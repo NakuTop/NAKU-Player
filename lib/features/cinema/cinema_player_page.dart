@@ -991,12 +991,28 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return Focus(
         autofocus: true,
         onKeyEvent: (_, event) {
-          if (event is KeyDownEvent &&
-              event.logicalKey == LogicalKeyboardKey.escape) {
-            unawaited(_toggleFullscreen());
-            return KeyEventResult.handled;
+          if (event is! KeyDownEvent ||
+              HardwareKeyboard.instance.isMetaPressed ||
+              HardwareKeyboard.instance.isControlPressed) {
+            return KeyEventResult.ignored;
           }
-          return KeyEventResult.ignored;
+          final actions = <LogicalKeyboardKey, VoidCallback>{
+            LogicalKeyboardKey.escape: _toggleFullscreen,
+            LogicalKeyboardKey.keyF: _toggleFullscreen,
+            LogicalKeyboardKey.keyE: _showEpisodes,
+            LogicalKeyboardKey.keyP: _togglePip,
+            LogicalKeyboardKey.keyW: () => showCinemaSyncSheet(context, _sync),
+            LogicalKeyboardKey.keyB: _toggleFavorite,
+            LogicalKeyboardKey.space: () {
+              _playback?.player.playOrPause();
+            },
+            LogicalKeyboardKey.arrowLeft: () => _seekBy(-10),
+            LogicalKeyboardKey.arrowRight: () => _seekBy(10),
+          };
+          final action = actions[event.logicalKey];
+          if (action == null) return KeyEventResult.ignored;
+          action();
+          return KeyEventResult.handled;
         },
         child: Theme(
           data: CinemaTheme.data,
