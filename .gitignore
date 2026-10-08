@@ -55,3 +55,16 @@ android/build/reports/problems/
 **/macos/Pods/
 **/ios/Podfile.lock
 **/macos/Podfile.lock
+
+# Keep reproducible macOS dependency resolution.
+!macos/Podfile.lock
+# Never commit release signing material.
+*.p12
+*.p8
+*.pem
+*.key
+.env
+.env.*
+
+# Local release outputs
+/artifacts/

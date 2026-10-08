@@ -18,7 +18,7 @@ class BangumiAccelerationInterceptor extends Interceptor {
     options.extra.remove(_echRequestKey);
     final uri = options.uri;
     if (ApiEndpoints.bangumiPublicApiHosts.contains(uri.host)) {
-      switch (BangumiAcceleration.current) {
+      switch (BangumiAcceleration.forRequest(uri, options.method)) {
         case BangumiAcceleration.direct:
           break;
         case BangumiAcceleration.ech:

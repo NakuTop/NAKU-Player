@@ -1,0 +1,23 @@
+name: macOS checks
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'lib/**'
+      - 'test/**'
+      - 'pubspec.*'
+      - 'macos/**'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.6'
+          cache: true
+      - run: flutter pub get
+      - run: flutter test --no-pub test/features/cinema test/bangumi_search_request_test.dart
+      - run: flutter build macos --release --no-pub

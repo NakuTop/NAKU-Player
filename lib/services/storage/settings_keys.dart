@@ -59,7 +59,7 @@ class SettingsKeys {
   );
   static const autoUpdate = SettingKey<bool>(
     _SettingBoxKey.autoUpdate,
-    true,
+    false,
     group: SettingGroup.update,
   );
   static const checkPluginUpdateOnStartup = SettingKey<bool>(
@@ -210,7 +210,7 @@ class SettingsKeys {
   );
   static const themeMode = SettingKey<String>(
     _SettingBoxKey.themeMode,
-    'system',
+    'dark',
     group: SettingGroup.theme,
   );
   static const themeColor = SettingKey<String>(

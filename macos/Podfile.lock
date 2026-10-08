@@ -1,0 +1,51 @@
+PODS:
+  - flutter_inappwebview_macos (0.0.1):
+    - FlutterMacOS
+    - OrderedSet (~> 6.0.3)
+  - FlutterMacOS (1.0.0)
+  - macos_secure_bookmarks (0.0.3):
+    - FlutterMacOS
+  - OrderedSet (6.0.3)
+  - screen_retriever_macos (0.0.1):
+    - FlutterMacOS
+  - Sparkle (2.9.6)
+  - tray_manager (0.0.1):
+    - FlutterMacOS
+
+DEPENDENCIES:
+  - flutter_inappwebview_macos (from `Flutter/ephemeral/.symlinks/plugins/flutter_inappwebview_macos/macos`)
+  - FlutterMacOS (from `Flutter/ephemeral`)
+  - macos_secure_bookmarks (from `Flutter/ephemeral/.symlinks/plugins/macos_secure_bookmarks/macos`)
+  - screen_retriever_macos (from `Flutter/ephemeral/.symlinks/plugins/screen_retriever_macos/macos`)
+  - Sparkle (= 2.9.6)
+  - tray_manager (from `Flutter/ephemeral/.symlinks/plugins/tray_manager/macos`)
+
+SPEC REPOS:
+  trunk:
+    - OrderedSet
+    - Sparkle
+
+EXTERNAL SOURCES:
+  flutter_inappwebview_macos:
+    :path: Flutter/ephemeral/.symlinks/plugins/flutter_inappwebview_macos/macos
+  FlutterMacOS:
+    :path: Flutter/ephemeral
+  macos_secure_bookmarks:
+    :path: Flutter/ephemeral/.symlinks/plugins/macos_secure_bookmarks/macos
+  screen_retriever_macos:
+    :path: Flutter/ephemeral/.symlinks/plugins/screen_retriever_macos/macos
+  tray_manager:
+    :path: Flutter/ephemeral/.symlinks/plugins/tray_manager/macos
+
+SPEC CHECKSUMS:
+  flutter_inappwebview_macos: c2d68649f9f8f1831bfcd98d73fd6256366d9d1d
+  FlutterMacOS: c232990155153907050900a2e175c7773903ba4e
+  macos_secure_bookmarks: e096d8ec49de2d25ea47e1061b85e5f2f1520fef
+  OrderedSet: e539b66b644ff081c73a262d24ad552a69be3a94
+  screen_retriever_macos: 452e51764a9e1cdb74b3c541238795849f21557f
+  Sparkle: b8c9cf4ced217ffc708a1ca5f988a7ba877658db
+  tray_manager: a104b5c81b578d83f3c3d0f40a997c8b10810166
+
+PODFILE CHECKSUM: 8c681c89debf4f962467cba01093ccf7882ffc82
+
+COCOAPODS: 1.17.0

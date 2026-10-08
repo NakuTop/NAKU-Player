@@ -1,0 +1,383 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
+import 'package:kazumi/plugins/plugins.dart';
+import 'package:kazumi/services/network/macos_system_proxy.dart';
+
+import 'cinema_models.dart';
+
+class CinemaSourceException implements Exception {
+  const CinemaSourceException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+/// MacCMS is a catalogue of its own. No Bangumi title matching is involved.
+class CinemaRepository {
+  CinemaRepository({Dio? dio}) : _dio = dio ?? _createDefaultDio();
+
+  static Dio _createDefaultDio() {
+    final dio = Dio(
+      BaseOptions(
+        connectTimeout: const Duration(seconds: 12),
+        receiveTimeout: const Duration(seconds: 15),
+        sendTimeout: const Duration(seconds: 12),
+        responseType: ResponseType.plain,
+        headers: {
+          'User-Agent': 'NAKUPlayer/1.0.0',
+          'Accept': 'application/json',
+        },
+      ),
+    );
+    dio.httpClientAdapter = IOHttpClientAdapter(
+      createHttpClient: () {
+        final client = HttpClient();
+        if (Platform.isMacOS) {
+          client.findProxy = MacOSSystemProxy.findProxy;
+        } else {
+          client.findProxy = HttpClient.findProxyFromEnvironment;
+        }
+        return client;
+      },
+    );
+    return dio;
+  }
+
+  final Dio _dio;
+  final Map<String, List<CinemaCategory>> _categories = {};
+
+  Future<CinemaPage> browse(
+    CinemaSource source, {
+    String? categoryId,
+    int page = 1,
+  }) async {
+    source.validate();
+    if (source.kind == CinemaSourceKind.kazumi) {
+      return const CinemaPage(items: []);
+    }
+    final categoriesFuture = categories(source);
+    final bodyFuture = _request(source, {
+      'ac': 'detail',
+      'pg': '$page',
+      if (categoryId != null && categoryId.isNotEmpty) 't': categoryId,
+    });
+    // Register both futures immediately so either error remains observable.
+    final responses = await Future.wait<Object>([categoriesFuture, bodyFuture]);
+    return parseMacCmsPage(
+      source,
+      responses[1] as Map<String, dynamic>,
+      categories: responses[0] as List<CinemaCategory>,
+    );
+  }
+
+  Future<List<CinemaCategory>> categories(CinemaSource source) async {
+    source.validate();
+    if (source.kind == CinemaSourceKind.kazumi) return [];
+    final cacheKey = '${source.id}|${source.url}';
+    final cached = _categories[cacheKey];
+    if (cached != null) return cached;
+    final body = await _request(source, {'ac': 'list', 'pg': '1'});
+    final result = jsonMaps(body['class'])
+        .map(
+          (entry) => CinemaCategory(
+            id: textValue(entry['type_id']),
+            name: cleanCinemaText(entry['type_name']),
+            parentId: textValue(entry['type_pid']),
+          ),
+        )
+        .where((entry) => entry.id.isNotEmpty && entry.name.isNotEmpty)
+        .toList();
+    _categories[cacheKey] = result;
+    return result;
+  }
+
+  Future<CinemaPage> search(
+    CinemaSource source,
+    String keyword, {
+    int page = 1,
+  }) async {
+    source.validate();
+    if (keyword.trim().isEmpty) return const CinemaPage(items: []);
+    if (source.kind == CinemaSourceKind.maccms) {
+      final body = await _request(source, {
+        'ac': 'detail',
+        'wd': keyword.trim(),
+        'pg': '$page',
+      });
+      return parseMacCmsPage(
+        source,
+        body,
+        categories: _categories['${source.id}|${source.url}'] ?? [],
+      );
+    }
+    if (page > 1) return const CinemaPage(items: []);
+    final plugin = Plugin.fromJson(source.rule!);
+    final cancelToken = CancelToken();
+    try {
+      final response = await plugin
+          .queryBangumi(
+            keyword.trim(),
+            shouldRethrow: true,
+            cancelToken: cancelToken,
+          )
+          .timeout(
+            const Duration(seconds: 15),
+            onTimeout: () {
+              cancelToken.cancel('动漫源搜索超时');
+              throw CinemaSourceException('${source.name}搜索超时，请重试或换源');
+            },
+          );
+      final items = response.data
+          .map(
+            (item) => CinemaTitle(
+              id: requireHttpUrl(plugin.buildFullUrl(item.src)).toString(),
+              sourceId: source.id,
+              title: cleanCinemaText(item.name),
+              category: '动漫',
+            ),
+          )
+          .toList();
+      return CinemaPage(items: items, total: items.length);
+    } on NoResultException {
+      return const CinemaPage(items: []);
+    } on CaptchaRequiredException {
+      throw CinemaSourceException('${source.name}需要网页验证码，请换源或在原动漫页面验证');
+    } on SearchErrorException catch (error) {
+      throw CinemaSourceException('${source.name}搜索失败：${error.cause ?? error}');
+    }
+  }
+
+  Future<CinemaTitle> detail(CinemaSource source, CinemaTitle title) async {
+    source.validate();
+    if (title.sourceId != source.id) {
+      throw const CinemaSourceException('影片与当前片源不匹配');
+    }
+    if (source.kind == CinemaSourceKind.maccms) {
+      final body = await _request(source, {'ac': 'detail', 'ids': title.id});
+      final items = parseMacCmsPage(source, body).items;
+      final match = items.where((item) => item.id == title.id).firstOrNull;
+      if (match == null) throw const CinemaSourceException('片源未返回此影片详情，可能已下架');
+      return match;
+    }
+    final plugin = Plugin.fromJson(source.rule!);
+    requireHttpUrl(title.id);
+    final cancelToken = CancelToken();
+    try {
+      final roads = await plugin
+          .queryChapterRoads(title.id, cancelToken: cancelToken)
+          .timeout(
+            const Duration(seconds: 15),
+            onTimeout: () {
+              cancelToken.cancel('动漫源详情超时');
+              throw CinemaSourceException('${source.name}详情超时，请重试或换源');
+            },
+          );
+      return title.copyWith(
+        routes: roads
+            .map(
+              (road) => CinemaRoute(
+                name: cleanCinemaText(road.name),
+                episodes: List.generate(
+                  road.data.length,
+                  (index) => CinemaEpisode(
+                    name:
+                        index < road.identifier.length &&
+                            road.identifier[index].isNotEmpty
+                        ? cleanCinemaText(road.identifier[index])
+                        : '第 ${index + 1} 集',
+                    url: requireHttpUrl(
+                      plugin.buildFullUrl(road.data[index]),
+                    ).toString(),
+                  ),
+                ),
+              ),
+            )
+            .where((road) => road.episodes.isNotEmpty)
+            .toList(),
+      );
+    } on ChapterErrorException catch (error) {
+      throw CinemaSourceException(
+        '${source.name}详情加载失败：${error.cause ?? error}',
+      );
+    }
+  }
+
+  Future<Map<String, dynamic>> _request(
+    CinemaSource source,
+    Map<String, String> query,
+  ) async {
+    final uri = requireHttpUrl(source.url);
+    final target = uri.replace(
+      queryParameters: {...uri.queryParameters, ...query},
+    );
+    final token = CancelToken();
+    try {
+      final response = await _dio
+          .get<Object?>(
+            target.toString(),
+            options: Options(
+              responseType: ResponseType.plain,
+              headers: source.headers,
+              receiveTimeout: const Duration(seconds: 15),
+              sendTimeout: const Duration(seconds: 12),
+            ),
+            cancelToken: token,
+          )
+          .timeout(
+            const Duration(seconds: 15),
+            onTimeout: () {
+              token.cancel('片源请求超时');
+              throw CinemaSourceException('${source.name}请求超时，请重试或换源');
+            },
+          );
+      Object? decoded = response.data;
+      if (decoded is String) {
+        decoded = jsonDecode(decoded.replaceFirst('\uFEFF', ''));
+      }
+      if (decoded is! Map) throw const FormatException('顶层数据不是 JSON 对象');
+      final data = Map<String, dynamic>.from(decoded);
+      if (data['code'] != null && textValue(data['code']) != '1') {
+        throw CinemaSourceException(
+          '${source.name}返回错误：${cleanCinemaText(data['msg'])}',
+        );
+      }
+      if (data['list'] is! List) {
+        throw const FormatException('缺少 MacCMS list 数组');
+      }
+      return data;
+    } on DioException catch (error) {
+      final status = error.response?.statusCode;
+      throw CinemaSourceException(
+        status == null
+            ? '${source.name}连接失败：${error.type.name}'
+            : '${source.name}返回 HTTP $status',
+      );
+    } on FormatException catch (error) {
+      throw CinemaSourceException('${source.name}接口格式不兼容：${error.message}');
+    }
+  }
+
+  static CinemaPage parseMacCmsPage(
+    CinemaSource source,
+    Map<String, dynamic> data, {
+    List<CinemaCategory> categories = const [],
+  }) {
+    if (data['list'] is! List) throw const FormatException('缺少 MacCMS list 数组');
+    if ((data['list'] as List).any((entry) => entry is! Map)) {
+      throw const FormatException('MacCMS 影片条目不是 JSON 对象');
+    }
+    final items = jsonMaps(data['list']).map((entry) {
+      if (textValue(entry['vod_id']).isEmpty ||
+          cleanCinemaText(entry['vod_name']).isEmpty) {
+        throw const FormatException('MacCMS 影片缺少 vod_id 或 vod_name');
+      }
+      final poster = textValue(entry['vod_pic']).trim();
+      final posterUri = Uri.tryParse(poster);
+      final resolvedPoster = poster.isEmpty
+          ? ''
+          : requireHttpUrl(
+              source.url,
+            ).resolveUri(posterUri ?? Uri()).toString();
+      return CinemaTitle(
+        id: textValue(entry['vod_id']),
+        sourceId: source.id,
+        title: cleanCinemaText(entry['vod_name']),
+        poster:
+            Uri.tryParse(resolvedPoster)?.isScheme('https') == true ||
+                Uri.tryParse(resolvedPoster)?.isScheme('http') == true
+            ? resolvedPoster
+            : '',
+        description: cleanCinemaText(
+          entry['vod_content'] ?? entry['vod_blurb'],
+        ),
+        category: cleanCinemaText(entry['type_name']),
+        categoryId: textValue(entry['type_id']),
+        year: cleanCinemaText(entry['vod_year']),
+        remarks: cleanCinemaText(entry['vod_remarks']),
+        actors: cleanCinemaText(entry['vod_actor']),
+        director: cleanCinemaText(entry['vod_director']),
+        area: cleanCinemaText(entry['vod_area']),
+        language: cleanCinemaText(entry['vod_lang']),
+        sourceHits: parseCinemaSourceHits(entry['vod_hits']),
+        sourceUpdatedAt: parseCinemaSourceUpdatedAt(entry['vod_time']),
+        releaseDateText: textValue(entry['vod_pubdate']),
+        doubanId: parseCinemaDoubanId(entry['vod_douban_id']),
+        sourceDoubanScore: parseCinemaSourceDoubanScore(
+          entry['vod_douban_score'],
+        ),
+        // These optional IDs require an explicitly named provider field.
+        // Never infer them from a title, description, score or arbitrary URL.
+        imdbId: parseCinemaImdbId(entry['vod_imdb_id'] ?? entry['imdb_id']),
+        rottenTomatoesId: parseCinemaRottenTomatoesId(
+          entry['vod_rotten_tomatoes_id'] ?? entry['rotten_tomatoes_id'],
+        ),
+        routes: parseMacCmsRoutes(
+          textValue(entry['vod_play_from']),
+          textValue(entry['vod_play_url']),
+        ),
+      );
+    }).toList();
+    return CinemaPage(
+      items: items,
+      categories: categories,
+      page: intValue(data['page'], 1),
+      pageCount: intValue(data['pagecount'], 1),
+      total: intValue(data['total'], items.length),
+    );
+  }
+
+  static List<CinemaRoute> parseMacCmsRoutes(String names, String playUrls) {
+    if (playUrls.trim().isEmpty) return [];
+    final routeNames = names.split(r'$$$');
+    final routeUrls = playUrls.split(r'$$$');
+    final routes = <CinemaRoute>[];
+    for (var routeIndex = 0; routeIndex < routeUrls.length; routeIndex++) {
+      final episodes = <CinemaEpisode>[];
+      for (final entry in routeUrls[routeIndex].split('#')) {
+        final separator = entry.indexOf(r'$');
+        final rawUrl = separator < 0
+            ? entry.trim()
+            : entry.substring(separator + 1).trim();
+        // Decode HTML entities but do not turn a non-web scheme into a request.
+        final url = cleanCinemaText(rawUrl);
+        final uri = Uri.tryParse(url);
+        if (uri == null ||
+            !['http', 'https'].contains(uri.scheme) ||
+            uri.host.isEmpty ||
+            uri.userInfo.isNotEmpty) {
+          continue;
+        }
+        final name = separator < 0
+            ? ''
+            : cleanCinemaText(entry.substring(0, separator));
+        episodes.add(
+          CinemaEpisode(
+            name: name.isEmpty ? '正片 ${episodes.length + 1}' : name,
+            url: uri.toString(),
+          ),
+        );
+      }
+      if (episodes.isNotEmpty) {
+        routes.add(
+          CinemaRoute(
+            name:
+                routeIndex < routeNames.length &&
+                    routeNames[routeIndex].isNotEmpty
+                ? cleanCinemaText(routeNames[routeIndex])
+                : '线路 ${routeIndex + 1}',
+            episodes: episodes,
+          ),
+        );
+      }
+    }
+    // Prefer directly playable links while retaining each original route label.
+    return [
+      ...routes.where((route) => route.episodes.first.isDirect),
+      ...routes.where((route) => !route.episodes.first.isDirect),
+    ];
+  }
+}

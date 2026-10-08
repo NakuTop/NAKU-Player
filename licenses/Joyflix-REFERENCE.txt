@@ -1,0 +1,6 @@
+Joyflix reference
+https://github.com/jeffernn/Joyflix-Mac-Objective-C
+Commit: 96cf8e7ee57a57da8b2f906935bd714398c659de
+Copyright © 2025 Joyflix.
+
+YingChuan 0.2.0 references the built-in website addresses in Joyflix/Home/HLHomeViewController.m and its visible WKWebView / homepage checking approach. The Flutter website library and WebView page are new implementations. Original Joyflix license is included alongside this file. YingChuan retains GPL-3.0 and Kazumi attribution.

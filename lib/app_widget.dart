@@ -1,13 +1,14 @@
+import 'package:kazumi/features/cinema/cinema_theme.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_modular/flutter_modular.dart';
-import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter_displaymode/flutter_displaymode.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/network/metered_network_service.dart';
+import 'package:kazumi/services/network/macos_system_proxy.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/bean/dialog/exit_confirmation_dialog.dart';
@@ -130,7 +131,7 @@ class _AppWidgetState extends State<AppWidget>
   Color _storedThemeColor() {
     final defaultThemeColor = GStorage.getSetting(SettingsKeys.themeColor);
     if (defaultThemeColor == 'default') {
-      return Colors.green;
+      return const Color(0xFFE6B48A);
     }
     return Color(int.parse(defaultThemeColor, radix: 16));
   }
@@ -156,8 +157,9 @@ class _AppWidgetState extends State<AppWidget>
   void _syncWindowsTitleBarBrightness(ThemeProvider themeProvider) {
     if (!Platform.isWindows) return;
 
-    final brightness =
-        themeProvider.isEffectiveDark() ? Brightness.dark : Brightness.light;
+    final brightness = themeProvider.isEffectiveDark()
+        ? Brightness.dark
+        : Brightness.light;
     if (_lastTitleBarBrightness == brightness) return;
 
     _lastTitleBarBrightness = brightness;
@@ -205,13 +207,10 @@ class _AppWidgetState extends State<AppWidget>
 
         action = result.action;
         if (result.rememberChoice) {
-          await GStorage.putSetting(
-            SettingsKeys.exitBehavior,
-            switch (action) {
-              ExitDialogAction.exit => 0,
-              ExitDialogAction.minimizeToTray => 1,
-            },
-          );
+          await GStorage.putSetting(SettingsKeys.exitBehavior, switch (action) {
+            ExitDialogAction.exit => 0,
+            ExitDialogAction.minimizeToTray => 1,
+          });
         }
       }
 
@@ -231,11 +230,14 @@ class _AppWidgetState extends State<AppWidget>
   void didChangeAppLifecycleState(AppLifecycleState state) async {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.paused) {
-      KazumiLogger()
-          .i("AppLifecycleState.paused: Application moved to background");
+      KazumiLogger().i(
+        "AppLifecycleState.paused: Application moved to background",
+      );
     } else if (state == AppLifecycleState.resumed) {
-      KazumiLogger()
-          .i("AppLifecycleState.resumed: Application moved to foreground");
+      await MacOSSystemProxy.initialize();
+      KazumiLogger().i(
+        "AppLifecycleState.resumed: Application moved to foreground",
+      );
       await MeteredNetworkService.refresh();
     } else if (state == AppLifecycleState.inactive) {
       KazumiLogger().i("AppLifecycleState.inactive: Application is inactive");
@@ -247,7 +249,8 @@ class _AppWidgetState extends State<AppWidget>
     super.didChangePlatformBrightness();
     final ThemeProvider themeProvider = context.read<ThemeProvider>();
     KazumiLogger().i(
-        "Platform brightness changed, themeMode: ${themeProvider.themeMode}");
+      "Platform brightness changed, themeMode: ${themeProvider.themeMode}",
+    );
 
     _syncWindowsTitleBarBrightness(themeProvider);
   }
@@ -259,66 +262,45 @@ class _AppWidgetState extends State<AppWidget>
         Platform.environment.containsKey('SNAP')) {
       await trayManager.setIcon('io.github.Predidit.Kazumi');
     } else {
-      await trayManager.setIcon('assets/images/logo/logo_rounded.png');
+      await trayManager.setIcon('assets/images/logo/yingchuan.png');
     }
 
     if (!Platform.isLinux) {
-      await trayManager.setToolTip('Kazumi');
+      await trayManager.setToolTip('NAKU播放器');
     }
 
-    Menu trayMenu = Menu(items: [
-      MenuItem(key: 'show_window', label: '显示窗口'),
-      MenuItem.separator(),
-      MenuItem(key: 'exit', label: '退出 Kazumi')
-    ]);
+    Menu trayMenu = Menu(
+      items: [
+        MenuItem(key: 'show_window', label: '显示窗口'),
+        MenuItem.separator(),
+        MenuItem(key: 'exit', label: '退出NAKU播放器'),
+      ],
+    );
     await trayManager.setContextMenu(trayMenu);
   }
 
   @override
   Widget build(BuildContext context) {
-    final ThemeProvider themeProvider = context.watch<ThemeProvider>();
-    bool oledEnhance = GStorage.getSetting(SettingsKeys.oledEnhance);
-
-    var app = DynamicColorBuilder(
-      builder: (theme, darkTheme) {
-        final useDynamicColor =
-            themeProvider.useDynamicColor && theme != null && darkTheme != null;
-        final lightTheme = useDynamicColor
-            ? _buildAppTheme(
-                brightness: Brightness.light,
-                colorScheme: theme,
-                fontFamily: themeProvider.currentFontFamily,
-              )
-            : themeProvider.light;
-        final dynamicDarkTheme = useDynamicColor
-            ? _buildAppTheme(
-                brightness: Brightness.dark,
-                colorScheme: darkTheme,
-                fontFamily: themeProvider.currentFontFamily,
-              )
-            : themeProvider.dark;
-        final effectiveDarkTheme = useDynamicColor && oledEnhance
-            ? oledDarkTheme(dynamicDarkTheme)
-            : dynamicDarkTheme;
-
-        return MaterialApp.router(
-          title: "Kazumi",
-          localizationsDelegates: GlobalMaterialLocalizations.delegates,
-          supportedLocales: const [
-            Locale.fromSubtags(
-                languageCode: 'zh', scriptCode: 'Hans', countryCode: "CN")
-          ],
-          locale: const Locale.fromSubtags(
-              languageCode: 'zh', scriptCode: 'Hans', countryCode: "CN"),
-          theme: lightTheme,
-          darkTheme: effectiveDarkTheme,
-          themeMode: themeProvider.themeMode,
-          scaffoldMessengerKey: rootScaffoldMessengerKey,
-          routerConfig: ModularApp.routerConfigOf(context),
-        );
-      },
+    return MaterialApp.router(
+      title: "NAKU播放器",
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      supportedLocales: const [
+        Locale.fromSubtags(
+          languageCode: 'zh',
+          scriptCode: 'Hans',
+          countryCode: "CN",
+        ),
+      ],
+      locale: const Locale.fromSubtags(
+        languageCode: 'zh',
+        scriptCode: 'Hans',
+        countryCode: "CN",
+      ),
+      theme: CinemaTheme.data,
+      darkTheme: CinemaTheme.data,
+      themeMode: ThemeMode.dark,
+      scaffoldMessengerKey: rootScaffoldMessengerKey,
+      routerConfig: ModularApp.routerConfigOf(context),
     );
-
-    return app;
   }
 }

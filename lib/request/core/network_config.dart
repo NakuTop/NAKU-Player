@@ -4,6 +4,7 @@ import 'package:dio/io.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/network/proxy_utils.dart';
 import 'package:kazumi/services/network/system_proxy_service.dart';
+import 'package:kazumi/services/network/macos_system_proxy.dart';
 import 'package:kazumi/services/storage/storage.dart';
 
 class NetworkConfig {
@@ -29,6 +30,7 @@ class NetworkConfig {
 
   Uri? proxyForUri(Uri uri) {
     if (hasProxy) return Uri(scheme: 'http', host: proxyHost, port: proxyPort);
+    if (Platform.isMacOS) return MacOSSystemProxy.proxyFor(uri);
     if (Platform.isWindows) {
       final proxy = SystemProxyService.findProxy(uri);
       if (proxy.startsWith('PROXY ')) {
@@ -46,6 +48,8 @@ class NetworkConfig {
           client.findProxy = (_) => 'PROXY $proxyHost:$proxyPort';
         } else if (Platform.isWindows) {
           client.findProxy = SystemProxyService.findProxy;
+        } else if (Platform.isMacOS) {
+          client.findProxy = MacOSSystemProxy.findProxy;
         }
         if (allowBadCertificates) {
           client.badCertificateCallback = (cert, host, port) => true;

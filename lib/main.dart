@@ -11,6 +11,7 @@ import 'package:kazumi/services/network/metered_network_service.dart';
 import 'package:kazumi/services/network/ech_http_licenses.dart';
 import 'package:kazumi/services/network/proxy_manager.dart';
 import 'package:kazumi/services/network/system_proxy_service.dart';
+import 'package:kazumi/services/network/macos_system_proxy.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
@@ -81,7 +82,7 @@ void main() async {
           ? TitleBarStyle.hidden
           : TitleBarStyle.normal,
       windowButtonVisibility: showWindowButton,
-      title: 'Kazumi',
+      title: 'NAKU播放器',
     );
     windowManager.waitUntilReadyToShow(windowOptions, () async {
       // window_manager controls desktop visibility to avoid startup flicker.
@@ -92,6 +93,7 @@ void main() async {
   if (Platform.isWindows) {
     SystemProxyService.init();
   }
+  await MacOSSystemProxy.initialize();
   await MeteredNetworkService.refresh();
   ProxyManager.applyProxy();
   runApp(

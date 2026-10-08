@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/pages/my/my_controller.dart';
@@ -17,7 +18,6 @@ import 'package:kazumi/pages/plugin_editor/plugin_update_actions.dart';
 import 'package:kazumi/services/download/background_download_service.dart';
 import 'package:kazumi/services/platform/windows_shortcut.dart';
 import 'package:kazumi/services/platform/platform_environment_service.dart';
-import 'package:kazumi/services/update/startup_update_check.dart';
 import 'package:kazumi/navigation.dart';
 
 class InitPage extends StatefulWidget {
@@ -76,24 +76,14 @@ class _InitPageState extends State<InitPage> {
     if (!mounted) {
       return;
     }
-    // First launch: no installed rules yet, hand over to the onboarding flow.
-    // OnboardingPage takes care of navigating to the default page and
-    // triggering the auto update check afterwards.
+    // Keep the upstream anime catalogue usable alongside the personal library.
     if (pluginsController.pluginList.isEmpty) {
-      context.navigate('/onboarding');
-      return;
+      await pluginsController.copyPluginsToExternalDirectory();
     }
 
     if (!mounted) {
       return;
     }
-    final updateController = myController;
-    unawaited(runStartupUpdateCheck(
-      isEnabled: () => GStorage.getSetting(SettingsKeys.autoUpdate),
-      checkForUpdate: () async {
-        await updateController.checkUpdate(type: 'auto');
-      },
-    ));
     _startDefaultPage();
   }
 
@@ -109,8 +99,10 @@ class _InitPageState extends State<InitPage> {
           if (path.contains('/download')) return;
           navigationContext.pushNamed('/settings/download/');
         } catch (e) {
-          KazumiLogger()
-              .w('InitPage: failed to navigate to download page', error: e);
+          KazumiLogger().w(
+            'InitPage: failed to navigate to download page',
+            error: e,
+          );
         }
       });
     };
@@ -130,8 +122,9 @@ class _InitPageState extends State<InitPage> {
                 onPressed: () => KazumiDialog.dismiss(popWith: false),
                 child: Text(
                   '稍后再说',
-                  style:
-                      TextStyle(color: Theme.of(context).colorScheme.outline),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.outline,
+                  ),
                 ),
               ),
               TextButton(
@@ -147,12 +140,10 @@ class _InitPageState extends State<InitPage> {
   }
 
   void _startDefaultPage() {
-    final defaultStartupPage =
-        GStorage.getSetting(SettingsKeys.defaultStartupPage);
     if (!mounted) {
       return;
     }
-    context.navigate(defaultStartupPage);
+    context.navigate('/cinema');
   }
 
   // migrate collect from old version (favorites)
@@ -166,8 +157,9 @@ class _InitPageState extends State<InitPage> {
 
   Future<void> _webDavInit() async {
     bool webDavEnable = await GStorage.getSetting(SettingsKeys.webDavEnable);
-    bool webDavEnableHistory =
-        await GStorage.getSetting(SettingsKeys.webDavEnableHistory);
+    bool webDavEnableHistory = await GStorage.getSetting(
+      SettingsKeys.webDavEnableHistory,
+    );
     if (webDavEnable) {
       var webDav = WebDav();
       KazumiLogger().i('WebDav: Starting WebDav initialization');
@@ -230,7 +222,8 @@ class _InitPageState extends State<InitPage> {
             child: AlertDialog(
               title: const Text('X11环境检测'),
               content: const Text(
-                  '检测到您当前运行在X11环境下，Kazumi在X11环境下可能出现性能问题或界面异常，建议切换到Wayland以获得更好的体验。您是否希望在X11下继续使用Kazumi？'),
+                '检测到您当前运行在X11环境下，Kazumi在X11环境下可能出现性能问题或界面异常，建议切换到Wayland以获得更好的体验。您是否希望在X11下继续使用Kazumi？',
+              ),
               actions: [
                 TextButton(
                   onPressed: () {
@@ -238,8 +231,9 @@ class _InitPageState extends State<InitPage> {
                   },
                   child: Text(
                     '退出',
-                    style:
-                        TextStyle(color: Theme.of(context).colorScheme.outline),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
                   ),
                 ),
                 TextButton(
@@ -270,8 +264,10 @@ class _InitPageState extends State<InitPage> {
         actions: [
           TextButton(
             onPressed: () => KazumiDialog.dismiss(popWith: false),
-            child: Text('暂不创建',
-                style: TextStyle(color: Theme.of(context).colorScheme.outline)),
+            child: Text(
+              '暂不创建',
+              style: TextStyle(color: Theme.of(context).colorScheme.outline),
+            ),
           ),
           TextButton(
             onPressed: () => KazumiDialog.dismiss(popWith: true),
@@ -302,8 +298,9 @@ class _InitPageState extends State<InitPage> {
   }
 
   Future<void> _pluginUpdate() async {
-    final checkOnStartup =
-        GStorage.getSetting(SettingsKeys.checkPluginUpdateOnStartup);
+    final checkOnStartup = GStorage.getSetting(
+      SettingsKeys.checkPluginUpdateOnStartup,
+    );
     late final int count;
     try {
       count = await pluginsController.checkPluginUpdatesOnStartup(

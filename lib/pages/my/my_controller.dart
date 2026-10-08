@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:kazumi/features/cinema/naku_update_service.dart';
 
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/modules/my/watch_stats.dart';
@@ -7,7 +8,6 @@ import 'package:kazumi/repositories/danmaku_shield_repository.dart';
 import 'package:kazumi/repositories/download_repository.dart';
 import 'package:kazumi/repositories/history_repository.dart';
 import 'package:kazumi/services/logging/logger.dart';
-import 'package:kazumi/services/update/auto_updater.dart';
 import 'package:mobx/mobx.dart';
 
 part 'my_controller.g.dart';
@@ -89,8 +89,9 @@ abstract class _MyController with Store {
         try {
           if (RegExp(pattern).hasMatch(danmaku)) return true;
         } catch (_) {
-          KazumiLogger()
-              .e('Danmaku: invalid danmaku shield regex pattern: $pattern');
+          KazumiLogger().e(
+            'Danmaku: invalid danmaku shield regex pattern: $pattern',
+          );
           continue;
         }
       } else {
@@ -102,14 +103,17 @@ abstract class _MyController with Store {
 
   Future<void> loadShieldList() async {
     // Keep this subscription alive during playback.
-    _shieldSubscription ??=
-        _shieldRepository.changes.listen((_) => _refreshShieldList());
+    _shieldSubscription ??= _shieldRepository.changes.listen(
+      (_) => _refreshShieldList(),
+    );
     _refreshShieldList();
     try {
       await _shieldRepository.initialize();
     } catch (e) {
-      KazumiLogger()
-          .e('Danmaku: failed to initialize shield sync state', error: e);
+      KazumiLogger().e(
+        'Danmaku: failed to initialize shield sync state',
+        error: e,
+      );
     }
   }
 
@@ -125,10 +129,11 @@ abstract class _MyController with Store {
     final error = DanmakuShieldRule.validate(item);
     if (error != null) {
       KazumiDialog.showToast(
-          message: switch (error) {
-        DanmakuShieldRuleError.empty => '请输入关键词',
-        DanmakuShieldRuleError.tooLong => '关键词过长',
-      });
+        message: switch (error) {
+          DanmakuShieldRuleError.empty => '请输入关键词',
+          DanmakuShieldRuleError.tooLong => '关键词过长',
+        },
+      );
       return false;
     }
     return _saveShieldRule(item, deleted: false);
@@ -152,23 +157,15 @@ abstract class _MyController with Store {
     }
   }
 
+  // Personal builds must not replace themselves with upstream release packages.
   Future<bool> checkUpdate({String type = 'manual'}) async {
-    try {
-      final autoUpdater = AutoUpdater();
-
-      if (type == 'manual') {
-        await autoUpdater.manualCheckForUpdates();
-      } else {
-        await autoUpdater.autoCheckForUpdates();
+    if (type == 'manual') {
+      try {
+        await NakuUpdateService.check();
+      } catch (error) {
+        KazumiDialog.showToast(message: '无法检查更新：$error');
       }
-
-      return true;
-    } catch (err) {
-      KazumiLogger().e('Update: check update failed', error: err);
-      if (type == 'manual') {
-        KazumiDialog.showToast(message: '检查更新失败，请稍后重试');
-      }
-      return false;
     }
+    return false;
   }
 }

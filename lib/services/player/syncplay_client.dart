@@ -28,6 +28,11 @@ abstract class SyncplayMessage {
   Map<String, dynamic> toJson();
 }
 
+class _ListMessage extends SyncplayMessage {
+  @override
+  Map<String, dynamic> toJson() => {'List': null};
+}
+
 class HelloMessage extends SyncplayMessage {
   final String username;
   final String version;
@@ -41,21 +46,19 @@ class HelloMessage extends SyncplayMessage {
 
   @override
   Map<String, dynamic> toJson() => {
-        'Hello': {
-          'username': username,
-          'room': {
-            'name': room,
-          },
-          'version': version,
-          'features': {
-            'sharedPlaylists': true,
-            'chat': true,
-            'featureList': true,
-            'readiness': true,
-            'managedRooms': false,
-          }
-        },
-      };
+    'Hello': {
+      'username': username,
+      'room': {'name': room},
+      'version': version,
+      'features': {
+        'sharedPlaylists': true,
+        'chat': true,
+        'featureList': true,
+        'readiness': true,
+        'managedRooms': false,
+      },
+    },
+  };
 }
 
 class StateMessage extends SyncplayMessage {
@@ -87,26 +90,26 @@ class StateMessage extends SyncplayMessage {
 
   @override
   Map<String, dynamic> toJson() => {
-        'State': {
-          if (clientAck != null || serverAck != null)
-            'ignoringOnTheFly': {
-              if (clientAck != null) 'client': clientAck,
-              if (serverAck != null) 'server': serverAck,
-            },
-          'ping': {
-            'clientRtt': clientRtt,
-            'clientLatencyCalculation': clientLatencyCalculation,
-            if (latencyCalculation != null)
-              'latencyCalculation': latencyCalculation,
-          },
-          'playstate': {
-            'position': position,
-            'paused': paused,
-            if (setBy != null) 'setBy': setBy,
-            'doSeek': doSeek,
-          },
+    'State': {
+      if (clientAck != null || serverAck != null)
+        'ignoringOnTheFly': {
+          if (clientAck != null) 'client': clientAck,
+          if (serverAck != null) 'server': serverAck,
         },
-      };
+      'ping': {
+        'clientRtt': clientRtt,
+        'clientLatencyCalculation': clientLatencyCalculation,
+        if (latencyCalculation != null)
+          'latencyCalculation': latencyCalculation,
+      },
+      'playstate': {
+        'position': position,
+        'paused': paused,
+        if (setBy != null) 'setBy': setBy,
+        'doSeek': doSeek,
+      },
+    },
+  };
 }
 
 class SetMessage extends SyncplayMessage {
@@ -135,28 +138,26 @@ class SetMessage extends SyncplayMessage {
     if (setJoined != null && room != null && username != null) {
       return {
         "Set": {
-          room: {
-            "room": {"name": room},
-            "event": {"joined": true}
+          "user": {
+            username: {
+              "room": {"name": room},
+              "event": {"joined": setJoined},
+            },
           },
-        }
+        },
       };
     }
     if (setReady != null) {
       return {
         'Set': {
-          "ready": {"isReady": true, "manuallyInitiated": false}
-        }
+          "ready": {"isReady": setReady, "manuallyInitiated": false},
+        },
       };
     }
     return {
       'Set': {
         if (fileName != null)
-          'file': {
-            'duration': duration,
-            'name': fileName,
-            'size': size,
-          },
+          'file': {'duration': duration, 'name': fileName, 'size': size},
         if (room != null)
           "user": {
             setBy: {
@@ -171,9 +172,7 @@ class SetMessage extends SyncplayMessage {
 class ChatMessage extends SyncplayMessage {
   final String message;
 
-  ChatMessage({
-    required this.message,
-  });
+  ChatMessage({required this.message});
 
   @override
   Map<String, dynamic> toJson() => {'Chat': message};
@@ -182,16 +181,12 @@ class ChatMessage extends SyncplayMessage {
 class _TLSMessage extends SyncplayMessage {
   final String message;
 
-  _TLSMessage({
-    required this.message,
-  });
+  _TLSMessage({required this.message});
 
   @override
   Map<String, dynamic> toJson() => {
-        'TLS': {
-          'startTLS': message,
-        },
-      };
+    'TLS': {'startTLS': message},
+  };
 }
 
 /// Single-use connection to a Syncplay server: [connect] may be called once,
@@ -269,8 +264,8 @@ class SyncplayClient {
   }
 
   SyncplayClient({required String host, required int port})
-      : _host = host,
-        _port = port;
+    : _host = host,
+      _port = port;
 
   /// Opens the connection using the TLS policy selected by the caller.
   Future<void> connect({required bool enableTLS}) async {
@@ -282,7 +277,11 @@ class SyncplayClient {
     }
     _connectCalled = true;
     try {
-      final socket = await RawSocket.connect(_host, _port);
+      final socket = await RawSocket.connect(
+        _host,
+        _port,
+        timeout: const Duration(seconds: 15),
+      );
       if (_closed) {
         await _forceCloseSocket(socket);
         throw SyncplayConnectionException('SyncPlay: connection closed');
@@ -294,13 +293,10 @@ class SyncplayClient {
         final handshakeCompleter = Completer<void>();
         _tlsHandshakeCompleter = handshakeCompleter;
         try {
-          await Future.wait<void>(
-            [
-              _requestTLS(),
-              handshakeCompleter.future,
-            ],
-            eagerError: true,
-          ).timeout(_tlsHandshakeTimeout);
+          await Future.wait<void>([
+            _requestTLS(),
+            handshakeCompleter.future,
+          ], eagerError: true).timeout(_tlsHandshakeTimeout);
           if (_socket == null || !_isTLS) {
             throw SyncplayConnectionException(
               'SyncPlay: TLS connection closed during upgrade',
@@ -316,10 +312,7 @@ class SyncplayClient {
       }
     } catch (error, stackTrace) {
       if (!_closed) {
-        await _closeSockets(
-          pendingWriteError: error,
-          stackTrace: stackTrace,
-        );
+        await _closeSockets(pendingWriteError: error, stackTrace: stackTrace);
       }
       if (error is SyncplayException) {
         Error.throwWithStackTrace(error, stackTrace);
@@ -349,41 +342,47 @@ class SyncplayClient {
   }
 
   Future<void> joinRoom(String room, String username) async {
-    await _sendMessage(HelloMessage(
-      username: username,
-      version: '1.7.0',
-      room: room,
-    ));
+    await _sendMessage(
+      HelloMessage(username: username, version: '1.7.0', room: room),
+    );
   }
+
+  Future<void> requestUserList() => _sendMessage(_ListMessage());
 
   Future<void> sendChatMessage(String message) async {
     if (_currentRoom == null || _username == null) {
       _generalMessageController?.addError(
         SyncplayProtocolException(
-            'SyncPlay: send chat message failed, not in a room'),
+          'SyncPlay: send chat message failed, not in a room',
+        ),
       );
       return;
     }
-    await _sendMessage(ChatMessage(
-      message: message,
-    ));
+    await _sendMessage(ChatMessage(message: message));
   }
 
   Future<void> setSyncPlayPlaying(
-      String bangumiName, double duration, int size) async {
+    String bangumiName,
+    double duration,
+    int size,
+  ) async {
     if (_currentRoom == null || _username == null) {
       _generalMessageController?.addError(
         SyncplayProtocolException(
-            'SyncPlay: set playing bangumi failed, not in a room'),
+          'SyncPlay: set playing bangumi failed, not in a room',
+        ),
       );
       return;
     }
-    await _sendMessage(SetMessage(
+    await _sendMessage(
+      SetMessage(
         duration: duration,
         fileName: bangumiName,
         size: size,
         setBy: _username ?? '',
-        room: _currentRoom ?? ''));
+        room: _currentRoom ?? '',
+      ),
+    );
   }
 
   Future<void> sendSyncPlaySyncRequest({bool? doSeek}) {
@@ -400,8 +399,9 @@ class SyncplayClient {
       return;
     }
     _closed = true;
-    final exception =
-        SyncplayConnectionException('SyncPlay: connection closed');
+    final exception = SyncplayConnectionException(
+      'SyncPlay: connection closed',
+    );
     _completeTLSHandshakeError(exception);
     await _closeSockets(pendingWriteError: exception);
     await _generalMessageController?.close();
@@ -478,7 +478,9 @@ class SyncplayClient {
   }
 
   void _setupSocketHandlers(RawSocket socket) {
-    String buffer = '';
+    // Syncplay frames JSON with CRLF. Decode only complete frames: a TCP read
+    // may split a UTF-8 character, and braces inside quoted strings are data.
+    final buffer = <int>[];
 
     _socketSubscription = socket.listen(
       (event) {
@@ -495,46 +497,42 @@ class SyncplayClient {
           return;
         }
         if (event == RawSocketEvent.read) {
-          while (true) {
+          while (socket.available() > 0) {
             final data = socket.read();
             if (data == null || data.isEmpty) {
               break;
             }
-            buffer += utf8.decode(data);
+            buffer.addAll(data);
             while (true) {
-              final startIndex = buffer.indexOf('{');
-              if (startIndex == -1) {
-                break;
+              final endIndex = buffer.indexOf(10);
+              if (endIndex < 0) break;
+              final frame = buffer.sublist(0, endIndex);
+              buffer.removeRange(0, endIndex + 1);
+              if (frame.isEmpty || (frame.length == 1 && frame.single == 13)) {
+                continue;
               }
-
-              int braceCount = 0;
-              int? endIndex;
-              for (int i = startIndex; i < buffer.length; i++) {
-                if (buffer[i] == '{') {
-                  braceCount++;
-                } else if (buffer[i] == '}') {
-                  braceCount--;
-                  if (braceCount == 0) {
-                    endIndex = i;
-                    break;
-                  }
-                }
-              }
-              if (endIndex == null) break;
-
-              final jsonStr = buffer.substring(startIndex, endIndex + 1);
               try {
+                final jsonStr = utf8.decode(frame);
                 _handleMessage(json.decode(jsonStr), socket);
               } catch (e) {
                 _generalMessageController?.addError(
                   SyncplayProtocolException(
-                      'SyncPlay: received data parse failed: $e'),
+                    'SyncPlay: received data parse failed: $e',
+                  ),
                 );
               }
-              buffer = buffer.substring(endIndex + 1);
               if (!identical(socket, _socket)) {
                 return;
               }
+            }
+            if (buffer.length > 1024 * 1024) {
+              _failCurrentSocket(
+                socket,
+                SyncplayConnectionException(
+                  'SyncPlay: unterminated message exceeds size limit',
+                ),
+              );
+              return;
             }
           }
         }
@@ -613,6 +611,7 @@ class SyncplayClient {
         _runInBackground(_setReady());
       }
       _generalMessageController?.add({
+        'type': 'hello',
         'username': json['Hello']['username'],
         'room': json['Hello']['room']['name'],
       });
@@ -620,13 +619,15 @@ class SyncplayClient {
     }
     if (json.containsKey('State')) {
       if (json['State'].containsKey('ping')) {
-        _lastLatencyCalculation =
-            json['State']['ping']['latencyCalculation']?.toDouble();
+        _lastLatencyCalculation = json['State']['ping']['latencyCalculation']
+            ?.toDouble();
         if (json['State']['ping'].containsKey('serverRtt')) {
           _serverRtt = json['State']['ping']['serverRtt']?.toDouble() ?? 0.0;
         }
         _updateClientRttAndFd(
-            json['State']["ping"]["clientLatencyCalculation"], _serverRtt);
+          json['State']["ping"]["clientLatencyCalculation"],
+          _serverRtt,
+        );
       }
       if (json['State'].containsKey('ignoringOnTheFly')) {
         var ignoringOnTheFly = json['State']['ignoringOnTheFly'];
@@ -643,13 +644,13 @@ class SyncplayClient {
         _currentPositon = (json['State']['playstate']['paused'] ?? true)
             ? (json['State']['playstate']['position']?.toDouble() ?? 0.0)
             : ((json['State']['playstate']['position']?.toDouble() ?? 0.0) +
-                _fd);
+                  _fd);
         _isPaused = json['State']['playstate']['paused'] ?? true;
         _positionChangedMessageController?.add({
           'calculatedPositon': (json['State']['playstate']['paused'] ?? true)
               ? (json['State']['playstate']['position']?.toDouble() ?? 0.0)
               : ((json['State']['playstate']['position']?.toDouble() ?? 0.0) +
-                  _fd),
+                    _fd),
           'position': json['State']['playstate']['position']?.toDouble() ?? 0.0,
           'paused': json['State']['playstate']['paused'] ?? true,
           'doSeek': json['State']['playstate']['doSeek'] ?? false,
@@ -661,10 +662,7 @@ class SyncplayClient {
         });
       }
       _runInBackground(
-        _sendState(
-          position: _currentPositon,
-          paused: _isPaused,
-        ),
+        _sendState(position: _currentPositon, paused: _isPaused),
       );
       return;
     }
@@ -679,28 +677,60 @@ class SyncplayClient {
       if (json['Set'].containsKey('user')) {
         Map<String, dynamic> userMap = data['Set']['user'];
         userMap.forEach((username, details) {
-          if (!details.containsKey('event')) {
-            return;
-          }
-          var event = details['event'].keys.first ?? 'unknown';
+          final events = details['event'];
+          final event = events is Map && events.isNotEmpty
+              ? events.keys.first.toString()
+              : 'updated';
           _roomMessageController?.add({
             'type': event,
             'username': username,
+            'room': details['room']?['name'],
+            if (details.containsKey('file'))
+              'name': details['file']?['name'] ?? '',
           });
         });
         for (var username in userMap.keys) {
           var userData = userMap[username];
           if (userData is Map && userData.containsKey('file')) {
             var fileData = userData['file'];
-            var fileName = fileData['name'];
+            var fileName = fileData?['name'] ?? '';
             _currentFileName = fileName;
             _flieChangedMessageController?.add({
               'name': fileName,
               'setBy': username,
+              'room': userData['room']?['name'],
             });
           }
         }
       }
+      return;
+    }
+    if (json.containsKey('List')) {
+      final users = <Map<String, dynamic>>[];
+      final rooms = json['List'];
+      if (rooms is Map) {
+        for (final entry in rooms.entries) {
+          if (entry.value is! Map) continue;
+          for (final user in (entry.value as Map).entries) {
+            final details = user.value;
+            if (details is! Map) continue;
+            users.add({
+              'username': user.key.toString(),
+              'room': entry.key.toString(),
+              'name': details['file']?['name'] ?? '',
+            });
+          }
+        }
+      }
+      _roomMessageController?.add({'type': 'snapshot', 'users': users});
+      return;
+    }
+    if (json.containsKey('Error')) {
+      _generalMessageController?.addError(
+        SyncplayProtocolException(
+          'SyncPlay: ${json['Error']?['message'] ?? 'server rejected request'}',
+        ),
+      );
       return;
     }
     if (json.containsKey('Chat')) {
@@ -779,17 +809,9 @@ class SyncplayClient {
       return;
     }
     await _sendMessage(
-      SetMessage(
-        setJoined: true,
-        username: _username,
-        room: _currentRoom,
-      ),
+      SetMessage(setJoined: true, username: _username, room: _currentRoom),
     );
-    await _sendMessage(
-      SetMessage(
-        setReady: true,
-      ),
-    );
+    await _sendMessage(SetMessage(setReady: true));
   }
 
   Future<void> _sendMessage(SyncplayMessage message) async {
@@ -881,11 +903,12 @@ class SyncplayClient {
     _pendingWriteCompleter = null;
   }
 
-  Future<void> _sendState(
-      {double? position,
-      bool? paused,
-      bool? doSeek,
-      bool stateChange = false}) {
+  Future<void> _sendState({
+    double? position,
+    bool? paused,
+    bool? doSeek,
+    bool stateChange = false,
+  }) {
     int? clientArck;
     int? serverAck;
     if (stateChange) {
@@ -898,17 +921,20 @@ class SyncplayClient {
     if (_clientIgnoringOnTheFly > 0) {
       clientArck = _clientIgnoringOnTheFly;
     }
-    return _sendMessage(StateMessage(
-      position: position ?? _currentPositon,
-      paused: paused ?? _isPaused,
-      latencyCalculation: _lastLatencyCalculation,
-      clientLatencyCalculation: DateTime.now().millisecondsSinceEpoch / 1000.0,
-      clientRtt: _clientRtt,
-      setBy: _username,
-      clientAck: clientArck,
-      serverAck: serverAck,
-      doSeek: doSeek,
-    ));
+    return _sendMessage(
+      StateMessage(
+        position: position ?? _currentPositon,
+        paused: paused ?? _isPaused,
+        latencyCalculation: _lastLatencyCalculation,
+        clientLatencyCalculation:
+            DateTime.now().millisecondsSinceEpoch / 1000.0,
+        clientRtt: _clientRtt,
+        setBy: _username,
+        clientAck: clientArck,
+        serverAck: serverAck,
+        doSeek: doSeek,
+      ),
+    );
   }
 
   void _runInBackground(Future<void> future) {
@@ -938,7 +964,8 @@ class SyncplayClient {
     }
 
     // Use moving average to update RTT, smooth the delay data
-    _avrRtt = _avrRtt * _pingMovingAverageWeight +
+    _avrRtt =
+        _avrRtt * _pingMovingAverageWeight +
         _clientRtt * (1 - _pingMovingAverageWeight);
 
     // Calculate the forward delay based on the sender's RTT

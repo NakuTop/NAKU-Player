@@ -4,6 +4,7 @@ import 'package:kazumi/bean/widget/error_widget.dart';
 import 'package:kazumi/bean/widget/image_preview.dart';
 import 'package:kazumi/pages/collect/collect_module.dart';
 import 'package:kazumi/pages/index_page.dart';
+import 'package:kazumi/features/cinema/cinema_home_page.dart';
 import 'package:kazumi/pages/info/info_module.dart';
 import 'package:kazumi/pages/init_page.dart';
 import 'package:kazumi/pages/my/my_module.dart';
@@ -83,6 +84,11 @@ final indexModule = createModule(
         transition: TransitionType.none,
       )
       ..route(
+        '/cinema',
+        child: (context, state) => const CinemaHomePage(),
+        transition: TransitionType.none,
+      )
+      ..route(
         '/onboarding',
         child: (context, state) => OnboardingPage(
           pluginsController: inject<PluginsController>(),
@@ -94,10 +100,7 @@ final indexModule = createModule(
         '/error',
         child: (context, state) => Scaffold(
           appBar: AppBar(title: const Text('Kazumi')),
-          body: const GeneralErrorWidget(
-            title: '初始化失败',
-            errMsg: '请重新启动应用后再试。',
-          ),
+          body: const GeneralErrorWidget(title: '初始化失败', errMsg: '请重新启动应用后再试。'),
         ),
       )
       ..module(tabModule)
