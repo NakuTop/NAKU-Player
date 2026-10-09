@@ -6,16 +6,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <link>https://github.com/NakuTop/NAKU-Player</link>
     <description>NAKU播放器 macOS 更新</description>
     <item>
-      <title>NAKU播放器 1.4.0</title>
-      <pubDate>Fri, 09 Oct 2026 05:30:43 GMT</pubDate>
-      <sparkle:version>12</sparkle:version>
-      <sparkle:shortVersionString>1.4.0</sparkle:shortVersionString>
+      <title>NAKU播放器 1.5.0</title>
+      <sparkle:version>13</sparkle:version>
+      <sparkle:shortVersionString>1.5.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <description><![CDATA[<ul><li>首页主动补充豆瓣、IMDb、烂番茄评分，支持按平台评分排序。</li><li>豆瓣榜单去除缩放跳转，恢复更多真实风格与主题。</li><li>作品详情与播放器下方统一展示豆瓣资料、评分分布、相关推荐及公开影评。</li><li>收藏、继续观看支持右键或长按删除；观看记录支持左滑与撤销。</li></ul>]]></description>
-      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.4.0/NAKUPlayer-1.4.0-macOS-universal.zip" length="56444298" type="application/octet-stream" sparkle:edSignature="KhnsmkcnAgxRAb3UqQ84oCi21C9lWsEBZkvhXzdtFUDB6a0sDaHaGh31BJMckmz+Yvy8Qxue7awVHGJVNx82Ag=="></enclosure>
+      <description><![CDATA[修复中英文片名和演员检索，支持省略姓名间隔点；演员作品直接查找片源并显示三评分。改善评分身份关联、按平台排序、搜索缓存与侧栏响应。保留用户资料。]]></description>
+      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.5.0/NAKUPlayer-1.5.0-macOS-universal.zip" length="56513315" type="application/octet-stream" sparkle:edSignature="t1lldlqEgg52Ka0tPNxcu5BmexPMDDBh1vg+En3u2tKgAyacsuGV0fyiLtIs/tt6OVkt4x9WUK2pAXNZ20RuBQ=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: 5xKbdwYxnB01bnXhfx6FY/Fpf79mHWV1yEr3KB1+jqKCTbCL6yi9pUdAifqiT2VIsciGnQmtFSVJAz8kzJO0Aw==
-length: 1592
+edSignature: oFtP7Wp4WQEtHl9xaAWSShuN8yBU3CZlJsRbDerA0Cz6QUOSLHT4eqHWNLhdHIcRMOp5midBAA4tRg8kthvkCA==
+length: 1368
 -->
