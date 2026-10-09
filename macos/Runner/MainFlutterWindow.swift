@@ -4,24 +4,62 @@ import window_manager
 import CFNetwork
 import Sparkle
 
-// FlutterView accepts the first mouse event even when its window is inactive.
-// This view lets AppKit activate the window without forwarding that event.
-private final class InactiveMouseBlockerView: NSView {
+// Decoration must never become the target of a mouse event. Flutter handles
+// activation clicks itself, including when the app has just regained focus.
+private final class PassiveVisualEffectView: NSVisualEffectView {
   override func hitTest(_ point: NSPoint) -> NSView? {
-    guard window?.isKeyWindow == false else {
-      return nil
-    }
-    return super.hitTest(point)
+    return nil
+  }
+}
+
+// Own both views through public AppKit containment. Window style and fullscreen
+// changes can rebuild AppKit's private frame view, so nothing is attached there.
+private final class GlassContentViewController: NSViewController {
+  let flutterViewController: FlutterViewController
+
+  init(flutterViewController: FlutterViewController) {
+    self.flutterViewController = flutterViewController
+    super.init(nibName: nil, bundle: nil)
+    addChild(flutterViewController)
   }
 
-  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-    return false
+  required init?(coder: NSCoder) {
+    fatalError("GlassContentViewController is created programmatically")
+  }
+
+  override func loadView() {
+    let container = NSView(frame: .zero)
+    container.appearance = NSAppearance(named: .darkAqua)
+    self.view = container
+
+    let backdrop = PassiveVisualEffectView(frame: .zero)
+    backdrop.material = .hudWindow
+    backdrop.blendingMode = .behindWindow
+    backdrop.state = .followsWindowActiveState
+    backdrop.translatesAutoresizingMaskIntoConstraints = false
+    container.addSubview(backdrop)
+
+    let flutterView = flutterViewController.view
+    flutterView.translatesAutoresizingMaskIntoConstraints = false
+    container.addSubview(flutterView, positioned: .above, relativeTo: backdrop)
+
+    NSLayoutConstraint.activate([
+      backdrop.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+      backdrop.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+      backdrop.topAnchor.constraint(equalTo: container.topAnchor),
+      backdrop.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+      flutterView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+      flutterView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+      flutterView.topAnchor.constraint(equalTo: container.topAnchor),
+      flutterView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+    ])
   }
 }
 
 class MainFlutterWindow: NSWindow {
-  private let inactiveMouseBlocker = InactiveMouseBlockerView()
-  private var glassBackdrop: NSVisualEffectView?
+  // Keep the engine owner explicit; the window's root controller is the glass
+  // container, while all plugin registrars still belong to this Flutter child.
+  private(set) var flutterViewController: FlutterViewController?
   private var updaterController: SPUStandardUpdaterController?
 
   override func awakeFromNib() {
@@ -29,34 +67,11 @@ class MainFlutterWindow: NSWindow {
     self.backgroundColor = NSColor.clear
     self.isOpaque = false
     flutterViewController.backgroundColor = NSColor.clear
+    self.flutterViewController = flutterViewController
     let windowFrame = self.frame
-    self.contentViewController = flutterViewController
+    self.contentViewController = GlassContentViewController(
+      flutterViewController: flutterViewController)
     self.setFrame(windowFrame, display: true)
-
-    if let contentView = self.contentView {
-      inactiveMouseBlocker.translatesAutoresizingMaskIntoConstraints = false
-      contentView.addSubview(
-        inactiveMouseBlocker,
-        positioned: .above,
-        relativeTo: nil
-      )
-      NSLayoutConstraint.activate([
-        inactiveMouseBlocker.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-        inactiveMouseBlocker.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-        inactiveMouseBlocker.topAnchor.constraint(equalTo: contentView.topAnchor),
-        inactiveMouseBlocker.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-      ])
-    }
-
-    if let flutterView = self.contentView, let frameView = flutterView.superview {
-      let backdrop = NSVisualEffectView(frame: flutterView.frame)
-      backdrop.material = .hudWindow
-      backdrop.blendingMode = .behindWindow
-      backdrop.state = .active
-      backdrop.autoresizingMask = [.width, .height]
-      frameView.addSubview(backdrop, positioned: .below, relativeTo: flutterView)
-      glassBackdrop = backdrop
-    }
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 

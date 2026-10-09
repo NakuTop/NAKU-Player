@@ -3,13 +3,14 @@ import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 abstract final class CinemaTheme {
-  static const background = Color(0xED09090B);
-  static const surface = Color(0xCF1B1B1F);
-  static const raised = Color(0xC92A292B);
+  // The native macOS material supplies the blur; keep this scrim translucent.
+  static const background = Color(0x7809090B);
+  static const surface = Color(0xA41B1B1F);
+  static const raised = Color(0x9E2A292B);
   static const copper = Color(0xFFFF9F0A);
   static const text = Color(0xFFF5F5F7);
   static const muted = Color(0xFFB3B0B5);
-  static const border = Color(0x28FFFFFF);
+  static const border = Color(0x30FFFFFF);
   static ThemeData get data => ThemeData(
     useMaterial3: true,
     brightness: Brightness.dark,
@@ -26,7 +27,7 @@ abstract final class CinemaTheme {
       error: Color(0xFFFF9D92),
     ),
     appBarTheme: const AppBarTheme(
-      backgroundColor: Color(0xB309090B),
+      backgroundColor: Color(0x7809090B),
       surfaceTintColor: Colors.transparent,
       elevation: 0,
       scrolledUnderElevation: 0,
@@ -114,7 +115,11 @@ class CinemaGlass extends StatelessWidget {
   Widget build(BuildContext context) {
     final content = DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0x891D1C20),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0x662D2B30), Color(0x47111014)],
+        ),
         borderRadius: BorderRadius.circular(radius),
         border: Border.all(color: CinemaTheme.border),
       ),
@@ -144,7 +149,7 @@ class CinemaCanvas extends StatelessWidget {
       gradient: RadialGradient(
         center: Alignment.topLeft,
         radius: 1.5,
-        colors: [Color(0x752F2119), Color(0xAA09090B)],
+        colors: [Color(0x303D2515), Color(0x1209090B)],
         stops: [0, 1],
       ),
     ),

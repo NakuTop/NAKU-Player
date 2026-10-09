@@ -22,7 +22,10 @@ class AppDelegate: FlutterAppDelegate {
     
     override func applicationDidFinishLaunching(_ notification: Notification) {
         setMenuEnabled(menu: "Player", enable: false)
-        let controller : FlutterViewController = mainFlutterWindow?.contentViewController as! FlutterViewController
+        guard let controller = (mainFlutterWindow as? MainFlutterWindow)?.flutterViewController else {
+            NSLog("NAKU: Flutter controller is unavailable; native channels were not registered.")
+            return
+        }
         let channel = FlutterMethodChannel.init(name: "com.predidit.kazumi/intent", binaryMessenger: controller.engine.binaryMessenger)
         self.menuChannel = FlutterMethodChannel.init(name: "com.predidit.kazumi/appmenu",binaryMessenger: controller.engine.binaryMessenger)
         channel.setMethodCallHandler({

@@ -581,7 +581,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
             child: ListTile(
               selected: _section == section,
-              selectedTileColor: CinemaTheme.raised,
+              selectedTileColor: CinemaTheme.copper.withValues(alpha: .16),
               selectedColor: CinemaTheme.copper,
               textColor: CinemaTheme.muted,
               iconColor: CinemaTheme.muted,
@@ -678,7 +678,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             onTap: () => showAboutDialog(
               context: context,
               applicationName: 'NAKU播放器',
-              applicationVersion: '1.0.0',
+              applicationVersion: '1.0.1',
               applicationLegalese:
                   '基于 Kazumi，GPL-3.0。\n个人电影、剧集与动漫客户端。\n片源及其内容由对应第三方提供。',
               children: [
@@ -696,7 +696,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
               ],
             ),
             child: const Text(
-              'NAKU播放器  1.0.0',
+              'NAKU播放器  1.0.1',
               style: TextStyle(
                 fontSize: 10,
                 height: 1.8,
