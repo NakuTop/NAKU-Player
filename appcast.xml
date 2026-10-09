@@ -6,15 +6,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <link>https://github.com/NakuTop/NAKU-Player</link>
     <description>NAKU播放器 macOS 更新</description>
     <item>
-      <title>NAKU播放器 1.7.0</title>
-      <sparkle:version>17</sparkle:version>
-      <sparkle:shortVersionString>1.7.0</sparkle:shortVersionString>
+      <title>NAKU播放器 1.8.0</title>
+      <sparkle:version>18</sparkle:version>
+      <sparkle:shortVersionString>1.8.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <description><![CDATA[<p>主侧栏与动漫共用完整设置入口，电影与剧集接入默认倍速、音量、硬解、超分、快捷键、续播等播放偏好。</p><p>底部取消、删除与撤销提示显示 5 秒后淡出；修复启动界面设置不生效，系统字体开关全局即时生效。</p><p>保留黑橙磨砂主题与原有数据；动漫专用设置标明范围。此个人构建仍未配置线上弹幕服务，功能与配置说明保留。</p>]]></description>
-      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.7.0/NAKUPlayer-1.7.0-macOS-universal.zip" length="56504722" type="application/octet-stream" sparkle:edSignature="HMCbnpuap3oTd7DLHsHZwdD7D1rRZpyw3slx90v34fflrj2JeLZPUtHo0eeDgrn1yVbdvClSQtnHqWAbFh/lBA=="></enclosure>
+      <description><![CDATA[<p>单击播放或暂停、双击进入或退出全屏；全屏切换保持当前播放状态。</p><p>新增高清直链播放、收藏与续播，支持可解码的 4K 视频；新增实际画质面板、最高码率偏好、缓存、精细缩放和实验性帧节奏设置。</p><p>电影、剧集与动漫共用收藏和继续观看入口，动漫跨源历史按作品合并，支持删除与撤销。保留原有数据和 Anime4K；本地处理不等于原生 4K 或 AI 运动补偿插帧。</p>]]></description>
+      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.8.0/NAKUPlayer-1.8.0-macOS-universal.zip" length="56410893" type="application/octet-stream" sparkle:edSignature="DVTb8rRclGgGxgdbjRdl8RxAEWfyn8KGuhd7u4kla5+Z9EEFatqj59v3B356k3xd4jUONkwh/j71f+VUu8xmCQ=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: mGoivcmq7It5hdjGXMpElQsItCxFWe2EDfpfz0rL8rrmvgyNuBMaHd0G7x+7Vrgm60E4z3g5yBdTHB+aZLybAg==
-length: 1605
+edSignature: hyczxzpN7gxUvRxkGKBZ20ZViBOocmDShf2la9FE01Bq37imdKMODsovDyZfwWr9QLDKuJLnvFbOw2v/xxwfDQ==
+length: 1652
 -->
