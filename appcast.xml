@@ -7,16 +7,25 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>NAKU播放器 macOS 更新</description>
     <language>zh-CN</language>
     <item>
+      <title>NAKU播放器 1.0.1</title>
+      <pubDate>Fri, 09 Oct 2026 01:46:39 +0000</pubDate>
+      <sparkle:version>8</sparkle:version>
+      <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
+      <description>修复 macOS 鼠标点击无响应；重建原生磨砂背景层级，减轻重复黑色遮罩，强化橙色选中状态。升级保留片源、收藏和观看记录。</description>
+      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.0.1/NAKUPlayer-1.0.1-macOS-universal.zip" length="56031868" type="application/octet-stream" sparkle:edSignature="pfITDHN8HlG34UKl4CPyF/XbSyLaKlk4ELp7oNOK/613D8TYyu8ucBPEhTM2YsXP5RLOnF2xjc0PSxYYSGu7AA=="></enclosure>
+    </item>
+    <item>
       <title>NAKU播放器 1.0.0</title>
       <pubDate>Thu, 08 Oct 2026 16:44:05 +0000</pubDate>
       <sparkle:version>7</sparkle:version>
       <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <description><![CDATA[<ul><li>黑橙磨砂玻璃界面、虚化封面与影片评分。</li><li>统一多源线路、失败换源和播放缓存优化。</li><li>全屏内提供画中画、Anime4K、一起看、收藏和选集。</li><li>修复 Bangumi 搜索，支持豆瓣电影和剧集目录。</li></ul><p>一起看同步播放、暂停和进度，建议双方选择相同剪辑版本。应用保留已有片源、收藏和观看记录。</p>]]></description>
+      <description>&lt;ul&gt;&lt;li&gt;黑橙磨砂玻璃界面、虚化封面与影片评分。&lt;/li&gt;&lt;li&gt;统一多源线路、失败换源和播放缓存优化。&lt;/li&gt;&lt;li&gt;全屏内提供画中画、Anime4K、一起看、收藏和选集。&lt;/li&gt;&lt;li&gt;修复 Bangumi 搜索，支持豆瓣电影和剧集目录。&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;一起看同步播放、暂停和进度，建议双方选择相同剪辑版本。应用保留已有片源、收藏和观看记录。&lt;/p&gt;</description>
       <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.0.0/NAKUPlayer-1.0.0-macOS-universal.zip" length="56025865" type="application/octet-stream" sparkle:edSignature="pP4ITVPY6vwQUAJZ7uyL9ymkArpj8VnlQZK6jDT8F4mPvHjKwbjLb5gYcYJpogyOrqUB7biATV5xT83n0waQAw=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: iBiDMQoWCrktXOWnlD7V+ueIx5akAK8Lan0MdHJ5R7aB7HR3EPJLQLJ7XEtXA2jLfPAbBmM31EYzfHL0em96DA==
-length: 1664
+edSignature: wbtMTfSWRDNhsrP+avfBWg+TYKhL9+AwShz7XW3y7HG0I/0HjP/Mf0AMubEfBxrxzVFexPBHzScmCmrGvn03Bw==
+length: 2532
 -->
