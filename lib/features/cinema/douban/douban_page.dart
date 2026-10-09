@@ -640,6 +640,7 @@ class _DoubanPageState extends State<DoubanPage> {
                   : CachedNetworkImage(
                       memCacheWidth: 480,
                       imageUrl: item.poster,
+                      httpHeaders: const {'Referer': 'https://m.douban.com/'},
                       fit: BoxFit.cover,
                       errorWidget: (_, _, _) => _posterFallback(),
                     ),

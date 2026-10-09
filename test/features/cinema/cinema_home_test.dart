@@ -107,6 +107,7 @@ class _Repository extends CinemaRepository {
     int page = 1,
   }) async {
     searched.add(keyword);
+    if (keyword == 'Interstellar') return const CinemaPage(items: []);
     if (keyword == '延迟') return (pending = Completer<CinemaPage>()).future;
     if (keyword == '排序搜索') {
       return const CinemaPage(
@@ -244,6 +245,7 @@ void main() {
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.pumpAndSettle();
       expect(repository.searched, containsAll(['Interstellar', '星际穿越']));
+      expect(find.text('测试目录 · 1 个结果'), findsOneWidget);
       expect(find.text('星际穿越'), findsWidgets);
       expect(tester.takeException(), isNull);
     },

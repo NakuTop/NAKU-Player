@@ -570,7 +570,8 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
               } else {
                 state.searchMore.remove(source.id);
               }
-              state.sourceStatus[source.name] = '${items.length} 个结果';
+              state.sourceStatus[source.name] =
+                  '${state.items.where((t) => t.sourceId == source.id).length} 个结果';
             });
           } catch (e) {
             if (!mounted || generation != state.generation) return;
@@ -628,7 +629,13 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                           keys.add(t.key),
                     )
                     .toList();
-                _changed(state, () => state.items.addAll(matches));
+                _changed(state, () {
+                  state.items.addAll(matches);
+                  final count = state.items
+                      .where((t) => t.sourceId == source.id)
+                      .length;
+                  if (count > 0) state.sourceStatus[source.name] = '$count 个结果';
+                });
               } catch (_) {
                 /* Ordinary source status remains visible. */
               }
@@ -1700,6 +1707,9 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
           : CachedNetworkImage(
               memCacheWidth: 480,
               imageUrl: title.poster,
+              httpHeaders: title.sourceId == 'douban-discovery'
+                  ? const {'Referer': 'https://m.douban.com/'}
+                  : null,
               fit: BoxFit.cover,
               placeholder: (_, _) => _posterFallback(title.title),
               errorWidget: (_, _, _) => _posterFallback(title.title),
@@ -2277,6 +2287,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
                         child: CachedNetworkImage(
                           memCacheWidth: 480,
                           imageUrl: title.poster,
+                          httpHeaders: title.sourceId == 'douban-discovery'
+                              ? const {'Referer': 'https://m.douban.com/'}
+                              : null,
                           width: MediaQuery.sizeOf(context).width < 600
                               ? 90
                               : 150,

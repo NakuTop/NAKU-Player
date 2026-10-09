@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'cinema_douban_details.dart';
@@ -173,11 +174,14 @@ class DoubanDetailsView extends StatelessWidget {
                               height: 142,
                               child: item.poster.isEmpty
                                   ? const _PosterFallback()
-                                  : Image.network(
-                                      item.poster,
+                                  : CachedNetworkImage(
+                                      imageUrl: item.poster,
+                                      memCacheWidth: 240,
+                                      httpHeaders: const {
+                                        'Referer': 'https://m.douban.com/',
+                                      },
                                       fit: BoxFit.cover,
-                                      excludeFromSemantics: true,
-                                      errorBuilder: (_, _, _) =>
+                                      errorWidget: (_, _, _) =>
                                           const _PosterFallback(),
                                     ),
                             ),
