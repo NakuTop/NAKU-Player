@@ -7,6 +7,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>NAKU播放器 macOS 更新</description>
     <language>zh-CN</language>
     <item>
+      <title>NAKU播放器 1.2.0</title>
+      <pubDate>Fri, 09 Oct 2026 03:58:07 +0000</pubDate>
+      <sparkle:version>10</sparkle:version>
+      <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
+      <description>新增外观与透明度设置，失焦保持原生磨砂；优化页面切换并尊重系统减少动态效果。补充豆瓣评分、上映日期、片长、又名、评分分布和相关推荐；电影与剧集支持独立年份、地区、类型筛选，并保留多元风格与主题榜单。支持中英文片名与主要演员检索，保留已有片源、收藏、历史和外观设置。</description>
+      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.2.0/NAKUPlayer-1.2.0-macOS-universal.zip" length="56292671" type="application/octet-stream" sparkle:edSignature="rpX72+Zf87wtJKqMIrTwNxwZHBhcrvKewQG56jnpZ3RhiCbbjqm9xtAP06M3yn+DQAha5GLG9UHeosKZ3OJzDw=="></enclosure>
+    </item>
+    <item>
       <title>NAKU播放器 1.1.0</title>
       <pubDate>Fri, 09 Oct 2026 02:41:42 +0000</pubDate>
       <sparkle:version>9</sparkle:version>
@@ -35,6 +44,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: +HTovaJxMK7D/au4Kecgo+KlZ2q9qZL6sEBFyEgdXXPaHWiC2M1ydgvQpkyRdVfCsg4rvegcc8E9SyLgP12EDg==
-length: 3417
+edSignature: 0RByPrHD1fQ1SYBmF/cCo2QthV7vp4bzpZ6dthunMlj0mh3Rt/LWfgbmHbfrqFki1/6no9/3uKljKa5w3Fq7Bw==
+length: 4453
 -->
