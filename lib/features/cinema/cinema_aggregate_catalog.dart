@@ -320,7 +320,11 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
         kind: session.kind == CinemaAggregateKind.movies
             ? DoubanKind.movie
             : DoubanKind.tv,
-        sort: session.sort == CinemaCatalogSort.latest ? 'T' : 'U',
+        sort: switch (session.sort) {
+          CinemaCatalogSort.latest => 'R',
+          CinemaCatalogSort.popular => 'U',
+          CinemaCatalogSort.rating => 'S',
+        },
         filters: DoubanFilters(
           year: cursor.year,
           region: switch (filters.region) {

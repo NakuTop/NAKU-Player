@@ -95,6 +95,23 @@ class DoubanRepository {
     }
   }
 
+  /// A bounded, independent exploration request; its cards never replace the
+  /// active board. A discovered topic provides variety when the public API
+  /// repeats the same top-level recommendations during a session.
+  Future<List<String>> discoverThemes({
+    required DoubanKind kind,
+    String? seed,
+    CancelToken? cancelToken,
+  }) async {
+    final page = await browse(
+      kind: kind,
+      tags: seed == null ? const [] : [seed],
+      count: 20,
+      cancelToken: cancelToken,
+    );
+    return page.tags;
+  }
+
   static void _validateFilters(DoubanFilters filters, List<String> tags) {
     final values = [...tags, filters.format, filters.genre, filters.region];
     if (tags.length > 20 ||

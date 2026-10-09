@@ -15,6 +15,22 @@ class CinemaSourcePack {
   final List<CinemaSource> sources;
 }
 
+/// Restores only the removed work, once, without replacing newer user activity.
+class CinemaLibraryUndo {
+  CinemaLibraryUndo._(this._restore);
+
+  final Future<bool> Function() _restore;
+  bool _used = false;
+
+  Future<bool> restore() async {
+    if (_used) return false;
+    _used = true;
+    return _restore();
+  }
+}
+
+typedef _RemovedLibraryEntry = ({int index, Map<String, dynamic> document});
+
 /// Stored apart from Kazumi's Bangumi history and favourites.
 class CinemaStore extends ChangeNotifier {
   CinemaStore({
@@ -350,14 +366,107 @@ class CinemaStore extends ChangeNotifier {
     await _persist();
   }
 
-  Future<void> removeHistory(CinemaTitle title) async {
+  Future<CinemaLibraryUndo?> removeFavorite(CinemaTitle title) =>
+      _removeLibraryEntry(title, history: false);
+
+  Future<CinemaLibraryUndo?> removeHistory(CinemaTitle title) =>
+      _removeLibraryEntry(title, history: true);
+
+  Future<CinemaLibraryUndo?> _removeLibraryEntry(
+    CinemaTitle title, {
+    required bool history,
+  }) async {
     await load();
-    final matches = _historyMatches(title);
-    _history.removeWhere((item) => matches.contains(item.title.key));
-    _historyDocuments.removeWhere((key, _) => matches.contains(key));
+    final matches = _matches(title, history: history);
+    if (matches.isEmpty) return null;
+    final documents = history ? _historyDocuments : _favoriteDocuments;
+    final orderedKeys = history
+        ? _history.map((item) => item.title.key)
+        : _favorites.map((item) => item.key);
+    final removed = <_RemovedLibraryEntry>[
+      for (final entry in orderedKeys.indexed)
+        if (matches.contains(entry.$2))
+          (
+            index: entry.$1,
+            // Preserve merged source identities, timestamps and unknown fields.
+            document: Map<String, dynamic>.from(
+              jsonDecode(jsonEncode(documents[entry.$2])) as Map,
+            ),
+          ),
+    ];
+    if (history) {
+      _history.removeWhere((item) => matches.contains(item.title.key));
+    } else {
+      _favorites.removeWhere((item) => matches.contains(item.key));
+    }
+    documents.removeWhere((key, _) => matches.contains(key));
     _invalidateIdentityCache();
     _notify();
-    await _persist();
+    try {
+      await _persist();
+    } catch (_) {
+      _restoreLibraryEntries(removed, history: history);
+      // A queued concurrent save may already contain the deletion. Append the
+      // compensating snapshot without allowing another failure to hide it.
+      try {
+        await _persist();
+      } catch (_) {}
+      rethrow;
+    }
+    return CinemaLibraryUndo._(() async {
+      if (!_restoreLibraryEntries(removed, history: history)) return false;
+      await _persist();
+      return true;
+    });
+  }
+
+  bool _restoreLibraryEntries(
+    List<_RemovedLibraryEntry> removed, {
+    required bool history,
+  }) {
+    final documents = history ? _historyDocuments : _favoriteDocuments;
+    final originals = removed
+        .expand((entry) => _recordTitles(entry.document, history: history))
+        .toList();
+    final context = [..._identityContext, ...originals];
+    if (originals.any(
+      (title) => _matchingRecordKeys(
+        title,
+        documents.values,
+        history: history,
+        context: context,
+      ).isNotEmpty,
+    )) {
+      // Watching or favoriting this work again takes precedence over undo.
+      return false;
+    }
+    for (final entry in removed) {
+      final document = entry.document;
+      if (history) {
+        final item = CinemaHistory.fromJson(document);
+        _history.insert(entry.index.clamp(0, _history.length), item);
+        _historyDocuments[item.title.key] = document;
+      } else {
+        final item = CinemaTitle.fromJson(document);
+        _favorites.insert(entry.index.clamp(0, _favorites.length), item);
+        _favoriteDocuments[item.key] = document;
+      }
+    }
+    if (history) {
+      final ordered = _history.indexed.toList()
+        ..sort((a, b) {
+          final updated = b.$2.updatedAt.compareTo(a.$2.updatedAt);
+          return updated == 0 ? a.$1.compareTo(b.$1) : updated;
+        });
+      _history
+        ..clear()
+        ..addAll(ordered.take(200).map((entry) => entry.$2));
+      final kept = _history.map((item) => item.title.key).toSet();
+      _historyDocuments.removeWhere((key, _) => !kept.contains(key));
+    }
+    _invalidateIdentityCache();
+    _notify();
+    return true;
   }
 
   Future<void> clearHistory() async {

@@ -9,17 +9,25 @@ import '../cinema_theme.dart';
 import 'douban_models.dart';
 import 'douban_repository.dart';
 import 'douban_image_headers.dart';
+import 'douban_themes.dart';
 
 class DoubanPage extends StatefulWidget {
-  const DoubanPage({super.key, required this.onSelect, this.repository});
+  const DoubanPage({
+    super.key,
+    required this.onSelect,
+    this.repository,
+    this.themeCatalog,
+  });
   final ValueChanged<DoubanTitle> onSelect;
   final DoubanRepository? repository;
+  final DoubanThemeCatalog? themeCatalog;
   @override
   State<DoubanPage> createState() => _DoubanPageState();
 }
 
 class _KindState {
   final scroll = ScrollController();
+  final themeScroll = ScrollController();
   DoubanFilters filters = const DoubanFilters();
   String? sort, error, filterError;
   List<DoubanTitle> items = [];
@@ -28,6 +36,10 @@ class _KindState {
   final tagGroups = <String, List<String>>{};
   List<String> themes = [];
   final selectedThemes = <String>{};
+  bool themesLoading = false, themesInitialized = false;
+  int themeGeneration = 0, themeSeedIndex = 0;
+  String? themeMessage;
+  CancelToken? themeToken;
   bool loading = false, filtersLoading = false, more = false;
   bool initialized = false, failedAppend = false;
   int next = 0, generation = 0, filterGeneration = 0;
@@ -36,6 +48,7 @@ class _KindState {
 
 class _DoubanPageState extends State<DoubanPage> {
   late final _repository = widget.repository ?? DoubanRepository();
+  late final _themeCatalog = widget.themeCatalog ?? DoubanThemeCatalog.shared;
   DoubanKind _kind = DoubanKind.movie;
   final _states = {for (final kind in DoubanKind.values) kind: _KindState()};
   _KindState get _state => _states[_kind]!;
@@ -43,6 +56,9 @@ class _DoubanPageState extends State<DoubanPage> {
   @override
   void initState() {
     super.initState();
+    for (final kind in DoubanKind.values) {
+      _states[kind]!.themes = _themeCatalog.topics(kind);
+    }
     _loadKind(_kind);
   }
 
@@ -51,9 +67,12 @@ class _DoubanPageState extends State<DoubanPage> {
     for (final state in _states.values) {
       state.generation++;
       state.filterGeneration++;
+      state.themeGeneration++;
       state.pageToken?.cancel();
       state.filterToken?.cancel();
+      state.themeToken?.cancel();
       state.scroll.dispose();
+      state.themeScroll.dispose();
     }
     super.dispose();
   }
@@ -122,8 +141,11 @@ class _DoubanPageState extends State<DoubanPage> {
         state.more = page.hasMore;
         // Recommendation topics are a separate exploration surface. Preserve
         // the visible order and chosen topics across personalized responses.
-        final topics = {...state.themes, ...page.tags};
-        state.themes = {...topics.take(40), ...state.selectedThemes}.toList();
+        state.themes = _themeCatalog.remember(
+          kind,
+          page.tags,
+          selected: state.selectedThemes,
+        );
         // Pagination cannot reshuffle controls. A partial response cannot remove
         // previously available taxonomy or a selected filter.
         if (!append || state.sorts.isEmpty) {
@@ -136,6 +158,10 @@ class _DoubanPageState extends State<DoubanPage> {
         }
         state.loading = false;
       });
+      if (!state.themesInitialized) {
+        state.themesInitialized = true;
+        unawaited(_loadThemes(kind, rounds: 2));
+      }
     } catch (error) {
       if (!mounted ||
           generation != state.generation ||
@@ -146,6 +172,60 @@ class _DoubanPageState extends State<DoubanPage> {
         state.loading = false;
         state.error = '$error';
       });
+    }
+  }
+
+  Future<void> _loadThemes(DoubanKind kind, {int rounds = 1}) async {
+    final state = _states[kind]!;
+    if (state.themesLoading) return;
+    final generation = ++state.themeGeneration;
+    final token = state.themeToken = CancelToken();
+    final before = state.themes.toSet();
+    _change(state, () {
+      state.themesLoading = true;
+      state.themeMessage = null;
+    });
+    try {
+      // Warm up at most two contexts, then one request per explicit click.
+      for (var round = 0; round < rounds.clamp(1, 2); round++) {
+        final seed = state.themes.isEmpty
+            ? null
+            : state.themes[state.themeSeedIndex++ % state.themes.length];
+        final topics = await _repository.discoverThemes(
+          kind: kind,
+          seed: seed,
+          cancelToken: token,
+        );
+        if (!mounted || generation != state.themeGeneration) return;
+        _change(state, () {
+          state.themes = _themeCatalog.remember(
+            kind,
+            topics,
+            selected: state.selectedThemes,
+          );
+        });
+      }
+      _change(state, () {
+        final added = state.themes
+            .where((topic) => !before.contains(topic))
+            .length;
+        state.themeMessage = added == 0
+            ? '当前暂无更多主题，已保留之前发现的主题。'
+            : '新增 $added 个主题，已保留之前发现的主题。';
+      });
+    } catch (error) {
+      if (!mounted ||
+          generation != state.themeGeneration ||
+          (error is DioException && CancelToken.isCancel(error))) {
+        return;
+      }
+      _change(state, () {
+        state.themeMessage = '主题暂时无法更新，现有主题和作品仍可使用。';
+      });
+    } finally {
+      if (mounted && generation == state.themeGeneration) {
+        _change(state, () => state.themesLoading = false);
+      }
     }
   }
 
@@ -369,13 +449,16 @@ class _DoubanPageState extends State<DoubanPage> {
               ],
             ),
           ],
-          if (state.themes.isNotEmpty) ...[
+          ...[
             const SizedBox(height: 8),
             Theme(
-              data: CinemaTheme.data.copyWith(dividerColor: Colors.transparent),
+              data: CinemaTheme.of(
+                context,
+              ).copyWith(dividerColor: Colors.transparent),
               child: ExpansionTile(
                 key: PageStorageKey('douban-${_kind.name}-themes'),
                 initiallyExpanded: true,
+                expansionAnimationStyle: AnimationStyle.noAnimation,
                 tilePadding: EdgeInsets.zero,
                 childrenPadding: const EdgeInsets.only(bottom: 8),
                 title: const Text('风格与主题', style: TextStyle(fontSize: 13)),
@@ -391,6 +474,34 @@ class _DoubanPageState extends State<DoubanPage> {
                         ),
                       ),
                 children: [
+                  Row(
+                    children: [
+                      Text(
+                        '已发现 ${state.themes.length} 个主题',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: CinemaTheme.muted,
+                        ),
+                      ),
+                      const Spacer(),
+                      TextButton.icon(
+                        key: const ValueKey('douban-more-themes'),
+                        onPressed: state.themesLoading
+                            ? null
+                            : () => _loadThemes(_kind),
+                        icon: state.themesLoading
+                            ? const SizedBox(
+                                width: 13,
+                                height: 13,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 1.5,
+                                ),
+                              )
+                            : const Icon(Icons.add, size: 16),
+                        label: Text(state.themesLoading ? '正在发现' : '更多主题'),
+                      ),
+                    ],
+                  ),
                   if (state.selectedThemes.length >= 6)
                     const Padding(
                       padding: EdgeInsets.only(bottom: 8),
@@ -402,39 +513,68 @@ class _DoubanPageState extends State<DoubanPage> {
                         ),
                       ),
                     ),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Wrap(
-                      spacing: 7,
-                      runSpacing: 6,
-                      children: [
-                        for (final theme in state.themes)
-                          FilterChip(
-                            key: ValueKey('douban-theme-$theme'),
-                            label: Text(
-                              theme,
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                            selected: state.selectedThemes.contains(theme),
-                            onSelected:
-                                state.selectedThemes.length >= 6 &&
-                                    !state.selectedThemes.contains(theme)
-                                ? null
-                                : (selected) {
-                                    setState(() {
-                                      if (selected) {
-                                        state.selectedThemes.add(theme);
-                                      } else {
-                                        state.selectedThemes.remove(theme);
-                                      }
-                                    });
-                                    if (state.scroll.hasClients) {
-                                      state.scroll.jumpTo(0);
-                                    }
-                                    unawaited(_loadPage(_kind));
-                                  },
+                  SizedBox(
+                    height: 144,
+                    child: Scrollbar(
+                      controller: state.themeScroll,
+                      thumbVisibility: true,
+                      child: SingleChildScrollView(
+                        controller: state.themeScroll,
+                        padding: const EdgeInsets.only(right: 12),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Wrap(
+                            spacing: 7,
+                            runSpacing: 6,
+                            children: [
+                              for (final theme in state.themes)
+                                FilterChip(
+                                  key: ValueKey('douban-theme-$theme'),
+                                  label: Text(
+                                    theme,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                  selected: state.selectedThemes.contains(
+                                    theme,
+                                  ),
+                                  onSelected:
+                                      state.selectedThemes.length >= 6 &&
+                                          !state.selectedThemes.contains(theme)
+                                      ? null
+                                      : (selected) {
+                                          setState(() {
+                                            if (selected) {
+                                              state.selectedThemes.add(theme);
+                                            } else {
+                                              state.selectedThemes.remove(
+                                                theme,
+                                              );
+                                            }
+                                          });
+                                          if (state.scroll.hasClients) {
+                                            state.scroll.jumpTo(0);
+                                          }
+                                          unawaited(_loadPage(_kind));
+                                        },
+                                ),
+                            ],
                           ),
-                      ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    height: 32,
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        state.themeMessage ?? '豆瓣推荐中的真实主题，可与上方筛选组合。',
+                        maxLines: 2,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: CinemaTheme.muted,
+                        ),
+                      ),
                     ),
                   ),
                 ],
@@ -463,7 +603,7 @@ class _DoubanPageState extends State<DoubanPage> {
 
   @override
   Widget build(BuildContext context) => Theme(
-    data: CinemaTheme.data,
+    data: CinemaTheme.of(context),
     child: Scaffold(
       backgroundColor: CinemaTheme.background,
       appBar: AppBar(

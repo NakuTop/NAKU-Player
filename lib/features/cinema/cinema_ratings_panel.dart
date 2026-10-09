@@ -4,6 +4,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'cinema_models.dart';
 import 'cinema_ratings.dart';
 import 'cinema_douban_details_view.dart';
+import 'cinema_douban_reviews.dart';
+import 'cinema_douban_reviews_view.dart';
 import 'cinema_theme.dart';
 
 /// Loads ratings independently of playback and keeps each provider's scale.
@@ -13,12 +15,14 @@ class CinemaRatingsPanel extends StatefulWidget {
     required this.title,
     required this.sourceName,
     this.repository,
+    this.reviewsRepository,
     this.onRecommendationSelected,
   });
 
   final CinemaTitle title;
   final String sourceName;
   final CinemaRatingsRepository? repository;
+  final CinemaDoubanReviewsRepository? reviewsRepository;
   final ValueChanged<DoubanRecommendation>? onRecommendationSelected;
 
   @override
@@ -325,6 +329,10 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
               details: _details,
               loading: _detailsLoading,
               onRecommendationSelected: widget.onRecommendationSelected,
+            ),
+            CinemaDoubanReviewsView(
+              subjectId: _result?.identity.doubanId ?? _details?.doubanId ?? '',
+              repository: widget.reviewsRepository,
             ),
           ],
         ),

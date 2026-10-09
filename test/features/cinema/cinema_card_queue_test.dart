@@ -33,7 +33,7 @@ void main() {
   );
 
   test(
-    'poster queue serializes requests, cancels stale work, then continues',
+    'poster queue cancels stale work and continues independent cards',
     () async {
       final firstStarted = Completer<void>();
       final releaseFirst = Completer<void>();
@@ -62,12 +62,12 @@ void main() {
       await first;
       await expectedSkip;
       final result = await second;
-      expect(paths, [
+      expect(paths.where((path) => path != '/sparql'), [
         '/rexxar/api/v2/movie/12341',
         '/rexxar/api/v2/movie/12342',
       ]);
       expect(result.ratings.first.value, 8);
-      expect(repository.peek(title('second')), same(result));
+      expect(repository.peek(title('second'))?.ratings.first.value, 8);
     },
   );
   test(
@@ -92,7 +92,7 @@ void main() {
         },
       );
       final result = await restored.loadForCard(item);
-      expect(paths, ['/rexxar/api/v2/movie/12345']);
+      expect(paths, ['/rexxar/api/v2/movie/12345', '/sparql']);
       expect(result.ratings.first.value, 8);
     },
   );

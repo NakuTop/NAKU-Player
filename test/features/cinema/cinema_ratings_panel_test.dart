@@ -6,6 +6,8 @@ import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_ratings.dart';
 import 'package:kazumi/features/cinema/cinema_ratings_panel.dart';
 import 'package:kazumi/features/cinema/cinema_theme.dart';
+import 'package:kazumi/features/cinema/cinema_douban_reviews.dart';
+import 'package:kazumi/features/cinema/cinema_douban_reviews_view.dart';
 
 const _title = CinemaTitle(
   id: 'movie-1',
@@ -90,6 +92,18 @@ class _FakeRepository extends CinemaRatingsRepository {
   }
 }
 
+class _ReviewsRepository extends CinemaDoubanReviewsRepository {
+  final ids = <String>[];
+  @override
+  Future<CinemaDoubanReviews> load(String id, {bool force = false}) async {
+    ids.add(id);
+    return CinemaDoubanReviews(
+      subjectId: id,
+      status: CinemaDoubanReviewsStatus.empty,
+    );
+  }
+}
+
 void main() {
   Future<void> mount(
     WidgetTester tester,
@@ -98,6 +112,7 @@ void main() {
     double textScale = 1,
     bool settle = true,
     CinemaTitle title = _title,
+    CinemaDoubanReviewsRepository? reviewsRepository,
   }) async {
     tester.view.physicalSize = Size(width, 900);
     tester.view.devicePixelRatio = 1;
@@ -115,6 +130,7 @@ void main() {
                 title: title,
                 sourceName: '测试片源',
                 repository: repository,
+                reviewsRepository: reviewsRepository ?? _ReviewsRepository(),
               ),
             ),
           ),
@@ -123,6 +139,32 @@ void main() {
     );
     if (settle) await tester.pumpAndSettle();
   }
+
+  testWidgets(
+    'reviews are placed after related works in the full details panel',
+    (tester) async {
+      final repository = _FakeRepository()
+        ..onDetails = (_) async => const DoubanSubjectDetails(
+          doubanId: '1889243',
+          title: '星际穿越',
+          year: '2014',
+          recommendations: [
+            DoubanRecommendation(doubanId: '1292052', title: '相关推荐'),
+          ],
+        );
+      final reviews = _ReviewsRepository();
+      await mount(tester, repository, reviewsRepository: reviews);
+      expect(reviews.ids, ['1889243']);
+      expect(
+        tester.getTopLeft(find.text('豆瓣影评')).dy,
+        greaterThan(
+          tester
+              .getBottomLeft(find.byKey(const ValueKey('douban-rec-1292052')))
+              .dy,
+        ),
+      );
+    },
+  );
 
   testWidgets('new verified score is not replaced by older detail metadata', (
     tester,
@@ -249,7 +291,9 @@ void main() {
     'validates edits before saving and forces reload after confirmation',
     (tester) async {
       final repository = _FakeRepository();
-      await mount(tester, repository);
+      final reviews = _ReviewsRepository();
+      await mount(tester, repository, reviewsRepository: reviews);
+      expect(reviews.ids, ['1889243']);
       await tester.tap(find.text('关联条目'));
       await tester.pumpAndSettle();
       expect(find.text('星际穿越 · 2014'), findsNWidgets(2));
@@ -289,6 +333,15 @@ void main() {
       expect(repository.saved.single.confirmed, isTrue);
       expect(repository.saved.single.wikidataId, isEmpty);
       expect(repository.forces, [false, true]);
+      expect(reviews.ids.last, '1292052');
+      expect(
+        tester
+            .widget<CinemaDoubanReviewsView>(
+              find.byType(CinemaDoubanReviewsView),
+            )
+            .subjectId,
+        '1292052',
+      );
     },
   );
 
@@ -314,6 +367,13 @@ void main() {
     expect(identity.rottenTomatoesId, isEmpty);
     expect(identity.confirmed, isTrue);
     expect(repository.forces, [false, true]);
+    expect(
+      tester
+          .widget<CinemaDoubanReviewsView>(find.byType(CinemaDoubanReviewsView))
+          .subjectId,
+      isEmpty,
+    );
+    expect(find.text('豆瓣影评'), findsNothing);
   });
 
   testWidgets('refresh bypasses cache and handles a readable request failure', (

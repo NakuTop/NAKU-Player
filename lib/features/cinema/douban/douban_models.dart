@@ -246,10 +246,62 @@ class DoubanResultPage {
           (total != null ? start + count < total : rawItems.length >= count),
       total: total != null && total >= 0 ? total : null,
       sorts: List.unmodifiable(sorts),
-      tags: _strings(json['recommend_tags']),
+      tags: parseDoubanThemes(json, kind),
       categoryGroups: parseDoubanCategoryGroups(json['recommend_categories']),
     );
   }
+}
+
+/// Discover only tags actually supplied by Douban. Card recommendation links
+/// carry more varied themes than the ten top-level suggestions. Keep category
+/// labels out of this surface: they already have dedicated stable controls.
+List<String> parseDoubanThemes(Map<String, dynamic> json, DoubanKind kind) {
+  final categories = parseDoubanCategoryGroups(json['recommend_categories']);
+  final taxonomy = {
+    ..._allValues,
+    for (final category in categories) ...category.tags,
+    for (final category in categories) ...category.groups.keys,
+    for (final category in categories) ...category.options(),
+  };
+  final topics = <String>{
+    ..._strings(json['recommend_tags']),
+    ..._strings(json['bottom_recommend_tags']),
+  };
+  final rawItems = json['items'];
+  if (rawItems is List) {
+    for (final item in rawItems.whereType<Map>()) {
+      if (item['card'] != 'subject' || item['type'] != kind.apiType) continue;
+      final title = DoubanTitle.fromJson(Map<String, dynamic>.from(item), kind);
+      if (title != null) {
+        taxonomy.addAll(title.regions);
+        taxonomy.addAll(title.genres);
+      }
+      final tags = item['tags'];
+      if (tags is! List) continue;
+      for (final tag in tags.whereType<Map>()) {
+        final uri = Uri.tryParse(_text(tag['uri']));
+        if (uri?.scheme != 'douban' ||
+            uri?.host != 'douban.com' ||
+            uri?.path != '/${kind.apiType}/recommend_tag' ||
+            uri?.queryParameters['type'] != 'tags') {
+          continue;
+        }
+        topics.addAll((uri!.queryParameters['tag'] ?? '').split(','));
+      }
+    }
+  }
+  return List.unmodifiable(
+    topics
+        .map((topic) => topic.trim())
+        .where(
+          (topic) =>
+              topic.isNotEmpty &&
+              topic.length <= 120 &&
+              !taxonomy.contains(topic) &&
+              !RegExp(r'^[0-9]{4}$|[,\x00-\x1f\x7f]').hasMatch(topic),
+        )
+        .toSet(),
+  );
 }
 
 List<DoubanCategoryGroup> parseDoubanCategoryGroups(Object? raw) {

@@ -41,6 +41,7 @@ class RatingsStub extends CinemaRatingsRepository {
   Future<CinemaRatings> loadForCard(
     CinemaTitle title, {
     bool Function()? isCurrent,
+    Future<CinemaTitle> Function(CinemaTitle)? resolveTitle,
   }) => load(title);
 }
 
@@ -50,8 +51,9 @@ class CatalogueStub extends CinemaRepository {
   Completer<CinemaTitle>? pendingA;
   bool delayA = false;
   @override
-  Future<List<CinemaCategory>> categories(CinemaSource source) async =>
-      const [CinemaCategory(id: '1', name: '科幻片')];
+  Future<List<CinemaCategory>> categories(CinemaSource source) async => const [
+    CinemaCategory(id: '1', name: '科幻片'),
+  ];
   @override
   Future<CinemaPage> browse(
     CinemaSource source, {

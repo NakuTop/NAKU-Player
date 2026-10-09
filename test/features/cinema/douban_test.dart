@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/douban/douban_models.dart';
 import 'package:kazumi/features/cinema/douban/douban_repository.dart';
 import 'package:kazumi/features/cinema/douban/douban_page.dart';
+import 'package:kazumi/features/cinema/douban/douban_themes.dart';
 
 Map<String, dynamic> subject(String id) => {
   'id': id,
@@ -16,6 +17,12 @@ Map<String, dynamic> subject(String id) => {
 
 class Repo extends DoubanRepository {
   final requests = <DoubanKind>[];
+  @override
+  Future<List<String>> discoverThemes({
+    required DoubanKind kind,
+    String? seed,
+    dynamic cancelToken,
+  }) async => const [];
   @override
   Future<DoubanResultPage> browse({
     required DoubanKind kind,
@@ -85,13 +92,19 @@ void main() {
     DoubanTitle? selected;
     await tester.pumpWidget(
       MaterialApp(
-        home: DoubanPage(repository: repo, onSelect: (s) => selected = s),
+        home: DoubanPage(
+          repository: repo,
+          themeCatalog: DoubanThemeCatalog(),
+          onSelect: (s) => selected = s,
+        ),
       ),
     );
     await tester.pumpAndSettle();
     await tester.tap(find.text('剧集').first);
     await tester.pumpAndSettle();
     expect(repo.requests, [DoubanKind.movie, DoubanKind.tv]);
+    await tester.ensureVisible(find.byKey(const ValueKey('douban-1')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('douban-1')));
     expect(selected!.kind, DoubanKind.tv);
     expect(tester.takeException(), isNull);

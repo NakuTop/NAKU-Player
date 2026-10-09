@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/douban/douban_models.dart';
 import 'package:kazumi/features/cinema/douban/douban_page.dart';
 import 'package:kazumi/features/cinema/douban/douban_repository.dart';
+import 'package:kazumi/features/cinema/douban/douban_themes.dart';
 
 const _categories = [
   DoubanCategoryGroup(name: '类型', tags: ['科幻', '喜剧']),
@@ -80,6 +81,25 @@ class _Repository extends DoubanRepository {
   bool manyItems = false, failPage = false, failFilters = false;
   List<String> recommendedTags = ['旅行', '摄影'];
   List<DoubanCategoryGroup>? categoryOverride;
+  final themeRequests =
+      <({DoubanKind kind, String? seed, CancelToken? token})>[];
+  List<String> discoveredThemes = [];
+  Completer<List<String>>? pendingThemes;
+  bool failThemes = false;
+
+  @override
+  Future<List<String>> discoverThemes({
+    required DoubanKind kind,
+    String? seed,
+    CancelToken? cancelToken,
+  }) async {
+    themeRequests.add((kind: kind, seed: seed, token: cancelToken));
+    if (failThemes) throw const DoubanException('themes offline');
+    if (kind == DoubanKind.movie && pendingThemes != null) {
+      return pendingThemes!.future;
+    }
+    return discoveredThemes;
+  }
 
   DoubanResultPage result(
     DoubanKind kind, {
@@ -331,6 +351,7 @@ void main() {
     _Repository repo, {
     double width = 1000,
     ValueChanged<DoubanTitle>? onSelect,
+    DoubanThemeCatalog? themeCatalog,
   }) async {
     tester.view.physicalSize = Size(width, 850);
     tester.view.devicePixelRatio = 1;
@@ -338,7 +359,11 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       MaterialApp(
-        home: DoubanPage(repository: repo, onSelect: onSelect ?? (_) {}),
+        home: DoubanPage(
+          repository: repo,
+          themeCatalog: themeCatalog ?? DoubanThemeCatalog(),
+          onSelect: onSelect ?? (_) {},
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -346,6 +371,7 @@ void main() {
 
   Future<void> choose(WidgetTester tester, String group, String value) async {
     await tester.ensureVisible(find.byKey(ValueKey('douban-filter-$group')));
+    await tester.pump();
     await tester.tap(find.byKey(ValueKey('douban-filter-$group')));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.text(value).last);
@@ -490,7 +516,16 @@ void main() {
       final repo = _Repository();
       await mount(tester, repo);
       await choose(tester, 'year', '2024');
-      await tester.ensureVisible(find.text('加载更多'));
+      await tester.scrollUntilVisible(
+        find.text('加载更多'),
+        250,
+        scrollable: find
+            .descendant(
+              of: find.byType(CustomScrollView),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
       await tester.tap(find.text('加载更多'));
       await tester.pumpAndSettle();
       expect(repo.requests.last.start, 20);
@@ -558,6 +593,7 @@ void main() {
       expect(find.textContaining('已保留现有作品'), findsOneWidget);
       expect(find.textContaining('部分筛选项'), findsOneWidget);
       await tester.ensureVisible(find.byKey(const ValueKey('douban-11')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('douban-11')));
       expect(opened!.id, '11');
       expect(tester.takeException(), isNull);
@@ -602,6 +638,104 @@ void main() {
       await choose(tester, 'year', '2024');
       expect(repo.requests.last.filters.year, '2024');
       expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'more themes preserves the board, selections and scroll while keeping topics beyond forty',
+    (tester) async {
+      final repo = _Repository()
+        ..manyItems = true
+        ..recommendedTags = [for (var i = 0; i < 45; i++) '主题$i'];
+      await mount(tester, repo);
+      expect(repo.themeRequests, hasLength(2));
+      await choose(tester, 'year', '2024');
+      await tester.tap(find.byKey(const ValueKey('douban-theme-主题0')));
+      await tester.pumpAndSettle();
+      final pages = repo.requests.length;
+      final view = find.byType(CustomScrollView);
+      final scroll = tester.widget<CustomScrollView>(view).controller!;
+      scroll.jumpTo(80);
+      await tester.pumpAndSettle();
+      final offset = scroll.offset;
+      final pending = repo.pendingThemes = Completer<List<String>>();
+      await tester.tap(find.byKey(const ValueKey('douban-more-themes')));
+      await tester.pump();
+      expect(repo.requests, hasLength(pages));
+      expect(repo.themeRequests, hasLength(3));
+      expect(
+        tester
+            .widget<TextButton>(
+              find.byKey(const ValueKey('douban-more-themes')),
+            )
+            .onPressed,
+        isNull,
+      );
+      pending.complete(['新主题', '主题0']);
+      await tester.pumpAndSettle();
+      expect(repo.requests, hasLength(pages));
+      expect(scroll.offset, closeTo(offset, 1));
+      expect(selected(tester, 'year'), '2024');
+      expect(find.byKey(const ValueKey('douban-theme-新主题')), findsOneWidget);
+      expect(find.byKey(const ValueKey('douban-theme-主题44')), findsOneWidget);
+      expect(
+        tester
+            .widget<FilterChip>(find.byKey(const ValueKey('douban-theme-主题0')))
+            .selected,
+        isTrue,
+      );
+      expect(find.textContaining('新增 1 个主题'), findsOneWidget);
+      expect(find.byKey(const ValueKey('douban-11')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'theme discovery failures and old context completions preserve usable content',
+    (tester) async {
+      final repo = _Repository();
+      await mount(tester, repo);
+      repo.failThemes = true;
+      await tester.tap(find.byKey(const ValueKey('douban-more-themes')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('现有主题和作品仍可使用'), findsOneWidget);
+      expect(find.byKey(const ValueKey('douban-11')), findsOneWidget);
+      expect(find.byKey(const ValueKey('douban-theme-旅行')), findsOneWidget);
+      repo.failThemes = false;
+      final pending = repo.pendingThemes = Completer<List<String>>();
+      await tester.tap(find.byKey(const ValueKey('douban-more-themes')));
+      await tester.pump();
+      await tester.tap(find.text('剧集'));
+      await tester.pumpAndSettle();
+      pending.complete(['电影新主题']);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('douban-theme-电影新主题')), findsNothing);
+      await tester.tap(find.text('电影'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('douban-theme-电影新主题')), findsOneWidget);
+      expect(find.byKey(const ValueKey('douban-11')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'reopening the board retains discovered themes in the session catalogue',
+    (tester) async {
+      final catalog = DoubanThemeCatalog();
+      final repo = _Repository()..discoveredThemes = ['之前发现的主题'];
+      await mount(tester, repo, themeCatalog: catalog);
+      expect(
+        find.byKey(const ValueKey('douban-theme-之前发现的主题')),
+        findsOneWidget,
+      );
+      await tester.pumpWidget(const SizedBox());
+      final newRepo = _Repository()..recommendedTags = ['本次推荐'];
+      await mount(tester, newRepo, themeCatalog: catalog);
+      expect(
+        find.byKey(const ValueKey('douban-theme-之前发现的主题')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('douban-theme-本次推荐')), findsOneWidget);
     },
   );
 

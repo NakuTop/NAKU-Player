@@ -105,7 +105,7 @@ class CinemaSearchDiscoveryRepository {
         receiveTimeout: const Duration(seconds: 8),
         responseType: ResponseType.plain,
         headers: {
-          'User-Agent': 'NAKUPlayer/1.3.0',
+          'User-Agent': 'NAKUPlayer/1.4.0',
           'Referer': 'https://m.douban.com/movie/',
         },
       ),

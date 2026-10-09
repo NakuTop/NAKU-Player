@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:html/parser.dart' as html;
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 
@@ -122,21 +123,38 @@ Future<void> _validateImdbInBackground(List<int> bytes) => Isolate.run(() {
 class CinemaRatingsRepository {
   CinemaRatingsRepository({Directory? directory, RatingsFetch? fetch})
     : _directory = directory,
-      _fetch = fetch ?? _networkFetch;
+      _rawFetch = fetch ?? _networkFetch;
   static final instance = CinemaRatingsRepository();
   Directory? _directory;
-  final RatingsFetch _fetch;
+  final RatingsFetch _rawFetch;
+  final _networkWork = _RatingsWorkPool(3);
+  final _primaryWork = _RatingsWorkPool(3);
+  final _secondaryWork = _RatingsWorkPool(2);
+  final _imdbWork = _RatingsWorkPool(1);
+  final _changes = _RatingsChanges();
+  Listenable get changes => _changes;
+  int get bindingRevision => _bindingRevision;
+  Future<List<int>> _fetch(Uri uri, int maxBytes) =>
+      _networkWork.run(() => _rawFetch(uri, maxBytes));
   Map<String, dynamic> _bindings = {}, _cache = {}, _mappings = {};
   Map<String, dynamic> _details = {};
   final _subjectMemory = <String, DoubanSubjectDetails>{};
+  final _subjectKinds = <String, String>{};
+  final _mobileSubjectPending = <String, Future<DoubanSubjectDetails>>{};
   final _subjectPending = <String, Future<DoubanSubjectDetails>>{};
   final _detailsPending = <String, Future<DoubanSubjectDetails>>{};
   Future<void>? _loading, _dataset;
+  DateTime? _datasetFailedAt;
+  String _datasetFailure = '';
   Future<void> _writes = Future.value();
   final Map<String, Future<CinemaRatings>> _pending = {};
   int _bindingRevision = 0;
   final Map<String, CinemaRatings> _memory = {};
-  Future<void> _cardQueue = Future.value();
+  final _cardPending = <String, Future<CinemaRatings>>{};
+  final _cardCompleted = <String, DateTime>{};
+  final _cardConsumers = <String, List<bool Function()>>{};
+  final _providerPending = <String, Future<CinemaRating>>{};
+  final _resolutionPending = <String, Future<RatingIdentity>>{};
   String? _storageWarning;
 
   Future<Directory> get _dir async => _directory ??= Directory(
@@ -158,6 +176,21 @@ class CinemaRatingsRepository {
       _bindings = Map<String, dynamic>.from(data['bindings']);
       _cache = Map<String, dynamic>.from(data['cache']);
       _mappings = Map<String, dynamic>.from(data['mappings']);
+      if (data['doubanSubjects'] is Map) {
+        for (final entry in (data['doubanSubjects'] as Map).entries) {
+          try {
+            final item = Map<String, dynamic>.from(entry.value);
+            final subject = DoubanSubjectDetails.fromJson(
+              Map<String, dynamic>.from(item['data']),
+            );
+            if (subject.doubanId == entry.key) {
+              _rememberSubject(subject, kind: item['kind']?.toString() ?? '');
+            }
+          } catch (_) {
+            /* Invalid optional metadata does not invalidate bindings. */
+          }
+        }
+      }
       if (data['doubanDetails'] is Map) {
         _details = Map<String, dynamic>.from(data['doubanDetails']);
         while (_details.length > 64) {
@@ -179,6 +212,13 @@ class CinemaRatingsRepository {
       'cache': _cache,
       'mappings': _mappings,
       'doubanDetails': _details,
+      'doubanSubjects': {
+        for (final entry in _subjectMemory.entries)
+          entry.key: {
+            'data': entry.value.toJson(),
+            'kind': _subjectKinds[entry.key] ?? '',
+          },
+      },
     });
     final operation = _writes.catchError((_) {}).then((_) async {
       await directory.create(recursive: true);
@@ -198,6 +238,7 @@ class CinemaRatingsRepository {
     _bindings[title.key] = identity.toJson();
     _bindingRevision++;
     _memory.clear();
+    _cardCompleted.clear();
     try {
       await _save();
     } catch (_) {
@@ -206,8 +247,13 @@ class CinemaRatingsRepository {
       } else {
         _bindings[title.key] = previous;
       }
+      _bindingRevision++;
+      _memory.clear();
+      _cardCompleted.clear();
+      _changes.changed();
       rethrow;
     }
+    _changes.changed();
   }
 
   Future<CinemaRatings> load(CinemaTitle title, {bool force = false}) {
@@ -228,7 +274,7 @@ class CinemaRatingsRepository {
       () => _load(title, force)
           .then((result) {
             if (revision == _bindingRevision) {
-              _memory[_memoryKey(title)] = result;
+              _publish(title, result);
             }
             return result;
           })
@@ -248,34 +294,144 @@ class CinemaRatingsRepository {
     title.sourceDoubanScore,
     _bindingRevision,
   ]);
-  CinemaRatings? peek(CinemaTitle title) => _memory[_memoryKey(title)];
+  CinemaRatings? peek(CinemaTitle title) {
+    final stored = _memory[_memoryKey(title)];
+    if (stored == null) return null;
+    // A detail refresh and cards for other sources of the same work share the
+    // exact provider cache, even when this card's original title lacked IDs.
+    final ratings = [
+      for (final rating in stored.ratings)
+        _newerProviderRating(stored.identity, rating),
+    ];
+    if (List.generate(
+      ratings.length,
+      (i) => identical(ratings[i], stored.ratings[i]),
+    ).every((same) => same)) {
+      return stored;
+    }
+    return CinemaRatings(
+      identity: stored.identity,
+      ratings: ratings,
+      message: stored.message,
+    );
+  }
 
-  /// Posters queue one lookup at a time. Off-screen/disposed cards can abandon
-  /// their queued work; opening details always bypasses this background queue.
+  CinemaRating _newerProviderRating(RatingIdentity identity, CinemaRating old) {
+    final id = switch (old.provider) {
+      '豆瓣' => identity.doubanId,
+      'IMDb' => identity.imdbId,
+      _ => identity.rottenTomatoesId,
+    };
+    try {
+      final raw = _cache['${old.provider}:$id'];
+      if (raw is Map) {
+        final candidate = CinemaRating.fromJson(Map<String, dynamic>.from(raw));
+        if (candidate.verified &&
+            candidate.value != null &&
+            (!old.verified ||
+                old.value == null ||
+                old.fetchedAt == null ||
+                (candidate.fetchedAt?.isAfter(old.fetchedAt!) ?? false))) {
+          return candidate;
+        }
+      }
+    } catch (_) {
+      /* Keep the valid in-memory value. */
+    }
+    return old;
+  }
+
+  /// Raw provider scale (Douban/IMDb: 10; Tomatometer: 100), never a blended
+  /// score. Unknown values stay null so callers can place them last when sorting.
+  double? scoreFor(CinemaTitle title, String provider) {
+    final result = peek(title);
+    final rating = result?.ratings
+        .where((r) => r.provider == provider)
+        .firstOrNull;
+    final scale = provider == '烂番茄' ? 100.0 : 10.0;
+    final value = rating?.value;
+    if (value != null &&
+        value.isFinite &&
+        value >= 0 &&
+        value <= scale &&
+        rating?.scale == scale) {
+      return value;
+    }
+    // An explicit corrected identity with no score must not inherit the old
+    // source's rating. Only use the source fallback before a lookup exists.
+    if (result == null && provider == '豆瓣') {
+      final source = title.sourceDoubanScore;
+      if (source != null && source.isFinite && source > 0 && source <= 10) {
+        return source;
+      }
+    }
+    return null;
+  }
+
+  void _publish(CinemaTitle title, CinemaRatings result) {
+    _memory[_memoryKey(title)] = result;
+    _changes.changed();
+  }
+
+  /// Visible posters publish their fast Douban result before bounded background
+  /// identity/IMDb/Tomatometer work. Full detail navigation is never required.
+  /// A resolver may hydrate an ID-less catalogue item from its source detail.
   Future<CinemaRatings> loadForCard(
     CinemaTitle title, {
     bool Function()? isCurrent,
+    Future<CinemaTitle> Function(CinemaTitle)? resolveTitle,
   }) {
-    final operation = _cardQueue.catchError((_) {}).then((_) async {
-      while (true) {
-        if (isCurrent != null && !isCurrent()) {
-          throw StateError('Card no longer displayed');
-        }
-        final revision = _bindingRevision;
-        final result = await _loadCard(title);
-        // A manual correction in the detail sheet may finish while the old
-        // poster request is in flight. Never hand that old association back.
-        if (revision == _bindingRevision) {
-          _memory[_memoryKey(title)] = result;
+    final key = _memoryKey(title);
+    final completed = _cardCompleted[key];
+    final memory = peek(title);
+    if (completed != null &&
+        memory != null &&
+        DateTime.now().difference(completed) < const Duration(minutes: 30)) {
+      return Future.value(memory);
+    }
+    _cardConsumers.putIfAbsent(key, () => []).add(isCurrent ?? () => true);
+    return _cardPending.putIfAbsent(key, () {
+      bool current() => _cardConsumers[key]?.any((check) => check()) ?? false;
+      Future<CinemaRatings> run() async {
+        while (true) {
+          final revision = _bindingRevision;
+          final effective = await _primaryWork.run(() async {
+            if (!current()) throw StateError('Card no longer displayed');
+            await _ready();
+            var resolved = title;
+            if (_bindings[title.key] is! Map &&
+                title.doubanId.isEmpty &&
+                title.imdbId.isEmpty &&
+                title.rottenTomatoesId.isEmpty &&
+                resolveTitle != null) {
+              try {
+                resolved = await resolveTitle(title);
+              } catch (_) {
+                // Source detail failure must not prevent local/source scores.
+              }
+            }
+            if (!current()) throw StateError('Card no longer displayed');
+            final quick = await _loadCard(resolved);
+            if (revision == _bindingRevision) _publish(title, quick);
+            return resolved;
+          });
+          final result = await _secondaryWork.run(() async {
+            if (!current()) throw StateError('Card no longer displayed');
+            return _load(effective, false);
+          });
+          // A manual correction can arrive during an old network response.
+          if (revision != _bindingRevision) continue;
+          _publish(title, result);
+          _cardCompleted[_memoryKey(title)] = DateTime.now();
           return result;
         }
       }
+
+      return run().whenComplete(() {
+        _cardPending.remove(key);
+        _cardConsumers.remove(key);
+      });
     });
-    _cardQueue = operation.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
-    return operation;
   }
 
   Future<CinemaRatings> _loadCard(CinemaTitle title) async {
@@ -290,8 +446,8 @@ class CinemaRatingsRepository {
             rottenTomatoesId: title.rottenTomatoesId,
           );
     identity.validate();
-    // Previously confirmed/resolved mappings can be reused locally. A poster
-    // never starts WDQS, downloads the IMDb dataset or visits Rotten Tomatoes.
+    // Fast first paint reuses existing crosswalks; background card enrichment
+    // resolves missing exact identities separately.
     final mapped = _mappings[identity.doubanId];
     if (mapped is Map && mapped['entity'] is Map && mapped['qid'] is String) {
       try {
@@ -300,6 +456,8 @@ class CinemaRatingsRepository {
           identity,
           mapped['qid'],
           Map<String, dynamic>.from(mapped['entity']),
+          verifiedSubject: _verifiedSubject(identity.doubanId),
+          verifiedSubjectKind: _subjectKinds[identity.doubanId] ?? '',
         );
       } catch (_) {
         /* Keep explicit IDs when a cached crosswalk is ambiguous. */
@@ -328,7 +486,7 @@ class CinemaRatingsRepository {
       return CinemaRating(
         provider: provider,
         scale: provider == 'IMDb' ? 10 : 100,
-        note: id.isEmpty ? '尚未关联条目；打开详情查询' : '打开详情读取官网评分',
+        note: id.isEmpty ? '尚未关联确切条目' : '正在后台读取官网评分',
       );
     }
 
@@ -339,7 +497,7 @@ class CinemaRatingsRepository {
         secondary('IMDb', identity.imdbId),
         secondary('烂番茄', identity.rottenTomatoesId),
       ],
-      message: '卡片轻量查询豆瓣并复用其他平台缓存；完整评分在详情更新',
+      message: '已显示可用评分，其他平台在后台补充',
     );
     try {
       await _save();
@@ -350,7 +508,12 @@ class CinemaRatingsRepository {
   }
 
   /// Detail first paint bypasses the poster queue and all secondary providers.
-  Future<CinemaRatings> loadQuickRatings(CinemaTitle title) => _loadCard(title);
+  Future<CinemaRatings> loadQuickRatings(CinemaTitle title) async {
+    final revision = _bindingRevision;
+    final result = await _loadCard(title);
+    if (revision == _bindingRevision) _publish(title, result);
+    return result;
+  }
 
   Future<CinemaRatings> _load(CinemaTitle title, bool force) async {
     await _ready();
@@ -413,12 +576,52 @@ class CinemaRatingsRepository {
     CinemaTitle title,
     RatingIdentity original,
     bool force,
+  ) {
+    final key = jsonEncode([original.toJson(), title.title, title.year, force]);
+    return _resolutionPending.putIfAbsent(key, () async {
+      try {
+        final cached = _mappings[original.doubanId];
+        if (!force &&
+            cached is Map &&
+            cached['failureSchema'] == 2 &&
+            _fresh(cached, const Duration(minutes: 30), field: 'failedAt')) {
+          throw FormatException(cached['failure']?.toString() ?? '跨站条目暂未关联');
+        }
+        return await _resolveUncached(title, original, force);
+      } catch (error) {
+        final existing = _mappings[original.doubanId];
+        if (force ||
+            existing is! Map ||
+            existing['failureSchema'] != 2 ||
+            !_fresh(existing, const Duration(minutes: 30), field: 'failedAt')) {
+          _mappings[original.doubanId] = {
+            if (existing is Map) ...Map<String, dynamic>.from(existing),
+            'failedAt': DateTime.now().toIso8601String(),
+            'failureSchema': 2,
+            'failure': _readable(error),
+          };
+        }
+        rethrow;
+      } finally {
+        _resolutionPending.remove(key);
+      }
+    });
+  }
+
+  Future<RatingIdentity> _resolveUncached(
+    CinemaTitle title,
+    RatingIdentity original,
+    bool force,
   ) async {
     final id = original.doubanId;
     Map<String, dynamic> entity;
     String qid;
     final cached = _mappings[id];
-    if (!force && cached is Map && _fresh(cached, const Duration(days: 7))) {
+    if (!force &&
+        cached is Map &&
+        cached['entity'] is Map &&
+        cached['qid'] is String &&
+        _fresh(cached, const Duration(days: 7))) {
       entity = Map<String, dynamic>.from(cached['entity']);
       qid = cached['qid'] as String;
     } else {
@@ -457,15 +660,51 @@ class CinemaRatingsRepository {
         'entity': entity,
       };
     }
-    return identityFromEntity(title, original, qid, entity);
+    try {
+      return identityFromEntity(
+        title,
+        original,
+        qid,
+        entity,
+        verifiedSubject: _verifiedSubject(id),
+        verifiedSubjectKind: _subjectKinds[id] ?? '',
+      );
+    } on FormatException {
+      // An exact official subject can supply its original name when Wikidata
+      // has no Chinese label. Reuse the score lookup/cache; never search names.
+      if (_verifiedSubject(id) == null || (_subjectKinds[id] ?? '').isEmpty) {
+        try {
+          try {
+            await _subject(id, false);
+          } catch (_) {
+            // The mobile page is the one bounded public fallback below.
+          }
+          if ((_subjectKinds[id] ?? '').isEmpty) {
+            await _mobileSubject(id, false);
+          }
+        } catch (_) {
+          /* Keep the original strict association failure below. */
+        }
+      }
+      return identityFromEntity(
+        title,
+        original,
+        qid,
+        entity,
+        verifiedSubject: _verifiedSubject(id),
+        verifiedSubjectKind: _subjectKinds[id] ?? '',
+      );
+    }
   }
 
   static RatingIdentity identityFromEntity(
     CinemaTitle title,
     RatingIdentity original,
     String qid,
-    Map<String, dynamic> entity,
-  ) {
+    Map<String, dynamic> entity, {
+    DoubanSubjectDetails? verifiedSubject,
+    String verifiedSubjectKind = '',
+  }) {
     List<dynamic> claims(String property) =>
         ((entity['claims'] as Map?)?[property] as List? ?? [])
             .where((c) => c['rank'] != 'deprecated')
@@ -496,10 +735,49 @@ class CinemaRatingsRepository {
         )
         .whereType<String>()
         .toSet();
-    // A season cannot silently inherit its parent series' rating: exact name,
-    // documented release year and an instance-of claim are required.
+    final instanceIds = claims(
+      'P31',
+    ).whereType<Map>().map((v) => v['id']).toSet();
+    final entityKind = instanceIds.contains('Q11424')
+        ? 'movie'
+        : instanceIds.contains('Q5398426') || instanceIds.contains('Q3464665')
+        ? 'tv'
+        : '';
+    final sourceKind = title.category.contains('电影')
+        ? 'movie'
+        : RegExp(r'电视剧|连续剧|国产剧|欧美剧|韩剧|日剧|泰剧|港剧|台剧|海外剧').hasMatch(title.category)
+        ? 'tv'
+        : '';
+    final officialNames = verifiedSubject == null
+        ? <String>{}
+        : {
+            verifiedSubject.title,
+            verifiedSubject.originalTitle,
+            ...verifiedSubject.aliases,
+          }.where((name) => name.trim().isNotEmpty).map(normalize).toSet();
+    final sameOfficialSubject =
+        verifiedSubject != null &&
+        verifiedSubject.doubanId == original.doubanId &&
+        verifiedSubject.year.trim() == title.year.trim() &&
+        officialNames.contains(normalize(title.title));
+    final aliasMatch =
+        sameOfficialSubject &&
+        ['movie', 'tv'].contains(verifiedSubjectKind) &&
+        entityKind == verifiedSubjectKind &&
+        officialNames.intersection(names).isNotEmpty;
     if (!original.confirmed &&
-        (!names.contains(normalize(title.title)) ||
+        entityKind.isNotEmpty &&
+        ((sourceKind.isNotEmpty && sourceKind != entityKind) ||
+            (sameOfficialSubject &&
+                verifiedSubjectKind.isNotEmpty &&
+                verifiedSubjectKind != entityKind))) {
+      throw const FormatException('电影与剧集类型不一致，请手动核对关联');
+    }
+    // An alias is accepted only from the exact official ID, with matching
+    // source title, year and film/series kind. Provider-supplied aliases alone
+    // never relax these checks, and a season still cannot inherit its series.
+    if (!original.confirmed &&
+        ((!names.contains(normalize(title.title)) && !aliasMatch) ||
             !years.contains(title.year.trim()) ||
             claims('P31').isEmpty)) {
       throw FormatException(
@@ -516,10 +794,9 @@ class CinemaRatingsRepository {
     final mappedImdb = unique('P345'), mappedRt = unique('P1258');
     final isSeason =
         claims('P31').whereType<Map>().any((v) => v['id'] == 'Q3464665') ||
-        RegExp(
-          r'第.{1,8}季|season\s*\d',
-          caseSensitive: false,
-        ).hasMatch(title.title);
+        RegExp(r'第.{1,8}季|season\s*\d', caseSensitive: false).hasMatch(
+          [title.title, if (sameOfficialSubject) ...officialNames].join(' '),
+        );
     if (isSeason && !original.confirmed) {
       throw const FormatException('季度条目需手动确认，避免将整剧评分当作本季评分');
     }
@@ -547,8 +824,82 @@ class CinemaRatingsRepository {
     )..validate();
   }
 
+  DoubanSubjectDetails? _verifiedSubject(String id) {
+    final memory = _subjectMemory[id];
+    if (memory != null &&
+        _fresh(
+          memory.toJson(),
+          const Duration(hours: 24),
+          field: 'fetchedAt',
+        )) {
+      return memory;
+    }
+    final cached = _details[id];
+    if (cached is Map) {
+      try {
+        final subject = DoubanSubjectDetails.fromJson(
+          Map<String, dynamic>.from(cached['data']),
+        );
+        if (subject.doubanId == id &&
+            _fresh(
+              subject.toJson(),
+              const Duration(hours: 24),
+              field: 'fetchedAt',
+            )) {
+          return subject;
+        }
+      } catch (_) {
+        /* Optional metadata is not an identity guess. */
+      }
+    }
+    return null;
+  }
+
+  void _rememberSubject(DoubanSubjectDetails subject, {String kind = ''}) {
+    final id = subject.doubanId;
+    _subjectMemory.remove(id);
+    _subjectMemory[id] = subject;
+    if (['movie', 'tv'].contains(kind)) _subjectKinds[id] = kind;
+    while (_subjectMemory.length > 80) {
+      final oldest = _subjectMemory.keys.first;
+      _subjectMemory.remove(oldest);
+      _subjectKinds.remove(oldest);
+    }
+  }
+
+  Future<DoubanSubjectDetails> _mobileSubject(String id, bool force) {
+    final key = '$id:$force';
+    return _mobileSubjectPending.putIfAbsent(key, () async {
+      try {
+        final body = utf8.decode(
+          await _fetch(
+            Uri.https('m.douban.com', '/movie/subject/$id/'),
+            2 * 1024 * 1024,
+          ),
+        );
+        final result = parseDoubanSubjectHtml(id, body);
+        // Only inspect type after the parser has verified canonical subject ID.
+        final document = html.parse(body);
+        final label =
+            document
+                .querySelector('meta[property="og:title"]')
+                ?.attributes['content'] ??
+            '';
+        final kind = RegExp(r'\s-\s*电影$').hasMatch(label)
+            ? 'movie'
+            : RegExp(r'\s-\s*电视剧$').hasMatch(label)
+            ? 'tv'
+            : '';
+        _rememberSubject(result, kind: kind);
+        return result;
+      } finally {
+        _mobileSubjectPending.remove(key);
+      }
+    });
+  }
+
   Future<DoubanSubjectDetails> _subject(String id, bool force) {
-    final cached = _subjectMemory[id];
+    final cached = _subjectMemory[id] ?? _verifiedSubject(id);
     if (!force &&
         cached != null &&
         _fresh(
@@ -567,11 +918,7 @@ class CinemaRatingsRepository {
           Uri.https('m.douban.com', '/rexxar/api/v2/movie/$id'),
         );
         final result = parseDoubanSubjectJson(id, data);
-        _subjectMemory.remove(id);
-        _subjectMemory[id] = result;
-        while (_subjectMemory.length > 80) {
-          _subjectMemory.remove(_subjectMemory.keys.first);
-        }
+        _rememberSubject(result, kind: data['type']?.toString() ?? '');
         return result;
       } finally {
         _subjectPending.remove(key);
@@ -579,7 +926,7 @@ class CinemaRatingsRepository {
     });
   }
 
-  /// Detail-only: cards never fetch star distributions or recommendations.
+  /// Full details and distribution requests are separate from card scoring.
   Future<DoubanSubjectDetails> loadDoubanDetails(
     CinemaTitle title, {
     RatingIdentity? identity,
@@ -800,6 +1147,22 @@ class CinemaRatingsRepository {
     String id,
     bool force, {
     bool cardOnly = false,
+  }) {
+    final key = '$provider:$id:$force:$cardOnly';
+    return _providerPending.putIfAbsent(
+      key,
+      () => _ratingUncached(provider, id, force, cardOnly: cardOnly)
+          .whenComplete(() {
+            _providerPending.remove(key);
+          }),
+    );
+  }
+
+  Future<CinemaRating> _ratingUncached(
+    String provider,
+    String id,
+    bool force, {
+    bool cardOnly = false,
   }) async {
     final scale = provider == '烂番茄' ? 100.0 : 10.0;
     if (id.isEmpty) {
@@ -841,17 +1204,19 @@ class CinemaRatingsRepository {
       if (provider == 'IMDb') {
         await (_dataset ??= _prepareDataset(
           force: force,
+          retryFailure: force,
         ).whenComplete(() => _dataset = null));
         final path = '${(await _dir).path}/title.ratings.tsv.gz';
         (double, int)? values;
         try {
-          values = await _readImdbInBackground(path, id);
+          values = await _imdbWork.run(() => _readImdbInBackground(path, id));
         } catch (_) {
           // One bounded repair for a corrupt/truncated local dataset.
-          await (_dataset ??= _prepareDataset(force: true).whenComplete(() {
-            _dataset = null;
-          }));
-          values = await _readImdbInBackground(path, id);
+          await (_dataset ??= _prepareDataset(force: true, retryFailure: force)
+              .whenComplete(() {
+                _dataset = null;
+              }));
+          values = await _imdbWork.run(() => _readImdbInBackground(path, id));
         }
         if (values == null) throw const FormatException('IMDb 数据集暂未收录评分');
         result = CinemaRating(
@@ -869,20 +1234,17 @@ class CinemaRatingsRepository {
         try {
           result = _doubanRating(await _subject(id, force));
         } catch (_) {
-          if (cardOnly) rethrow;
-          try {
-            final body = utf8.decode(
-              await _fetch(Uri.parse(url), 2 * 1024 * 1024),
-            );
-            result = parseRatingPage(provider, url, body);
-          } catch (_) {
-            final body = utf8.decode(
-              await _fetch(
-                Uri.https('m.douban.com', '/movie/subject/$id/'),
-                2 * 1024 * 1024,
-              ),
-            );
-            result = _doubanRating(parseDoubanSubjectHtml(id, body));
+          if (cardOnly) {
+            result = _doubanRating(await _mobileSubject(id, force));
+          } else {
+            try {
+              final body = utf8.decode(
+                await _fetch(Uri.parse(url), 2 * 1024 * 1024),
+              );
+              result = parseRatingPage(provider, url, body);
+            } catch (_) {
+              result = _doubanRating(await _mobileSubject(id, force));
+            }
           }
         }
       } else {
@@ -919,10 +1281,31 @@ class CinemaRatingsRepository {
       if (cardOnly && result.value == null) 'cardOnlyFailure': true,
       'attemptedAt': DateTime.now().toIso8601String(),
     };
+    _changes.changed();
     return result;
   }
 
-  Future<void> _prepareDataset({bool force = false}) async {
+  Future<void> _prepareDataset({
+    bool force = false,
+    bool retryFailure = false,
+  }) async {
+    if (!retryFailure &&
+        _datasetFailedAt != null &&
+        DateTime.now().difference(_datasetFailedAt!) <
+            const Duration(minutes: 30)) {
+      throw FormatException(_datasetFailure);
+    }
+    try {
+      await _updateDataset(force: force);
+      _datasetFailedAt = null;
+    } catch (error) {
+      _datasetFailedAt = DateTime.now();
+      _datasetFailure = _readable(error);
+      rethrow;
+    }
+  }
+
+  Future<void> _updateDataset({bool force = false}) async {
     final directory = await _dir;
     await directory.create(recursive: true);
     final file = File('${directory.path}/title.ratings.tsv.gz');
@@ -1074,8 +1457,8 @@ class CinemaRatingsRepository {
       req.headers.set(
         'User-Agent',
         uri.host == 'm.douban.com' && uri.path.startsWith('/movie/subject/')
-            ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1 NAKUPlayer/1.3.0'
-            : 'NAKUPlayer/1.3.0 (https://github.com/NakuTop/NAKU-Player)',
+            ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1 NAKUPlayer/1.4.0'
+            : 'NAKUPlayer/1.4.0 (https://github.com/NakuTop/NAKU-Player)',
       );
       req.headers.set('Accept', 'application/json,text/html,*/*');
       if (uri.host == 'm.douban.com' &&
@@ -1118,10 +1501,46 @@ class CinemaRatingsRepository {
 
     try {
       return await request().timeout(
-        Duration(seconds: uri.host.endsWith('douban.com') ? 12 : 40),
+        Duration(
+          seconds: uri.host == 'datasets.imdbws.com'
+              ? 40
+              : uri.host == 'query.wikidata.org'
+              ? 8
+              : 12,
+        ),
       );
     } finally {
       client.close(force: true);
     }
   }
+}
+
+/// A small FIFO gate; a failed request never poisons later work.
+class _RatingsWorkPool {
+  _RatingsWorkPool(this.limit);
+  final int limit;
+  int _active = 0;
+  final _waiting = <Completer<void>>[];
+  Future<T> run<T>(Future<T> Function() operation) async {
+    if (_active >= limit) {
+      final ready = Completer<void>();
+      _waiting.add(ready);
+      await ready.future;
+    } else {
+      _active++;
+    }
+    try {
+      return await operation();
+    } finally {
+      if (_waiting.isNotEmpty) {
+        _waiting.removeAt(0).complete();
+      } else {
+        _active--;
+      }
+    }
+  }
+}
+
+class _RatingsChanges extends ChangeNotifier {
+  void changed() => notifyListeners();
 }

@@ -3,7 +3,7 @@ import 'package:html/parser.dart' as html;
 enum CinemaSourceKind { maccms, kazumi }
 
 /// Sorting is limited to the supplied, already loaded catalogue items.
-enum CinemaCatalogSort { latest, popular }
+enum CinemaCatalogSort { latest, popular, rating }
 
 /// Independent source identity; it never shares Bangumi subject IDs.
 class CinemaSource {
@@ -219,7 +219,13 @@ class CinemaTitle {
   final String rottenTomatoesId;
   final List<CinemaRoute> routes;
   String get key => '$sourceId::$id';
-  CinemaTitle copyWith({List<CinemaRoute>? routes}) => CinemaTitle(
+  CinemaTitle copyWith({
+    List<CinemaRoute>? routes,
+    String? doubanId,
+    String? imdbId,
+    String? rottenTomatoesId,
+    double? sourceDoubanScore,
+  }) => CinemaTitle(
     id: id,
     sourceId: sourceId,
     title: title,
@@ -239,10 +245,10 @@ class CinemaTitle {
     sourceHits: sourceHits,
     sourceUpdatedAt: sourceUpdatedAt,
     releaseDateText: releaseDateText,
-    doubanId: doubanId,
-    sourceDoubanScore: sourceDoubanScore,
-    imdbId: imdbId,
-    rottenTomatoesId: rottenTomatoesId,
+    doubanId: doubanId ?? this.doubanId,
+    sourceDoubanScore: sourceDoubanScore ?? this.sourceDoubanScore,
+    imdbId: imdbId ?? this.imdbId,
+    rottenTomatoesId: rottenTomatoesId ?? this.rottenTomatoesId,
     routes: routes ?? this.routes,
   );
   Map<String, dynamic> toJson() => {
@@ -303,8 +309,19 @@ class CinemaTitle {
 /// This does not create a source-wide chart or compare external rating ranks.
 List<CinemaTitle> sortCinemaTitles(
   Iterable<CinemaTitle> items,
-  CinemaCatalogSort sort,
-) {
+  CinemaCatalogSort sort, {
+  double? Function(CinemaTitle title)? scoreOf,
+}) {
+  double? score(CinemaTitle title) {
+    final value = scoreOf == null ? title.sourceDoubanScore : scoreOf(title);
+    return value != null &&
+            value.isFinite &&
+            value >= 0 &&
+            value <= (scoreOf == null ? 10 : 100)
+        ? value
+        : null;
+  }
+
   final indexed = items.indexed.toList();
   indexed.sort((a, b) {
     final comparison = switch (sort) {
@@ -316,6 +333,11 @@ List<CinemaTitle> sortCinemaTitles(
       CinemaCatalogSort.popular => _compareNullableDescending(
         a.$2.sourceHits,
         b.$2.sourceHits,
+        (a, b) => b.compareTo(a),
+      ),
+      CinemaCatalogSort.rating => _compareNullableDescending(
+        score(a.$2),
+        score(b.$2),
         (a, b) => b.compareTo(a),
       ),
     };

@@ -441,8 +441,30 @@ void main() {
           return fetch(uri, max);
         },
       );
-      expect((await recovered.loadDoubanDetails(_title)).note, '豆瓣官网公开资料');
-      expect(calls, hasLength(3));
+      final recoveredDetails = await recovered.loadDoubanDetails(_title);
+      expect(recoveredDetails.note, '豆瓣官网公开资料');
+      // The successful official subject response is still within its 24-hour
+      // lifetime after restart. Retry only the missing distribution and page;
+      // do not relabel cached primary metadata with a new fetch timestamp.
+      expect(recoveredDetails.fetchedAt, updated.fetchedAt);
+      expect(recoveredDetails.score, updated.score);
+      expect(
+        recoveredDetails.starsFetchedAt!.isAfter(updated.starsFetchedAt!),
+        isTrue,
+      );
+      expect(
+        recoveredDetails.recommendationsFetchedAt!.isAfter(
+          updated.recommendationsFetchedAt!,
+        ),
+        isTrue,
+      );
+      expect(
+        calls.map((uri) => uri.path),
+        unorderedEquals([
+          '/movie/subject/$_id/',
+          '/rexxar/api/v2/movie/$_id/rating',
+        ]),
+      );
     },
   );
 

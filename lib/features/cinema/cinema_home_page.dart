@@ -33,7 +33,9 @@ import 'cinema_card_ratings.dart';
 import 'cinema_repository.dart';
 import 'cinema_ratings_panel.dart';
 import 'cinema_ratings.dart';
+import 'cinema_rating_title_resolver.dart';
 import 'cinema_store.dart';
+import 'cinema_library_actions.dart';
 import 'cinema_player_page.dart';
 import 'cinema_theme.dart';
 import 'cinema_websites_page.dart';
@@ -94,6 +96,16 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       widget.repository ?? CinemaRepository();
   late final _discoveryRepository =
       widget.searchDiscovery ?? CinemaSearchDiscoveryRepository();
+  late final _ratings =
+      widget.ratingsRepository ?? CinemaRatingsRepository.instance;
+  late final _ratingTitles = CinemaRatingTitleResolver(
+    repository: _repository,
+    sourceFor: _findSource,
+  );
+  final _scoreProviders = <_Section, String>{};
+  final _ratingPreloads = <_Section>{};
+  final _ratingLoadedContexts = <_Section, String>{};
+  Timer? _ratingRefresh;
   late final _together = widget.watchTogether ?? CinemaWatchTogether.instance;
   StreamSubscription<String>? _togetherNotices;
   _Section _section = _Section.movies;
@@ -147,6 +159,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             state.error = snapshot.error;
             state.fetchedAt = snapshot.fetchedAt;
           });
+          if (!snapshot.loading) unawaited(_preloadRatings(section));
         });
         return controller;
       });
@@ -164,6 +177,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   void initState() {
     super.initState();
     _store.addListener(_onStoreChanged);
+    _ratings.changes.addListener(_onRatingsChanged);
     if (widget.enableWatchTogether) {
       _together.onFollowRequested = _followPeer;
       _togetherNotices = _together.notices.listen((message) {
@@ -172,6 +186,78 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       unawaited(_initializeTogether());
     }
     unawaited(_initialize());
+  }
+
+  String get _scoreProvider => _scoreProviders[_section] ?? '豆瓣';
+
+  void _onRatingsChanged() {
+    if (!mounted ||
+        !_showsCatalogSort ||
+        _currentCatalogSort != CinemaCatalogSort.rating) {
+      return;
+    }
+    _ratingRefresh ??= Timer(const Duration(milliseconds: 350), () {
+      _ratingRefresh = null;
+      if (mounted &&
+          _showsCatalogSort &&
+          _currentCatalogSort == CinemaCatalogSort.rating) {
+        setState(() {});
+      }
+    });
+  }
+
+  Future<void> _preloadRatings(_Section section) async {
+    final state = _catalogs[section]!;
+    if (!mounted ||
+        state.searching ||
+        state.loading ||
+        _catalogSort[section] != CinemaCatalogSort.rating ||
+        _ratingPreloads.contains(section)) {
+      return;
+    }
+    final titles = groupCinemaTitles(
+      state.items.where(state.filters.matches).toList(),
+    ).map((group) => group.representative).toList();
+    final generation = state.generation;
+    final fingerprint = jsonEncode([
+      generation,
+      for (final title in titles) title.toJson(),
+    ]);
+    if (_ratingLoadedContexts[section] == fingerprint) return;
+    _ratingLoadedContexts[section] = fingerprint;
+    _ratingPreloads.add(section);
+    if (_section == section) setState(() {});
+    bool current() =>
+        mounted &&
+        state.generation == generation &&
+        !state.searching &&
+        _catalogSort[section] == CinemaCatalogSort.rating;
+    var next = 0;
+    Future<void> worker() async {
+      while (current() && next < titles.length) {
+        final title = titles[next++];
+        try {
+          await _ratings.loadForCard(
+            title,
+            isCurrent: current,
+            resolveTitle: _ratingTitles.resolve,
+          );
+        } catch (_) {
+          // A failed provider remains unscored; other works can still resolve.
+        }
+      }
+    }
+
+    try {
+      await Future.wait([worker(), worker()]);
+    } finally {
+      _ratingPreloads.remove(section);
+      if (mounted) {
+        if (_section == section) setState(() {});
+        // A catalogue refresh or load-more may have arrived during this batch.
+        unawaited(_preloadRatings(section));
+      }
+    }
   }
 
   Future<void> _initializeTogether() async {
@@ -240,6 +326,18 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                   store: _store,
                   variants: variants,
                   repository: _repository,
+                  ratingsRepository: _ratings,
+                  onRecommendationSelected: (recommendation) async {
+                    if (!mounted) return;
+                    await _selectSection(
+                      _matchesCategory(detail.category, _Section.series)
+                          ? _Section.series
+                          : _Section.movies,
+                    );
+                    if (!mounted) return;
+                    _search.text = recommendation.title;
+                    unawaited(_runSearch());
+                  },
                   routeIndex: road,
                   episodeIndex: episode,
                 ),
@@ -300,6 +398,9 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
 
   @override
   void dispose() {
+    _ratings.changes.removeListener(_onRatingsChanged);
+    _ratingRefresh?.cancel();
+    _ratingTitles.dispose();
     for (final controller in _aggregateControllers.values) {
       controller.dispose();
     }
@@ -339,6 +440,16 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
 
   String get _catalogSortExplanation {
     if (_items.isEmpty) return _loading ? '正在汇总片源。' : '暂无作品可排序。';
+    if (_currentCatalogSort == CinemaCatalogSort.rating) {
+      final works = groupCinemaTitles(
+        _items.where(_catalog.filters.matches).toList(),
+      ).map((group) => group.representative).toList();
+      final available = works
+          .where((title) => _ratings.scoreFor(title, _scoreProvider) != null)
+          .length;
+      final loading = _ratingPreloads.contains(_section) ? ' · 后台补充评分中' : '';
+      return '已加载 $available/${works.length} 部有$_scoreProvider评分，缺失项排后$loading';
+    }
     final popular = _currentCatalogSort == CinemaCatalogSort.popular;
     final available = _items
         .where(
@@ -1229,8 +1340,10 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             onTap: () {
               if (closeDrawer) Navigator.pop(context);
               Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => DoubanPage(
+                PageRouteBuilder<void>(
+                  transitionDuration: Duration.zero,
+                  reverseTransitionDuration: Duration.zero,
+                  pageBuilder: (_, _, _) => DoubanPage(
                     onSelect: (title) {
                       Navigator.of(context).pop();
                       _selectSection(
@@ -1264,7 +1377,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             onTap: () => showAboutDialog(
               context: context,
               applicationName: 'NAKU播放器',
-              applicationVersion: '1.3.0',
+              applicationVersion: '1.4.0',
               applicationLegalese:
                   '基于 Kazumi，GPL-3.0。\n个人电影、剧集与动漫客户端。\n片源及其内容由对应第三方提供。',
               children: [
@@ -1282,7 +1395,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
               ],
             ),
             child: const Text(
-              'NAKU播放器  1.3.0',
+              'NAKU播放器  1.4.0',
               style: TextStyle(
                 fontSize: 10,
                 height: 1.8,
@@ -1309,10 +1422,15 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             for (final sort in [
               CinemaCatalogSort.popular,
               CinemaCatalogSort.latest,
+              CinemaCatalogSort.rating,
             ])
               ChoiceChip(
                 key: ValueKey('catalog-sort-${sort.name}'),
-                label: Text(sort == CinemaCatalogSort.popular ? '热门' : '最新'),
+                label: Text(switch (sort) {
+                  CinemaCatalogSort.popular => '热门',
+                  CinemaCatalogSort.latest => '最新',
+                  CinemaCatalogSort.rating => '评分',
+                }),
                 selected: _currentCatalogSort == sort,
                 selectedColor: CinemaTheme.copper.withValues(alpha: .18),
                 side: BorderSide(
@@ -1321,16 +1439,40 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                       : CinemaTheme.border,
                 ),
                 onSelected: (_) {
+                  if (_currentCatalogSort == sort) return;
                   setState(() => _catalogSort[_section] = sort);
                   if (_aggregates(_section)) unawaited(_browse());
                 },
               ),
+            if (_currentCatalogSort == CinemaCatalogSort.rating)
+              DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  key: const ValueKey('catalog-rating-provider'),
+                  value: _scoreProvider,
+                  isDense: true,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: CinemaTheme.copper,
+                  ),
+                  items: [
+                    for (final provider in ['豆瓣', 'IMDb', '烂番茄'])
+                      DropdownMenuItem(value: provider, child: Text(provider)),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() => _scoreProviders[_section] = value);
+                    }
+                  },
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.only(left: 4),
               child: Text(
-                _currentCatalogSort == CinemaCatalogSort.popular
-                    ? '已加载作品 · 片源热度'
-                    : '已加载作品 · 片源更新时间',
+                switch (_currentCatalogSort) {
+                  CinemaCatalogSort.popular => '已加载作品 · 片源热度',
+                  CinemaCatalogSort.latest => '已加载作品 · 片源更新时间',
+                  CinemaCatalogSort.rating => '已加载作品 · 评分从高到低',
+                },
                 style: const TextStyle(fontSize: 11, color: CinemaTheme.muted),
               ),
             ),
@@ -1408,18 +1550,27 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
               separatorBuilder: (_, _) => const Divider(height: 25),
               itemBuilder: (context, index) {
                 final h = history[index];
-                return ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: SizedBox(width: 48, child: _poster(h.title, 48, 68)),
-                  title: Text(h.title.title),
-                  subtitle: Text(
-                    '${_findSource(h.title.sourceId)?.name ?? '已移除的片源'}  ·  第 ${h.episodeIndex + 1} 集  ·  ${Duration(seconds: h.positionSeconds).inMinutes} 分钟',
+                return CinemaLibraryActions(
+                  key: ValueKey('history-actions:${h.title.key}'),
+                  store: _store,
+                  title: h.title,
+                  history: true,
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: SizedBox(
+                      width: 48,
+                      child: _poster(h.title, 48, 68),
+                    ),
+                    title: Text(h.title.title),
+                    subtitle: Text(
+                      '${_findSource(h.title.sourceId)?.name ?? '已移除的片源'}  ·  第 ${h.episodeIndex + 1} 集  ·  ${Duration(seconds: h.positionSeconds).inMinutes} 分钟',
+                    ),
+                    trailing: const Icon(
+                      Icons.play_circle_outline_rounded,
+                      color: CinemaTheme.copper,
+                    ),
+                    onTap: () => _openTitle(h.title, resume: h),
                   ),
-                  trailing: const Icon(
-                    Icons.play_circle_outline_rounded,
-                    color: CinemaTheme.copper,
-                  ),
-                  onTap: () => _openTitle(h.title, resume: h),
                 );
               },
             ),
@@ -1440,7 +1591,11 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         ? searchGroups.map((g) => g.representative).toList()
         : filteredItems;
     final visibleItems = _showsCatalogSort
-        ? sortCinemaTitles(representatives, _currentCatalogSort)
+        ? sortCinemaTitles(
+            representatives,
+            _currentCatalogSort,
+            scoreOf: (title) => _ratings.scoreFor(title, _scoreProvider),
+          )
         : representatives;
     final variantsByKey = {
       for (final group in searchGroups)
@@ -1848,7 +2003,12 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         mainAxisSpacing: 24,
         childAspectRatio: .51,
       ),
-      itemBuilder: (_, i) => _titleCard(items[i]),
+      itemBuilder: (_, i) => CinemaLibraryActions(
+        key: ValueKey('favorite-actions:${items[i].key}'),
+        store: _store,
+        title: items[i],
+        child: _titleCard(items[i]),
+      ),
     );
   }
 
@@ -1970,7 +2130,11 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             style: const TextStyle(fontSize: 10, color: CinemaTheme.muted),
           ),
           const SizedBox(height: 5),
-          CinemaCardRatings(title: title, repository: widget.ratingsRepository),
+          CinemaCardRatings(
+            title: title,
+            repository: _ratings,
+            resolveTitle: _ratingTitles.resolve,
+          ),
         ],
       ),
     ),

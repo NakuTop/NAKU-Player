@@ -215,9 +215,9 @@ void main() {
         'm/alien#reviews',
       ]) {
         expect(
-        _parse({'vod_rotten_tomatoes_id': id}).rottenTomatoesId,
-        isEmpty,
-        reason: id,
+          _parse({'vod_rotten_tomatoes_id': id}).rottenTomatoesId,
+          isEmpty,
+          reason: id,
         );
       }
       final textOnly = _parse({
@@ -331,6 +331,44 @@ void main() {
       ]);
       expect(input.first.id, 'missing-first');
       expect(sortCinemaTitles(const [], CinemaCatalogSort.latest), isEmpty);
+    },
+  );
+  test(
+    'rating sort uses one provider, leaves missing last and keeps ties stable',
+    () {
+      final input = [
+        'unknown',
+        'low',
+        'high',
+        'tie',
+        'invalid',
+      ].map(_title).toList();
+      final douban = <String, double>{
+        'low': 6.5,
+        'high': 9.1,
+        'tie': 9.1,
+        'invalid': double.nan,
+      };
+      final imdb = <String, double>{'low': 8.3, 'high': 7.1};
+      final rt = <String, double>{'low': 0, 'high': 75};
+      List<String> sorted(Map<String, double> scores) => sortCinemaTitles(
+        input,
+        CinemaCatalogSort.rating,
+        scoreOf: (title) => scores[title.id],
+      ).map((title) => title.id).toList();
+      expect(sorted(douban), ['high', 'tie', 'low', 'unknown', 'invalid']);
+      expect(sorted(imdb), ['low', 'high', 'unknown', 'tie', 'invalid']);
+      expect(sorted(rt), ['high', 'low', 'unknown', 'tie', 'invalid']);
+      expect(input.first.id, 'unknown');
+      final sourceOnly = _title('source').copyWith(sourceDoubanScore: 9.9);
+      expect(
+        sortCinemaTitles(
+          [sourceOnly, input[1]],
+          CinemaCatalogSort.rating,
+          scoreOf: (title) => imdb[title.id],
+        ).first.id,
+        'low',
+      );
     },
   );
 }

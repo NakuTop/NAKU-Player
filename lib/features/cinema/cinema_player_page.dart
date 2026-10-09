@@ -12,6 +12,9 @@ import 'package:kazumi/services/video_source/video_source_service.dart';
 import 'package:kazumi/services/video_source/webview_video_source_service.dart';
 
 import 'cinema_models.dart';
+import 'cinema_ratings.dart';
+import 'cinema_ratings_panel.dart';
+import 'cinema_douban_reviews.dart';
 import 'cinema_theme.dart';
 import 'cinema_work_sources.dart';
 import 'cinema_watch_together.dart';
@@ -176,6 +179,9 @@ class CinemaPlayerPage extends StatefulWidget {
     this.variants = const [],
     this.repository,
     this.watchTogether,
+    this.ratingsRepository,
+    this.reviewsRepository,
+    this.onRecommendationSelected,
   });
 
   final CinemaTitle title;
@@ -186,6 +192,9 @@ class CinemaPlayerPage extends StatefulWidget {
   final List<CinemaTitle> variants;
   final CinemaRepository? repository;
   final CinemaWatchTogether? watchTogether;
+  final CinemaRatingsRepository? ratingsRepository;
+  final CinemaDoubanReviewsRepository? reviewsRepository;
+  final ValueChanged<DoubanRecommendation>? onRecommendationSelected;
 
   @override
   State<CinemaPlayerPage> createState() => _CinemaPlayerPageState();
@@ -1311,6 +1320,23 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           style: const TextStyle(color: _muted, fontSize: 13, height: 1.8),
         ),
       ],
+      const SizedBox(height: 24),
+      CinemaRatingsPanel(
+        key: ValueKey('playing-work-details:${widget.title.key}'),
+        // Playback routes belong to the same verified work. Keep its metadata
+        // anchor stable while changing source or episode, including ID-less ones.
+        title: widget.title,
+        sourceName: widget.source.name,
+        repository: widget.ratingsRepository,
+        reviewsRepository: widget.reviewsRepository,
+        onRecommendationSelected: widget.onRecommendationSelected == null
+            ? null
+            : (recommendation) async {
+                final onSelected = widget.onRecommendationSelected!;
+                await _leave();
+                onSelected(recommendation);
+              },
+      ),
     ],
   );
 

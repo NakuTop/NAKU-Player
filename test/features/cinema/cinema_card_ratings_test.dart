@@ -39,6 +39,9 @@ const _result = CinemaRatings(
 
 class _FakeRepository extends CinemaRatingsRepository {
   CinemaRatings? cached;
+  final updates = ChangeNotifier();
+  @override
+  Listenable get changes => updates;
   final requests = <CinemaTitle>[];
   final isCurrentCallbacks = <bool Function()?>[];
   Future<CinemaRatings> Function(CinemaTitle)? onLoad;
@@ -50,6 +53,7 @@ class _FakeRepository extends CinemaRatingsRepository {
   Future<CinemaRatings> loadForCard(
     CinemaTitle title, {
     bool Function()? isCurrent,
+    Future<CinemaTitle> Function(CinemaTitle)? resolveTitle,
   }) async {
     requests.add(title);
     isCurrentCallbacks.add(isCurrent);
@@ -220,6 +224,30 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.tap(find.text('IMDb 8.7'));
       expect(taps, 1);
+    },
+  );
+
+  testWidgets(
+    'a mounted card observes a later provider refresh without navigation',
+    (tester) async {
+      final repository = _FakeRepository()..cached = _result;
+      await mount(tester, repository);
+      repository.cached = const CinemaRatings(
+        identity: RatingIdentity(doubanId: '1889243', imdbId: 'tt0816692'),
+        ratings: [
+          CinemaRating(
+            provider: 'IMDb',
+            value: 8.8,
+            verified: true,
+            note: '刷新后的官方评分',
+          ),
+        ],
+        message: '',
+      );
+      repository.updates.notifyListeners();
+      await tester.pump();
+      expect(find.text('IMDb 8.8'), findsOneWidget);
+      expect(find.text('IMDb 8.7'), findsNothing);
     },
   );
 

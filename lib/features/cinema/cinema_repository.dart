@@ -39,7 +39,7 @@ class CinemaRepository {
         sendTimeout: const Duration(seconds: 12),
         responseType: ResponseType.plain,
         headers: {
-          'User-Agent': 'NAKUPlayer/1.3.0',
+          'User-Agent': 'NAKUPlayer/1.4.0',
           'Accept': 'application/json',
         },
       ),
