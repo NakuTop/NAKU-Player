@@ -50,6 +50,9 @@ class CatalogueStub extends CinemaRepository {
   Completer<CinemaTitle>? pendingA;
   bool delayA = false;
   @override
+  Future<List<CinemaCategory>> categories(CinemaSource source) async =>
+      const [CinemaCategory(id: '1', name: '科幻片')];
+  @override
   Future<CinemaPage> browse(
     CinemaSource source, {
     String? categoryId,
@@ -142,10 +145,10 @@ void main() {
   Finder card() => find.byKey(const ValueKey('title-card:maccms-modu::m1'));
 
   testWidgets(
-    'Modu is the default even when it is not first in the source library',
+    'all sources are browsed while Modu remains the preferred representative',
     (tester) async {
       await mount(tester);
-      expect(repository.browsed.toSet(), {modu.id});
+      expect(repository.browsed.toSet(), {sourceA.id, modu.id});
       expect(card(), findsOneWidget);
       expect(find.textContaining('9.4'), findsOneWidget);
       expect(tester.takeException(), isNull);

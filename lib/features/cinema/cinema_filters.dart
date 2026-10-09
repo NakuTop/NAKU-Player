@@ -84,7 +84,7 @@ class CinemaFilterBar extends StatelessWidget {
       '运动',
       ...items
           .expand((t) => t.genres.split(RegExp(r'[,，/、\s]+')))
-          .where((s) => s.isNotEmpty && s.length <= 6),
+          .where((s) => s.isNotEmpty && s.length <= 6 && !s.contains('擦边')),
     }.toList();
     Widget menu(
       String label,
@@ -98,7 +98,6 @@ class CinemaFilterBar extends StatelessWidget {
         initialValue: current,
         isExpanded: true,
         decoration: InputDecoration(
-          labelText: label,
           isDense: true,
           contentPadding: const EdgeInsets.symmetric(
             horizontal: 12,

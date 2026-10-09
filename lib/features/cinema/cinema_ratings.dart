@@ -1074,8 +1074,8 @@ class CinemaRatingsRepository {
       req.headers.set(
         'User-Agent',
         uri.host == 'm.douban.com' && uri.path.startsWith('/movie/subject/')
-            ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1 NAKUPlayer/1.2.0'
-            : 'NAKUPlayer/1.2.0 (https://github.com/NakuTop/NAKU-Player)',
+            ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1 NAKUPlayer/1.3.0'
+            : 'NAKUPlayer/1.3.0 (https://github.com/NakuTop/NAKU-Player)',
       );
       req.headers.set('Accept', 'application/json,text/html,*/*');
       if (uri.host == 'm.douban.com' &&

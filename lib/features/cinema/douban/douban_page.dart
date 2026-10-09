@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../cinema_theme.dart';
 import 'douban_models.dart';
 import 'douban_repository.dart';
+import 'douban_image_headers.dart';
 
 class DoubanPage extends StatefulWidget {
   const DoubanPage({super.key, required this.onSelect, this.repository});
@@ -221,7 +222,6 @@ class _DoubanPageState extends State<DoubanPage> {
     };
     return InputDecorator(
       decoration: InputDecoration(
-        labelText: label,
         contentPadding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
       ),
@@ -242,7 +242,7 @@ class _DoubanPageState extends State<DoubanPage> {
               DropdownMenuItem(
                 value: value,
                 child: Text(
-                  value.isEmpty ? '全部' : value,
+                  value.isEmpty ? '全部$label' : value,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -640,7 +640,7 @@ class _DoubanPageState extends State<DoubanPage> {
                   : CachedNetworkImage(
                       memCacheWidth: 480,
                       imageUrl: item.poster,
-                      httpHeaders: const {'Referer': 'https://m.douban.com/'},
+                      httpHeaders: doubanImageHeaders,
                       fit: BoxFit.cover,
                       errorWidget: (_, _, _) => _posterFallback(),
                     ),

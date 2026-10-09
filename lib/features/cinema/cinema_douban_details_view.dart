@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'cinema_douban_details.dart';
 import 'cinema_theme.dart';
+import 'douban/douban_image_headers.dart';
 
 class DoubanDetailsView extends StatelessWidget {
   const DoubanDetailsView({
@@ -177,9 +178,7 @@ class DoubanDetailsView extends StatelessWidget {
                                   : CachedNetworkImage(
                                       imageUrl: item.poster,
                                       memCacheWidth: 240,
-                                      httpHeaders: const {
-                                        'Referer': 'https://m.douban.com/',
-                                      },
+                                      httpHeaders: doubanImageHeaders,
                                       fit: BoxFit.cover,
                                       errorWidget: (_, _, _) =>
                                           const _PosterFallback(),

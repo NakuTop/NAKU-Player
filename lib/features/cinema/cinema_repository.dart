@@ -39,7 +39,7 @@ class CinemaRepository {
         sendTimeout: const Duration(seconds: 12),
         responseType: ResponseType.plain,
         headers: {
-          'User-Agent': 'NAKUPlayer/1.2.0',
+          'User-Agent': 'NAKUPlayer/1.3.0',
           'Accept': 'application/json',
         },
       ),
@@ -118,6 +118,48 @@ class CinemaRepository {
           )
           .where((entry) => entry.id.isNotEmpty && entry.name.isNotEmpty)
           .toList();
+    });
+  }
+
+  /// Some MacCMS providers support [year], while others silently ignore it.
+  /// Callers must validate returned metadata before presenting a filtered page.
+  /// Kept separate from browse so existing ordinary catalogue adapters retain
+  /// their interface and the filtered cache never aliases an unfiltered page.
+  Future<CinemaPage> browseFiltered(
+    CinemaSource source, {
+    String? categoryId,
+    String year = '',
+    int page = 1,
+  }) async {
+    if (year.isEmpty) return browse(source, categoryId: categoryId, page: page);
+    if (!RegExp(r'^\d{4}$').hasMatch(year)) {
+      throw const CinemaSourceException('片源年份筛选参数无效');
+    }
+    source.validate();
+    if (source.kind != CinemaSourceKind.maccms) {
+      return const CinemaPage(items: []);
+    }
+    final key = (
+      source.id,
+      _sourceIdentity(source),
+      jsonEncode({'category': categoryId, 'year': year}),
+      page,
+    );
+    return _pages.load(key, () async {
+      final results = await Future.wait<Object>([
+        categories(source),
+        _request(source, {
+          'ac': 'detail',
+          'pg': '$page',
+          'year': year,
+          if (categoryId != null && categoryId.isNotEmpty) 't': categoryId,
+        }),
+      ]);
+      return parseMacCmsPage(
+        source,
+        results[1] as Map<String, dynamic>,
+        categories: results[0] as List<CinemaCategory>,
+      );
     });
   }
 

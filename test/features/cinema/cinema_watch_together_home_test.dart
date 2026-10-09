@@ -18,6 +18,22 @@ const _source = CinemaSource(
 
 class _Repository extends CinemaRepository {
   @override
+  Future<List<CinemaCategory>> categories(CinemaSource source) async => const [
+    CinemaCategory(id: '1', name: '电影'),
+    CinemaCategory(id: '11', name: '剧情片', parentId: '1'),
+    CinemaCategory(id: '2', name: '电视剧'),
+    CinemaCategory(id: '22', name: '欧美剧', parentId: '2'),
+  ];
+
+  @override
+  Future<CinemaPage> browseFiltered(
+    CinemaSource source, {
+    String? categoryId,
+    String year = '',
+    int page = 1,
+  }) => browse(source, categoryId: categoryId, page: page);
+
+  @override
   Future<CinemaPage> browse(
     CinemaSource source, {
     String? categoryId,
