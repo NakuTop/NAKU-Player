@@ -203,7 +203,11 @@ void main() {
         expect(result.ratings.every((rating) => rating.verified), isTrue);
         expect(
           requests,
-          unorderedEquals(['movie.douban.com', 'www.rottentomatoes.com']),
+          unorderedEquals([
+            'm.douban.com',
+            'movie.douban.com',
+            'www.rottentomatoes.com',
+          ]),
         );
         final saved = jsonDecode(await cacheFile.readAsString()) as Map;
         expect(saved['bindings'], {_allIdsTitle.key: identity});
@@ -355,10 +359,7 @@ void main() {
     } finally {
       // Always settle controlled requests before deleting their cache directory.
       finishResponses();
-      await Future.wait([
-        ?oldLookup,
-        ?newLookup,
-      ]).timeout(_timeout);
+      await Future.wait([?oldLookup, ?newLookup]).timeout(_timeout);
     }
   });
 }

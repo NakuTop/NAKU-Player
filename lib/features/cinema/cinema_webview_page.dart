@@ -362,16 +362,18 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
     final uri = Uri.tryParse(_currentUrl);
     final host = uri?.host ?? '';
     return Theme(
-      data: CinemaTheme.data,
+      data: CinemaTheme.of(context),
       child: Scaffold(
         backgroundColor: CinemaTheme.background,
         body: SafeArea(
           child: Column(
             children: [
               Container(
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   color: CinemaTheme.surface,
-                  border: Border(bottom: BorderSide(color: CinemaTheme.border)),
+                  border: const Border(
+                    bottom: BorderSide(color: CinemaTheme.border),
+                  ),
                 ),
                 padding: const EdgeInsets.symmetric(
                   horizontal: 14,

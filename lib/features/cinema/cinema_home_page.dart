@@ -1,5 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:dio/dio.dart';
+import 'cinema_appearance_settings.dart';
+import 'cinema_filters.dart';
+import 'cinema_search_discovery.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
@@ -40,6 +44,11 @@ class _CatalogState {
   final searchPages = <String, int>{};
   final searchMore = <String>{};
   String activeKeyword = '';
+  CinemaFilters filters = const CinemaFilters();
+  CinemaSearchDiscovery discovery = const CinemaSearchDiscovery();
+  CancelToken? discoveryCancel;
+  String discoveryMessage = '';
+  bool discoveryLoading = false;
   String? itemsContext;
   CinemaSource? source;
   String? categoryId, error;
@@ -56,12 +65,16 @@ class CinemaHomePage extends StatefulWidget {
     this.ratingsRepository,
     this.watchTogether,
     this.enableWatchTogether = true,
+    this.enableSearchDiscovery = true,
+    this.searchDiscovery,
   });
   final CinemaStore? store;
   final CinemaRepository? repository;
   final CinemaRatingsRepository? ratingsRepository;
   final CinemaWatchTogether? watchTogether;
   final bool enableWatchTogether;
+  final bool enableSearchDiscovery;
+  final CinemaSearchDiscoveryRepository? searchDiscovery;
 
   @override
   State<CinemaHomePage> createState() => _CinemaHomePageState();
@@ -71,6 +84,8 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   late final CinemaStore _store = widget.store ?? CinemaStore();
   late final CinemaRepository _repository =
       widget.repository ?? CinemaRepository();
+  late final _discoveryRepository =
+      widget.searchDiscovery ?? CinemaSearchDiscoveryRepository();
   late final _together = widget.watchTogether ?? CinemaWatchTogether.instance;
   StreamSubscription<String>? _togetherNotices;
   _Section _section = _Section.movies;
@@ -182,8 +197,8 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       Navigator.of(context)
           .push(
             MaterialPageRoute<void>(
-              builder: (_) => Theme(
-                data: CinemaTheme.data,
+              builder: (context) => Theme(
+                data: CinemaTheme.of(context),
                 child: CinemaPlayerPage(
                   title: detail,
                   source: source,
@@ -248,6 +263,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   void dispose() {
     for (final state in _catalogs.values) {
       state.generation++;
+      state.discoveryCancel?.cancel();
       state.search.dispose();
     }
     unawaited(_togetherNotices?.cancel());
@@ -376,10 +392,15 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     return _categoryChoices(state.categories, section).firstOrNull?.id;
   }
 
-  Future<void> _browse({int page = 1, bool refresh = false}) async {
+  Future<void> _browse({
+    int page = 1,
+    bool refresh = false,
+    bool append = false,
+  }) async {
     final state = _catalog;
     final section = _section;
     final generation = ++state.generation;
+    state.discoveryCancel?.cancel();
     final choices = _store.enabledSources
         .where((s) => s.kind == CinemaSourceKind.maccms)
         .toList();
@@ -434,9 +455,14 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         }
       }
       _changed(state, () {
-        state.items = result.items
-            .where((t) => _ordinaryCategory(t.category))
-            .toList();
+        final existing = append ? state.items : <CinemaTitle>[];
+        final keys = existing.map((t) => t.key).toSet();
+        state.items = [
+          ...existing,
+          ...result.items.where(
+            (t) => _ordinaryCategory(t.category) && keys.add(t.key),
+          ),
+        ];
         state.itemsContext = '$sourceKey|${state.categoryId}';
         state.page = result.page;
         state.pageCount = result.pageCount;
@@ -462,7 +488,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       await _browse();
       return;
     }
-    final generation = ++state.generation;
+    final generation = loadMore ? state.generation : ++state.generation;
     final sources = _store.enabledSources
         .where(
           (s) =>
@@ -478,7 +504,22 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       state.itemsContext = null;
       state.initialized = true;
       if (!loadMore) {
-        state.items = [];
+        state.items =
+            [
+                  for (final catalogue in _catalogs.values) ...catalogue.items,
+                  ..._store.favorites,
+                  ..._store.history.map((h) => h.title),
+                ]
+                .where(
+                  (t) =>
+                      cinemaMatchesKeyword(t, keyword) &&
+                      (t.category.isEmpty ||
+                          _matchesCategory(t.category, section)),
+                )
+                .toList();
+        state.discoveryCancel?.cancel();
+        state.discovery = const CinemaSearchDiscovery();
+        state.discoveryMessage = '';
         state.sourceStatus.clear();
         state.searchPages.clear();
         state.searchMore.clear();
@@ -495,6 +536,9 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       });
       return;
     }
+    final discoveryFuture = !loadMore && widget.enableSearchDiscovery
+        ? _discoverSearch(state, section, keyword, generation, sources)
+        : Future<void>.value();
     // Each destination has its own generation: switching tabs doesn't discard work.
     for (var offset = 0; offset < sources.length; offset += 3) {
       await Future.wait(
@@ -536,7 +580,239 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       );
       if (!mounted || generation != state.generation) return;
     }
-    _changed(state, () => state.loading = false);
+    await discoveryFuture;
+    if (mounted && generation == state.generation) {
+      _changed(state, () => state.loading = false);
+    }
+  }
+
+  Future<void> _discoverSearch(
+    _CatalogState state,
+    _Section section,
+    String keyword,
+    int generation,
+    List<CinemaSource> sources,
+  ) async {
+    final cancel = state.discoveryCancel = CancelToken();
+    bool current() =>
+        mounted && generation == state.generation && !cancel.isCancelled;
+    _changed(state, () => state.discoveryLoading = true);
+    try {
+      final discovery = await _discoveryRepository.search(
+        keyword,
+        cancelToken: cancel,
+      );
+      if (!current()) return;
+      _changed(state, () {
+        state.discovery = discovery;
+        state.discoveryMessage = discovery.message;
+        state.discoveryLoading = false;
+      });
+      // Resolve at most two suggested Chinese titles, with three source requests
+      // in flight. Original source search and its pagination remain independent.
+      for (final query in discovery.queries) {
+        for (var offset = 0; offset < sources.length; offset += 3) {
+          if (!current()) return;
+          await Future.wait(
+            sources.skip(offset).take(3).map((source) async {
+              try {
+                final result = await _repository.search(source, query);
+                if (!current()) return;
+                final keys = state.items.map((t) => t.key).toSet();
+                final matches = result.items
+                    .where(
+                      (t) =>
+                          _ordinaryCategory(t.category) &&
+                          (t.category.isEmpty ||
+                              _matchesCategory(t.category, section)) &&
+                          keys.add(t.key),
+                    )
+                    .toList();
+                _changed(state, () => state.items.addAll(matches));
+              } catch (_) {
+                /* Ordinary source status remains visible. */
+              }
+            }),
+          );
+        }
+      }
+    } catch (e) {
+      if (current()) {
+        _changed(
+          state,
+          () => state.discoveryMessage = '中英文与演员资料暂时不可用，已保留片源搜索结果。',
+        );
+      }
+    } finally {
+      if (current()) _changed(state, () => state.discoveryLoading = false);
+    }
+  }
+
+  Future<void> _moreActorWorks() async {
+    final state = _catalog;
+    final generation = state.generation;
+    final previous = state.discovery;
+    if (state.discoveryLoading || !previous.hasMore) return;
+    _changed(state, () => state.discoveryLoading = true);
+    try {
+      final next = await _discoveryRepository.actorWorks(
+        previous.celebrityId,
+        previous.celebrityName,
+        start: previous.nextStart,
+        cancelToken: state.discoveryCancel,
+      );
+      if (!mounted || generation != state.generation) return;
+      final ids = previous.titles.map((t) => t.id).toSet();
+      _changed(state, () {
+        state.discovery = CinemaSearchDiscovery(
+          titles: [
+            ...previous.titles,
+            ...next.titles.where((t) => ids.add(t.id)),
+          ],
+          celebrityId: next.celebrityId,
+          celebrityName: next.celebrityName,
+          nextStart: next.nextStart,
+          hasMore: next.hasMore,
+        );
+        state.discoveryMessage = '';
+      });
+    } catch (_) {
+      if (mounted && generation == state.generation) {
+        _changed(state, () => state.discoveryMessage = '暂时无法加载更多演员作品，请重试。');
+      }
+    } finally {
+      if (mounted && generation == state.generation) {
+        _changed(state, () => state.discoveryLoading = false);
+      }
+    }
+  }
+
+  void _changeCatalogueFilters(CinemaFilters value) {
+    final previous = _catalog.filters;
+    final category =
+        !_searching && value.genre != previous.genre && value.genre.isNotEmpty
+        ? _visibleCategories
+              .where(
+                (c) =>
+                    c.name == '${value.genre}片' || c.name == '${value.genre}电影',
+              )
+              .firstOrNull
+        : null;
+    setState(() => _catalog.filters = value);
+    if (category != null && category.id != _categoryId) {
+      _categoryId = category.id;
+      _browse();
+    }
+  }
+
+  Widget _discoveryResults() {
+    final discovery = _catalog.discovery;
+    final titles = discovery.titles
+        .where(
+          (t) =>
+              _catalog.filters.matches(t.metadata) &&
+              (_section == _Section.anime ||
+                  (_section == _Section.series
+                      ? t.kind == 'tv'
+                      : t.kind != 'tv')) &&
+              !_items.any(
+                (v) =>
+                    v.doubanId == t.id ||
+                    (cinemaSearchKey(v.title) == cinemaSearchKey(t.title) &&
+                        (v.year.isEmpty || t.year.isEmpty || v.year == t.year)),
+              ),
+        )
+        .toList();
+    if (titles.isEmpty &&
+        !_catalog.discoveryLoading &&
+        _catalog.discoveryMessage.isEmpty &&
+        !discovery.hasMore) {
+      return const SizedBox();
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  discovery.celebrityName.isEmpty
+                      ? '相关作品 · 点击查找片源'
+                      : '${discovery.celebrityName}参演作品 · 点击查找片源',
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+              if (discovery.hasMore)
+                TextButton(
+                  onPressed: _catalog.discoveryLoading ? null : _moreActorWorks,
+                  child: const Text('更多参演作品'),
+                ),
+            ],
+          ),
+          if (_catalog.discoveryLoading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: LinearProgressIndicator(minHeight: 2),
+            ),
+          if (_catalog.discoveryMessage.isNotEmpty)
+            Text(
+              _catalog.discoveryMessage,
+              style: const TextStyle(color: CinemaTheme.muted, fontSize: 11),
+            ),
+          if (titles.isNotEmpty)
+            SizedBox(
+              height: 208,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: titles.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 14),
+                itemBuilder: (context, index) {
+                  final title = titles[index];
+                  return SizedBox(
+                    width: 110,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () {
+                        _search.text = title.title;
+                        _runSearch();
+                      },
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: _poster(title.metadata, 110, 151),
+                          ),
+                          const SizedBox(height: 7),
+                          Text(
+                            title.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          Text(
+                            [
+                              title.year,
+                              if (title.score != null)
+                                '豆瓣 ${title.score!.toStringAsFixed(1)}',
+                            ].where((s) => s.isNotEmpty).join(' · '),
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: CinemaTheme.muted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   Future<void> _openTitle(
@@ -562,6 +838,18 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         repository: _repository,
         store: _store,
         resume: resume,
+        onRecommendationSelected: (recommendation) {
+          Navigator.pop(context);
+          if (!_isCatalog) {
+            setState(
+              () => _section = _matchesCategory(title.category, _Section.series)
+                  ? _Section.series
+                  : _Section.movies,
+            );
+          }
+          _search.text = recommendation.title;
+          _runSearch();
+        },
         onPlay: (detail, selectedSource, road, episode, allVariants) {
           Navigator.pop(context);
           _playTitle(detail, selectedSource, road, episode, allVariants);
@@ -582,7 +870,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: CinemaTheme.data,
+      data: CinemaTheme.of(context),
       child: Builder(
         builder: (context) {
           final wide = MediaQuery.sizeOf(context).width >= 860;
@@ -672,7 +960,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                                             onSubmitted: (_) => _runSearch(),
                                             decoration: InputDecoration(
                                               isDense: true,
-                                              hintText: '搜索电影、剧集或动漫',
+                                              hintText: '中英文片名 / 演员',
                                               prefixIcon: const Icon(
                                                 Icons.search_rounded,
                                                 size: 20,
@@ -696,10 +984,39 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                                     duration:
                                         MediaQuery.disableAnimationsOf(context)
                                         ? Duration.zero
-                                        : const Duration(milliseconds: 160),
-                                    // Only paint the incoming pane; don't blend two large grids.
+                                        : const Duration(milliseconds: 240),
+                                    reverseDuration:
+                                        MediaQuery.disableAnimationsOf(context)
+                                        ? Duration.zero
+                                        : const Duration(milliseconds: 110),
+                                    switchInCurve: Curves.easeOutCubic,
+                                    switchOutCurve: Curves.easeInCubic,
+                                    transitionBuilder: (child, animation) =>
+                                        FadeTransition(
+                                          opacity: animation,
+                                          child: SlideTransition(
+                                            position: Tween<Offset>(
+                                              begin: const Offset(0, .012),
+                                              end: Offset.zero,
+                                            ).animate(animation),
+                                            child: child,
+                                          ),
+                                        ),
                                     layoutBuilder: (current, previous) =>
-                                        current ?? const SizedBox(),
+                                        ClipRect(
+                                          child: Stack(
+                                            fit: StackFit.expand,
+                                            children: [
+                                              for (final child in previous)
+                                                ExcludeSemantics(
+                                                  child: IgnorePointer(
+                                                    child: child,
+                                                  ),
+                                                ),
+                                              ?current,
+                                            ],
+                                          ),
+                                        ),
                                     child: RepaintBoundary(
                                       key: ValueKey(_section),
                                       child: _content(wide),
@@ -878,6 +1195,18 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             },
           ),
         ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.blur_on_rounded, size: 20),
+            title: const Text('外观与透明度'),
+            onTap: () {
+              if (closeDrawer) Navigator.pop(context);
+              showCinemaAppearanceSheet(context);
+            },
+          ),
+        ),
         const SizedBox(height: 24),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 18),
@@ -893,7 +1222,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             onTap: () => showAboutDialog(
               context: context,
               applicationName: 'NAKU播放器',
-              applicationVersion: '1.1.0',
+              applicationVersion: '1.2.0',
               applicationLegalese:
                   '基于 Kazumi，GPL-3.0。\n个人电影、剧集与动漫客户端。\n片源及其内容由对应第三方提供。',
               children: [
@@ -911,7 +1240,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
               ],
             ),
             child: const Text(
-              'NAKU播放器  1.1.0',
+              'NAKU播放器  1.2.0',
               style: TextStyle(
                 fontSize: 10,
                 height: 1.8,
@@ -979,42 +1308,82 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   Widget _content(bool wide) {
     if (_section == _Section.sources) return _sourceManager(wide);
     if (_section == _Section.favorites) {
-      return _library(_store.favorites, wide, '还没有收藏。打开任意影片，点击收藏即可保存在这里。');
+      return Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 28),
+            child: CinemaFilterBar(
+              value: _catalog.filters,
+              items: _store.favorites,
+              scope: '全部收藏',
+              onChanged: (v) => setState(() => _catalog.filters = v),
+            ),
+          ),
+          Expanded(
+            child: _library(
+              _store.favorites.where(_catalog.filters.matches).toList(),
+              wide,
+              '没有符合条件的收藏。',
+            ),
+          ),
+        ],
+      );
     }
     if (_section == _Section.history) {
       if (_store.history.isEmpty) return _empty('暂无观看记录', '播放后会在这里保留剧集和进度。');
-      return ListView.separated(
-        key: const PageStorageKey('cinema-history-scroll'),
-        padding: const EdgeInsets.all(28),
-        itemCount: _store.history.length,
-        separatorBuilder: (_, _) => const Divider(height: 25),
-        itemBuilder: (context, index) {
-          final h = _store.history[index];
-          return ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: SizedBox(width: 48, child: _poster(h.title, 48, 68)),
-            title: Text(h.title.title),
-            subtitle: Text(
-              '${_findSource(h.title.sourceId)?.name ?? '已移除的片源'}  ·  第 ${h.episodeIndex + 1} 集  ·  ${Duration(seconds: h.positionSeconds).inMinutes} 分钟',
+      final history = _store.history
+          .where((h) => _catalog.filters.matches(h.title))
+          .toList();
+      return Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 28),
+            child: CinemaFilterBar(
+              value: _catalog.filters,
+              items: _store.history.map((h) => h.title).toList(),
+              scope: '全部历史',
+              onChanged: (v) => setState(() => _catalog.filters = v),
             ),
-            trailing: const Icon(
-              Icons.play_circle_outline_rounded,
-              color: CinemaTheme.copper,
+          ),
+          Expanded(
+            child: ListView.separated(
+              key: const PageStorageKey('cinema-history-scroll'),
+              padding: const EdgeInsets.all(28),
+              itemCount: history.length,
+              separatorBuilder: (_, _) => const Divider(height: 25),
+              itemBuilder: (context, index) {
+                final h = history[index];
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: SizedBox(width: 48, child: _poster(h.title, 48, 68)),
+                  title: Text(h.title.title),
+                  subtitle: Text(
+                    '${_findSource(h.title.sourceId)?.name ?? '已移除的片源'}  ·  第 ${h.episodeIndex + 1} 集  ·  ${Duration(seconds: h.positionSeconds).inMinutes} 分钟',
+                  ),
+                  trailing: const Icon(
+                    Icons.play_circle_outline_rounded,
+                    color: CinemaTheme.copper,
+                  ),
+                  onTap: () => _openTitle(h.title, resume: h),
+                );
+              },
             ),
-            onTap: () => _openTitle(h.title, resume: h),
-          );
-        },
+          ),
+        ],
       );
     }
     final padding = wide ? 36.0 : 18.0;
+    final searching =
+        _searching; // Freeze state for the outgoing transition pane.
+    final filteredItems = _items.where(_catalog.filters.matches).toList();
     final searchGroups = _searching
-        ? groupCinemaTitles(_items)
+        ? groupCinemaTitles(filteredItems)
         : <CinemaTitleGroup>[];
     final visibleItems = _searching
         ? searchGroups.map((g) => g.representative).toList()
         : _showsCatalogSort
-        ? sortCinemaTitles(_items, _currentCatalogSort)
-        : _items;
+        ? sortCinemaTitles(filteredItems, _currentCatalogSort)
+        : filteredItems;
     return CustomScrollView(
       key: PageStorageKey(
         'catalog-${_section.name}-${_source?.id}-${_searching ? _catalog.activeKeyword : _categoryId}-$_page',
@@ -1133,7 +1502,14 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                       ),
                     ),
                   ),
+                CinemaFilterBar(
+                  value: _catalog.filters,
+                  items: _items,
+                  onChanged: _changeCatalogueFilters,
+                  scope: _searching ? '当前搜索结果' : '已加载片源目录',
+                ),
                 if (_showsCatalogSort) _catalogSortControls(),
+                if (_searching) _discoveryResults(),
                 if (_section == _Section.anime && !_searching)
                   Padding(
                     padding: const EdgeInsets.only(top: 16),
@@ -1194,12 +1570,16 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
               ),
             ),
           )
-        else if (_items.isEmpty && !_loading)
+        else if (visibleItems.isEmpty && !_loading)
           SliverFillRemaining(
             hasScrollBody: false,
             child: _empty(
               '暂时没有结果',
-              _searching ? '试试作品别名，或在片源管理启用其他来源。' : '当前片源在这个分类暂未返回内容，可切换分类或片源。',
+              !_catalog.filters.isEmpty
+                  ? '已加载内容没有符合筛选的作品，可重置筛选或继续加载后续页。'
+                  : _searching
+                  ? '可从相关作品查找线路，或在片源管理启用其他来源。'
+                  : '当前片源在这个分类暂未返回内容，可切换分类或片源。',
             ),
           )
         else
@@ -1214,7 +1594,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                   delegate: SliverChildBuilderDelegate(
                     (context, index) => _titleCard(
                       visibleItems[index],
-                      variants: _searching
+                      variants: searching
                           ? searchGroups[index].variants
                           : const [],
                     ),
@@ -1239,6 +1619,21 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                   onPressed: _loading ? null : () => _runSearch(loadMore: true),
                   icon: const Icon(Icons.expand_more),
                   label: const Text('加载更多搜索结果'),
+                ),
+              ),
+            ),
+          ),
+        if (!_searching && !_catalog.filters.isEmpty && _page < _pageCount)
+          SliverToBoxAdapter(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: OutlinedButton.icon(
+                  onPressed: _loading
+                      ? null
+                      : () => _browse(page: _page + 1, append: true),
+                  icon: const Icon(Icons.filter_alt_outlined),
+                  label: const Text('继续筛选后续页'),
                 ),
               ),
             ),
@@ -1793,6 +2188,7 @@ class _TitleDetails extends StatefulWidget {
     required this.repository,
     required this.store,
     required this.onPlay,
+    required this.onRecommendationSelected,
     this.resume,
   });
   final CinemaTitle title;
@@ -1802,6 +2198,7 @@ class _TitleDetails extends StatefulWidget {
   final CinemaRepository repository;
   final CinemaStore store;
   final CinemaHistory? resume;
+  final ValueChanged<DoubanRecommendation> onRecommendationSelected;
   final void Function(CinemaTitle, CinemaSource, int, int, List<CinemaTitle>)
   onPlay;
   @override
@@ -1857,7 +2254,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
 
   @override
   Widget build(BuildContext context) => Theme(
-    data: CinemaTheme.data,
+    data: CinemaTheme.of(context),
     child: SizedBox(
       height: MediaQuery.sizeOf(context).height * .84,
       child: FutureBuilder<CinemaTitle>(
@@ -2012,6 +2409,12 @@ class _TitleDetailsState extends State<_TitleDetails> {
                   '演员 / 配音': title.actors,
                   '地区': title.area,
                   '语言': title.language,
+                  '类型': title.genres,
+                  '上映（片源）': title.releaseDateText,
+                  '片长（片源）': RegExp(r'^\d+$').hasMatch(title.durationText)
+                      ? '${title.durationText} 分钟'
+                      : title.durationText,
+                  '又名（片源）': title.aliases,
                 }.entries)
                   if (entry.value.isNotEmpty)
                     Padding(
@@ -2096,6 +2499,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
                     title: title,
                     sourceName: _selectedSource.name,
                     repository: widget.ratingsRepository,
+                    onRecommendationSelected: widget.onRecommendationSelected,
                   ),
                   const SizedBox(height: 20),
                 ],

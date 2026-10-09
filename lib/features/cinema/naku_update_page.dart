@@ -50,7 +50,7 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
 
   @override
   Widget build(BuildContext context) => Theme(
-    data: CinemaTheme.data,
+    data: CinemaTheme.of(context),
     child: Scaffold(
       appBar: AppBar(title: const Text('软件更新')),
       body: ListView(

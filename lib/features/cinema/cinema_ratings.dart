@@ -8,6 +8,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 
 import 'cinema_models.dart';
+import 'cinema_douban_details.dart';
+export 'cinema_douban_details.dart';
 
 class RatingIdentity {
   const RatingIdentity({
@@ -125,6 +127,10 @@ class CinemaRatingsRepository {
   Directory? _directory;
   final RatingsFetch _fetch;
   Map<String, dynamic> _bindings = {}, _cache = {}, _mappings = {};
+  Map<String, dynamic> _details = {};
+  final _subjectMemory = <String, DoubanSubjectDetails>{};
+  final _subjectPending = <String, Future<DoubanSubjectDetails>>{};
+  final _detailsPending = <String, Future<DoubanSubjectDetails>>{};
   Future<void>? _loading, _dataset;
   Future<void> _writes = Future.value();
   final Map<String, Future<CinemaRatings>> _pending = {};
@@ -152,6 +158,12 @@ class CinemaRatingsRepository {
       _bindings = Map<String, dynamic>.from(data['bindings']);
       _cache = Map<String, dynamic>.from(data['cache']);
       _mappings = Map<String, dynamic>.from(data['mappings']);
+      if (data['doubanDetails'] is Map) {
+        _details = Map<String, dynamic>.from(data['doubanDetails']);
+        while (_details.length > 64) {
+          _details.remove(_details.keys.first);
+        }
+      }
     } catch (_) {
       // Keep a malformed file intact; never silently replace user bindings.
       _storageWarning = '评分设置文件无法读取，已保留原文件；本次结果不保存';
@@ -166,6 +178,7 @@ class CinemaRatingsRepository {
       'bindings': _bindings,
       'cache': _cache,
       'mappings': _mappings,
+      'doubanDetails': _details,
     });
     final operation = _writes.catchError((_) {}).then((_) async {
       await directory.create(recursive: true);
@@ -249,10 +262,13 @@ class CinemaRatingsRepository {
           throw StateError('Card no longer displayed');
         }
         final revision = _bindingRevision;
-        final result = await load(title);
+        final result = await _loadCard(title);
         // A manual correction in the detail sheet may finish while the old
         // poster request is in flight. Never hand that old association back.
-        if (revision == _bindingRevision) return result;
+        if (revision == _bindingRevision) {
+          _memory[_memoryKey(title)] = result;
+          return result;
+        }
       }
     });
     _cardQueue = operation.then<void>(
@@ -261,6 +277,80 @@ class CinemaRatingsRepository {
     );
     return operation;
   }
+
+  Future<CinemaRatings> _loadCard(CinemaTitle title) async {
+    await _ready();
+    var identity = _bindings[title.key] is Map
+        ? RatingIdentity.fromJson(
+            Map<String, dynamic>.from(_bindings[title.key]),
+          )
+        : RatingIdentity(
+            doubanId: title.doubanId,
+            imdbId: title.imdbId,
+            rottenTomatoesId: title.rottenTomatoesId,
+          );
+    identity.validate();
+    // Previously confirmed/resolved mappings can be reused locally. A poster
+    // never starts WDQS, downloads the IMDb dataset or visits Rotten Tomatoes.
+    final mapped = _mappings[identity.doubanId];
+    if (mapped is Map && mapped['entity'] is Map && mapped['qid'] is String) {
+      try {
+        identity = identityFromEntity(
+          title,
+          identity,
+          mapped['qid'],
+          Map<String, dynamic>.from(mapped['entity']),
+        );
+      } catch (_) {
+        /* Keep explicit IDs when a cached crosswalk is ambiguous. */
+      }
+    }
+    var douban = await _rating('豆瓣', identity.doubanId, false, cardOnly: true);
+    if (douban.value == null &&
+        title.sourceDoubanScore != null &&
+        identity.doubanId == title.doubanId) {
+      douban = CinemaRating(
+        provider: '豆瓣',
+        value: title.sourceDoubanScore,
+        url: douban.url,
+        note: '片源转述 · 未核验；${douban.note}',
+      );
+    }
+    CinemaRating secondary(String provider, String id) {
+      final cached = _cache['$provider:$id'];
+      try {
+        if (cached is Map) {
+          return CinemaRating.fromJson(Map<String, dynamic>.from(cached));
+        }
+      } catch (_) {
+        /* A malformed cache remains an explicit missing value. */
+      }
+      return CinemaRating(
+        provider: provider,
+        scale: provider == 'IMDb' ? 10 : 100,
+        note: id.isEmpty ? '尚未关联条目；打开详情查询' : '打开详情读取官网评分',
+      );
+    }
+
+    final result = CinemaRatings(
+      identity: identity,
+      ratings: [
+        douban,
+        secondary('IMDb', identity.imdbId),
+        secondary('烂番茄', identity.rottenTomatoesId),
+      ],
+      message: '卡片轻量查询豆瓣并复用其他平台缓存；完整评分在详情更新',
+    );
+    try {
+      await _save();
+    } catch (_) {
+      /* Live values remain useful without disk cache. */
+    }
+    return result;
+  }
+
+  /// Detail first paint bypasses the poster queue and all secondary providers.
+  Future<CinemaRatings> loadQuickRatings(CinemaTitle title) => _loadCard(title);
 
   Future<CinemaRatings> _load(CinemaTitle title, bool force) async {
     await _ready();
@@ -275,6 +365,8 @@ class CinemaRatingsRepository {
           );
     identity.validate();
     var message = identity.confirmed ? '使用你确认的条目 ID' : '条目 ID 由片源提供';
+    // Douban does not depend on the slower cross-site identity lookup.
+    final douban = _rating('豆瓣', identity.doubanId, force);
     if (identity.doubanId.isNotEmpty &&
         (identity.imdbId.isEmpty || identity.rottenTomatoesId.isEmpty)) {
       try {
@@ -288,7 +380,7 @@ class CinemaRatingsRepository {
       }
     }
     final results = await Future.wait([
-      _rating('豆瓣', identity.doubanId, force),
+      douban,
       _rating('IMDb', identity.imdbId, force),
       _rating('烂番茄', identity.rottenTomatoesId, force),
     ]);
@@ -455,7 +547,260 @@ class CinemaRatingsRepository {
     )..validate();
   }
 
-  Future<CinemaRating> _rating(String provider, String id, bool force) async {
+  Future<DoubanSubjectDetails> _subject(String id, bool force) {
+    final cached = _subjectMemory[id];
+    if (!force &&
+        cached != null &&
+        _fresh(
+          cached.toJson(),
+          cached.score == null
+              ? const Duration(minutes: 30)
+              : const Duration(hours: 24),
+          field: 'fetchedAt',
+        )) {
+      return Future.value(cached);
+    }
+    final key = '$id:$force';
+    return _subjectPending.putIfAbsent(key, () async {
+      try {
+        final data = await _json(
+          Uri.https('m.douban.com', '/rexxar/api/v2/movie/$id'),
+        );
+        final result = parseDoubanSubjectJson(id, data);
+        _subjectMemory.remove(id);
+        _subjectMemory[id] = result;
+        while (_subjectMemory.length > 80) {
+          _subjectMemory.remove(_subjectMemory.keys.first);
+        }
+        return result;
+      } finally {
+        _subjectPending.remove(key);
+      }
+    });
+  }
+
+  /// Detail-only: cards never fetch star distributions or recommendations.
+  Future<DoubanSubjectDetails> loadDoubanDetails(
+    CinemaTitle title, {
+    RatingIdentity? identity,
+    bool force = false,
+  }) async {
+    await _ready();
+    final selected =
+        identity ??
+        (_bindings[title.key] is Map
+            ? RatingIdentity.fromJson(
+                Map<String, dynamic>.from(_bindings[title.key]),
+              )
+            : RatingIdentity(doubanId: title.doubanId));
+    selected.validate();
+    final id = selected.doubanId;
+    if (id.isEmpty) {
+      return const DoubanSubjectDetails(doubanId: '', note: '尚未关联豆瓣条目');
+    }
+    final key = '$id:$force';
+    return _detailsPending.putIfAbsent(
+      key,
+      () => _loadDoubanDetails(id, force).whenComplete(() {
+        _detailsPending.remove(key);
+      }),
+    );
+  }
+
+  Future<DoubanSubjectDetails> _loadDoubanDetails(String id, bool force) async {
+    DoubanSubjectDetails? previous;
+    final cached = _details[id];
+    if (cached is Map) {
+      try {
+        previous = DoubanSubjectDetails.fromJson(
+          Map<String, dynamic>.from(cached['data']),
+        );
+        if (previous.doubanId != id) throw const FormatException('详情缓存身份不一致');
+        if (!force &&
+            (_fresh(
+                  cached,
+                  cached['partial'] == true
+                      ? const Duration(minutes: 30)
+                      : const Duration(hours: 24),
+                ) ||
+                _fresh(
+                  cached,
+                  const Duration(minutes: 30),
+                  field: 'attemptedAt',
+                ))) {
+          return previous.copyWith(stale: cached['failed'] == true);
+        }
+      } catch (_) {
+        _details.remove(id);
+        previous = null;
+      }
+    }
+    DoubanSubjectDetails? subject, page;
+    Map<String, dynamic>? stats;
+    final problems = <String>[];
+    await Future.wait([
+      (() async {
+        try {
+          subject = await _subject(id, force);
+        } catch (error) {
+          problems.add('详细资料：${_readable(error)}');
+        }
+      })(),
+      (() async {
+        try {
+          final body = utf8.decode(
+            await _fetch(
+              Uri.https('m.douban.com', '/movie/subject/$id/'),
+              2 * 1024 * 1024,
+            ),
+          );
+          page = parseDoubanSubjectHtml(id, body);
+        } catch (error) {
+          problems.add('推荐列表：${_readable(error)}');
+        }
+      })(),
+      (() async {
+        try {
+          stats = await _json(
+            Uri.https('m.douban.com', '/rexxar/api/v2/movie/$id/rating'),
+          );
+        } catch (error) {
+          problems.add('星级分布：${_readable(error)}');
+        }
+      })(),
+    ]);
+    final primary = subject ?? page;
+    DoubanSubjectDetails result;
+    if (primary == null || !primary.hasContent) {
+      result = (previous ?? DoubanSubjectDetails(doubanId: id)).copyWith(
+        stale: previous?.hasContent ?? false,
+        note:
+            '${previous?.hasContent == true ? '更新失败，保留上次官网资料。' : ''}${problems.join('；')}',
+      );
+      _details[id] = {
+        'data': result.toJson(),
+        'failed': true,
+        'attemptedAt': DateTime.now().toIso8601String(),
+      };
+    } else {
+      var shares = page?.stars ?? <DoubanStarShare>[];
+      try {
+        if (stats != null) shares = parseDoubanStarShares(stats!);
+      } catch (error) {
+        if (shares.isEmpty) problems.add('星级分布：${_readable(error)}');
+      }
+      var starsAt = DateTime.now(), recommendationsAt = DateTime.now();
+      if (shares.isEmpty &&
+          previous?.stars.isNotEmpty == true &&
+          problems.any((p) => p.startsWith('星级分布'))) {
+        shares = previous!.stars;
+        starsAt = previous.starsFetchedAt ?? previous.fetchedAt ?? starsAt;
+        problems.add(
+          '星级分布沿用 ${starsAt.toLocal().toString().substring(0, 16)} 的官网缓存',
+        );
+      }
+      var recommendations = page?.recommendations ?? <DoubanRecommendation>[];
+      if (page == null && previous?.recommendations.isNotEmpty == true) {
+        recommendations = previous!.recommendations;
+        recommendationsAt =
+            previous.recommendationsFetchedAt ??
+            previous.fetchedAt ??
+            recommendationsAt;
+        problems.add(
+          '推荐列表沿用 ${recommendationsAt.toLocal().toString().substring(0, 16)} 的官网缓存',
+        );
+      }
+      if (subject == null && previous?.hasContent == true) {
+        problems.add('官网资料接口暂不可用，缺失字段沿用已保存的官网资料');
+      }
+      // Never infer per-star counts from rounded proportions or done_count.
+      result = DoubanSubjectDetails(
+        doubanId: id,
+        title: primary.title,
+        year: primary.year,
+        originalTitle: primary.originalTitle.isNotEmpty
+            ? primary.originalTitle
+            : (page?.originalTitle.isNotEmpty == true
+                  ? page!.originalTitle
+                  : subject == null
+                  ? previous?.originalTitle ?? ''
+                  : ''),
+        releaseDates: {
+          ...primary.releaseDates,
+          ...?page?.releaseDates,
+          if (subject == null) ...?previous?.releaseDates,
+        }.toList(),
+        durations: primary.durations.isNotEmpty
+            ? primary.durations
+            : (page?.durations.isNotEmpty == true
+                  ? page!.durations
+                  : subject == null
+                  ? previous?.durations ?? const []
+                  : const []),
+        aliases: primary.aliases.isNotEmpty
+            ? primary.aliases
+            : (page?.aliases.isNotEmpty == true
+                  ? page!.aliases
+                  : subject == null
+                  ? previous?.aliases ?? const []
+                  : const []),
+        score: primary.score ?? page?.score,
+        ratingCount: primary.ratingCount ?? page?.ratingCount,
+        stars: shares,
+        recommendations: recommendations,
+        fetchedAt:
+            (primary.score != null ? primary.fetchedAt : page?.fetchedAt) ??
+            primary.fetchedAt,
+        starsFetchedAt: shares.isEmpty ? null : starsAt,
+        recommendationsFetchedAt: recommendations.isEmpty
+            ? null
+            : recommendationsAt,
+        note: problems.isEmpty ? '豆瓣官网公开资料' : problems.join('；'),
+      );
+      _details.remove(id);
+      _details[id] = {
+        'at': DateTime.now().toIso8601String(),
+        'partial': problems.isNotEmpty,
+        'data': result.toJson(),
+      };
+      if (result.score != null) {
+        final scoreSource = primary.score != null ? primary : page!;
+        _cache['豆瓣:$id'] = {
+          ..._doubanRating(scoreSource).toJson(),
+          'schema': 2,
+        };
+      }
+    }
+    while (_details.length > 64) {
+      _details.remove(_details.keys.first);
+    }
+    try {
+      await _save();
+    } catch (_) {
+      result = result.copyWith(note: '${result.note} · 详情缓存保存失败');
+    }
+    return result;
+  }
+
+  static CinemaRating _doubanRating(DoubanSubjectDetails subject) {
+    if (subject.score == null) throw const FormatException('豆瓣官网暂未公布评分');
+    return CinemaRating(
+      provider: '豆瓣',
+      value: subject.score,
+      count: subject.ratingCount,
+      url: subject.url,
+      verified: true,
+      fetchedAt: subject.fetchedAt,
+      note: '豆瓣官网公开条目',
+    );
+  }
+
+  Future<CinemaRating> _rating(
+    String provider,
+    String id,
+    bool force, {
+    bool cardOnly = false,
+  }) async {
     final scale = provider == '烂番茄' ? 100.0 : 10.0;
     if (id.isEmpty) {
       return CinemaRating(
@@ -468,13 +813,18 @@ class CinemaRatingsRepository {
     final cached = _cache[key];
     if (!force &&
         cached is Map &&
-        _fresh(
-          cached,
-          cached['value'] == null
-              ? const Duration(minutes: 30)
-              : const Duration(hours: 24),
-          field: 'fetchedAt',
-        )) {
+        (provider != '豆瓣' ||
+            cached['value'] != null ||
+            cached['schema'] == 2) &&
+        (cardOnly || cached['cardOnlyFailure'] != true) &&
+        (_fresh(cached, const Duration(minutes: 30), field: 'attemptedAt') ||
+            _fresh(
+              cached,
+              cached['value'] == null
+                  ? const Duration(minutes: 30)
+                  : const Duration(hours: 24),
+              field: 'fetchedAt',
+            ))) {
       try {
         return CinemaRating.fromJson(Map<String, dynamic>.from(cached));
       } catch (_) {
@@ -513,20 +863,62 @@ class CinemaRatingsRepository {
           note: 'IMDb 官方每日数据 · 个人非商业使用',
           fetchedAt: (await File(path).lastModified()),
         );
+      } else if (provider == '豆瓣') {
+        // The official mobile page uses metadata instead of JSON-LD, and its
+        // subject_header.js loads this public JSON. No cookies or private keys.
+        try {
+          result = _doubanRating(await _subject(id, force));
+        } catch (_) {
+          if (cardOnly) rethrow;
+          try {
+            final body = utf8.decode(
+              await _fetch(Uri.parse(url), 2 * 1024 * 1024),
+            );
+            result = parseRatingPage(provider, url, body);
+          } catch (_) {
+            final body = utf8.decode(
+              await _fetch(
+                Uri.https('m.douban.com', '/movie/subject/$id/'),
+                2 * 1024 * 1024,
+              ),
+            );
+            result = _doubanRating(parseDoubanSubjectHtml(id, body));
+          }
+        }
       } else {
         final body = utf8.decode(await _fetch(Uri.parse(url), 5 * 1024 * 1024));
         result = parseRatingPage(provider, url, body);
       }
     } catch (error) {
+      CinemaRating? previous;
+      try {
+        if (cached is Map) {
+          previous = CinemaRating.fromJson(Map<String, dynamic>.from(cached));
+        }
+      } catch (_) {
+        /* Invalid cache entries must not defeat independent providers. */
+      }
       result = CinemaRating(
         provider: provider,
         scale: scale,
         url: url,
-        note: _readable(error),
-        fetchedAt: DateTime.now(),
+        value: previous?.verified == true ? previous?.value : null,
+        count: previous?.verified == true ? previous?.count : null,
+        verified: previous?.verified == true && previous?.value != null,
+        note: previous?.verified == true && previous?.value != null
+            ? '更新失败，保留上次官网评分；${_readable(error)}'
+            : _readable(error),
+        fetchedAt: previous?.verified == true && previous?.value != null
+            ? previous?.fetchedAt
+            : DateTime.now(),
       );
     }
-    _cache[key] = result.toJson();
+    _cache[key] = {
+      ...result.toJson(),
+      'schema': 2,
+      if (cardOnly && result.value == null) 'cardOnlyFailure': true,
+      'attemptedAt': DateTime.now().toIso8601String(),
+    };
     return result;
   }
 
@@ -576,6 +968,11 @@ class CinemaRatingsRepository {
     String url,
     String body,
   ) {
+    if (provider == '豆瓣') {
+      final id = doubanIdFromUrl(url);
+      if (id == null) throw const FormatException('豆瓣条目网址无效');
+      return _doubanRating(parseDoubanSubjectHtml(id, body));
+    }
     final document = html.parse(body);
     Iterable<Map> nodes(Object? value) sync* {
       if (value is List) {
@@ -672,15 +1069,36 @@ class CinemaRatingsRepository {
         : HttpClient.findProxyFromEnvironment;
     Future<List<int>> request() async {
       final req = await client.getUrl(uri);
+      final douban = ['m.douban.com', 'movie.douban.com'].contains(uri.host);
+      if (douban) req.followRedirects = false;
       req.headers.set(
         'User-Agent',
-        'NAKUPlayer/1.0.0 (https://github.com/NakuTop/NAKU-Player)',
+        uri.host == 'm.douban.com' && uri.path.startsWith('/movie/subject/')
+            ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1 NAKUPlayer/1.2.0'
+            : 'NAKUPlayer/1.2.0 (https://github.com/NakuTop/NAKU-Player)',
       );
       req.headers.set('Accept', 'application/json,text/html,*/*');
+      if (uri.host == 'm.douban.com' &&
+          uri.path.startsWith('/rexxar/api/v2/movie/')) {
+        final id = uri.pathSegments[4];
+        req.headers.set('Referer', 'https://m.douban.com/movie/subject/$id/');
+      }
       final response = await req.close();
       if (response.statusCode != 200) {
         throw HttpException(
-          response.statusCode == 429
+          douban &&
+                  [
+                    301,
+                    302,
+                    303,
+                    307,
+                    308,
+                    401,
+                    403,
+                    418,
+                  ].contains(response.statusCode)
+              ? '豆瓣暂时限制访问或要求验证，请在官网查看'
+              : response.statusCode == 429
               ? '服务限流，请稍后刷新'
               : '服务暂不可用 (HTTP ${response.statusCode})',
         );
@@ -699,7 +1117,9 @@ class CinemaRatingsRepository {
     }
 
     try {
-      return await request().timeout(const Duration(seconds: 40));
+      return await request().timeout(
+        Duration(seconds: uri.host.endsWith('douban.com') ? 12 : 40),
+      );
     } finally {
       client.close(force: true);
     }

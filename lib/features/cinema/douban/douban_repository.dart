@@ -53,6 +53,7 @@ class DoubanRepository {
     required DoubanKind kind,
     String? sort,
     List<String> tags = const [],
+    DoubanFilters filters = const DoubanFilters(),
     int start = 0,
     int count = 20,
     CancelToken? cancelToken,
@@ -60,14 +61,16 @@ class DoubanRepository {
     if (start < 0 || count < 1 || count > 50) {
       throw const DoubanException('榜单分页参数无效');
     }
+    final selectedTags = {...filters.tags(kind), ...tags}.toList();
+    _validateFilters(filters, selectedTags);
     final json = await _request(kind, '/recommend', {
       'start': start,
       'count': count,
-      'selected_categories': '{}',
+      'selected_categories': jsonEncode(filters.categories(kind)),
       'uncollect': 'false',
       'score_range': '0,10',
       if (sort != null && sort.isNotEmpty) 'sort': sort,
-      if (tags.isNotEmpty) 'tags': tags.join(','),
+      if (selectedTags.isNotEmpty) 'tags': selectedTags.join(','),
     }, cancelToken);
     try {
       return DoubanResultPage.fromJson(json, kind, start: start, count: count);
@@ -78,15 +81,28 @@ class DoubanRepository {
 
   Future<List<DoubanTagGroup>> tagGroups({
     required DoubanKind kind,
+    DoubanFilters filters = const DoubanFilters(),
     CancelToken? cancelToken,
   }) async {
+    _validateFilters(filters, filters.tags(kind));
     final json = await _request(kind, '/recommend/filter_tags', {
-      'selected_categories': '{}',
+      'selected_categories': jsonEncode(filters.categories(kind)),
     }, cancelToken);
     try {
       return parseDoubanTagGroups(json);
     } on FormatException catch (error) {
       throw DoubanException(error.message);
+    }
+  }
+
+  static void _validateFilters(DoubanFilters filters, List<String> tags) {
+    final values = [...tags, filters.format, filters.genre, filters.region];
+    if (tags.length > 20 ||
+        values.any(
+          (value) =>
+              value.length > 120 || RegExp(r'[,\x00-\x1f\x7f]').hasMatch(value),
+        )) {
+      throw const DoubanException('豆瓣筛选条件无效');
     }
   }
 

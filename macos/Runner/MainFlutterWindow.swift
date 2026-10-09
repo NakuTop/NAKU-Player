@@ -16,6 +16,33 @@ private final class PassiveVisualEffectView: NSVisualEffectView {
 // changes can rebuild AppKit's private frame view, so nothing is attached there.
 private final class GlassContentViewController: NSViewController {
   let flutterViewController: FlutterViewController
+  private let backdrop = PassiveVisualEffectView(frame: .zero)
+  private var accessibilityObserver: NSObjectProtocol?
+  var onAccessibilityChange: (([String: Bool]) -> Void)?
+
+  var accessibilityState: [String: Bool] {
+    [
+      "reduceTransparency": NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
+      "reduceMotion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+    ]
+  }
+
+  deinit {
+    if let observer = accessibilityObserver {
+      NSWorkspace.shared.notificationCenter.removeObserver(observer)
+    }
+  }
+
+  private func updateAccessibilityAppearance() {
+    let state = accessibilityState
+    // Keep the material stable when another window becomes key, while honoring
+    // the system accessibility override with a genuinely opaque fallback.
+    backdrop.isHidden = state["reduceTransparency"] == true
+    view.layer?.backgroundColor = state["reduceTransparency"] == true
+      ? NSColor(srgbRed: 9.0 / 255.0, green: 9.0 / 255.0, blue: 11.0 / 255.0, alpha: 1).cgColor
+      : NSColor.clear.cgColor
+    onAccessibilityChange?(state)
+  }
 
   init(flutterViewController: FlutterViewController) {
     self.flutterViewController = flutterViewController
@@ -30,12 +57,12 @@ private final class GlassContentViewController: NSViewController {
   override func loadView() {
     let container = NSView(frame: .zero)
     container.appearance = NSAppearance(named: .darkAqua)
+    container.wantsLayer = true
     self.view = container
 
-    let backdrop = PassiveVisualEffectView(frame: .zero)
     backdrop.material = .hudWindow
     backdrop.blendingMode = .behindWindow
-    backdrop.state = .followsWindowActiveState
+    backdrop.state = .active
     backdrop.translatesAutoresizingMaskIntoConstraints = false
     container.addSubview(backdrop)
 
@@ -53,6 +80,13 @@ private final class GlassContentViewController: NSViewController {
       flutterView.topAnchor.constraint(equalTo: container.topAnchor),
       flutterView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
     ])
+    updateAccessibilityAppearance()
+    accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+      object: nil, queue: .main
+    ) { [weak self] _ in
+      self?.updateAccessibilityAppearance()
+    }
   }
 }
 
@@ -69,11 +103,31 @@ class MainFlutterWindow: NSWindow {
     flutterViewController.backgroundColor = NSColor.clear
     self.flutterViewController = flutterViewController
     let windowFrame = self.frame
-    self.contentViewController = GlassContentViewController(
+    let glassController = GlassContentViewController(
       flutterViewController: flutterViewController)
+    self.contentViewController = glassController
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+
+    let appearanceChannel = FlutterMethodChannel(
+      name: "naku/appearance", binaryMessenger: flutterViewController.engine.binaryMessenger)
+    appearanceChannel.setMethodCallHandler { [weak glassController] call, result in
+      guard call.method == "state" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      result(glassController?.accessibilityState ?? [:])
+    }
+    glassController.onAccessibilityChange = { [weak self] state in
+      let reduced = state["reduceTransparency"] == true
+      self?.isOpaque = reduced
+      self?.backgroundColor = reduced
+        ? NSColor(srgbRed: 9.0 / 255.0, green: 9.0 / 255.0, blue: 11.0 / 255.0, alpha: 1)
+        : NSColor.clear
+      appearanceChannel.invokeMethod("accessibilityChanged", arguments: state)
+    }
+    glassController.onAccessibilityChange?(glassController.accessibilityState)
 
     let networkChannel = FlutterMethodChannel(
       name: "yingchuan/network",

@@ -50,7 +50,27 @@ class _FakeRepository extends CinemaRatingsRepository {
   final forces = <bool>[];
   final saved = <RatingIdentity>[];
   Future<CinemaRatings> Function(CinemaTitle, bool)? onLoad;
+  Future<CinemaRatings> Function(CinemaTitle)? onQuick;
+  Future<DoubanSubjectDetails> Function(CinemaTitle)? onDetails;
   Object? saveError;
+
+  @override
+  Future<CinemaRatings> loadQuickRatings(CinemaTitle title) async {
+    if (onQuick == null) throw StateError('No quick fixture');
+    return onQuick!(title);
+  }
+
+  @override
+  Future<DoubanSubjectDetails> loadDoubanDetails(
+    CinemaTitle title, {
+    RatingIdentity? identity,
+    bool force = false,
+  }) async => onDetails != null
+      ? await onDetails!(title)
+      : const DoubanSubjectDetails(
+          doubanId: '',
+          note: 'Fixture details unavailable',
+        );
 
   @override
   Future<CinemaRatings> load(CinemaTitle title, {bool force = false}) async {
@@ -103,6 +123,75 @@ void main() {
     );
     if (settle) await tester.pumpAndSettle();
   }
+
+  testWidgets('new verified score is not replaced by older detail metadata', (
+    tester,
+  ) async {
+    final repository = _FakeRepository();
+    repository.result = CinemaRatings(
+      identity: const RatingIdentity(doubanId: '1889243'),
+      message: 'fixture',
+      ratings: [
+        CinemaRating(
+          provider: '豆瓣',
+          value: 9.5,
+          note: 'official fixture',
+          verified: true,
+          fetchedAt: DateTime(2026, 10, 9),
+        ),
+      ],
+    );
+    repository.onDetails = (_) async => DoubanSubjectDetails(
+      doubanId: '1889243',
+      title: '星际穿越',
+      score: 9.1,
+      fetchedAt: DateTime(2026, 10, 8),
+    );
+    await mount(tester, repository);
+    expect(find.text('9.5'), findsOneWidget);
+    expect(find.text('9.1'), findsNothing);
+  });
+
+  testWidgets(
+    'shows quick official score before full ratings or metadata completes',
+    (tester) async {
+      final full = Completer<CinemaRatings>();
+      final details = Completer<DoubanSubjectDetails>();
+      final repository = _FakeRepository();
+      repository.onLoad = (_, _) => full.future;
+      repository.onDetails = (_) => details.future;
+      repository.onQuick = (_) async => const CinemaRatings(
+        identity: RatingIdentity(doubanId: '36889088'),
+        message: 'Quick fixture',
+        ratings: [
+          CinemaRating(
+            provider: '豆瓣',
+            value: 5.6,
+            count: 12934,
+            note: '豆瓣官网公开条目',
+            verified: true,
+          ),
+        ],
+      );
+      await mount(tester, repository, settle: false);
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('5.6'), findsOneWidget);
+      expect(find.text('正在读取豆瓣影片资料与推荐…'), findsOneWidget);
+      expect(full.isCompleted, isFalse);
+      expect(details.isCompleted, isFalse);
+      full.complete(_ratings());
+      details.complete(
+        const DoubanSubjectDetails(
+          doubanId: '',
+          note: 'Fixture details unavailable',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('8.7'), findsOneWidget);
+      expect(find.text('5.6'), findsNothing);
+    },
+  );
 
   testWidgets('keeps ten-point scores and critic percentage distinct', (
     tester,

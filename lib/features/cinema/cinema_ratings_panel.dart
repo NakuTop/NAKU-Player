@@ -3,6 +3,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'cinema_models.dart';
 import 'cinema_ratings.dart';
+import 'cinema_douban_details_view.dart';
 import 'cinema_theme.dart';
 
 /// Loads ratings independently of playback and keeps each provider's scale.
@@ -12,11 +13,13 @@ class CinemaRatingsPanel extends StatefulWidget {
     required this.title,
     required this.sourceName,
     this.repository,
+    this.onRecommendationSelected,
   });
 
   final CinemaTitle title;
   final String sourceName;
   final CinemaRatingsRepository? repository;
+  final ValueChanged<DoubanRecommendation>? onRecommendationSelected;
 
   @override
   State<CinemaRatingsPanel> createState() => _CinemaRatingsPanelState();
@@ -24,6 +27,8 @@ class CinemaRatingsPanel extends StatefulWidget {
 
 class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
   CinemaRatings? _result;
+  DoubanSubjectDetails? _details;
+  bool _detailsLoading = true;
   bool _loading = true;
   bool _editing = false;
   String? _error;
@@ -44,6 +49,7 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
     if (oldWidget.title != widget.title ||
         oldWidget.repository != widget.repository) {
       _result = null;
+      _details = null;
       _load();
     }
   }
@@ -54,6 +60,8 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
       _loading = true;
       _error = null;
     });
+    _loadDetails(request, force);
+    _loadQuick(request);
     try {
       final result = await _repository.load(widget.title, force: force);
       if (!mounted || request != _request) return;
@@ -68,6 +76,41 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
     }
   }
 
+  Future<void> _loadQuick(int request) async {
+    try {
+      final result = await _repository.loadQuickRatings(widget.title);
+      if (mounted && request == _request && _loading) {
+        setState(() => _result = result);
+      }
+    } catch (_) {
+      /* The full lookup provides the visible error if needed. */
+    }
+  }
+
+  Future<void> _loadDetails(int request, bool force) async {
+    setState(() => _detailsLoading = true);
+    try {
+      final details = await _repository.loadDoubanDetails(
+        widget.title,
+        force: force,
+      );
+      if (mounted && request == _request) setState(() => _details = details);
+    } catch (error) {
+      if (mounted && request == _request) {
+        setState(
+          () => _details = DoubanSubjectDetails(
+            doubanId: '',
+            note: '官网资料暂未加载：${_readableError(error)}',
+          ),
+        );
+      }
+    } finally {
+      if (mounted && request == _request) {
+        setState(() => _detailsLoading = false);
+      }
+    }
+  }
+
   Future<void> _editIdentity() async {
     final title = widget.title;
     final repository = _repository;
@@ -76,7 +119,7 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
       final identity = await showDialog<RatingIdentity>(
         context: context,
         builder: (_) => Theme(
-          data: CinemaTheme.data,
+          data: CinemaTheme.of(context),
           child: _RatingIdentityDialog(
             title: title,
             sourceName: widget.sourceName,
@@ -94,7 +137,10 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
       await repository.setIdentity(title, identity);
       if (!mounted || widget.title != title) return;
       // A changed binding must not display the previous work's scores.
-      setState(() => _result = null);
+      setState(() {
+        _result = null;
+        _details = null;
+      });
       await _load(force: true);
     } catch (error) {
       if (mounted && widget.title == title) {
@@ -106,6 +152,32 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
   }
 
   CinemaRating _rating(String provider) {
+    final details = _details;
+    final available = _result?.ratings
+        .where((r) => _providerName(r.provider) == provider)
+        .firstOrNull;
+    if (provider == '豆瓣' &&
+        details?.score != null &&
+        details!.doubanId == (_result?.identity.doubanId ?? details.doubanId)) {
+      if (available != null &&
+          available.verified &&
+          available.value != null &&
+          (details.stale ||
+              (available.fetchedAt != null &&
+                  details.fetchedAt != null &&
+                  !available.fetchedAt!.isBefore(details.fetchedAt!)))) {
+        return available;
+      }
+      return CinemaRating(
+        provider: '豆瓣',
+        value: details.score,
+        count: details.ratingCount,
+        url: details.url,
+        verified: true,
+        note: details.stale ? '更新失败，保留上次官网评分' : '豆瓣官网公开条目',
+        fetchedAt: details.fetchedAt,
+      );
+    }
     for (final rating in _result?.ratings ?? <CinemaRating>[]) {
       if (_providerName(rating.provider) == provider) return rating;
     }
@@ -118,7 +190,7 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
 
   @override
   Widget build(BuildContext context) => Theme(
-    data: CinemaTheme.data,
+    data: CinemaTheme.of(context),
     child: Material(
       color: CinemaTheme.surface,
       shape: RoundedRectangleBorder(
@@ -249,6 +321,11 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
                   ),
                 ],
               ),
+            DoubanDetailsView(
+              details: _details,
+              loading: _detailsLoading,
+              onRecommendationSelected: widget.onRecommendationSelected,
+            ),
           ],
         ),
       ),

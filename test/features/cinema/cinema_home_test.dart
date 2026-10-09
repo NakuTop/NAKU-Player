@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:dio/dio.dart';
+import 'package:kazumi/features/cinema/cinema_search_discovery.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
@@ -153,6 +155,44 @@ class _Repository extends CinemaRepository {
   }
 }
 
+class _Discovery extends CinemaSearchDiscoveryRepository {
+  bool paginated = false;
+  Completer<CinemaSearchDiscovery>? worksPending;
+  @override
+  Future<CinemaSearchDiscovery> actorWorks(
+    String id,
+    String name, {
+    int start = 0,
+    CancelToken? cancelToken,
+  }) => (worksPending = Completer<CinemaSearchDiscovery>()).future;
+  final calls = <String>[];
+  @override
+  Future<CinemaSearchDiscovery> search(
+    String keyword, {
+    CancelToken? cancelToken,
+  }) async {
+    calls.add(keyword);
+    if (paginated) {
+      return const CinemaSearchDiscovery(
+        celebrityId: '1049484',
+        celebrityName: '测试演员',
+        hasMore: true,
+        nextStart: 12,
+        titles: [CinemaDiscoveryTitle(id: '36889088', title: '怒之杀')],
+      );
+    }
+    return keyword == 'Jason Statham'
+        ? const CinemaSearchDiscovery(
+            celebrityName: '杰森·斯坦森',
+            celebrityId: '1049484',
+            titles: [
+              CinemaDiscoveryTitle(id: '36889088', title: '怒之杀', year: '2026'),
+            ],
+          )
+        : const CinemaSearchDiscovery(queries: ['星际穿越']);
+  }
+}
+
 void main() {
   late Directory directory;
   late CinemaStore store;
@@ -171,7 +211,11 @@ void main() {
     await directory.delete(recursive: true);
   });
 
-  Future<void> mount(WidgetTester tester, {double width = 1280}) async {
+  Future<void> mount(
+    WidgetTester tester, {
+    double width = 1280,
+    CinemaSearchDiscoveryRepository? discovery,
+  }) async {
     tester.view.physicalSize = Size(width, 860);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -180,6 +224,8 @@ void main() {
       MaterialApp(
         theme: ThemeData.dark(),
         home: CinemaHomePage(
+          enableSearchDiscovery: discovery != null,
+          searchDiscovery: discovery,
           enableWatchTogether: false,
           store: store,
           repository: repository,
@@ -188,6 +234,75 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  testWidgets(
+    'original-name search resolves Chinese titles without losing raw source results',
+    (tester) async {
+      final discovery = _Discovery();
+      await mount(tester, discovery: discovery);
+      await tester.enterText(find.byType(TextField).first, 'Interstellar');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+      expect(repository.searched, containsAll(['Interstellar', '星际穿越']));
+      expect(find.text('星际穿越'), findsWidgets);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'actor metadata survives section return and opens source search',
+    (tester) async {
+      final discovery = _Discovery();
+      await mount(tester, discovery: discovery);
+      await tester.enterText(find.byType(TextField).first, 'Jason Statham');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+      expect(find.text('杰森·斯坦森参演作品 · 点击查找片源'), findsOneWidget);
+      await tester.tap(find.text('剧集').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('电影').first);
+      await tester.pumpAndSettle();
+      expect(discovery.calls, ['Jason Statham']);
+      await tester.ensureVisible(find.text('怒之杀').first);
+      await tester.tap(find.text('怒之杀').first);
+      await tester.pumpAndSettle();
+      expect(repository.searched, contains('怒之杀'));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('source pagination does not strand concurrent actor pagination', (
+    tester,
+  ) async {
+    final discovery = _Discovery()..paginated = true;
+    await mount(tester, discovery: discovery);
+    await tester.enterText(find.byType(TextField).first, '多页');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('更多参演作品'));
+    await tester.tap(find.text('更多参演作品'));
+    await tester.pump();
+    await tester.ensureVisible(find.text('加载更多搜索结果'));
+    await tester.tap(find.text('加载更多搜索结果'));
+    await tester.pump();
+    discovery.worksPending!.complete(
+      const CinemaSearchDiscovery(
+        celebrityId: '1049484',
+        celebrityName: '测试演员',
+        hasMore: true,
+        nextStart: 24,
+        titles: [CinemaDiscoveryTitle(id: '1889243', title: '星际穿越')],
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextButton>(find.widgetWithText(TextButton, '更多参演作品'))
+          .onPressed,
+      isNotNull,
+    );
+    expect(tester.takeException(), isNull);
+  });
 
   Finder sortChip(CinemaCatalogSort sort) =>
       find.byKey(ValueKey('catalog-sort-${sort.name}'));

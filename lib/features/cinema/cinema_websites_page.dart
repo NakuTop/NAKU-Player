@@ -297,7 +297,7 @@ class _CinemaWebsitesPageState extends State<CinemaWebsitesPage> {
   @override
   Widget build(BuildContext context) {
     return Theme(
-      data: CinemaTheme.data,
+      data: CinemaTheme.of(context),
       child: Scaffold(
         appBar: AppBar(
           title: const Text('网页影院'),

@@ -21,6 +21,7 @@ class Repo extends DoubanRepository {
     required DoubanKind kind,
     String? sort,
     List<String> tags = const [],
+    DoubanFilters filters = const DoubanFilters(),
     int start = 0,
     int count = 20,
     dynamic cancelToken,
@@ -34,6 +35,13 @@ class Repo extends DoubanRepository {
       sorts: [const DoubanSort(name: 'U', text: '近期热度')],
     );
   }
+
+  @override
+  Future<List<DoubanTagGroup>> tagGroups({
+    required DoubanKind kind,
+    DoubanFilters filters = const DoubanFilters(),
+    dynamic cancelToken,
+  }) async => const [];
 }
 
 void main() {

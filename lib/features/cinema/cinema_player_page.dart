@@ -193,8 +193,8 @@ class CinemaPlayerPage extends StatefulWidget {
 
 class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     with WidgetsBindingObserver, WindowListener {
-  static const _background = CinemaTheme.background;
-  static const _surface = CinemaTheme.surface;
+  static Color get _background => CinemaTheme.background;
+  static Color get _surface => CinemaTheme.surface;
   static const _line = CinemaTheme.border;
   static const _text = Color(0xFFF3EEE5);
   static const _muted = Color(0xFFA6A39C);
@@ -1041,7 +1041,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           return KeyEventResult.handled;
         },
         child: Theme(
-          data: CinemaTheme.data,
+          data: CinemaTheme.of(context),
           child: Scaffold(backgroundColor: Colors.black, body: _videoSurface()),
         ),
       );
@@ -1067,7 +1067,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       );
     }
     return Theme(
-      data: CinemaTheme.data,
+      data: CinemaTheme.of(context),
       child: Scaffold(
         backgroundColor: _background,
         appBar: AppBar(

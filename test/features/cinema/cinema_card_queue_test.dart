@@ -17,15 +17,19 @@ void main() {
     id: id,
     sourceId: 'fixture',
     title: id,
-    rottenTomatoesId: 'm/$id',
+    doubanId: const {
+      'first': '12341',
+      'second': '12342',
+      'skipped': '12343',
+    }[id]!,
   );
   List<int> response(String path) => utf8.encode(
-    '<script type="application/ld+json">'
-    '${jsonEncode({
-      '@type': 'Movie',
-      'url': 'https://www.rottentomatoes.com$path',
-      'aggregateRating': {'name': 'Tomatometer', 'bestRating': 100, 'ratingValue': 80},
-    })}</script>',
+    jsonEncode({
+      'id': path.split('/').last,
+      'type': 'movie',
+      'title': 'Fixture movie',
+      'rating': {'max': 10, 'value': 8, 'count': 100},
+    }),
   );
 
   test(
@@ -38,7 +42,7 @@ void main() {
         directory: directory,
         fetch: (uri, _) async {
           paths.add(uri.path);
-          if (uri.path == '/m/first') {
+          if (uri.path == '/rexxar/api/v2/movie/12341') {
             firstStarted.complete();
             await releaseFirst.future;
           }
@@ -53,13 +57,16 @@ void main() {
       );
       final expectedSkip = expectLater(skipped, throwsStateError);
       final second = repository.loadForCard(title('second'));
-      expect(paths, ['/m/first']);
+      expect(paths, ['/rexxar/api/v2/movie/12341']);
       releaseFirst.complete();
       await first;
       await expectedSkip;
       final result = await second;
-      expect(paths, ['/m/first', '/m/second']);
-      expect(result.ratings.last.value, 80);
+      expect(paths, [
+        '/rexxar/api/v2/movie/12341',
+        '/rexxar/api/v2/movie/12342',
+      ]);
+      expect(result.ratings.first.value, 8);
       expect(repository.peek(title('second')), same(result));
     },
   );
@@ -74,7 +81,7 @@ void main() {
       final first = CinemaRatingsRepository(directory: directory);
       await first.setIdentity(
         item,
-        const RatingIdentity(rottenTomatoesId: 'm/confirmed', confirmed: true),
+        const RatingIdentity(doubanId: '12345', confirmed: true),
       );
       final paths = <String>[];
       final restored = CinemaRatingsRepository(
@@ -85,8 +92,8 @@ void main() {
         },
       );
       final result = await restored.loadForCard(item);
-      expect(paths, ['/m/confirmed']);
-      expect(result.ratings.last.value, 80);
+      expect(paths, ['/rexxar/api/v2/movie/12345']);
+      expect(result.ratings.first.value, 8);
     },
   );
   test(
@@ -96,14 +103,14 @@ void main() {
         id: 'same',
         sourceId: 'fixture',
         title: 'Movie',
-        rottenTomatoesId: 'm/old',
+        doubanId: '12341',
       );
       final started = Completer<void>();
       final release = Completer<void>();
       final repository = CinemaRatingsRepository(
         directory: directory,
         fetch: (uri, _) async {
-          if (uri.path == '/m/old') {
+          if (uri.path == '/rexxar/api/v2/movie/12341') {
             started.complete();
             await release.future;
           }
@@ -114,13 +121,13 @@ void main() {
       await started.future;
       await repository.setIdentity(
         item,
-        const RatingIdentity(rottenTomatoesId: 'm/new', confirmed: true),
+        const RatingIdentity(doubanId: '12342', confirmed: true),
       );
       final corrected = await repository.load(item, force: true);
       release.complete();
       final delivered = await oldCard;
-      expect(delivered.identity.rottenTomatoesId, 'm/new');
-      expect(delivered.ratings.last.url, corrected.ratings.last.url);
+      expect(delivered.identity.doubanId, '12342');
+      expect(delivered.ratings.first.url, corrected.ratings.first.url);
     },
   );
 }

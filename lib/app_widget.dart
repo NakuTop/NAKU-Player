@@ -301,6 +301,8 @@ class _AppWidgetState extends State<AppWidget>
       themeMode: ThemeMode.dark,
       scaffoldMessengerKey: rootScaffoldMessengerKey,
       routerConfig: ModularApp.routerConfigOf(context),
+      builder: (context, child) =>
+          CinemaAppearanceScope(child: child ?? const SizedBox.shrink()),
     );
   }
 }

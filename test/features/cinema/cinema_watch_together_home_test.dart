@@ -81,6 +81,7 @@ void main() {
       MaterialApp(
         theme: ThemeData.dark(),
         home: CinemaHomePage(
+          enableSearchDiscovery: false,
           store: store,
           repository: _Repository(),
           watchTogether: together,

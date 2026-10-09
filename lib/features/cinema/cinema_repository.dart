@@ -39,7 +39,7 @@ class CinemaRepository {
         sendTimeout: const Duration(seconds: 12),
         responseType: ResponseType.plain,
         headers: {
-          'User-Agent': 'NAKUPlayer/1.1.0',
+          'User-Agent': 'NAKUPlayer/1.2.0',
           'Accept': 'application/json',
         },
       ),
@@ -329,6 +329,9 @@ class CinemaRepository {
         director: cleanCinemaText(entry['vod_director']),
         area: cleanCinemaText(entry['vod_area']),
         language: cleanCinemaText(entry['vod_lang']),
+        aliases: cleanCinemaText(entry['vod_sub']),
+        durationText: cleanCinemaText(entry['vod_duration']),
+        genres: cleanCinemaText(entry['vod_class']),
         sourceHits: parseCinemaSourceHits(entry['vod_hits']),
         sourceUpdatedAt: parseCinemaSourceUpdatedAt(entry['vod_time']),
         releaseDateText: textValue(entry['vod_pubdate']),

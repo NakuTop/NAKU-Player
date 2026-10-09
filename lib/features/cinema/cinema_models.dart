@@ -178,6 +178,9 @@ class CinemaTitle {
     this.director = '',
     this.area = '',
     this.language = '',
+    this.genres = '',
+    this.durationText = '',
+    this.aliases = '',
     this.sourceHits,
     this.sourceUpdatedAt,
     this.releaseDateText = '',
@@ -200,6 +203,9 @@ class CinemaTitle {
   final String director;
   final String area;
   final String language;
+  final String genres;
+  final String durationText;
+  final String aliases;
 
   /// Provider-supplied metadata, not independently verified viewing or ratings.
   final int? sourceHits;
@@ -227,6 +233,9 @@ class CinemaTitle {
     director: director,
     area: area,
     language: language,
+    genres: genres,
+    durationText: durationText,
+    aliases: aliases,
     sourceHits: sourceHits,
     sourceUpdatedAt: sourceUpdatedAt,
     releaseDateText: releaseDateText,
@@ -250,6 +259,9 @@ class CinemaTitle {
     'director': director,
     'area': area,
     'language': language,
+    'genres': genres,
+    'durationText': durationText,
+    'aliases': aliases,
     'sourceHits': sourceHits,
     'sourceUpdatedAt': sourceUpdatedAt?.toIso8601String(),
     'releaseDateText': releaseDateText,
@@ -273,6 +285,9 @@ class CinemaTitle {
     director: textValue(json['director']),
     area: textValue(json['area']),
     language: textValue(json['language']),
+    genres: textValue(json['genres']),
+    durationText: textValue(json['durationText']),
+    aliases: textValue(json['aliases']),
     sourceHits: parseCinemaSourceHits(json['sourceHits']),
     sourceUpdatedAt: parseCinemaSourceUpdatedAt(json['sourceUpdatedAt']),
     releaseDateText: textValue(json['releaseDateText']),
