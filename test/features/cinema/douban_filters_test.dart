@@ -77,7 +77,7 @@ typedef _Request = ({
 class _Repository extends DoubanRepository {
   final requests = <_Request>[];
   final filterRequests = <DoubanKind>[];
-  Completer<DoubanResultPage>? pending;
+  Completer<DoubanResultPage>? pending, pendingAppend;
   bool manyItems = false, failPage = false, failFilters = false;
   List<String> recommendedTags = ['旅行', '摄影'];
   List<DoubanCategoryGroup>? categoryOverride;
@@ -156,6 +156,7 @@ class _Repository extends DoubanRepository {
     ));
     if (failPage) throw const DoubanException('fixture offline');
     if (filters.genre == '科幻' && pending != null) return pending!.future;
+    if (start > 0 && pendingAppend != null) return pendingAppend!.future;
     return result(kind, start: start);
   }
 
@@ -357,6 +358,7 @@ void main() {
     double width = 1000,
     ValueChanged<DoubanTitle>? onSelect,
     DoubanThemeCatalog? themeCatalog,
+    DoubanBrowseSession? session,
   }) async {
     tester.view.physicalSize = Size(width, 850);
     tester.view.devicePixelRatio = 1;
@@ -366,6 +368,7 @@ void main() {
       MaterialApp(
         home: DoubanPage(
           repository: repo,
+          session: session,
           themeCatalog: themeCatalog ?? DoubanThemeCatalog(),
           onSelect: onSelect ?? (_) {},
         ),
@@ -774,6 +777,180 @@ void main() {
         findsOneWidget,
       );
       expect(find.byKey(const ValueKey('douban-theme-本次推荐')), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'closing and reopening preserves both kinds and never reloads completed pages',
+    (tester) async {
+      final session = DoubanBrowseSession();
+      final themes = DoubanThemeCatalog();
+      final repo = _Repository()..manyItems = true;
+      await mount(tester, repo, session: session, themeCatalog: themes);
+      await choose(tester, 'genre', '科幻');
+      await choose(tester, 'year', '2024');
+      await tester.tap(find.byKey(const ValueKey('douban-sort-S')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('douban-theme-旅行')));
+      await tester.pumpAndSettle();
+      final movieScroll = tester
+          .widget<CustomScrollView>(find.byType(CustomScrollView))
+          .controller!;
+      movieScroll.jumpTo(640);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('剧集'));
+      await tester.pumpAndSettle();
+      await choose(tester, 'format', '电视剧');
+      await choose(tester, 'year', '2023');
+      await tester.tap(find.text('风格与主题'));
+      await tester.pumpAndSettle();
+      final tvScroll = tester
+          .widget<CustomScrollView>(find.byType(CustomScrollView))
+          .controller!;
+      tvScroll.jumpTo(420);
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox());
+
+      final offline = _Repository()
+        ..failPage = true
+        ..failFilters = true
+        ..failThemes = true;
+      await mount(tester, offline, session: session, themeCatalog: themes);
+      final active = tester.widget<SegmentedButton<DoubanKind>>(
+        find.byType(SegmentedButton<DoubanKind>),
+      );
+      expect(active.selected, {DoubanKind.tv});
+      final restoredTv = tester
+          .widget<CustomScrollView>(find.byType(CustomScrollView))
+          .controller!;
+      expect(restoredTv, isNot(same(tvScroll)));
+      expect(restoredTv.offset, closeTo(420, 1));
+      restoredTv.jumpTo(0);
+      await tester.pumpAndSettle();
+      expect(selected(tester, 'format'), '电视剧');
+      expect(selected(tester, 'year'), '2023');
+      expect(find.byKey(const ValueKey('douban-theme-旅行')), findsNothing);
+      await tester.tap(find.text('电影'));
+      await tester.pumpAndSettle();
+      final restoredMovie = tester
+          .widget<CustomScrollView>(find.byType(CustomScrollView))
+          .controller!;
+      expect(restoredMovie, isNot(same(movieScroll)));
+      expect(restoredMovie.offset, closeTo(640, 1));
+      restoredMovie.jumpTo(0);
+      await tester.pumpAndSettle();
+      expect(selected(tester, 'genre'), '科幻');
+      expect(selected(tester, 'year'), '2024');
+      expect(
+        tester
+            .widget<ChoiceChip>(find.byKey(const ValueKey('douban-sort-S')))
+            .selected,
+        isTrue,
+      );
+      expect(
+        tester
+            .widget<FilterChip>(find.byKey(const ValueKey('douban-theme-旅行')))
+            .selected,
+        isTrue,
+      );
+      expect(offline.requests, isEmpty);
+      expect(offline.filterRequests, isEmpty);
+      expect(offline.themeRequests, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'reopening resumes an interrupted selection and ignores disposed route results',
+    (tester) async {
+      final session = DoubanBrowseSession();
+      final repo = _Repository();
+      await mount(tester, repo, session: session);
+      final oldResponse = repo.pending = Completer<DoubanResultPage>();
+      await choose(tester, 'genre', '科幻');
+      final token = repo.requests.last.token!;
+      await tester.pumpWidget(const SizedBox());
+      expect(token.isCancelled, isTrue);
+      final nextRepo = _Repository();
+      await mount(tester, nextRepo, session: session);
+      expect(nextRepo.requests, hasLength(1));
+      expect(nextRepo.requests.single.filters.genre, '科幻');
+      expect(nextRepo.requests.single.start, 0);
+      oldResponse.complete(repo.result(DoubanKind.movie, suffix: '已销毁页面结果'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('已销毁页面结果'), findsNothing);
+      expect(selected(tester, 'genre'), '科幻');
+      expect(find.byKey(const ValueKey('douban-11')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'reopening resumes interrupted pagination at its previous cursor',
+    (tester) async {
+      final session = DoubanBrowseSession();
+      final repo = _Repository();
+      await mount(tester, repo, session: session);
+      final pending = repo.pendingAppend = Completer<DoubanResultPage>();
+      await tester.scrollUntilVisible(
+        find.text('加载更多'),
+        250,
+        scrollable: find
+            .descendant(
+              of: find.byType(CustomScrollView),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('加载更多'));
+      await tester.pump();
+      expect(repo.requests.last.start, 20);
+      await tester.pumpWidget(const SizedBox());
+      final resumed = _Repository();
+      await mount(tester, resumed, session: session);
+      expect(resumed.requests, hasLength(1));
+      expect(resumed.requests.single.start, 20);
+      pending.complete(repo.result(DoubanKind.movie, start: 20, suffix: '旧分页'));
+      await tester.pumpAndSettle();
+      final scroll = tester
+          .widget<CustomScrollView>(find.byType(CustomScrollView))
+          .controller!;
+      scroll.jumpTo(0);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('旧分页'), findsNothing);
+      expect(find.byKey(const ValueKey('douban-11')), findsOneWidget);
+      expect(find.byKey(const ValueKey('douban-13')), findsOneWidget);
+      expect(resumed.filterRequests, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'interrupted theme discovery resumes even when page restoration fails',
+    (tester) async {
+      final session = DoubanBrowseSession();
+      final repo = _Repository();
+      await mount(tester, repo, session: session);
+      final themeResponse = repo.pendingThemes = Completer<List<String>>();
+      await tester.tap(find.byKey(const ValueKey('douban-more-themes')));
+      await tester.pump();
+      final pageResponse = repo.pending = Completer<DoubanResultPage>();
+      await choose(tester, 'genre', '科幻');
+      await tester.pumpWidget(const SizedBox());
+      final resumed = _Repository()
+        ..failPage = true
+        ..discoveredThemes = ['恢复后主题'];
+      await mount(tester, resumed, session: session);
+      expect(resumed.requests, hasLength(1));
+      expect(resumed.themeRequests, hasLength(1));
+      expect(find.byKey(const ValueKey('douban-theme-恢复后主题')), findsOneWidget);
+      expect(find.textContaining('fixture offline'), findsWidgets);
+      themeResponse.complete(['旧会话主题']);
+      pageResponse.complete(repo.result(DoubanKind.movie));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('douban-theme-旧会话主题')), findsNothing);
+      expect(tester.takeException(), isNull);
     },
   );
 

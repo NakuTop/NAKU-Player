@@ -15,6 +15,8 @@ import 'package:kazumi/features/cinema/cinema_search_discovery.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
 import 'package:kazumi/features/cinema/douban/douban_models.dart';
 import 'package:kazumi/features/cinema/douban/douban_repository.dart';
+import 'package:kazumi/features/cinema/douban/douban_page.dart';
+import 'package:kazumi/features/cinema/douban/douban_themes.dart';
 
 const _source = CinemaSource(
   id: 'actor-source',
@@ -192,6 +194,58 @@ class _Catalogue extends DoubanRepository {
       const DoubanResultPage(items: [], start: 0, nextStart: 0, hasMore: false);
 }
 
+class _BoardCatalogue extends _Catalogue {
+  final requests = <DoubanKind>[];
+  @override
+  Future<DoubanResultPage> browse({
+    required DoubanKind kind,
+    String? sort,
+    List<String> tags = const [],
+    DoubanFilters filters = const DoubanFilters(),
+    int start = 0,
+    int count = 20,
+    CancelToken? cancelToken,
+  }) async {
+    requests.add(kind);
+    return DoubanResultPage(
+      items: [
+        const DoubanTitle(
+          id: '36889088',
+          title: '怒之杀',
+          originalTitle: 'Mutiny',
+          kind: DoubanKind.movie,
+          year: '2026',
+          score: 5.6,
+        ),
+        for (var i = 1; i < 60; i++)
+          DoubanTitle(
+            id: '${70000000 + i}',
+            title: '榜单作品$i',
+            kind: kind,
+            year: '2026',
+          ),
+      ],
+      start: 0,
+      nextStart: 60,
+      hasMore: false,
+      tags: const ['旅行'],
+    );
+  }
+
+  @override
+  Future<List<DoubanTagGroup>> tagGroups({
+    required DoubanKind kind,
+    DoubanFilters filters = const DoubanFilters(),
+    CancelToken? cancelToken,
+  }) async => [];
+  @override
+  Future<List<String>> discoverThemes({
+    required DoubanKind kind,
+    String? seed,
+    CancelToken? cancelToken,
+  }) async => [];
+}
+
 const _ratingResult = CinemaRatings(
   // Keep the review section inactive: this test checks identity plumbing via
   // its input title and never makes a real ratings/reviews/network request.
@@ -211,6 +265,10 @@ const _ratingResult = CinemaRatings(
 );
 
 class _Ratings extends CinemaRatingsRepository {
+  DoubanSubjectDetails detailsResult = const DoubanSubjectDetails(
+    doubanId: '',
+    note: 'fixture',
+  );
   final notifier = ChangeNotifier();
   final loaded = <CinemaTitle>[];
   final providerLoads = <(String, String)>[];
@@ -242,7 +300,7 @@ class _Ratings extends CinemaRatingsRepository {
     CinemaTitle title, {
     RatingIdentity? identity,
     bool force = false,
-  }) async => const DoubanSubjectDetails(doubanId: '', note: 'fixture');
+  }) async => detailsResult;
   @override
   Future<CinemaRatings> loadForCard(
     CinemaTitle title, {
@@ -303,7 +361,7 @@ void main() {
       )
       .title;
 
-  Future<void> mount(WidgetTester tester) async {
+  Future<void> mount(WidgetTester tester, {DoubanRepository? catalogue}) async {
     tester.view.physicalSize = const Size(1440, 1100);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -314,7 +372,8 @@ void main() {
           store: store,
           repository: repository,
           ratingsRepository: ratings,
-          catalogDiscovery: _Catalogue(),
+          catalogDiscovery: catalogue ?? _Catalogue(),
+          doubanThemeCatalog: DoubanThemeCatalog(),
           searchDiscovery: discovery,
           enableWatchTogether: false,
         ),
@@ -514,6 +573,105 @@ void main() {
         expect(metadataCard(_metadata), findsNothing);
         expect(metadataCard(_nextMetadata), findsNothing);
         expect(find.text('更多参演作品'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  for (final action in [
+    'detail close',
+    'canceled resolution',
+    'recommended work',
+  ]) {
+    testWidgets(
+      'Douban card $action returns to the same board and reopening restores it',
+      (tester) async {
+        final cancel = action == 'canceled resolution';
+        final recommend = action == 'recommended work';
+        if (recommend) {
+          ratings.detailsResult = const DoubanSubjectDetails(
+            doubanId: '36889088',
+            title: '怒之杀',
+            recommendations: [
+              DoubanRecommendation(
+                doubanId: '1292052',
+                title: '推荐作品',
+                year: '1994',
+              ),
+            ],
+          );
+        }
+        final catalogue = _BoardCatalogue();
+        final pending = Completer<CinemaPage>();
+        if (cancel) {
+          repository.pending['怒之杀'] = pending;
+        } else {
+          repository.results['怒之杀'] = [_rawTitle];
+        }
+        await mount(tester, catalogue: catalogue);
+        await tester.tap(find.text('豆瓣榜单'));
+        await tester.pumpAndSettle();
+        final board = find.byType(DoubanPage);
+        final view = find.descendant(
+          of: board,
+          matching: find.byType(CustomScrollView),
+        );
+        final scroll = tester.widget<CustomScrollView>(view).controller!;
+        scroll.jumpTo(260);
+        await tester.pumpAndSettle();
+        final before = scroll.offset;
+        final calls = catalogue.requests.length;
+        final card = find.byKey(const ValueKey('douban-36889088'));
+        expect(card.hitTestable(), findsOneWidget);
+        await tester.tap(card);
+        if (cancel) {
+          await tester.pump(const Duration(milliseconds: 350));
+          expect(find.text('正在查找播放线路'), findsOneWidget);
+          await tester.tap(find.text('取消'));
+          await tester.pumpAndSettle();
+          pending.complete(const CinemaPage(items: [_rawTitle]));
+          await tester.pumpAndSettle();
+          expect(find.byType(CinemaRatingsPanel), findsNothing);
+        } else {
+          await tester.pumpAndSettle();
+          final panel = tester.widget<CinemaRatingsPanel>(
+            find.byType(CinemaRatingsPanel),
+          );
+          expect(panel.title.doubanId, '36889088');
+          expect(panel.title.aliases, 'Mutiny');
+          expect(panel.title.sourceDoubanScore, 5.6);
+          if (recommend) {
+            final recommendedCard = find.byKey(
+              const ValueKey('douban-rec-1292052'),
+            );
+            await tester.ensureVisible(recommendedCard);
+            await tester.pumpAndSettle();
+            await tester.tap(recommendedCard);
+            await tester.pumpAndSettle();
+            expect(find.text('暂未找到匹配的片源'), findsOneWidget);
+            expect(repository.searches, contains('推荐作品'));
+            expect(discovery.searches, isEmpty);
+            await tester.tap(find.widgetWithText(TextButton, '关闭'));
+            await tester.pumpAndSettle();
+          } else {
+            await tester.tap(find.byTooltip('关闭'));
+            await tester.pumpAndSettle();
+          }
+        }
+        expect(board, findsOneWidget);
+        expect(tester.widget<CustomScrollView>(view).controller, same(scroll));
+        expect(scroll.offset, closeTo(before, 1));
+        expect(catalogue.requests, hasLength(calls));
+        await tester.tap(find.byType(BackButton));
+        await tester.pumpAndSettle();
+        expect(board, findsNothing);
+        await tester.tap(find.text('豆瓣榜单'));
+        await tester.pumpAndSettle();
+        expect(board, findsOneWidget);
+        final restored = tester.widget<CustomScrollView>(view).controller!;
+        expect(restored, isNot(same(scroll)));
+        expect(restored.offset, closeTo(before, 1));
+        expect(catalogue.requests, hasLength(calls));
         expect(tester.takeException(), isNull);
       },
     );

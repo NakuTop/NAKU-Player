@@ -14,6 +14,7 @@ import 'cinema_search_discovery.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
@@ -25,7 +26,7 @@ import 'cinema_sync_sheet.dart';
 import 'cinema_watch_together.dart';
 import 'cinema_work_sources.dart';
 import 'douban/douban_page.dart';
-import 'douban/douban_models.dart';
+import 'douban/douban_themes.dart';
 import 'douban/douban_repository.dart';
 import 'douban/douban_image_headers.dart';
 import 'naku_update_page.dart';
@@ -80,6 +81,7 @@ class CinemaHomePage extends StatefulWidget {
     this.enableSearchDiscovery = true,
     this.searchDiscovery,
     this.catalogDiscovery,
+    this.doubanThemeCatalog,
   });
   final CinemaStore? store;
   final CinemaRepository? repository;
@@ -89,6 +91,7 @@ class CinemaHomePage extends StatefulWidget {
   final bool enableSearchDiscovery;
   final CinemaSearchDiscoveryRepository? searchDiscovery;
   final DoubanRepository? catalogDiscovery;
+  final DoubanThemeCatalog? doubanThemeCatalog;
 
   @override
   State<CinemaHomePage> createState() => _CinemaHomePageState();
@@ -123,9 +126,11 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   StreamSubscription<String>? _togetherNotices;
   _Section _section = _Section.movies;
   bool _showSourceManager = false;
+  String _applicationVersion = '正在读取版本';
   final _catalogs = {
     for (final section in _Section.values) section: _CatalogState(),
   };
+  final _doubanSession = DoubanBrowseSession();
   final _knownCategories = <String, List<CinemaCategory>>{};
   final _aggregateControllers = <_Section, CinemaAggregateCatalogController>{};
   String _sourceConfiguration = '';
@@ -210,7 +215,23 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       });
       unawaited(_initializeTogether());
     }
+    unawaited(_readApplicationVersion());
     unawaited(_initialize());
+  }
+
+  Future<void> _readApplicationVersion() async {
+    var display = '版本信息暂不可用';
+    try {
+      final package = await PackageInfo.fromPlatform();
+      final version = package.version.trim();
+      final build = package.buildNumber.trim();
+      if (version.isNotEmpty) {
+        display = build.isEmpty ? version : '$version+$build';
+      }
+    } catch (_) {
+      // Display an unavailable state rather than a stale hard-coded release.
+    }
+    if (mounted) setState(() => _applicationVersion = display);
   }
 
   String get _scoreProvider => _scoreProviders[_section] ?? '豆瓣';
@@ -394,8 +415,9 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     CinemaSource source,
     int road,
     int episode,
-    List<CinemaTitle> variants,
-  ) {
+    List<CinemaTitle> variants, {
+    bool keepBrowseRoute = false,
+  }) {
     unawaited(
       Navigator.of(context)
           .push(
@@ -412,6 +434,10 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                   ratingsRepository: _ratings,
                   onRecommendationSelected: (recommendation) async {
                     if (!mounted) return;
+                    if (keepBrowseRoute) {
+                      await _openDoubanRecommendation(recommendation);
+                      return;
+                    }
                     await _selectSection(
                       _matchesCategory(detail.category, _Section.series)
                           ? _Section.series
@@ -1227,10 +1253,25 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     );
   }
 
+  Future<void> _openDoubanRecommendation(
+    DoubanRecommendation recommendation,
+  ) => _openTitle(
+    CinemaDiscoveryTitle(
+      id: recommendation.doubanId,
+      title: recommendation.title,
+      year: recommendation.year,
+      poster: recommendation.poster,
+      // The recommendation metadata does not declare film versus television.
+      kind: '',
+    ).metadata,
+    keepBrowseRoute: true,
+  );
+
   Future<void> _openTitle(
     CinemaTitle title, {
     CinemaHistory? resume,
     List<CinemaTitle> variants = const [],
+    bool keepBrowseRoute = false,
   }) async {
     if (title.sourceId == 'douban-discovery') {
       final found = await resolveCinemaDiscoverySources(
@@ -1248,7 +1289,11 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         ...available,
         title,
       ]).first.catalogTitle;
-      await _openTitle(representative, variants: available);
+      await _openTitle(
+        representative,
+        variants: available,
+        keepBrowseRoute: keepBrowseRoute,
+      );
       return;
     }
     final source = _findSource(title.sourceId);
@@ -1273,6 +1318,10 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         resume: resume,
         onRecommendationSelected: (recommendation) {
           Navigator.pop(context);
+          if (keepBrowseRoute) {
+            unawaited(_openDoubanRecommendation(recommendation));
+            return;
+          }
           if (!_isCatalog) {
             setState(
               () => _section = _matchesCategory(title.category, _Section.series)
@@ -1285,7 +1334,14 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         },
         onPlay: (detail, selectedSource, road, episode, allVariants) {
           Navigator.pop(context);
-          _playTitle(detail, selectedSource, road, episode, allVariants);
+          _playTitle(
+            detail,
+            selectedSource,
+            road,
+            episode,
+            allVariants,
+            keepBrowseRoute: keepBrowseRoute,
+          );
         },
       ),
     );
@@ -1579,18 +1635,25 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                   transitionDuration: Duration.zero,
                   reverseTransitionDuration: Duration.zero,
                   pageBuilder: (_, _, _) => DoubanPage(
-                    onSelect: (title) {
-                      Navigator.of(context).pop();
-                      _selectSection(
-                        title.kind == DoubanKind.movie
-                            ? _Section.movies
-                            : _Section.series,
-                      ).then((_) {
-                        if (!mounted) return;
-                        _search.text = title.title;
-                        _runSearch();
-                      });
-                    },
+                    repository: widget.catalogDiscovery,
+                    session: _doubanSession,
+                    themeCatalog: widget.doubanThemeCatalog,
+                    onSelect: (title) => _openTitle(
+                      CinemaDiscoveryTitle(
+                        id: title.id,
+                        title: title.title,
+                        originalTitle: title.originalTitle,
+                        year: title.year,
+                        poster: title.poster,
+                        kind: title.kind.apiType,
+                        actors: title.actors.join(' / '),
+                        genres: title.genres.join(' / '),
+                        area: title.regions.join(' / '),
+                        score: title.score,
+                        identityVerified: true,
+                      ).metadata,
+                      keepBrowseRoute: true,
+                    ),
                   ),
                 ),
               );
@@ -1612,7 +1675,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             onTap: () => showAboutDialog(
               context: context,
               applicationName: 'NAKU播放器',
-              applicationVersion: '1.5.0',
+              applicationVersion: _applicationVersion,
               applicationLegalese:
                   '基于 Kazumi，GPL-3.0。\n个人电影、剧集与动漫客户端。\n片源及其内容由对应第三方提供。',
               children: [
@@ -1629,9 +1692,10 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                 ),
               ],
             ),
-            child: const Text(
-              'NAKU播放器  1.5.0',
-              style: TextStyle(
+            child: Text(
+              'NAKU播放器  $_applicationVersion',
+              key: const ValueKey('cinema-app-version'),
+              style: const TextStyle(
                 fontSize: 10,
                 height: 1.8,
                 letterSpacing: .8,

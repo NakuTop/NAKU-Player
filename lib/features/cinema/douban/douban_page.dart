@@ -17,17 +17,103 @@ class DoubanPage extends StatefulWidget {
     required this.onSelect,
     this.repository,
     this.themeCatalog,
+    this.session,
   });
   final ValueChanged<DoubanTitle> onSelect;
   final DoubanRepository? repository;
   final DoubanThemeCatalog? themeCatalog;
+  final DoubanBrowseSession? session;
   @override
   State<DoubanPage> createState() => _DoubanPageState();
 }
 
+/// One home-window browsing session. Only data and offsets survive closing the
+/// board; scroll controllers and in-flight requests belong to each route.
+class DoubanBrowseSession {
+  DoubanKind _kind = DoubanKind.movie;
+  final _states = <DoubanKind, _KindSnapshot>{};
+}
+
+class _KindSnapshot {
+  _KindSnapshot(_KindState state)
+    : filters = state.filters,
+      sort = state.sort,
+      error = state.error,
+      filterError = state.filterError,
+      items = List.of(state.items),
+      sorts = List.of(state.sorts),
+      categories = Map.of(state.categories),
+      tagGroups = {
+        for (final entry in state.tagGroups.entries)
+          entry.key: List.of(entry.value),
+      },
+      themes = List.of(state.themes),
+      selectedThemes = Set.of(state.selectedThemes),
+      themesInitialized = state.themesInitialized,
+      showAllThemes = state.showAllThemes,
+      themesExpanded = state.themesExpanded,
+      themeMessage = state.themeMessage,
+      more = state.more,
+      initialized = state.initialized,
+      failedAppend = state.failedAppend,
+      next = state.next,
+      scrollOffset = state.scrollOffset,
+      themeScrollOffset = state.themeScrollOffset,
+      resumePage = state.loading || state.resumePage,
+      resumeFilters = state.filtersLoading || state.resumeFilters,
+      resumeThemes = state.themesLoading || state.resumeThemes;
+
+  final DoubanFilters filters;
+  final String? sort, error, filterError, themeMessage;
+  final List<DoubanTitle> items;
+  final List<DoubanSort> sorts;
+  final Map<String, DoubanCategoryGroup> categories;
+  final Map<String, List<String>> tagGroups;
+  final List<String> themes;
+  final Set<String> selectedThemes;
+  final bool themesInitialized, showAllThemes, themesExpanded;
+  final bool more, initialized, failedAppend;
+  final bool resumePage, resumeFilters, resumeThemes;
+  final int next;
+  final double scrollOffset, themeScrollOffset;
+}
+
 class _KindState {
-  final scroll = ScrollController();
-  final themeScroll = ScrollController();
+  _KindState(_KindSnapshot? saved) {
+    if (saved != null) {
+      filters = saved.filters;
+      sort = saved.sort;
+      error = saved.error;
+      filterError = saved.filterError;
+      items = List.of(saved.items);
+      sorts = List.of(saved.sorts);
+      categories.addAll(saved.categories);
+      tagGroups.addAll(saved.tagGroups);
+      themes = List.of(saved.themes);
+      selectedThemes.addAll(saved.selectedThemes);
+      themesInitialized = saved.themesInitialized && !saved.resumeThemes;
+      showAllThemes = saved.showAllThemes;
+      themesExpanded = saved.themesExpanded;
+      themeMessage = saved.themeMessage;
+      more = saved.more;
+      initialized = saved.initialized;
+      failedAppend = saved.failedAppend;
+      next = saved.next;
+      scrollOffset = saved.scrollOffset;
+      themeScrollOffset = saved.themeScrollOffset;
+      resumePage = saved.resumePage;
+      resumeFilters = saved.resumeFilters;
+      resumeThemes = saved.resumeThemes;
+    }
+    scroll = ScrollController(initialScrollOffset: scrollOffset)
+      ..addListener(() => scrollOffset = scroll.offset);
+    themeScroll = ScrollController(initialScrollOffset: themeScrollOffset)
+      ..addListener(() => themeScrollOffset = themeScroll.offset);
+  }
+
+  late final ScrollController scroll, themeScroll;
+  double scrollOffset = 0, themeScrollOffset = 0;
+  bool resumePage = false, resumeFilters = false, resumeThemes = false;
   DoubanFilters filters = const DoubanFilters();
   String? sort, error, filterError;
   List<DoubanTitle> items = [];
@@ -38,7 +124,7 @@ class _KindState {
   final selectedThemes = <String>{};
   bool themesLoading = false, themesInitialized = false;
   int themeGeneration = 0;
-  bool showAllThemes = false;
+  bool showAllThemes = false, themesExpanded = true;
   String? themeMessage;
   CancelToken? themeToken;
   bool loading = false, filtersLoading = false, more = false;
@@ -50,26 +136,36 @@ class _KindState {
 class _DoubanPageState extends State<DoubanPage> {
   late final _repository = widget.repository ?? DoubanRepository();
   late final _themeCatalog = widget.themeCatalog ?? DoubanThemeCatalog.shared;
-  DoubanKind _kind = DoubanKind.movie;
-  final _states = {for (final kind in DoubanKind.values) kind: _KindState()};
+  late final _session = widget.session ?? DoubanBrowseSession();
+  late DoubanKind _kind = _session._kind;
+  late final _states = {
+    for (final kind in DoubanKind.values)
+      kind: _KindState(_session._states[kind]),
+  };
   _KindState get _state => _states[_kind]!;
 
   @override
   void initState() {
     super.initState();
     for (final kind in DoubanKind.values) {
-      _states[kind]!.themes = _themeCatalog.topics(kind);
+      _states[kind]!.themes = {
+        ..._states[kind]!.themes,
+        ..._themeCatalog.topics(kind),
+      }.toList();
     }
     _themeCatalog.addListener(_restoreThemes);
     unawaited(_themeCatalog.initialize());
-    _loadKind(_kind);
+    _resumeKind(_kind);
   }
 
   void _restoreThemes() {
     if (!mounted) return;
     setState(() {
       for (final kind in DoubanKind.values) {
-        _states[kind]!.themes = _themeCatalog.topics(kind);
+        _states[kind]!.themes = {
+          ..._states[kind]!.themes,
+          ..._themeCatalog.topics(kind),
+        }.toList();
       }
     });
   }
@@ -77,6 +173,10 @@ class _DoubanPageState extends State<DoubanPage> {
   @override
   void dispose() {
     _themeCatalog.removeListener(_restoreThemes);
+    _session._kind = _kind;
+    for (final entry in _states.entries) {
+      _session._states[entry.key] = _KindSnapshot(entry.value);
+    }
     for (final state in _states.values) {
       state.generation++;
       state.filterGeneration++;
@@ -104,10 +204,28 @@ class _DoubanPageState extends State<DoubanPage> {
     unawaited(_loadFilters(kind));
   }
 
+  void _resumeKind(DoubanKind kind) {
+    final state = _states[kind]!;
+    if (!state.initialized) {
+      _loadKind(kind);
+      return;
+    }
+    final page = state.resumePage;
+    if (page) {
+      unawaited(_loadPage(kind, append: state.failedAppend, preserve: true));
+    }
+    if (state.resumeFilters) unawaited(_loadFilters(kind));
+    if (state.resumeThemes) {
+      state.themesInitialized = true;
+      unawaited(_loadThemes(kind));
+    }
+    state.resumePage = state.resumeFilters = state.resumeThemes = false;
+  }
+
   void _selectKind(DoubanKind kind) {
     if (kind == _kind) return;
     setState(() => _kind = kind);
-    if (!_state.initialized) _loadKind(kind);
+    _resumeKind(kind);
   }
 
   Future<void> _loadPage(
@@ -521,7 +639,9 @@ class _DoubanPageState extends State<DoubanPage> {
               ).copyWith(dividerColor: Colors.transparent),
               child: ExpansionTile(
                 key: PageStorageKey('douban-${_kind.name}-themes'),
-                initiallyExpanded: true,
+                initiallyExpanded: state.themesExpanded,
+                onExpansionChanged: (expanded) =>
+                    state.themesExpanded = expanded,
                 expansionAnimationStyle: AnimationStyle.noAnimation,
                 tilePadding: EdgeInsets.zero,
                 childrenPadding: const EdgeInsets.only(bottom: 8),
