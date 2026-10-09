@@ -6,15 +6,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <link>https://github.com/NakuTop/NAKU-Player</link>
     <description>NAKU播放器 macOS 更新</description>
     <item>
-      <title>NAKU播放器 1.6.0</title>
-      <sparkle:version>16</sparkle:version>
-      <sparkle:shortVersionString>1.6.0</sparkle:shortVersionString>
+      <title>NAKU播放器 1.7.0</title>
+      <sparkle:version>17</sparkle:version>
+      <sparkle:shortVersionString>1.7.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <description><![CDATA[<p>统一动漫入口，完整保留热门、时间表、搜索、追番、详情和原播放器；动漫使用原规则源，影视接口仅用于电影和剧集。</p><p>新增关闭窗口选项；保留豆瓣榜单浏览位置；包含滚动优化、主题保存和灰色遮挡修复。</p><p>此个人构建未配置线上弹幕服务，功能与配置说明保留。</p>]]></description>
-      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.6.0/NAKUPlayer-1.6.0-macOS-universal.zip" length="56575146" type="application/octet-stream" sparkle:edSignature="gaTIcx7PwrRrcSvRK/yt+/a0G8tUkarU10KtQlkmISYxvofQ+u69FmecYtkgI3FJKbgCqEA0IHkVLfzgpiNtBw=="></enclosure>
+      <description><![CDATA[<p>主侧栏与动漫共用完整设置入口，电影与剧集接入默认倍速、音量、硬解、超分、快捷键、续播等播放偏好。</p><p>底部取消、删除与撤销提示显示 5 秒后淡出；修复启动界面设置不生效，系统字体开关全局即时生效。</p><p>保留黑橙磨砂主题与原有数据；动漫专用设置标明范围。此个人构建仍未配置线上弹幕服务，功能与配置说明保留。</p>]]></description>
+      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.7.0/NAKUPlayer-1.7.0-macOS-universal.zip" length="56504722" type="application/octet-stream" sparkle:edSignature="HMCbnpuap3oTd7DLHsHZwdD7D1rRZpyw3slx90v34fflrj2JeLZPUtHo0eeDgrn1yVbdvClSQtnHqWAbFh/lBA=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: W5mMs7XQvVEcWxFzT9tEytcGUe5UZeRWfs8OL6nm3uiz8w7ik55JexLYCEj7xu5/z21qQkxMYeXXhKokAEKsBg==
-length: 1527
+edSignature: mGoivcmq7It5hdjGXMpElQsItCxFWe2EDfpfz0rL8rrmvgyNuBMaHd0G7x+7Vrgm60E4z3g5yBdTHB+aZLybAg==
+length: 1605
 -->
