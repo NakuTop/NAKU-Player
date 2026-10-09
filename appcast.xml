@@ -5,54 +5,17 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <title>NAKU播放器</title>
     <link>https://github.com/NakuTop/NAKU-Player</link>
     <description>NAKU播放器 macOS 更新</description>
-    <language>zh-CN</language>
     <item>
-      <title>NAKU播放器 1.3.0</title>
-      <pubDate>Fri, 09 Oct 2026 04:29:35 +0000</pubDate>
-      <sparkle:version>11</sparkle:version>
-      <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
+      <title>NAKU播放器 1.4.0</title>
+      <pubDate>Fri, 09 Oct 2026 05:30:43 GMT</pubDate>
+      <sparkle:version>12</sparkle:version>
+      <sparkle:shortVersionString>1.4.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <description>电影与剧集首页汇总全部启用影视片源，同作品合并卡片与线路；修复年份筛选和父分类遗漏，增加统一资料筛选，屏蔽擦边短剧。侧栏改用单页轻量过渡，去除筛选重复标题，片源管理、软件更新、外观与透明度整合到设置。修复豆瓣推荐海报请求。升级保留片源、收藏、历史和外观设置。</description>
-      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.3.0/NAKUPlayer-1.3.0-macOS-universal.zip" length="56348713" type="application/octet-stream" sparkle:edSignature="SIsKOUdkla92nyD8wtaAxgAbWHK0gi4DXoE1+yUM6fKyPIUUdPgGv1hknUuVu5sIehnz0YeV/G7p2CmEDRrOBQ=="></enclosure>
-    </item>
-    <item>
-      <title>NAKU播放器 1.2.0</title>
-      <pubDate>Fri, 09 Oct 2026 03:58:07 +0000</pubDate>
-      <sparkle:version>10</sparkle:version>
-      <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <description>新增外观与透明度设置，失焦保持原生磨砂；优化页面切换并尊重系统减少动态效果。补充豆瓣评分、上映日期、片长、又名、评分分布和相关推荐；电影与剧集支持独立年份、地区、类型筛选，并保留多元风格与主题榜单。支持中英文片名与主要演员检索，保留已有片源、收藏、历史和外观设置。</description>
-      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.2.0/NAKUPlayer-1.2.0-macOS-universal.zip" length="56292671" type="application/octet-stream" sparkle:edSignature="rpX72+Zf87wtJKqMIrTwNxwZHBhcrvKewQG56jnpZ3RhiCbbjqm9xtAP06M3yn+DQAha5GLG9UHeosKZ3OJzDw=="></enclosure>
-    </item>
-    <item>
-      <title>NAKU播放器 1.1.0</title>
-      <pubDate>Fri, 09 Oct 2026 02:41:42 +0000</pubDate>
-      <sparkle:version>9</sparkle:version>
-      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <description>电影、剧集与动漫切换保留列表、搜索和滚动位置；收藏与历史按作品跨源合并。一起看持续配对、断线重连，可主动跟随同伴当前作品并在同步成功后通知对方。升级前自动备份资料。</description>
-      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.1.0/NAKUPlayer-1.1.0-macOS-universal.zip" length="56115623" type="application/octet-stream" sparkle:edSignature="wpps1qh+aR7Wg71C81LOu8k8tBXhLpfmspKIDVHdjXb/lSKg1NRqlVPaWVZCVCtYfVFu/SK/jkj7/iqaK4mzBQ=="></enclosure>
-    </item>
-    <item>
-      <title>NAKU播放器 1.0.1</title>
-      <pubDate>Fri, 09 Oct 2026 01:46:39 +0000</pubDate>
-      <sparkle:version>8</sparkle:version>
-      <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <description>修复 macOS 鼠标点击无响应；重建原生磨砂背景层级，减轻重复黑色遮罩，强化橙色选中状态。升级保留片源、收藏和观看记录。</description>
-      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.0.1/NAKUPlayer-1.0.1-macOS-universal.zip" length="56031868" type="application/octet-stream" sparkle:edSignature="pfITDHN8HlG34UKl4CPyF/XbSyLaKlk4ELp7oNOK/613D8TYyu8ucBPEhTM2YsXP5RLOnF2xjc0PSxYYSGu7AA=="></enclosure>
-    </item>
-    <item>
-      <title>NAKU播放器 1.0.0</title>
-      <pubDate>Thu, 08 Oct 2026 16:44:05 +0000</pubDate>
-      <sparkle:version>7</sparkle:version>
-      <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <description>&lt;ul&gt;&lt;li&gt;黑橙磨砂玻璃界面、虚化封面与影片评分。&lt;/li&gt;&lt;li&gt;统一多源线路、失败换源和播放缓存优化。&lt;/li&gt;&lt;li&gt;全屏内提供画中画、Anime4K、一起看、收藏和选集。&lt;/li&gt;&lt;li&gt;修复 Bangumi 搜索，支持豆瓣电影和剧集目录。&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;一起看同步播放、暂停和进度，建议双方选择相同剪辑版本。应用保留已有片源、收藏和观看记录。&lt;/p&gt;</description>
-      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.0.0/NAKUPlayer-1.0.0-macOS-universal.zip" length="56025865" type="application/octet-stream" sparkle:edSignature="pP4ITVPY6vwQUAJZ7uyL9ymkArpj8VnlQZK6jDT8F4mPvHjKwbjLb5gYcYJpogyOrqUB7biATV5xT83n0waQAw=="></enclosure>
+      <description><![CDATA[<ul><li>首页主动补充豆瓣、IMDb、烂番茄评分，支持按平台评分排序。</li><li>豆瓣榜单去除缩放跳转，恢复更多真实风格与主题。</li><li>作品详情与播放器下方统一展示豆瓣资料、评分分布、相关推荐及公开影评。</li><li>收藏、继续观看支持右键或长按删除；观看记录支持左滑与撤销。</li></ul>]]></description>
+      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.4.0/NAKUPlayer-1.4.0-macOS-universal.zip" length="56444298" type="application/octet-stream" sparkle:edSignature="KhnsmkcnAgxRAb3UqQ84oCi21C9lWsEBZkvhXzdtFUDB6a0sDaHaGh31BJMckmz+Yvy8Qxue7awVHGJVNx82Ag=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: TYrO2aIVxurhIIeENgULEdTAlgh/QDjunrX6AUtKIYtGnFToBb4bmwjFGD71bjDqqiip2STVo4M4HXMiR4WdBg==
-length: 5480
+edSignature: 5xKbdwYxnB01bnXhfx6FY/Fpf79mHWV1yEr3KB1+jqKCTbCL6yi9pUdAifqiT2VIsciGnQmtFSVJAz8kzJO0Aw==
+length: 1592
 -->
