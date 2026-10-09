@@ -278,19 +278,30 @@ void main() {
       ratings.notifier.notifyListeners();
       await tester.pump(const Duration(milliseconds: 400));
       await tester.pumpAndSettle();
-      await selectProvider(tester, 'IMDb');
-      await selectProvider(tester, '烂番茄');
       expect(
         ratings.cardCalls,
         calls,
-        reason: 'Sort refreshes do not restart completed preload batches.',
+        reason: 'Score notifications do not restart a completed batch.',
+      );
+      await selectProvider(tester, 'IMDb');
+      await selectProvider(tester, '烂番茄');
+      final allProviders = Map<String, int>.of(ratings.cardCalls);
+      expect(allProviders, {
+        for (final entry in calls.entries) entry.key: entry.value + 2,
+      }, reason: 'Each newly selected provider gets one bounded preload.');
+      await selectProvider(tester, '豆瓣');
+      await selectProvider(tester, 'IMDb');
+      expect(
+        ratings.cardCalls,
+        allProviders,
+        reason: 'Switching back reuses completed work for that provider.',
       );
       expect(
         catalogue.browseCalls,
         browses,
         reason: 'Changing local score order reuses the loaded catalogue.',
       );
-      expect(ratings.cardCalls.values.every((count) => count <= 2), isTrue);
+      expect(ratings.cardCalls.values.every((count) => count <= 4), isTrue);
       expect(tester.takeException(), isNull);
     },
   );

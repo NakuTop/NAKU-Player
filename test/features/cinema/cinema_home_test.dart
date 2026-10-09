@@ -473,7 +473,7 @@ void main() {
   });
 
   testWidgets(
-    'popular selection does not reorder searches or show search chips',
+    'searches retain selected sorting and catalogue order survives return',
     (tester) async {
       repository.useMetadata = true;
       await mount(tester);
@@ -482,9 +482,10 @@ void main() {
       await tester.enterText(find.byType(TextField), '排序搜索');
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.pumpAndSettle();
-      expect(sortChip(CinemaCatalogSort.popular), findsNothing);
-      expect(sortChip(CinemaCatalogSort.latest), findsNothing);
-      expectBefore(tester, '搜索低热结果', '搜索高热结果');
+      expectSelected(tester, CinemaCatalogSort.popular);
+      expect(sortChip(CinemaCatalogSort.latest), findsOneWidget);
+      expect(sortChip(CinemaCatalogSort.rating), findsOneWidget);
+      expectBefore(tester, '搜索高热结果', '搜索低热结果');
       await tester.enterText(find.byType(TextField), '');
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.pumpAndSettle();

@@ -26,6 +26,66 @@ class CinemaTitleGroup {
           .where((title) => title.sourceId == _preferredSourceId)
           .firstOrNull ??
       variants.first;
+
+  /// Keep the preferred playback source while sharing only unambiguous rating
+  /// identities from variants that already passed the work identity checks.
+  /// The original variants remain untouched for playback and persistence.
+  late final CinemaTitle catalogTitle = _catalogTitle();
+
+  CinemaTitle _catalogTitle() {
+    final base = representative;
+    Set<String> identities(String Function(CinemaTitle) read) => variants
+        .map(read)
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    final douban = identities((title) => title.doubanId);
+    final imdb = identities((title) => title.imdbId);
+    final rotten = identities((title) => title.rottenTomatoesId);
+    // A conflicting external ID means the purported variants need inspection.
+    // Never transfer a different provider's identity through that conflict.
+    if ([douban, imdb, rotten].any((ids) => ids.length > 1)) return base;
+    final doubanId = douban.firstOrNull ?? '';
+    double? score = base.sourceDoubanScore;
+    if (score == null && doubanId.isNotEmpty) {
+      final scores = variants
+          .where((title) => title.doubanId.trim() == doubanId)
+          .map((title) => title.sourceDoubanScore)
+          .whereType<double>()
+          .where((value) => value.isFinite && value > 0 && value <= 10)
+          .toSet();
+      if (scores.length == 1) score = scores.single;
+    }
+    final imdbId = imdb.firstOrNull ?? '';
+    final rottenId = rotten.firstOrNull ?? '';
+    if (base.doubanId == doubanId &&
+        base.imdbId == imdbId &&
+        base.rottenTomatoesId == rottenId &&
+        base.sourceDoubanScore == score) {
+      return base;
+    }
+    return base.copyWith(
+      doubanId: doubanId,
+      imdbId: imdbId,
+      rottenTomatoesId: rottenId,
+      sourceDoubanScore: score,
+    );
+  }
+}
+
+/// A refreshed source detail may omit IDs that were already resolved for its
+/// card. Preserve those IDs only when the same conservative grouping rules
+/// confirm the work; keep all newly loaded source content and playback routes.
+CinemaTitle inheritCinemaRatingMetadata(
+  CinemaTitle detail,
+  CinemaTitle anchor,
+) {
+  if (!_Group(_Candidate(detail)).accepts(_Candidate(anchor))) return detail;
+  return CinemaTitleGroup(
+    key: detail.key,
+    variants: [detail, anchor],
+    preferredSourceId: detail.sourceId,
+  ).catalogTitle;
 }
 
 /// Conservatively groups only compatible works in first-appearance order.

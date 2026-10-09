@@ -295,7 +295,7 @@ class CinemaDoubanReviewsRepository {
         request.followRedirects = false;
         request.headers.set(
           'User-Agent',
-          'NAKUPlayer/1.4.0 (https://github.com/NakuTop/NAKU-Player)',
+          'NAKUPlayer/1.5.0 (https://github.com/NakuTop/NAKU-Player)',
         );
         request.headers.set('Accept', 'application/json');
         request.headers.set(

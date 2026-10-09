@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'cinema_appearance_settings.dart';
 import 'cinema_pane_transition.dart';
+import 'cinema_catalog_view.dart';
 import 'cinema_settings_page.dart';
 import 'cinema_filters.dart';
 import 'cinema_aggregate_catalog.dart';
@@ -34,6 +35,7 @@ import 'cinema_repository.dart';
 import 'cinema_ratings_panel.dart';
 import 'cinema_ratings.dart';
 import 'cinema_rating_title_resolver.dart';
+import 'cinema_rating_identity_search.dart';
 import 'cinema_store.dart';
 import 'cinema_library_actions.dart';
 import 'cinema_player_page.dart';
@@ -47,6 +49,7 @@ enum _Section { movies, series, anime, favorites, history, settings }
 class _CatalogState {
   final search = TextEditingController();
   List<CinemaTitle> items = [];
+  final viewCache = CinemaCatalogViewCache();
   List<CinemaCategory> categories = [];
   final sourceStatus = <String, String>{};
   final searchPages = <String, int>{};
@@ -98,14 +101,21 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       widget.searchDiscovery ?? CinemaSearchDiscoveryRepository();
   late final _ratings =
       widget.ratingsRepository ?? CinemaRatingsRepository.instance;
+  late final _ratingIdentity = CinemaRatingIdentitySearch(
+    search: (keyword) => _discoveryRepository.search(keyword),
+  );
   late final _ratingTitles = CinemaRatingTitleResolver(
     repository: _repository,
     sourceFor: _findSource,
+    discoverTitle: widget.enableSearchDiscovery
+        ? _ratingIdentity.resolve
+        : null,
   );
   final _scoreProviders = <_Section, String>{};
   final _ratingPreloads = <_Section>{};
-  final _ratingLoadedContexts = <_Section, String>{};
+  final _ratingLoadedContexts = <(_Section, String), String>{};
   Timer? _ratingRefresh;
+  int _ratingRevision = 0;
   late final _together = widget.watchTogether ?? CinemaWatchTogether.instance;
   StreamSubscription<String>? _togetherNotices;
   _Section _section = _Section.movies;
@@ -191,6 +201,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   String get _scoreProvider => _scoreProviders[_section] ?? '豆瓣';
 
   void _onRatingsChanged() {
+    _ratingRevision++;
     if (!mounted ||
         !_showsCatalogSort ||
         _currentCatalogSort != CinemaCatalogSort.rating) {
@@ -209,36 +220,69 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   Future<void> _preloadRatings(_Section section) async {
     final state = _catalogs[section]!;
     if (!mounted ||
-        state.searching ||
         state.loading ||
         _catalogSort[section] != CinemaCatalogSort.rating ||
         _ratingPreloads.contains(section)) {
       return;
     }
-    final titles = groupCinemaTitles(
-      state.items.where(state.filters.matches).toList(),
-    ).map((group) => group.representative).toList();
+    final provider = _scoreProviders[section] ?? '豆瓣';
+    final works = [
+      ...groupCinemaTitles(
+        state.items.where(state.filters.matches).toList(),
+      ).map((group) => group.catalogTitle),
+      if (state.searching)
+        ..._visibleDiscoveryTitles(
+          state,
+          section,
+        ).map((title) => title.metadata),
+    ];
+    int priority(CinemaTitle title) {
+      final directId = switch (provider) {
+        'IMDb' => title.imdbId,
+        '烂番茄' => title.rottenTomatoesId,
+        _ => title.doubanId,
+      };
+      if (directId.isNotEmpty) return 0;
+      return title.doubanId.isNotEmpty ? 1 : 2;
+    }
+
+    // Start exact IDs first; a slow name lookup must not occupy both sort
+    // workers while straightforward provider requests remain undispatched.
+    final titles = [
+      for (var tier = 0; tier <= 2; tier++)
+        ...works.where((title) => priority(title) == tier),
+    ];
     final generation = state.generation;
     final fingerprint = jsonEncode([
       generation,
-      for (final title in titles) title.toJson(),
+      provider,
+      for (final title in titles)
+        [
+          title.key,
+          title.title,
+          title.year,
+          title.doubanId,
+          title.imdbId,
+          title.rottenTomatoesId,
+          title.sourceDoubanScore,
+        ],
     ]);
-    if (_ratingLoadedContexts[section] == fingerprint) return;
-    _ratingLoadedContexts[section] = fingerprint;
+    if (_ratingLoadedContexts[(section, provider)] == fingerprint) return;
     _ratingPreloads.add(section);
     if (_section == section) setState(() {});
     bool current() =>
         mounted &&
         state.generation == generation &&
-        !state.searching &&
-        _catalogSort[section] == CinemaCatalogSort.rating;
+        _catalogSort[section] == CinemaCatalogSort.rating &&
+        (_scoreProviders[section] ?? '豆瓣') == provider;
     var next = 0;
     Future<void> worker() async {
       while (current() && next < titles.length) {
         final title = titles[next++];
         try {
-          await _ratings.loadForCard(
+          await _ratings.loadForProvider(
             title,
+            provider,
             isCurrent: current,
             resolveTitle: _ratingTitles.resolve,
           );
@@ -250,6 +294,9 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
 
     try {
       await Future.wait([worker(), worker()]);
+      if (current() && next >= titles.length) {
+        _ratingLoadedContexts[(section, provider)] = fingerprint;
+      }
     } finally {
       _ratingPreloads.remove(section);
       if (mounted) {
@@ -432,24 +479,31 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   bool get _isCatalog => _section.index <= _Section.anime.index;
 
   bool get _showsCatalogSort =>
-      !_searching &&
-      (_section == _Section.movies || _section == _Section.series);
+      _section == _Section.movies || _section == _Section.series;
 
   CinemaCatalogSort get _currentCatalogSort =>
       _catalogSort[_section] ?? CinemaCatalogSort.latest;
 
   String get _catalogSortExplanation {
-    if (_items.isEmpty) return _loading ? '正在汇总片源。' : '暂无作品可排序。';
     if (_currentCatalogSort == CinemaCatalogSort.rating) {
-      final works = groupCinemaTitles(
-        _items.where(_catalog.filters.matches).toList(),
-      ).map((group) => group.representative).toList();
+      final works = [
+        ..._catalogView.representatives,
+        if (_searching)
+          ..._visibleDiscoveryTitles(
+            _catalog,
+            _section,
+          ).map((title) => title.metadata),
+      ];
       final available = works
           .where((title) => _ratings.scoreFor(title, _scoreProvider) != null)
           .length;
       final loading = _ratingPreloads.contains(_section) ? ' · 后台补充评分中' : '';
-      return '已加载 $available/${works.length} 部有$_scoreProvider评分，缺失项排后$loading';
+      final scope = _searching && _catalog.discovery.titles.isNotEmpty
+          ? '；片源结果与相关作品分别排序'
+          : '';
+      return '已加载 $available/${works.length} 部有$_scoreProvider评分，缺失项排后$loading$scope';
     }
+    if (_items.isEmpty) return _loading ? '正在汇总片源。' : '暂无片源作品可排序。';
     final popular = _currentCatalogSort == CinemaCatalogSort.popular;
     final available = _items
         .where(
@@ -659,6 +713,8 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       await _browse();
       return;
     }
+    final resetFilters =
+        !loadMore && (!state.searching || state.activeKeyword != keyword);
     final generation = loadMore ? state.generation : ++state.generation;
     final sources = _store.enabledSources
         .where(
@@ -672,6 +728,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       state.loading = true;
       state.error = null;
       state.searching = true;
+      if (resetFilters) state.filters = const CinemaFilters();
       state.itemsContext = null;
       state.initialized = true;
       if (!loadMore) {
@@ -710,52 +767,75 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     final discoveryFuture = !loadMore && widget.enableSearchDiscovery
         ? _discoverSearch(state, section, keyword, generation, sources)
         : Future<void>.value();
-    // Each destination has its own generation: switching tabs doesn't discard work.
-    for (var offset = 0; offset < sources.length; offset += 3) {
-      await Future.wait(
-        sources.skip(offset).take(3).map((source) async {
-          try {
-            final page = loadMore ? (state.searchPages[source.id] ?? 1) + 1 : 1;
-            final result = await _repository.search(
-              source,
-              keyword,
-              page: page,
-            );
-            if (!mounted || generation != state.generation) return;
-            _changed(state, () {
-              final items = result.items
-                  .where(
-                    (t) =>
-                        _ordinaryCategory(t.category) &&
-                        (t.category.isEmpty ||
-                            _matchesCategory(t.category, section)),
-                  )
-                  .toList();
-              final existing = state.items.map((item) => item.key).toSet();
-              state.items.addAll(
-                items.where((item) => !existing.contains(item.key)),
-              );
-              state.searchPages[source.id] = result.page;
-              if (result.hasMore) {
-                state.searchMore.add(source.id);
-              } else {
-                state.searchMore.remove(source.id);
-              }
-              state.sourceStatus[source.name] =
-                  '${state.items.where((t) => t.sourceId == source.id).length} 个结果';
-            });
-          } catch (e) {
-            if (!mounted || generation != state.generation) return;
-            _changed(state, () => state.sourceStatus[source.name] = '连接失败：$e');
-          }
-        }),
-      );
-      if (!mounted || generation != state.generation) return;
-    }
+    // Each destination owns its generation; slower sources don't hold up the
+    // next available worker or overwrite a newer search.
+    await _searchInPool(
+      sources,
+      () => mounted && generation == state.generation,
+      (source) async {
+        try {
+          final page = loadMore ? (state.searchPages[source.id] ?? 1) + 1 : 1;
+          final result = await _repository.search(source, keyword, page: page);
+          if (!mounted || generation != state.generation) return;
+          _changed(state, () {
+            final items = result.items
+                .map((title) => _withDiscoveryIdentity(title, state.discovery))
+                .where(
+                  (t) =>
+                      _ordinaryCategory(t.category) &&
+                      (t.category.isEmpty ||
+                          _matchesCategory(t.category, section)),
+                )
+                .toList();
+            final existing = state.items.map((item) => item.key).toSet();
+            state.items = [
+              ...state.items,
+              ...items.where((item) => existing.add(item.key)),
+            ];
+            state.searchPages[source.id] = result.page;
+            if (result.hasMore) {
+              state.searchMore.add(source.id);
+            } else {
+              state.searchMore.remove(source.id);
+            }
+            state.sourceStatus[source.name] =
+                '${state.items.where((t) => t.sourceId == source.id).length} 个结果';
+          });
+        } catch (e) {
+          if (!mounted || generation != state.generation) return;
+          _changed(state, () => state.sourceStatus[source.name] = '连接失败：$e');
+        }
+      },
+    );
     await discoveryFuture;
     if (mounted && generation == state.generation) {
       _changed(state, () => state.loading = false);
+      unawaited(_preloadRatings(section));
     }
+  }
+
+  CinemaTitle _withDiscoveryIdentity(
+    CinemaTitle title,
+    CinemaSearchDiscovery discovery,
+  ) => title.doubanId.isNotEmpty
+      ? title
+      : CinemaRatingIdentitySearch.match(title, discovery.titles) ?? title;
+
+  Future<void> _searchInPool(
+    List<CinemaSource> sources,
+    bool Function() current,
+    Future<void> Function(CinemaSource) search,
+  ) async {
+    var next = 0;
+    Future<void> worker() async {
+      while (current() && next < sources.length) {
+        await search(sources[next++]);
+      }
+    }
+
+    await Future.wait(
+      List.generate(sources.length.clamp(0, 3), (_) => worker()),
+    );
   }
 
   Future<void> _discoverSearch(
@@ -777,42 +857,42 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       if (!current()) return;
       _changed(state, () {
         state.discovery = discovery;
+        state.items = state.items
+            .map((title) => _withDiscoveryIdentity(title, discovery))
+            .toList();
         state.discoveryMessage = discovery.message;
         state.discoveryLoading = false;
       });
       // Resolve at most two suggested Chinese titles, with three source requests
       // in flight. Original source search and its pagination remain independent.
       for (final query in discovery.queries) {
-        for (var offset = 0; offset < sources.length; offset += 3) {
-          if (!current()) return;
-          await Future.wait(
-            sources.skip(offset).take(3).map((source) async {
-              try {
-                final result = await _repository.search(source, query);
-                if (!current()) return;
-                final keys = state.items.map((t) => t.key).toSet();
-                final matches = result.items
-                    .where(
-                      (t) =>
-                          _ordinaryCategory(t.category) &&
-                          (t.category.isEmpty ||
-                              _matchesCategory(t.category, section)) &&
-                          keys.add(t.key),
-                    )
-                    .toList();
-                _changed(state, () {
-                  state.items.addAll(matches);
-                  final count = state.items
-                      .where((t) => t.sourceId == source.id)
-                      .length;
-                  if (count > 0) state.sourceStatus[source.name] = '$count 个结果';
-                });
-              } catch (_) {
-                /* Ordinary source status remains visible. */
-              }
-            }),
-          );
-        }
+        if (!current()) return;
+        await _searchInPool(sources, current, (source) async {
+          try {
+            final result = await _repository.search(source, query);
+            if (!current()) return;
+            final keys = state.items.map((t) => t.key).toSet();
+            final matches = result.items
+                .map((title) => _withDiscoveryIdentity(title, discovery))
+                .where(
+                  (t) =>
+                      _ordinaryCategory(t.category) &&
+                      (t.category.isEmpty ||
+                          _matchesCategory(t.category, section)) &&
+                      keys.add(t.key),
+                )
+                .toList();
+            _changed(state, () {
+              state.items = [...state.items, ...matches];
+              final count = state.items
+                  .where((t) => t.sourceId == source.id)
+                  .length;
+              if (count > 0) state.sourceStatus[source.name] = '$count 个结果';
+            });
+          } catch (_) {
+            /* Ordinary source status remains visible. */
+          }
+        });
       }
     } catch (e) {
       if (current()) {
@@ -826,8 +906,63 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     }
   }
 
+  Future<void> _selectActor(CinemaDiscoveryPerson person) async {
+    final state = _catalog;
+    final section = _section;
+    final people = state.discovery.people;
+    state.discoveryCancel?.cancel('演员选择已改变');
+    final cancel = state.discoveryCancel = CancelToken();
+    final generation = ++state.generation;
+    _changed(state, () {
+      state.items = [];
+      state.loading = false;
+      state.discoveryLoading = true;
+      state.discoveryMessage = '';
+      state.searchMore.clear();
+      state.searchPages.clear();
+      state.sourceStatus.clear();
+      state.discovery = CinemaSearchDiscovery(
+        people: people,
+        celebrityId: person.id,
+        celebrityName: person.name,
+      );
+    });
+    try {
+      final result = await _discoveryRepository.actorWorks(
+        person.id,
+        person.name,
+        cancelToken: cancel,
+      );
+      if (!mounted || generation != state.generation || cancel.isCancelled) {
+        return;
+      }
+      _changed(state, () {
+        state.discovery = CinemaSearchDiscovery(
+          titles: result.titles,
+          people: people,
+          celebrityId: result.celebrityId,
+          celebrityName: result.celebrityName,
+          nextStart: result.nextStart,
+          hasMore: result.hasMore,
+          message: result.message,
+        );
+        state.discoveryMessage = result.message;
+      });
+    } catch (_) {
+      if (mounted && generation == state.generation && !cancel.isCancelled) {
+        _changed(state, () => state.discoveryMessage = '暂时无法读取这位演员的作品，请重试。');
+      }
+    } finally {
+      if (mounted && generation == state.generation) {
+        _changed(state, () => state.discoveryLoading = false);
+        unawaited(_preloadRatings(section));
+      }
+    }
+  }
+
   Future<void> _moreActorWorks() async {
     final state = _catalog;
+    final section = _section;
     final generation = state.generation;
     final previous = state.discovery;
     if (state.discoveryLoading || !previous.hasMore) return;
@@ -847,12 +982,13 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             ...previous.titles,
             ...next.titles.where((t) => ids.add(t.id)),
           ],
+          people: previous.people,
           celebrityId: next.celebrityId,
           celebrityName: next.celebrityName,
           nextStart: next.nextStart,
           hasMore: next.hasMore,
         );
-        state.discoveryMessage = '';
+        state.discoveryMessage = next.message;
       });
     } catch (_) {
       if (mounted && generation == state.generation) {
@@ -861,6 +997,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     } finally {
       if (mounted && generation == state.generation) {
         _changed(state, () => state.discoveryLoading = false);
+        unawaited(_preloadRatings(section));
       }
     }
   }
@@ -882,31 +1019,50 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
               .firstOrNull
         : null;
     setState(() => _catalog.filters = value);
+    if (_searching) unawaited(_preloadRatings(_section));
     if (category != null && category.id != _categoryId) {
       _categoryId = category.id;
       _browse();
     }
   }
 
+  List<CinemaDiscoveryTitle> _visibleDiscoveryTitles(
+    _CatalogState state,
+    _Section section,
+  ) => state.discovery.titles
+      .where(
+        (title) =>
+            state.filters.matches(title.metadata) &&
+            (section == _Section.anime ||
+                title.kind.isEmpty ||
+                (section == _Section.series
+                    ? title.kind == 'tv'
+                    : title.kind != 'tv')) &&
+            !state.items.any(
+              (item) =>
+                  item.doubanId == title.id ||
+                  (cinemaSearchKey(item.title) ==
+                          cinemaSearchKey(title.title) &&
+                      (item.year.isEmpty ||
+                          title.year.isEmpty ||
+                          item.year == title.year)),
+            ),
+      )
+      .toList();
+
   Widget _discoveryResults() {
     final discovery = _catalog.discovery;
-    final titles = discovery.titles
-        .where(
-          (t) =>
-              _catalog.filters.matches(t.metadata) &&
-              (_section == _Section.anime ||
-                  (_section == _Section.series
-                      ? t.kind == 'tv'
-                      : t.kind != 'tv')) &&
-              !_items.any(
-                (v) =>
-                    v.doubanId == t.id ||
-                    (cinemaSearchKey(v.title) == cinemaSearchKey(t.title) &&
-                        (v.year.isEmpty || t.year.isEmpty || v.year == t.year)),
-              ),
-        )
-        .toList();
+    var titles = _visibleDiscoveryTitles(_catalog, _section);
+    if (_showsCatalogSort && _currentCatalogSort == CinemaCatalogSort.rating) {
+      final byId = {for (final title in titles) title.id: title};
+      titles = sortCinemaTitles(
+        titles.map((title) => title.metadata).toList(),
+        CinemaCatalogSort.rating,
+        scoreOf: (title) => _ratings.scoreFor(title, _scoreProvider),
+      ).map((title) => byId[title.id]!).toList();
+    }
     if (titles.isEmpty &&
+        discovery.people.isEmpty &&
         !_catalog.discoveryLoading &&
         _catalog.discoveryMessage.isEmpty &&
         !discovery.hasMore) {
@@ -917,6 +1073,36 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (discovery.people.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  for (final person in discovery.people)
+                    ChoiceChip(
+                      key: ValueKey('discovery-person:${person.id}'),
+                      selected: discovery.celebrityId == person.id,
+                      avatar: const Icon(
+                        Icons.person_outline_rounded,
+                        size: 16,
+                      ),
+                      label: Text(
+                        [
+                          person.name,
+                          person.originalName,
+                        ].where((s) => s.isNotEmpty).toSet().join(' · '),
+                      ),
+                      onSelected:
+                          _catalog.discoveryLoading &&
+                              discovery.celebrityId == person.id
+                          ? null
+                          : (_) => _selectActor(person),
+                    ),
+                ],
+              ),
+            ),
           Row(
             children: [
               Expanded(
@@ -946,7 +1132,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             ),
           if (titles.isNotEmpty)
             SizedBox(
-              height: 208,
+              height: 252,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 itemCount: titles.length,
@@ -957,10 +1143,8 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                     width: 110,
                     child: InkWell(
                       borderRadius: BorderRadius.circular(12),
-                      onTap: () {
-                        _search.text = title.title;
-                        _runSearch();
-                      },
+                      key: ValueKey('discovery-title:${title.id}'),
+                      onTap: () => _openTitle(title.metadata),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -976,15 +1160,16 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                             style: const TextStyle(fontSize: 12),
                           ),
                           Text(
-                            [
-                              title.year,
-                              if (title.score != null)
-                                '豆瓣 ${title.score!.toStringAsFixed(1)}',
-                            ].where((s) => s.isNotEmpty).join(' · '),
+                            title.year,
                             style: const TextStyle(
                               fontSize: 10,
                               color: CinemaTheme.muted,
                             ),
+                          ),
+                          const SizedBox(height: 5),
+                          CinemaCardRatings(
+                            title: title.metadata,
+                            repository: _ratings,
                           ),
                         ],
                       ),
@@ -1015,7 +1200,10 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
           .where((t) => _findSource(t.sourceId)?.enabled == true)
           .toList();
       if (available.isEmpty) return;
-      final representative = groupCinemaTitles(available).first.representative;
+      final representative = groupCinemaTitles([
+        ...available,
+        title,
+      ]).first.catalogTitle;
       await _openTitle(representative, variants: available);
       return;
     }
@@ -1377,7 +1565,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             onTap: () => showAboutDialog(
               context: context,
               applicationName: 'NAKU播放器',
-              applicationVersion: '1.4.0',
+              applicationVersion: '1.5.0',
               applicationLegalese:
                   '基于 Kazumi，GPL-3.0。\n个人电影、剧集与动漫客户端。\n片源及其内容由对应第三方提供。',
               children: [
@@ -1395,7 +1583,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
               ],
             ),
             child: const Text(
-              'NAKU播放器  1.4.0',
+              'NAKU播放器  1.5.0',
               style: TextStyle(
                 fontSize: 10,
                 height: 1.8,
@@ -1441,7 +1629,11 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                 onSelected: (_) {
                   if (_currentCatalogSort == sort) return;
                   setState(() => _catalogSort[_section] = sort);
-                  if (_aggregates(_section)) unawaited(_browse());
+                  if (_aggregates(_section) && !_searching) {
+                    unawaited(_browse());
+                  } else {
+                    unawaited(_preloadRatings(_section));
+                  }
                 },
               ),
             if (_currentCatalogSort == CinemaCatalogSort.rating)
@@ -1461,6 +1653,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                   onChanged: (value) {
                     if (value != null) {
                       setState(() => _scoreProviders[_section] = value);
+                      unawaited(_preloadRatings(_section));
                     }
                   },
                 ),
@@ -1489,6 +1682,16 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         ),
       ],
     ),
+  );
+
+  CinemaCatalogView get _catalogView => _catalog.viewCache.resolve(
+    items: _items,
+    filters: _catalog.filters,
+    grouped: _searching || _aggregates(_section),
+    sort: _showsCatalogSort ? _currentCatalogSort : null,
+    provider: _scoreProvider,
+    ratingRevision: _ratingRevision,
+    scoreOf: (title) => _ratings.scoreFor(title, _scoreProvider),
   );
 
   Widget _content(bool wide) {
@@ -1582,29 +1785,11 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     final searching = _searching;
     final aggregated = _aggregates(_section) && !searching;
     final snapshot = aggregated ? _aggregateFor(_section).snapshot : null;
-    final filteredItems = _items.where(_catalog.filters.matches).toList();
-    final grouped = searching || aggregated;
-    final searchGroups = grouped
-        ? groupCinemaTitles(filteredItems)
-        : <CinemaTitleGroup>[];
-    final representatives = grouped
-        ? searchGroups.map((g) => g.representative).toList()
-        : filteredItems;
-    final visibleItems = _showsCatalogSort
-        ? sortCinemaTitles(
-            representatives,
-            _currentCatalogSort,
-            scoreOf: (title) => _ratings.scoreFor(title, _scoreProvider),
-          )
-        : representatives;
-    final variantsByKey = {
-      for (final group in searchGroups)
-        group.representative.key: group.variants,
-    };
-    final cardIndexByKey = {
-      for (var index = 0; index < visibleItems.length; index++)
-        ValueKey('title-card:${visibleItems[index].key}'): index,
-    };
+    final view = _catalogView;
+    final searchGroups = view.groups;
+    final representatives = view.representatives;
+    final visibleItems = view.visible;
+    final variantsByKey = view.variants;
     return CustomScrollView(
       key: PageStorageKey(
         aggregated
@@ -1897,7 +2082,13 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                           variantsByKey[visibleItems[index].key] ?? const [],
                     ),
                     childCount: visibleItems.length,
-                    findChildIndexCallback: (key) => cardIndexByKey[key],
+                    findChildIndexCallback: (key) =>
+                        key is ValueKey<String> &&
+                            key.value.startsWith('title-card:')
+                        ? view.indices[key.value.substring(
+                            'title-card:'.length,
+                          )]
+                        : null,
                   ),
                   gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: columns,
@@ -2596,7 +2787,12 @@ class _TitleDetailsState extends State<_TitleDetails> {
         future: _detail,
         initialData: _selectedTitle.routes.isNotEmpty ? _selectedTitle : null,
         builder: (context, snapshot) {
-          final title = snapshot.data ?? _selectedTitle;
+          final title = snapshot.data == null
+              ? _selectedTitle
+              : inheritCinemaRatingMetadata(
+                  inheritCinemaRatingMetadata(snapshot.data!, _selectedTitle),
+                  widget.title,
+                );
           return CinemaCoverBackdrop(
             poster: title.poster,
             child: ListView(

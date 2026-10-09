@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'cinema_models.dart';
 import 'cinema_repository.dart';
+import 'cinema_rating_identity_search.dart';
 
 /// Some catalogue responses omit the identifiers returned by the detail API.
 /// Resolve those without opening a detail sheet or blocking the poster grid.
@@ -10,12 +11,14 @@ class CinemaRatingTitleResolver {
   CinemaRatingTitleResolver({
     required this.repository,
     required this.sourceFor,
+    this.discoverTitle,
     DateTime Function()? now,
     this.maxQueueWait = const Duration(seconds: 12),
   }) : _now = now ?? DateTime.now;
 
   final CinemaRepository repository;
   final CinemaSource? Function(String) sourceFor;
+  final Future<CinemaTitle> Function(CinemaTitle)? discoverTitle;
   final DateTime Function() _now;
   final Duration maxQueueWait;
   final _cache = <String, (DateTime, CinemaTitle?)>{};
@@ -75,6 +78,7 @@ class CinemaRatingTitleResolver {
     CinemaTitle title,
   ) async {
     if (!await _acquire()) return null;
+    var ownsSourceSlot = true;
     try {
       if (!_isCurrent(source.id, config)) return null;
       CinemaTitle? result;
@@ -87,6 +91,26 @@ class CinemaRatingTitleResolver {
         // Failed requests get the same cooldown as missing identifiers.
       }
       if (!_isCurrent(source.id, config)) return null;
+      if ((result?.doubanId ?? '').isEmpty && discoverTitle != null) {
+        // Discovery is independently bounded; release the source-detail slot so
+        // slow public metadata cannot expire other source requests in this queue.
+        _release();
+        ownsSourceSlot = false;
+        try {
+          final discovered = await discoverTitle!(_merge(title, result));
+          if (discovered.key == title.key && _compatible(title, discovered)) {
+            // The lookup's input contains this caller's source fallback score.
+            // Cache only an actual source-detail score, never that caller field.
+            result = CinemaTitle.fromJson({
+              ...discovered.toJson(),
+              'sourceDoubanScore': result?.sourceDoubanScore,
+            });
+          }
+        } catch (_) {
+          // Discovery failure leaves source metadata and playback untouched.
+        }
+      }
+      if (!_isCurrent(source.id, config)) return null;
       // Cache source data only, never one caller's explicit IDs or card fields.
       _cache[key] = (_now(), result);
       while (_cache.length > 256) {
@@ -94,7 +118,7 @@ class CinemaRatingTitleResolver {
       }
       return result;
     } finally {
-      _release();
+      if (ownsSourceSlot) _release();
     }
   }
 
@@ -111,6 +135,10 @@ class CinemaRatingTitleResolver {
     if (a != null && b != null && a != b) return false;
     final kind = _kind(title.category), detailKind = _kind(detail.category);
     if (kind.isNotEmpty && detailKind.isNotEmpty && kind != detailKind) {
+      return false;
+    }
+    if (CinemaRatingIdentitySearch.seasonForLabel(title.title) !=
+        CinemaRatingIdentitySearch.seasonForLabel(detail.title)) {
       return false;
     }
     var sameIdentity = false;

@@ -87,6 +87,58 @@ void main() {
   );
 
   test(
+    'missing source ID can use strict public discovery without caching caller fallback',
+    () async {
+      final repo = Repository()
+        ..response = (title) => title.copyWith(sourceDoubanScore: 6.2);
+      var discoveries = 0;
+      final resolver = CinemaRatingTitleResolver(
+        repository: repo,
+        sourceFor: (_) => source,
+        discoverTitle: (title) async {
+          discoveries++;
+          return title.copyWith(doubanId: '1292052');
+        },
+      );
+      final original = change(title('discover'), {'sourceDoubanScore': 8.8});
+      expect((await resolver.resolve(original)).sourceDoubanScore, 8.8);
+      final again = await resolver.resolve(title('discover'));
+      expect(again.doubanId, '1292052');
+      expect(again.sourceDoubanScore, 6.2);
+      expect(discoveries, 1);
+      resolver.dispose();
+    },
+  );
+
+  test(
+    'discovery does not override a source ID or publish after removal',
+    () async {
+      final repo = Repository();
+      var discoveries = 0;
+      final gate = Completer<CinemaTitle>();
+      CinemaSource? enabled = source;
+      final resolver = CinemaRatingTitleResolver(
+        repository: repo,
+        sourceFor: (_) => enabled,
+        discoverTitle: (_) {
+          discoveries++;
+          return gate.future;
+        },
+      );
+      await resolver.resolve(title('known'));
+      expect(discoveries, 0);
+      repo.response = (title) => title;
+      final pending = resolver.resolve(title('missing'));
+      await Future<void>.delayed(Duration.zero);
+      expect(discoveries, 1);
+      enabled = null;
+      gate.complete(enriched(title('missing')));
+      expect((await pending).doubanId, isEmpty);
+      resolver.dispose();
+    },
+  );
+
+  test(
     'limits concurrency and rejects removed sources before draining queue',
     () async {
       final repo = Repository()..delayed = true;

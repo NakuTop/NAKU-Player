@@ -29,6 +29,11 @@ class CinemaRepository {
         lifetime: const Duration(minutes: 5),
         capacity: 48,
         now: now ?? DateTime.now,
+      ),
+      _searches = _CatalogueCache(
+        lifetime: const Duration(minutes: 3),
+        capacity: 96,
+        now: now ?? DateTime.now,
       );
 
   static Dio _createDefaultDio() {
@@ -39,7 +44,7 @@ class CinemaRepository {
         sendTimeout: const Duration(seconds: 12),
         responseType: ResponseType.plain,
         headers: {
-          'User-Agent': 'NAKUPlayer/1.4.0',
+          'User-Agent': 'NAKUPlayer/1.5.0',
           'Accept': 'application/json',
         },
       ),
@@ -61,13 +66,20 @@ class CinemaRepository {
   final Dio _dio;
   final _CatalogueCache<(String, String), List<CinemaCategory>> _categories;
   final _CatalogueCache<(String, String, String, int), CinemaPage> _pages;
+  final _CatalogueCache<(String, String, String, int), CinemaPage> _searches;
 
   /// A manual refresh also detaches earlier requests, so a response that was
   /// already loading cannot overwrite the refreshed catalogue in the cache.
   void invalidateBrowseCache({CinemaSource? source}) {
     _categories.invalidate((key) => source == null || key.$1 == source.id);
     _pages.invalidate((key) => source == null || key.$1 == source.id);
+    invalidateSearchCache(source: source);
   }
+
+  /// Shared by card lookup, source discovery and explicit searches. Source
+  /// settings also form part of each key, including headers and nested rules.
+  void invalidateSearchCache({CinemaSource? source}) =>
+      _searches.invalidate((key) => source == null || key.$1 == source.id);
 
   static String _sourceIdentity(CinemaSource source) =>
       jsonEncode(_canonicalConfig(source.toJson()));
@@ -169,11 +181,24 @@ class CinemaRepository {
     int page = 1,
   }) async {
     source.validate();
-    if (keyword.trim().isEmpty) return const CinemaPage(items: []);
+    final query = keyword.trim();
+    if (query.isEmpty || (source.kind == CinemaSourceKind.kazumi && page > 1)) {
+      return const CinemaPage(items: []);
+    }
+    // Keep case and interior whitespace: those can affect remote semantics.
+    final key = (source.id, _sourceIdentity(source), query, page);
+    return _searches.load(key, () => _search(source, query, page));
+  }
+
+  Future<CinemaPage> _search(
+    CinemaSource source,
+    String keyword,
+    int page,
+  ) async {
     if (source.kind == CinemaSourceKind.maccms) {
       final body = await _request(source, {
         'ac': 'detail',
-        'wd': keyword.trim(),
+        'wd': keyword,
         'pg': '$page',
       });
       return parseMacCmsPage(
@@ -183,16 +208,11 @@ class CinemaRepository {
             _categories.peek((source.id, _sourceIdentity(source))) ?? [],
       );
     }
-    if (page > 1) return const CinemaPage(items: []);
     final plugin = Plugin.fromJson(source.rule!);
     final cancelToken = CancelToken();
     try {
       final response = await plugin
-          .queryBangumi(
-            keyword.trim(),
-            shouldRethrow: true,
-            cancelToken: cancelToken,
-          )
+          .queryBangumi(keyword, shouldRethrow: true, cancelToken: cancelToken)
           .timeout(
             const Duration(seconds: 15),
             onTimeout: () {

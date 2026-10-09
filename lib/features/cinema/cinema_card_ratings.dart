@@ -101,7 +101,7 @@ class _CinemaCardRatingsState extends State<CinemaCardRatings> {
       );
       if (!mounted || request != _request) return;
       setState(() {
-        _ratings = ratings;
+        _ratings = repository.peek(title) ?? ratings;
         _loading = false;
       });
     } catch (error) {
@@ -247,6 +247,8 @@ Object _identityKey(CinemaTitle title) => (
   title.key,
   title.title,
   title.year,
+  title.category,
+  title.aliases,
   title.doubanId,
   title.imdbId,
   title.rottenTomatoesId,

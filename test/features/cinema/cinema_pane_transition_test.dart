@@ -3,78 +3,119 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_pane_transition.dart';
 
 void main() {
-  testWidgets('new pane is usable during motion and frames do not rebuild it', (
-    tester,
-  ) async {
-    var builds = 0;
-    var taps = 0;
-    Future<void> show(String destination) => tester.pumpWidget(
-      MaterialApp(
-        home: CinemaPaneTransition(
-          destination: destination,
-          child: Builder(
-            builder: (context) {
-              builds++;
-              return Center(
-                child: TextButton(
-                  onPressed: () => taps++,
-                  child: Text(destination),
-                ),
-              );
-            },
-          ),
-        ),
-      ),
-    );
-    await show('电影');
-    await show('剧集');
-    expect(find.text('电影'), findsNothing);
-    final buildsAtStart = builds;
-    await tester.pump(const Duration(milliseconds: 40));
-    await tester.tap(find.text('剧集'));
-    expect(taps, 1);
-    await tester.pump(const Duration(milliseconds: 40));
-    expect(builds, buildsAtStart);
-    // Rapid navigation replaces the target rather than accumulating old panes.
-    await show('收藏');
-    expect(find.text('剧集'), findsNothing);
-    await tester.pumpAndSettle();
-    expect(find.text('收藏'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('reduce motion bypasses and interrupts pane animation', (
-    tester,
-  ) async {
-    Future<void> show(String destination, {bool reduce = false}) =>
-        tester.pumpWidget(
-          MaterialApp(
-            home: MediaQuery(
-              data: MediaQueryData(disableAnimations: reduce),
-              child: CinemaPaneTransition(
-                destination: destination,
-                child: Text(destination),
-              ),
+  testWidgets(
+    'switching a dense pane does not schedule whole-page motion frames',
+    (tester) async {
+      var childBuilds = 0;
+      Future<void> show(String destination) => tester.pumpWidget(
+        MaterialApp(
+          home: CinemaPaneTransition(
+            destination: destination,
+            child: Builder(
+              builder: (_) {
+                childBuilds++;
+                return GridView.builder(
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 6,
+                  ),
+                  itemCount: 240,
+                  itemBuilder: (_, index) => Text('$destination $index'),
+                );
+              },
             ),
           ),
-        );
-    double offset() => tester
-        .widget<Transform>(
-          find.descendant(
-            of: find.byType(CinemaPaneTransition),
-            matching: find.byType(Transform),
+        ),
+      );
+      await show('电影');
+      await show('剧集');
+      final buildsBeforeIdle = childBuilds;
+      final settledFrames = await tester.pumpAndSettle(
+        const Duration(milliseconds: 16),
+      );
+      debugPrint(
+        'Pane switch: $settledFrames settling frames; ${childBuilds - buildsBeforeIdle} additional child builds',
+      );
+      expect(settledFrames, lessThanOrEqualTo(1));
+      expect(childBuilds, buildsBeforeIdle);
+    },
+  );
+
+  testWidgets(
+    'new pane is usable immediately and rapid switches leave one destination',
+    (tester) async {
+      var builds = 0;
+      var taps = 0;
+      Future<void> show(String destination) => tester.pumpWidget(
+        MaterialApp(
+          home: CinemaPaneTransition(
+            destination: destination,
+            child: Builder(
+              builder: (context) {
+                builds++;
+                return Center(
+                  child: TextButton(
+                    onPressed: () => taps++,
+                    child: Text(destination),
+                  ),
+                );
+              },
+            ),
           ),
-        )
-        .transform
-        .storage[13];
-    await show('电影');
-    await show('剧集');
-    expect(offset(), greaterThan(0));
-    await show('剧集', reduce: true);
-    expect(offset(), 0);
-    await show('设置', reduce: true);
-    expect(offset(), 0);
-    await tester.pump(const Duration(milliseconds: 40));
-    expect(tester.binding.hasScheduledFrame, isFalse);
-  });
+        ),
+      );
+      await show('电影');
+      await show('剧集');
+      expect(find.text('电影'), findsNothing);
+      final buildsAtStart = builds;
+      await tester.pump(const Duration(milliseconds: 40));
+      await tester.tap(find.text('剧集'));
+      expect(taps, 1);
+      await tester.pump(const Duration(milliseconds: 40));
+      expect(builds, buildsAtStart);
+      // Rapid navigation replaces the target rather than accumulating old panes.
+      await show('收藏');
+      expect(find.text('剧集'), findsNothing);
+      await tester.pumpAndSettle();
+      expect(find.text('收藏'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'navigation has no page motion with either accessibility preference',
+    (tester) async {
+      Future<void> show(String destination, {bool reduce = false}) =>
+          tester.pumpWidget(
+            MaterialApp(
+              home: MediaQuery(
+                data: MediaQueryData(disableAnimations: reduce),
+                child: CinemaPaneTransition(
+                  destination: destination,
+                  child: Text(destination),
+                ),
+              ),
+            ),
+          );
+      await show('电影');
+      await show('剧集');
+      expect(
+        find.descendant(
+          of: find.byType(CinemaPaneTransition),
+          matching: find.byType(Transform),
+        ),
+        findsNothing,
+      );
+      expect(tester.binding.hasScheduledFrame, isFalse);
+      await show('设置', reduce: true);
+      expect(
+        find.descendant(
+          of: find.byType(CinemaPaneTransition),
+          matching: find.byType(Transform),
+        ),
+        findsNothing,
+      );
+      await tester.pump(const Duration(milliseconds: 40));
+      expect(tester.binding.hasScheduledFrame, isFalse);
+    },
+  );
 }

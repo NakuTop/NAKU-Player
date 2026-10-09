@@ -38,15 +38,22 @@ void main() {
       final firstStarted = Completer<void>();
       final releaseFirst = Completer<void>();
       final paths = <String>[];
+      var active = 0, peak = 0;
       final repository = CinemaRatingsRepository(
         directory: directory,
         fetch: (uri, _) async {
           paths.add(uri.path);
-          if (uri.path == '/rexxar/api/v2/movie/12341') {
-            firstStarted.complete();
-            await releaseFirst.future;
+          active++;
+          if (active > peak) peak = active;
+          try {
+            if (uri.path == '/rexxar/api/v2/movie/12341') {
+              firstStarted.complete();
+              await releaseFirst.future;
+            }
+            return response(uri.path);
+          } finally {
+            active--;
           }
-          return response(uri.path);
         },
       );
       final first = repository.loadForCard(title('first'));
@@ -57,11 +64,17 @@ void main() {
       );
       final expectedSkip = expectLater(skipped, throwsStateError);
       final second = repository.loadForCard(title('second'));
-      expect(paths, ['/rexxar/api/v2/movie/12341']);
+      // Crosswalk now runs independently of the first slow primary request.
+      expect(paths.where((path) => path != '/sparql'), [
+        '/rexxar/api/v2/movie/12341',
+      ]);
+      final result = await second.timeout(const Duration(seconds: 2));
+      expect(releaseFirst.isCompleted, isFalse);
       releaseFirst.complete();
       await first;
       await expectedSkip;
-      final result = await second;
+      expect(paths.any((path) => path.contains('12343')), isFalse);
+      expect(peak, lessThanOrEqualTo(3));
       expect(paths.where((path) => path != '/sparql'), [
         '/rexxar/api/v2/movie/12341',
         '/rexxar/api/v2/movie/12342',
