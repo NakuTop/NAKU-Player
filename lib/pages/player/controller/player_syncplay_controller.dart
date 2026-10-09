@@ -178,7 +178,7 @@ abstract class _PlayerSyncPlayController with Store {
               KazumiDialog.showToast(
                   message:
                       'SyncPlay: ${message['setBy'] ?? 'unknown'} 切换到第 $episode 话',
-                  duration: const Duration(seconds: 3));
+                  duration: const Duration(seconds: 5));
               changeEpisode(episode, currentRoad: currentRoad());
             }
           }
@@ -221,14 +221,14 @@ abstract class _PlayerSyncPlayController with Store {
               if (message['position'] != 0) {
                 KazumiDialog.showToast(
                     message: 'SyncPlay: ${message['setBy'] ?? 'unknown'} 暂停了播放',
-                    duration: const Duration(seconds: 3));
+                    duration: const Duration(seconds: 5));
                 pause(enableSync: false);
               }
             } else {
               if (message['position'] != 0) {
                 KazumiDialog.showToast(
                     message: 'SyncPlay: ${message['setBy'] ?? 'unknown'} 开始了播放',
-                    duration: const Duration(seconds: 3));
+                    duration: const Duration(seconds: 5));
                 play(enableSync: false);
               }
             }

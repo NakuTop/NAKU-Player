@@ -3,12 +3,18 @@ import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/bean/settings/settings_detail_scaffold.dart';
 import 'package:kazumi/bean/settings/settings_dropdown_tile.dart';
 import 'package:kazumi/bean/settings/settings_list.dart';
+import 'package:kazumi/features/cinema/cinema_startup_preferences.dart';
 import 'package:kazumi/modules/collect/collect_layout.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:kazumi/utils/device.dart';
 
 class InterfaceSettingsPage extends StatefulWidget {
-  const InterfaceSettingsPage({super.key});
+  const InterfaceSettingsPage({
+    super.key,
+    this.startupPreferences = const CinemaStartupPreferences(),
+  });
+
+  final CinemaStartupPreferences startupPreferences;
 
   @override
   State<InterfaceSettingsPage> createState() => _InterfaceSettingsPageState();
@@ -16,35 +22,44 @@ class InterfaceSettingsPage extends StatefulWidget {
 
 class _InterfaceSettingsPageState extends State<InterfaceSettingsPage> {
   late bool showRating;
-  late String defaultPage;
+  CinemaStartupTarget? _startup;
+  bool _savingStartup = false;
+  String? _startupError;
   late CollectLayout _defaultCollectLayout;
   bool _savingCollectLayout = false;
-  static const _exitBehaviorTitles = ['退出 Kazumi', '最小化至托盘', '每次都询问'];
+  static const _exitBehaviorTitles = ['退出 NAKU播放器', '隐藏到托盘', '每次都询问'];
   int _exitBehavior = GStorage.getSetting(SettingsKeys.exitBehavior)
       .clamp(0, _exitBehaviorTitles.length - 1);
-
-  static const Map<String, String> defaultPageMap = {
-    '/tab/popular/': '推荐',
-    '/tab/timeline/': '时间表',
-    '/tab/collect/': '追番',
-    '/tab/my/': '我的',
-  };
 
   @override
   void initState() {
     super.initState();
     showRating = GStorage.getSetting(SettingsKeys.showRating);
-    defaultPage = GStorage.getSetting(SettingsKeys.defaultStartupPage);
+    try {
+      _startup = widget.startupPreferences.read();
+    } catch (_) {
+      _startupError = '启动设置暂时无法读取，请重新打开设置。';
+    }
     _defaultCollectLayout = CollectLayout.fromValue(
       GStorage.getSetting(SettingsKeys.defaultCollectLayout),
     );
   }
 
-  void updateDefaultPage(String page) {
-    GStorage.putSetting(SettingsKeys.defaultStartupPage, page);
+  Future<void> updateDefaultPage(String page) async {
+    if (_savingStartup || _startup == null || page == _startup!.location) return;
     setState(() {
-      defaultPage = page;
+      _savingStartup = true;
+      _startupError = null;
     });
+    try {
+      final target = CinemaStartupTarget.fromStored(page);
+      await widget.startupPreferences.save(target);
+      if (mounted) setState(() => _startup = target);
+    } catch (_) {
+      if (mounted) setState(() => _startupError = '启动页面未保存，请重试。');
+    } finally {
+      if (mounted) setState(() => _savingStartup = false);
+    }
   }
 
   Future<void> _updateDefaultCollectLayout(CollectLayout layout) async {
@@ -69,19 +84,21 @@ class _InterfaceSettingsPageState extends State<InterfaceSettingsPage> {
           SettingsSection(title: Text('启动'), tiles: [
             SettingsDropdownTile<String>(
               leading: Icons.home_rounded,
-              title: const Text('启动界面设置'),
-              description: const Text('设置应用开启时的默认页面'),
-              value: defaultPage,
-              options: defaultPageMap,
-              fallbackLabel: '推荐',
+              title: const Text('启动页面'),
+              description: Text(_startupError ??
+                  (_savingStartup ? '正在保存…' : '下次启动 NAKU播放器时打开此页面')),
+              value: _startup?.location ?? '',
+              options: CinemaStartupPreferences.options,
+              fallbackLabel: '暂不可用',
+              enabled: !_savingStartup && _startup != null,
               onChanged: updateDefaultPage,
             ),
           ]),
-          SettingsSection(title: Text('展示信息'), tiles: [
+          SettingsSection(title: Text('动漫展示'), tiles: [
             SettingsDropdownTile<CollectLayout>(
               leading: Icons.view_agenda_rounded,
-              title: const Text('追番默认布局'),
-              description: const Text('下次打开追番页时使用，页面内切换不会改变此设置'),
+              title: const Text('动漫追番默认布局'),
+              description: const Text('仅影响动漫追番页；下次打开时使用，页内切换不会改变此设置'),
               enabled: !_savingCollectLayout,
               value: _defaultCollectLayout,
               options: {
@@ -96,8 +113,8 @@ class _InterfaceSettingsPageState extends State<InterfaceSettingsPage> {
                 await GStorage.putSetting(SettingsKeys.showRating, showRating);
                 setState(() {});
               },
-              title: Text('显示评分'),
-              description: Text('关闭后隐藏概览和番剧列表中的评分信息'),
+              title: Text('显示动漫评分'),
+              description: Text('仅影响动漫概览和番剧列表，不改变电影、剧集与豆瓣榜单评分'),
               initialValue: showRating,
             ),
           ]),

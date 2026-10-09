@@ -1,3 +1,4 @@
+import 'package:kazumi/features/cinema/cinema_startup_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:kazumi/bean/widget/error_widget.dart';
@@ -18,7 +19,6 @@ import 'package:kazumi/pages/settings/settings_module.dart';
 import 'package:kazumi/pages/timeline/timeline_controller.dart';
 import 'package:kazumi/pages/timeline/timeline_module.dart';
 import 'package:kazumi/pages/video/video_module.dart';
-import 'package:kazumi/services/storage/storage.dart';
 import 'package:kazumi/plugins/plugins_controller.dart';
 import 'package:kazumi/pages/collect/collect_controller.dart';
 import 'package:kazumi/pages/my/my_controller.dart';
@@ -56,7 +56,7 @@ final tabModule = createModule(
             ..route(
               '/',
               guards: [
-                (state) => GStorage.getSetting(SettingsKeys.defaultStartupPage),
+                (state) => const CinemaStartupPreferences().read().location,
               ],
               child: (context, state) => const SizedBox.shrink(),
             )
@@ -87,7 +87,9 @@ final indexModule = createModule(
       ..route(
         '/cinema',
         provide: provideCinemaAnimeControllers,
-        child: (context, state) => const CinemaHomePage(),
+        child: (context, state) => CinemaHomePage(
+          initialStartup: CinemaStartupTarget.fromStored(state.uri.toString()),
+        ),
         transition: TransitionType.none,
       )
       ..route(
@@ -101,7 +103,7 @@ final indexModule = createModule(
       ..route(
         '/error',
         child: (context, state) => Scaffold(
-          appBar: AppBar(title: const Text('Kazumi')),
+          appBar: AppBar(title: const Text('NAKU播放器')),
           body: const GeneralErrorWidget(title: '初始化失败', errMsg: '请重新启动应用后再试。'),
         ),
       )

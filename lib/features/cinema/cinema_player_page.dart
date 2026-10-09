@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:kazumi/bean/dialog/dialog_helper.dart';
+import 'package:kazumi/pages/player/player_keyboard_shortcuts.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:kazumi/services/logging/logger.dart';
@@ -29,6 +31,7 @@ import 'package:kazumi/utils/media.dart';
 import 'cinema_playback_candidates.dart';
 import 'cinema_repository.dart';
 import 'cinema_store.dart';
+import 'cinema_player_preferences.dart';
 
 /// Locate the saved episode in a fresh catalogue without trusting old indexes.
 ({int routeIndex, int episodeIndex})? cinemaResumeSelection(
@@ -183,6 +186,9 @@ class CinemaPlayerPage extends StatefulWidget {
     this.ratingsRepository,
     this.reviewsRepository,
     this.onRecommendationSelected,
+    this.preferences,
+    this.createPlayer,
+    this.videoSurfaceBuilder,
   });
 
   final CinemaTitle title;
@@ -196,6 +202,13 @@ class CinemaPlayerPage extends StatefulWidget {
   final CinemaRatingsRepository? ratingsRepository;
   final CinemaDoubanReviewsRepository? reviewsRepository;
   final ValueChanged<DoubanRecommendation>? onRecommendationSelected;
+  @visibleForTesting
+  final CinemaPlayerPreferences? preferences;
+  @visibleForTesting
+  final Player Function(PlayerConfiguration configuration)? createPlayer;
+  @visibleForTesting
+  final Widget Function(BuildContext context, Player player)?
+  videoSurfaceBuilder;
 
   @override
   State<CinemaPlayerPage> createState() => _CinemaPlayerPageState();
@@ -240,6 +253,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   String? _playbackNotice;
   double _rate = 1;
   double _volume = 100;
+  double _audibleVolume = 100;
+  double? _beforeForwardRate;
+  bool _forwardHeld = false;
+  bool _backgroundPaused = false;
+  late final _preferences =
+      widget.preferences ?? CinemaPlayerPreferences.read();
+  final _playerFocus = FocusScopeNode(debugLabel: 'NAKU player');
+  Timer? _volumeSaveTimer;
+  final _volumePersistence = CinemaVolumePersistence();
   bool _pip = false, _pipChanging = false;
   Completer<void>? _pipTransition;
   bool _fullscreen = false, _fullscreenChanging = false;
@@ -319,9 +341,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       if (mounted) setState(() {});
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('收藏未保存，请检查磁盘空间后重试。')));
+        KazumiDialog.showToast(context: context, message: '收藏未保存，请检查磁盘空间后重试。');
       }
     }
   }
@@ -348,7 +368,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       playback.watchdog.reset();
       await playback.player.seek(position);
       if (!identical(playback, _playback)) return;
-      if (playing) {
+      if (playing && !_backgroundPaused) {
         await playback.player.play();
       } else {
         await playback.player.pause();
@@ -408,9 +428,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('暂时无法切换画中画')));
+        KazumiDialog.showToast(context: context, message: '暂时无法切换画中画');
       }
     } finally {
       _pipChanging = false;
@@ -464,9 +482,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     } catch (_) {
       if (mounted && identical(playback, _playback)) {
         setState(() => _superResolution = SuperResolutionMode.off);
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('当前渲染器无法启用超分辨率，已保留原始画面。')));
+        KazumiDialog.showToast(
+          context: context,
+          message: '当前渲染器无法启用超分辨率，已保留原始画面。',
+        );
       }
     }
   }
@@ -485,6 +504,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   @override
   void initState() {
     super.initState();
+    _rate = _preferences.rate;
+    _volume = _preferences.initialVolume;
+    _audibleVolume = _preferences.volume > 0 ? _preferences.volume : 100;
+    _superResolution = _preferences.superResolution;
     DesktopExitTasks.instance.register(this, _saveBeforeApplicationExit);
     _bindTogether();
     unawaited(_together.initialize());
@@ -526,6 +549,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       episodeIndex: current.episodeIndex,
       positionSeconds: current.completed ? 0 : current.position.inSeconds,
     );
+    if (_preferences.privateMode) return;
     try {
       await widget.store.recordProgress(
         title: current.title,
@@ -638,6 +662,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         routeIndex,
         episodeIndex,
         generation,
+        _preferences,
+        widget.createPlayer,
       );
       _playback = candidate;
       candidate.logStage('player-created');
@@ -679,6 +705,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           start: Duration(seconds: offset),
           httpHeaders: selectedSource.headers,
         ),
+        play: _preferences.autoPlay && !_backgroundPaused,
       );
       if (!_isCurrent(generation)) return;
       candidate.logStage('open-return');
@@ -710,6 +737,16 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       playback.player.stream.playing.listen((_) {
         if (current()) playback.watchdog.reset();
       }),
+      playback.player.stream.volume.listen((volume) {
+        if (!current() || !volume.isFinite || volume == _volume) return;
+        _volume = volume.clamp(0, 100).toDouble();
+        if (_volume > 0) _audibleVolume = _volume;
+        _volumePersistence.update(_volume);
+        _volumeSaveTimer?.cancel();
+        _volumeSaveTimer = Timer(const Duration(milliseconds: 300), () {
+          unawaited(_saveVolume());
+        });
+      }),
       playback.player.stream.duration.listen((duration) {
         if (!current()) return;
         playback.duration = duration;
@@ -727,8 +764,19 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }),
       playback.player.stream.completed.listen((completed) {
         if (!current()) return;
+        final newlyCompleted = completed && !playback.completed;
         setState(() => playback.completed = completed);
         if (completed) unawaited(_persistProgress(playback));
+        if (newlyCompleted) {
+          final next = _preferences.nextEpisode(
+            index: _episodeIndex,
+            count: _route?.episodes.length ?? 0,
+            following: _together.following,
+          );
+          if (next != null) {
+            unawaited(_playEpisode(_routeIndex, next, resumeAt: 0));
+          }
+        }
       }),
       playback.player.stream.error.listen((message) {
         if (!current()) return;
@@ -752,9 +800,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           isBuffering: playback.player.state.buffering,
         );
         debugPrint('Cinema playback notice: $message');
-        setState(
-          () => _playbackNotice = explanation ?? '播放器报告异常；若无法继续，可重试或更换线路。',
-        );
+        if (_preferences.showPlayerError) {
+          setState(
+            () => _playbackNotice = explanation ?? '播放器报告异常；若无法继续，可重试或更换线路。',
+          );
+        }
       }),
     ]);
   }
@@ -953,12 +1003,95 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }
     } catch (_) {
       if (mounted && identical(playback, _playback)) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('暂时无法更改倍速，请在视频加载后重试。')));
+        KazumiDialog.showToast(
+          context: context,
+          message: '暂时无法更改倍速，请在视频加载后重试。',
+        );
       }
     }
   }
+
+  Future<void> _saveVolume() async {
+    _volumeSaveTimer?.cancel();
+    try {
+      await _volumePersistence.flush();
+    } catch (_) {
+      // An unavailable settings store must not stop playback or block exit.
+      KazumiLogger().w('Cinema: could not save remembered volume');
+    }
+  }
+
+  Future<void> _setVolume(double volume) async {
+    final player = _playback?.player;
+    if (player == null || _closing) return;
+    await player.setVolume(volume.clamp(0, 100).toDouble());
+  }
+
+  void _changeEpisode(int delta) {
+    if (_closing || _loading || _requiresEpisodeSelection) return;
+    final target = _episodeIndex + delta;
+    if (target >= 0 && target < (_route?.episodes.length ?? 0)) {
+      unawaited(_playEpisode(_routeIndex, target, resumeAt: 0));
+    }
+  }
+
+  void _changeSpeed(int direction) {
+    final choices = direction > 0
+        ? defaultPlaySpeedList.where((value) => value > _rate)
+        : defaultPlaySpeedList.reversed.where((value) => value < _rate);
+    if (choices.isNotEmpty) unawaited(_setRate(choices.first));
+  }
+
+  Future<void> _holdForward() async {
+    if (_closing || _playback == null) return;
+    _forwardHeld = true;
+    if (_rate < _preferences.longPressRate) {
+      await _setRate(_preferences.longPressRate);
+    }
+  }
+
+  Future<void> _releaseForward() async {
+    final previous = _beforeForwardRate;
+    final held = _forwardHeld;
+    _beforeForwardRate = null;
+    _forwardHeld = false;
+    if (_closing || !mounted) return;
+    if (held && previous != null) {
+      await _setRate(previous);
+    } else {
+      _seekBy(_preferences.arrowSkipSeconds);
+    }
+  }
+
+  Map<String, PlayerShortcutAction> get _keyboardActions => {
+    'playorpause': () async {
+      await _playback?.player.playOrPause();
+    },
+    'forward': () {
+      _beforeForwardRate = _rate;
+      _forwardHeld = false;
+    },
+    'rewind': () => _seekBy(-_preferences.arrowSkipSeconds),
+    'next': () => _changeEpisode(1),
+    'prev': () => _changeEpisode(-1),
+    'volumeup': () => _setVolume(_volume + 10),
+    'volumedown': () => _setVolume(_volume - 10),
+    'togglemute': () => _setVolume(_volume > 0 ? 0 : _audibleVolume),
+    'fullscreen': _toggleFullscreen,
+    'exitfullscreen': () async {
+      if (_fullscreen) await _toggleFullscreen();
+    },
+    'skip': () => _seekBy(_preferences.buttonSkipSeconds),
+    'speed1': () => _setRate(1),
+    'speed2': () => _setRate(2),
+    'speed3': () => _setRate(3),
+    'speedup': () => _changeSpeed(1),
+    'speeddown': () => _changeSpeed(-1),
+    'episodes': _showEpisodes,
+    'pip': _togglePip,
+    'together': () => showCinemaSyncSheet(context, coordinator: _together),
+    'favorite': _toggleFavorite,
+  };
 
   Future<void>? _leaving;
   Future<void> _leave() => _leaving ??= _leaveOnce();
@@ -974,6 +1107,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     // Save the final local progress before process termination. A window hide
     // does not invoke this hook or disturb the current route/playback session.
     try {
+      await _saveVolume();
       await _persistProgress(playback);
       await widget.store.flush();
     } finally {
@@ -1002,6 +1136,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
     await _together.detachPlayback(_syncOwner);
     _resolver.cancel();
+    await _saveVolume();
     await _persistProgress();
     try {
       await widget.store.flush();
@@ -1015,6 +1150,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_preferences.backgroundPlayback &&
+        (state == AppLifecycleState.hidden ||
+            state == AppLifecycleState.paused) &&
+        !_pip) {
+      _backgroundPaused = true;
+      unawaited(_playback?.player.pause());
+    } else if (state == AppLifecycleState.resumed) {
+      _backgroundPaused = false;
+    }
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
@@ -1028,6 +1172,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     WidgetsBinding.instance.removeObserver(this);
     windowManager.removeListener(this);
     _panelRevision.dispose();
+    _playerFocus.dispose();
+    _volumeSaveTimer?.cancel();
+    unawaited(_saveVolume());
     unawaited(_together.detachPlayback(_syncOwner));
     if (_pip) unawaited(_restoreWindow());
     _closing = true;
@@ -1046,39 +1193,38 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   @override
-  Widget build(BuildContext context) {
-    if (_fullscreen) {
-      return Focus(
-        autofocus: true,
-        onKeyEvent: (_, event) {
-          if (event is! KeyDownEvent ||
+  Widget build(BuildContext context) => FocusScope(
+    node: _playerFocus,
+    autofocus: true,
+    child: Stack(
+      fit: StackFit.expand,
+      children: [
+        _buildPlayer(context),
+        PlayerKeyboardShortcuts(
+          focusScopeNode: _playerFocus,
+          shortcuts: _preferences.shortcuts,
+          actions: _keyboardActions,
+          longPressActions: {
+            'forward': PlayerLongPressShortcutActions(
+              onRepeat: _holdForward,
+              onRelease: _releaseForward,
+            ),
+          },
+          isBlocked: () =>
+              _closing ||
               HardwareKeyboard.instance.isMetaPressed ||
-              HardwareKeyboard.instance.isControlPressed) {
-            return KeyEventResult.ignored;
-          }
-          final actions = <LogicalKeyboardKey, VoidCallback>{
-            LogicalKeyboardKey.escape: _toggleFullscreen,
-            LogicalKeyboardKey.keyF: _toggleFullscreen,
-            LogicalKeyboardKey.keyE: _showEpisodes,
-            LogicalKeyboardKey.keyP: _togglePip,
-            LogicalKeyboardKey.keyW: () =>
-                showCinemaSyncSheet(context, coordinator: _together),
-            LogicalKeyboardKey.keyB: _toggleFavorite,
-            LogicalKeyboardKey.space: () {
-              _playback?.player.playOrPause();
-            },
-            LogicalKeyboardKey.arrowLeft: () => _seekBy(-10),
-            LogicalKeyboardKey.arrowRight: () => _seekBy(10),
-          };
-          final action = actions[event.logicalKey];
-          if (action == null) return KeyEventResult.ignored;
-          action();
-          return KeyEventResult.handled;
-        },
-        child: Theme(
-          data: CinemaTheme.of(context),
-          child: Scaffold(backgroundColor: Colors.black, body: _videoSurface()),
+              HardwareKeyboard.instance.isControlPressed ||
+              HardwareKeyboard.instance.isAltPressed,
         ),
+      ],
+    ),
+  );
+
+  Widget _buildPlayer(BuildContext context) {
+    if (_fullscreen) {
+      return Theme(
+        data: CinemaTheme.of(context),
+        child: Scaffold(backgroundColor: Colors.black, body: _videoSurface()),
       );
     }
     if (_pip) {
@@ -1280,7 +1426,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             tooltip: '播放倍速',
             onSelected: _setRate,
             enabled: _playback != null && !_loading,
-            itemBuilder: (_) => [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+            itemBuilder: (_) => defaultPlaySpeedList
                 .map(
                   (rate) => CheckedPopupMenuItem<double>(
                     value: rate,
@@ -1368,27 +1514,26 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   Widget _videoSurface() {
     final playback = _playback;
-    playback?.observeControllerInitialization();
+    if (widget.videoSurfaceBuilder == null) {
+      playback?.observeControllerInitialization();
+    }
     final controlsTheme = MaterialDesktopVideoControlsThemeData(
       visibleOnMount: true,
       toggleFullscreenOnDoublePress: false,
-      keyboardShortcuts: {
-        const SingleActivator(LogicalKeyboardKey.space): () {
-          playback?.player.playOrPause();
-        },
-        const SingleActivator(LogicalKeyboardKey.keyF): _toggleFullscreen,
-        const SingleActivator(LogicalKeyboardKey.keyE): _showEpisodes,
-        const SingleActivator(LogicalKeyboardKey.keyP): _togglePip,
-        const SingleActivator(LogicalKeyboardKey.keyW): () =>
-            showCinemaSyncSheet(context, coordinator: _together),
-        const SingleActivator(LogicalKeyboardKey.keyB): _toggleFavorite,
-
-        const SingleActivator(LogicalKeyboardKey.escape): () {
-          if (_fullscreen) _toggleFullscreen();
-        },
-        const SingleActivator(LogicalKeyboardKey.arrowLeft): () => _seekBy(-10),
-        const SingleActivator(LogicalKeyboardKey.arrowRight): () => _seekBy(10),
-      },
+      keyboardShortcuts: const {},
+      controlsHoverDuration: _preferences.controlsHoverDuration,
+      controlsTransitionDuration: _preferences.disableAnimations
+          ? Duration.zero
+          : const Duration(milliseconds: 150),
+      seekBarTransitionDuration: _preferences.disableAnimations
+          ? Duration.zero
+          : const Duration(milliseconds: 300),
+      seekBarThumbTransitionDuration: _preferences.disableAnimations
+          ? Duration.zero
+          : const Duration(milliseconds: 150),
+      volumeBarTransitionDuration: _preferences.disableAnimations
+          ? Duration.zero
+          : const Duration(milliseconds: 150),
       buttonBarHeight: _pip ? 48 : 72,
       automaticallyImplySkipNextButton: false,
       automaticallyImplySkipPreviousButton: false,
@@ -1476,6 +1621,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                           Icons.playlist_play,
                           _showEpisodes,
                         ),
+                        IconButton(
+                          tooltip: '跳过 ${_preferences.buttonSkipSeconds} 秒',
+                          icon: const Icon(
+                            Icons.fast_forward_rounded,
+                            size: 19,
+                          ),
+                          onPressed: () =>
+                              _seekBy(_preferences.buttonSkipSeconds),
+                        ),
                       ],
                     ),
                   ),
@@ -1503,12 +1657,16 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             MaterialDesktopVideoControlsTheme(
               normal: controlsTheme,
               fullscreen: controlsTheme,
-              child: Video(
-                key: ValueKey(playback),
-                controller: playback.controller,
-                controls: MaterialDesktopVideoControls,
-                pauseUponEnteringBackgroundMode: false,
-              ),
+              child:
+                  widget.videoSurfaceBuilder?.call(context, playback.player) ??
+                  Video(
+                    key: ValueKey(playback),
+                    controller: playback.controller,
+                    fit: _preferences.aspectRatio.fit,
+                    aspectRatio: _preferences.aspectRatio.frameAspectRatio,
+                    controls: MaterialDesktopVideoControls,
+                    pauseUponEnteringBackgroundMode: false,
+                  ),
             ),
           if (_loading || _error != null)
             ColoredBox(
@@ -1704,7 +1862,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
     return cinemaResumePosition(
       selected,
-      widget.store.historyFor(selected),
+      _preferences.resume ? widget.store.historyFor(selected) : null,
       routeIndex,
       episodeIndex,
     );
@@ -1820,9 +1978,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             ],
           ),
         const SizedBox(height: 26),
-        const Text(
-          '播放进度会自动保存在这台电脑。',
-          style: TextStyle(color: _muted, fontSize: 11, height: 1.7),
+        Text(
+          _preferences.privateMode ? '隐身模式已开启，本次不会保存观看记录。' : '播放进度会自动保存在这台电脑。',
+          style: const TextStyle(color: _muted, fontSize: 11, height: 1.7),
         ),
       ],
     );
@@ -1861,19 +2019,22 @@ class _CinemaPlayback {
     this.routeIndex,
     this.episodeIndex,
     this.generation,
+    this.preferences,
+    this.createPlayer,
   );
   final CinemaTitle title;
   final int routeIndex;
   final int episodeIndex;
   final int generation;
-  final player = Player(
-    configuration: const PlayerConfiguration(
-      title: 'NAKU播放器',
-      osc: false,
-      bufferSize: 64 * 1024 * 1024,
-    ),
+  final CinemaPlayerPreferences preferences;
+  final Player Function(PlayerConfiguration configuration)? createPlayer;
+  late final player =
+      createPlayer?.call(preferences.playerConfiguration) ??
+      Player(configuration: preferences.playerConfiguration);
+  late final controller = VideoController(
+    player,
+    configuration: preferences.videoConfiguration,
   );
-  late final controller = VideoController(player);
   String lastStage = 'created';
   bool _controllerDiagnosticsAttached = false;
 

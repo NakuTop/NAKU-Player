@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/bean/settings/settings_list.dart';
 import 'package:kazumi/utils/dandan_credentials.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -18,8 +19,9 @@ class DanmakuServiceStatusTile extends StatelessWidget {
       // Keep a failed external link from interrupting the settings page.
     }
     if (!context.mounted) return;
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-      const SnackBar(content: Text('无法打开说明，请访问 doc.dandanplay.com/open/')),
+    KazumiDialog.showToast(
+      context: context,
+      message: '无法打开说明，请访问 doc.dandanplay.com/open/',
     );
   }
 

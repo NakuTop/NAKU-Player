@@ -1,3 +1,4 @@
+import 'package:kazumi/features/cinema/cinema_startup_preferences.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -164,7 +165,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       isEnabled: () => GStorage.getSetting(SettingsKeys.autoUpdate),
       checkForUpdate: () => myController.checkUpdate(type: 'auto'),
     ));
-    context.navigate(GStorage.getSetting(SettingsKeys.defaultStartupPage));
+    context.navigate(const CinemaStartupPreferences().read().location);
   }
 
   Widget _buildBottomBar(BuildContext context) {

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'cinema_models.dart';
@@ -363,9 +364,7 @@ class _RatingCard extends StatelessWidget {
       }
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.maybeOf(
-        context,
-      )?.showSnackBar(SnackBar(content: Text(_readableError(error))));
+      KazumiDialog.showToast(context: context, message: _readableError(error));
     }
   }
 

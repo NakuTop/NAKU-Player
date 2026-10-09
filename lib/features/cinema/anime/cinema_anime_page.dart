@@ -27,9 +27,10 @@ void provideCinemaAnimeControllers(Scoped scoped) {
 /// NAKU navigation around the complete original anime pages. Keeping this host
 /// mounted preserves each page's filters, requests, input and scroll position.
 class CinemaAnimePage extends StatefulWidget {
-  const CinemaAnimePage({super.key, this.active = true});
+  const CinemaAnimePage({super.key, this.active = true, this.initialTab = 0});
 
   final bool active;
+  final int initialTab;
 
   @override
   State<CinemaAnimePage> createState() => _CinemaAnimePageState();
@@ -45,7 +46,7 @@ class _CinemaAnimePageState extends State<CinemaAnimePage> with RouteAware {
   ];
   final _pages = <int, Widget>{};
   final _focusScope = FocusScopeNode(debugLabel: 'NAKU anime');
-  int _selected = 0;
+  late int _selected = widget.initialTab.clamp(0, _destinations.length - 1);
   bool _covered = false;
   PageRoute<void>? _route;
 

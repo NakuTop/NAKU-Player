@@ -36,6 +36,8 @@ class KazumiDialog {
   static final KazumiDialogObserver observer = KazumiDialogObserver();
   // Allows modal sheets to use the same dismissal and route tracking.
   static const routeSettings = RouteSettings(name: 'KazumiDialog');
+  static const toastDuration = Duration(seconds: 5);
+  static const toastTransitionDuration = Duration(milliseconds: 200);
   static int _toastRevision = 0;
 
   KazumiDialog._internal();
@@ -88,18 +90,21 @@ class KazumiDialog {
   static void showToast({
     required String message,
     BuildContext? context,
+    ScaffoldMessengerState? messenger,
     bool showActionButton = false,
     String? actionLabel,
     VoidCallback? onActionPressed,
-    Duration duration = const Duration(seconds: 2),
+    Duration duration = toastDuration,
   }) {
-    final messenger = _resolveScaffoldMessenger(context);
-    if (messenger != null && messenger.mounted) {
+    final target = messenger ?? _resolveScaffoldMessenger(context);
+    if (target != null && target.mounted) {
       final toastContext =
-          context != null && context.mounted ? context : messenger.context;
+          context != null && context.mounted ? context : target.context;
       try {
         _toastRevision++;
-        messenger
+        target
+          // A new result replaces stale feedback, including any older queue.
+          ..clearSnackBars()
           ..removeCurrentSnackBar()
           ..showSnackBar(
             SnackBar(
@@ -111,6 +116,7 @@ class KazumiDialog {
                   : null,
               duration: duration,
               persist: false,
+              hitTestBehavior: HitTestBehavior.deferToChild,
               action: showActionButton
                   ? SnackBarAction(
                       label: actionLabel ?? 'Dismiss',
@@ -123,6 +129,12 @@ class KazumiDialog {
                     )
                   : null,
             ),
+            snackBarAnimationStyle: MediaQuery.disableAnimationsOf(toastContext)
+                ? AnimationStyle.noAnimation
+                : const AnimationStyle(
+                    duration: toastTransitionDuration,
+                    reverseDuration: toastTransitionDuration,
+                  ),
           );
       } catch (e) {
         debugPrint('Kazumi Dialog Error: Failed to show toast: $e');

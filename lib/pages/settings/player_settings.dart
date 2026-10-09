@@ -274,7 +274,7 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
                     await context.pushNamed('/settings/player/renderer');
                   },
                   title: Text('视频渲染器'),
-                  description: Text('选择视频输出方式'),
+                  description: Text('Android 动漫专用：选择视频输出方式'),
                 ),
               ],
               const LowMemoryModeSettingsTile(),
@@ -289,7 +289,7 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
                     setState(() {});
                   },
                   title: Text('低延迟音频'),
-                  description: Text('启用OpenSLES音频输出以降低延时'),
+                  description: Text('Android 动漫专用：启用 OpenSLES 音频输出'),
                   initialValue: androidEnableOpenSLES,
                 ),
               ],
@@ -353,7 +353,7 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
                     setState(() {});
                   },
                   title: Text('自动进入画中画'),
-                  description: Text('切到后台时，自动进入画中画'),
+                  description: Text('Android 动漫专用：切到后台时自动进入画中画'),
                   initialValue: androidAutoEnterPIP,
                 ),
               SettingsTile.switchTile(
@@ -392,7 +392,7 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
                     setState(() {});
                   },
                   title: Text('滑动手势'),
-                  description: Text('竖向滑动调节音量和亮度'),
+                  description: Text('动漫专用：竖向滑动调节音量和亮度'),
                   initialValue: brightnessVolumeGesture,
                 ),
               SettingsTile.switchTile(
@@ -433,13 +433,13 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
                   setState(() {});
                 },
                 title: Text('调试模式'),
-                description: Text('记录播放器内部日志'),
+                description: Text('动漫专用：记录播放器内部日志'),
                 initialValue: playerDebugMode,
               ),
               SettingsDropdownTile<int>(
                 leading: Icons.receipt_long_rounded,
                 title: const Text('日志等级'),
-                description: const Text('播放器内部日志等级'),
+                description: const Text('动漫播放器内部日志等级'),
                 value: playerLogLevel,
                 options: playerLogLevelMap,
                 fallbackLabel: '???',
@@ -464,7 +464,7 @@ class _PlayerSettingsPageState extends State<PlayerSettingsPage> {
               SettingsSliderTile(
                 leading: Icons.fast_forward_rounded,
                 title: Text('长按倍速'),
-                description: Text('长按屏幕或按住方向键时的倍速'),
+                description: Text('按住方向键时的倍速；屏幕长按仅用于动漫'),
                 value: defaultShortcutForwardPlaySpeed,
                 min: 1.25,
                 max: 3,

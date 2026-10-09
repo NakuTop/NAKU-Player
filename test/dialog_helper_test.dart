@@ -233,6 +233,157 @@ void main() {
     expect(find.text('updating'), findsOneWidget);
   });
 
+  testWidgets('action toast stays five seconds then fades out', (tester) async {
+    await mountApp(tester);
+    KazumiDialog.showToast(
+      message: 'deleted',
+      showActionButton: true,
+      actionLabel: 'undo',
+    );
+    await tester.pumpAndSettle(const Duration(milliseconds: 10));
+    final snackBar = tester.widget<SnackBar>(find.byType(SnackBar));
+    expect(snackBar.persist, isFalse);
+    expect(snackBar.duration, const Duration(seconds: 5));
+    await tester.pump(const Duration(milliseconds: 4900));
+    expect(find.text('undo'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+    final fade = tester.widget<FadeTransition>(find.descendant(
+      of: find.byType(SnackBar),
+      matching: find.byType(FadeTransition),
+    ));
+    expect(fade.opacity.value, allOf(greaterThan(0), lessThan(1)));
+    await tester.pump(const Duration(milliseconds: 110));
+    expect(find.text('deleted'), findsNothing);
+    expect(find.text('undo'), findsNothing);
+  });
+
+  testWidgets('undo is still actionable just before five seconds', (tester) async {
+    await mountApp(tester);
+    var undone = 0;
+    KazumiDialog.showToast(
+      message: 'deleted',
+      showActionButton: true,
+      actionLabel: 'undo',
+      onActionPressed: () => undone++,
+    );
+    await tester.pumpAndSettle(const Duration(milliseconds: 10));
+    await tester.pump(const Duration(milliseconds: 4900));
+    await tester.tap(find.text('undo'));
+    await tester.pumpAndSettle();
+    expect(undone, 1);
+    expect(find.text('deleted'), findsNothing);
+  });
+
+  testWidgets('a new toast discards queued stale feedback', (tester) async {
+    await mountApp(tester);
+    final messenger = rootScaffoldMessengerKey.currentState!;
+    messenger.showSnackBar(SnackBar(
+      content: const Text('old persistent result'),
+      action: SnackBarAction(label: 'old undo', onPressed: () {}),
+    ));
+    messenger.showSnackBar(const SnackBar(content: Text('old queued result')));
+    await tester.pumpAndSettle();
+    KazumiDialog.showToast(message: 'latest result');
+    await tester.pumpAndSettle();
+    expect(find.text('latest result'), findsOneWidget);
+    expect(find.text('old persistent result'), findsNothing);
+    expect(find.text('old queued result'), findsNothing);
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('rapid toasts leave only the latest and no hidden queue',
+      (tester) async {
+    await mountApp(tester);
+    for (var i = 0; i < 4; i++) {
+      KazumiDialog.showToast(message: 'result $i');
+    }
+    await tester.pumpAndSettle();
+    expect(find.text('result 3'), findsOneWidget);
+    expect(find.byType(SnackBar), findsOneWidget);
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    expect(find.byType(SnackBar), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('toast margins let pointer clicks reach the page', (tester) async {
+    tester.view.physicalSize = const Size(1000, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    var clicked = 0;
+    await tester.pumpWidget(MaterialApp(
+      scaffoldMessengerKey: rootScaffoldMessengerKey,
+      home: Scaffold(body: Stack(children: [
+        Positioned(
+          left: 0,
+          bottom: 20,
+          width: 60,
+          height: 48,
+          child: TextButton(
+            onPressed: () => clicked++,
+            child: const Text('behind'),
+          ),
+        ),
+      ])),
+    ));
+    KazumiDialog.showToast(message: 'result');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('behind'));
+    expect(clicked, 1);
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('behind'));
+    expect(clicked, 2);
+    expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('accessibility mode still expires feedback without animation',
+      (tester) async {
+    tester.binding.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(
+          accessibleNavigation: true,
+          disableAnimations: true,
+        );
+    addTearDown(tester.binding.platformDispatcher.clearAccessibilityFeaturesTestValue);
+    await tester.pumpWidget(MaterialApp(
+      scaffoldMessengerKey: rootScaffoldMessengerKey,
+      home: const Scaffold(body: Text('home')),
+    ));
+    KazumiDialog.showToast(
+      message: 'accessible result',
+      showActionButton: true,
+      actionLabel: 'undo',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('undo'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pump();
+    expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('toast expiry leaves an important confirmation dialog open',
+      (tester) async {
+    await mountApp(tester);
+    final dialog = KazumiDialog.show<bool>(
+      clickMaskDismiss: false,
+      builder: (_) => const AlertDialog(title: Text('confirm deletion')),
+    );
+    await tester.pumpAndSettle();
+    KazumiDialog.showToast(message: 'status only');
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    expect(find.text('status only'), findsNothing);
+    expect(find.text('confirm deletion'), findsOneWidget);
+    KazumiDialog.dismiss(popWith: false);
+    await tester.pumpAndSettle();
+    expect(await dialog, isFalse);
+  });
+
   testWidgets('cancelling a timer only closes its own expiry dialog',
       (tester) async {
     await mountApp(tester);

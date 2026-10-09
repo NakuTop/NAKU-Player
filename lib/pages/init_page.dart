@@ -1,3 +1,4 @@
+import 'package:kazumi/features/cinema/cinema_startup_preferences.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -143,7 +144,7 @@ class _InitPageState extends State<InitPage> {
     if (!mounted) {
       return;
     }
-    context.navigate('/cinema');
+    context.navigate(const CinemaStartupPreferences().read().location);
   }
 
   // migrate collect from old version (favorites)

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:flutter/material.dart';
+import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 
@@ -68,7 +69,7 @@ class _CinemaWebsitesPageState extends State<CinemaWebsitesPage> {
 
   void _toast(String text) {
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+      KazumiDialog.showToast(context: context, message: text);
     }
   }
 
@@ -274,20 +275,18 @@ class _CinemaWebsitesPageState extends State<CinemaWebsitesPage> {
       await _store.removeSite(site.id);
       if (!mounted) return;
       setState(() => _checks.remove(site.id));
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('已移除 ${site.name}'),
-          action: SnackBarAction(
-            label: '撤销',
-            onPressed: () async {
-              try {
-                await _store.saveSite(site);
-              } catch (e) {
-                _toast('$e');
-              }
-            },
-          ),
-        ),
+      KazumiDialog.showToast(
+        context: context,
+        message: '已移除 ${site.name}',
+        showActionButton: true,
+        actionLabel: '撤销',
+        onActionPressed: () async {
+          try {
+            await _store.saveSite(site);
+          } catch (e) {
+            _toast('$e');
+          }
+        },
       );
     } catch (e) {
       _toast('$e');

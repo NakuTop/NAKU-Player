@@ -241,6 +241,41 @@ void main() {
     expect(opened, 0);
   });
 
+  testWidgets('deletion feedback expires and leaves the remaining row usable',
+      (tester) async {
+    await mount(tester, history: true);
+    await rightClick(tester, find.text(_first.title));
+    await tester.tap(find.widgetWithText(PopupMenuItem<bool>, '删除记录'));
+    await flush(tester);
+    final notification = tester.widget<SnackBar>(find.byType(SnackBar));
+    expect(notification.persist, isFalse);
+    expect(notification.duration, const Duration(seconds: 5));
+    expect(find.text('撤销'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    expect(find.text('已删除观看记录'), findsNothing);
+    expect(find.text('撤销'), findsNothing);
+    expect(store.history.single.title.key, _second.key);
+    await tester.tap(find.text(_second.title));
+    expect(opened, 1);
+  });
+
+  testWidgets('late undo restores a removed card through its live messenger',
+      (tester) async {
+    await mount(tester);
+    await rightClick(tester, find.text(_first.title));
+    await tester.tap(find.text('取消收藏'));
+    await flush(tester);
+    expect(find.text(_first.title), findsNothing);
+    await tester.pump(const Duration(milliseconds: 4500));
+    expect(find.text('撤销'), findsOneWidget);
+    await tester.tap(find.text('撤销'));
+    await flush(tester);
+    expect(store.isFavorite(_variant), isTrue);
+    expect(find.text(_first.title), findsOneWidget);
+    expect(find.text('已取消收藏'), findsNothing);
+  });
+
   testWidgets(
     'touch long press exposes favorite removal and ordinary tap still opens',
     (tester) async {

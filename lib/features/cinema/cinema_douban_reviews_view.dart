@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'cinema_douban_reviews.dart';
@@ -103,12 +104,9 @@ class _CinemaDoubanReviewsViewState extends State<CinemaDoubanReviewsView> {
       }
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        SnackBar(
-          content: Text(
-            error is FormatException ? error.message : '暂时无法打开豆瓣链接。',
-          ),
-        ),
+      KazumiDialog.showToast(
+        context: context,
+        message: error is FormatException ? error.message : '暂时无法打开豆瓣链接。',
       );
     }
   }

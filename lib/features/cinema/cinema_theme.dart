@@ -3,6 +3,8 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'cinema_appearance.dart';
+import 'package:kazumi/services/storage/storage.dart';
+import 'package:kazumi/utils/constants.dart';
 
 abstract final class CinemaTheme {
   // The native macOS material supplies the blur; keep this scrim translucent.
@@ -28,19 +30,36 @@ abstract final class CinemaTheme {
   static const border = Color(0x30FFFFFF);
   static ThemeData? _cached;
   static double? _cachedOpacity;
+  static String? _cachedFont;
+  static String get _fontFamily {
+    try {
+      return GStorage.getSetting(SettingsKeys.useSystemFont)
+          ? '.AppleSystemUIFont'
+          : customAppFontFamily;
+    } catch (_) {
+      return '.AppleSystemUIFont';
+    }
+  }
+
   static ThemeData get data => dataFor(CinemaAppearance.instance);
   static ThemeData of(BuildContext context) =>
       dataFor(CinemaAppearanceScope.of(context));
   static ThemeData dataFor(CinemaAppearance appearance) {
     final opacity = appearance.effectiveBackgroundOpacity;
-    if (_cached != null && _cachedOpacity == opacity) return _cached!;
+    final fontFamily = _fontFamily;
+    if (_cached != null &&
+        _cachedOpacity == opacity &&
+        _cachedFont == fontFamily) {
+      return _cached!;
+    }
     final background = backgroundFor(appearance),
         surface = surfaceFor(appearance);
     _cachedOpacity = opacity;
+    _cachedFont = fontFamily;
     return _cached = ThemeData(
       useMaterial3: true,
       brightness: Brightness.dark,
-      fontFamily: '.AppleSystemUIFont',
+      fontFamily: fontFamily,
       fontFamilyFallback: const ['MI_Sans_Regular'],
       scaffoldBackgroundColor: background,
       colorScheme: ColorScheme.dark(
@@ -293,12 +312,21 @@ class CinemaAppearanceScope extends StatefulWidget {
 
 class _CinemaAppearanceScopeState extends State<CinemaAppearanceScope>
     with WidgetsBindingObserver {
+  StreamSubscription<void>? _fontChanges;
   CinemaAppearance get _appearance =>
       widget.appearance ?? CinemaAppearance.instance;
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    try {
+      _fontChanges = GStorage.watchSettings([SettingsKeys.useSystemFont])
+          .listen((_) {
+            if (mounted) setState(() {});
+          });
+    } catch (_) {
+      // A standalone preview may not have initialized application storage.
+    }
     unawaited(_appearance.initialize());
   }
 
@@ -322,6 +350,7 @@ class _CinemaAppearanceScopeState extends State<CinemaAppearanceScope>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    unawaited(_fontChanges?.cancel());
     unawaited(_appearance.flush());
     super.dispose();
   }

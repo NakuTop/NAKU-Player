@@ -6,6 +6,8 @@ import 'cinema_pane_transition.dart';
 import 'cinema_scroll_activity.dart';
 import 'cinema_catalog_view.dart';
 import 'cinema_settings_page.dart';
+import 'cinema_settings_host_binding.dart';
+import 'cinema_startup_preferences.dart';
 import 'anime/cinema_anime_page.dart';
 import 'cinema_filters.dart';
 import 'cinema_aggregate_catalog.dart';
@@ -13,6 +15,7 @@ import 'cinema_discovery_resolver.dart';
 import 'cinema_search_discovery.dart';
 
 import 'package:flutter/material.dart';
+import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -84,7 +87,9 @@ class CinemaHomePage extends StatefulWidget {
     this.catalogDiscovery,
     this.doubanThemeCatalog,
     this.animePageBuilder,
+    this.initialStartup = const CinemaStartupTarget(),
   });
+  final CinemaStartupTarget initialStartup;
   final CinemaStore? store;
   final CinemaRepository? repository;
   final CinemaRatingsRepository? ratingsRepository;
@@ -209,6 +214,30 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   @override
   void initState() {
     super.initState();
+    _section = switch (widget.initialStartup.section) {
+      CinemaStartupSection.series => _Section.series,
+      CinemaStartupSection.anime => _Section.anime,
+      CinemaStartupSection.favorites => _Section.favorites,
+      CinemaStartupSection.history => _Section.history,
+      CinemaStartupSection.settings => _Section.settings,
+      _ => _Section.movies,
+    };
+    _animeOpened = _section == _Section.anime;
+    if (widget.initialStartup.section == CinemaStartupSection.douban) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _openDouban();
+      });
+    }
+    CinemaSettingsHostBinding.instance.bind(
+      this,
+      onSources: _openSourceSettings,
+      enabledSourceCount: () => _store.enabledSources
+          .where((source) => source.kind == CinemaSourceKind.maccms)
+          .length,
+      sourceCount: () => _store.sources
+          .where((source) => source.kind == CinemaSourceKind.maccms)
+          .length,
+    );
     _store.addListener(_onStoreChanged);
     _ratings.changes.addListener(_onRatingsChanged);
     _scrollActivity.addListener(_onScrollActivityChanged);
@@ -221,6 +250,48 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     }
     unawaited(_readApplicationVersion());
     unawaited(_initialize());
+  }
+
+  void _openDouban() {
+    Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+        pageBuilder: (_, _, _) => DoubanPage(
+          repository: widget.catalogDiscovery,
+          session: _doubanSession,
+          themeCatalog: widget.doubanThemeCatalog,
+          onSelect: (title) => _openTitle(
+            CinemaDiscoveryTitle(
+              id: title.id,
+              title: title.title,
+              originalTitle: title.originalTitle,
+              year: title.year,
+              poster: title.poster,
+              kind: title.kind.apiType,
+              actors: title.actors.join(' / '),
+              genres: title.genres.join(' / '),
+              area: title.regions.join(' / '),
+              score: title.score,
+              identityVerified: true,
+            ).metadata,
+            keepBrowseRoute: true,
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openSourceSettings() {
+    if (!mounted) return;
+    final route = ModalRoute.of(context);
+    if (route != null) {
+      Navigator.of(context).popUntil((candidate) => candidate == route);
+    }
+    setState(() {
+      _section = _Section.settings;
+      _showSourceManager = true;
+    });
   }
 
   Future<void> _readApplicationVersion() async {
@@ -498,19 +569,25 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         _store.sources.map((s) => s.toJson()).toList(),
       );
       if (!mounted) return;
+      setState(() {});
       await _browse();
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _catalog.error = '$e';
-          _catalog.loading = false;
-        });
+        if (_isCatalog) {
+          setState(() {
+            _catalog.error = '$e';
+            _catalog.loading = false;
+          });
+        } else {
+          _toast('资料加载失败，请重试');
+        }
       }
     }
   }
 
   @override
   void dispose() {
+    CinemaSettingsHostBinding.instance.unbind(this);
     _ratings.changes.removeListener(_onRatingsChanged);
     _ratingRefresh?.cancel();
     _scrollActivity.removeListener(_onScrollActivityChanged);
@@ -1359,9 +1436,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   }
 
   void _toast(String message) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    KazumiDialog.showToast(context: context, message: message);
   }
 
   @override
@@ -1520,6 +1595,10 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                                                 _section == _Section.anime,
                                               ) ??
                                               CinemaAnimePage(
+                                                initialTab: widget
+                                                    .initialStartup
+                                                    .animeTab
+                                                    .index,
                                                 active:
                                                     _section == _Section.anime,
                                               ),
@@ -1666,33 +1745,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             title: const Text('豆瓣榜单'),
             onTap: () {
               if (closeDrawer) Navigator.pop(context);
-              Navigator.of(context).push(
-                PageRouteBuilder<void>(
-                  transitionDuration: Duration.zero,
-                  reverseTransitionDuration: Duration.zero,
-                  pageBuilder: (_, _, _) => DoubanPage(
-                    repository: widget.catalogDiscovery,
-                    session: _doubanSession,
-                    themeCatalog: widget.doubanThemeCatalog,
-                    onSelect: (title) => _openTitle(
-                      CinemaDiscoveryTitle(
-                        id: title.id,
-                        title: title.title,
-                        originalTitle: title.originalTitle,
-                        year: title.year,
-                        poster: title.poster,
-                        kind: title.kind.apiType,
-                        actors: title.actors.join(' / '),
-                        genres: title.genres.join(' / '),
-                        area: title.regions.join(' / '),
-                        score: title.score,
-                        identityVerified: true,
-                      ).metadata,
-                      keepBrowseRoute: true,
-                    ),
-                  ),
-                ),
-              );
+              _openDouban();
             },
           ),
         ),
@@ -2600,14 +2653,18 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                     try {
                       await _store.removeSource(source.id);
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('已移除 ${source.name}'),
-                          action: SnackBarAction(
-                            label: '撤销',
-                            onPressed: () => _store.saveSource(source),
-                          ),
-                        ),
+                      KazumiDialog.showToast(
+                        context: context,
+                        message: '已移除 ${source.name}',
+                        showActionButton: true,
+                        actionLabel: '撤销',
+                        onActionPressed: () async {
+                          try {
+                            await _store.saveSource(source);
+                          } catch (error) {
+                            if (mounted) _toast('恢复片源失败：$error');
+                          }
+                        },
                       );
                     } catch (e) {
                       _toast('$e');
@@ -3047,14 +3104,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
                                       h,
                                     );
                                     if (selection == null) {
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
-                                        const SnackBar(
-                                          content: Text(
-                                            '片源的线路或集数已变化，请在下方重新选择。',
-                                          ),
-                                        ),
+                                      KazumiDialog.showToast(
+                                        context: context,
+                                        message: '片源的线路或集数已变化，请在下方重新选择。',
                                       );
                                       return;
                                     }

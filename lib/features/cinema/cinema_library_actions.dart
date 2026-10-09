@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
+import 'package:kazumi/bean/dialog/dialog_helper.dart';
 
 import 'cinema_models.dart';
 import 'cinema_store.dart';
@@ -79,37 +80,37 @@ class _CinemaLibraryActionsState extends State<CinemaLibraryActions> {
           : await widget.store.removeFavorite(widget.title);
       if (undo == null) return false;
       if (!messenger.mounted) return true;
-      messenger
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          SnackBar(
-            content: Text(message),
-            duration: const Duration(seconds: 6),
-            action: SnackBarAction(
-              label: '撤销',
-              onPressed: () async {
-                try {
-                  final restored = await undo.restore();
-                  if (!restored && messenger.mounted) {
-                    messenger.showSnackBar(
-                      const SnackBar(content: Text('已保留这部作品的新记录')),
-                    );
-                  }
-                } catch (_) {
-                  if (messenger.mounted) {
-                    messenger.showSnackBar(
-                      const SnackBar(content: Text('恢复记录保存失败，请稍后重试')),
-                    );
-                  }
-                }
-              },
-            ),
-          ),
-        );
+      KazumiDialog.showToast(
+        messenger: messenger,
+        message: message,
+        showActionButton: true,
+        actionLabel: '撤销',
+        onActionPressed: () async {
+          try {
+            final restored = await undo.restore();
+            if (!restored && messenger.mounted) {
+              KazumiDialog.showToast(
+                messenger: messenger,
+                message: '已保留这部作品的新记录',
+              );
+            }
+          } catch (_) {
+            if (messenger.mounted) {
+              KazumiDialog.showToast(
+                messenger: messenger,
+                message: '恢复记录保存失败，请稍后重试',
+              );
+            }
+          }
+        },
+      );
       return true;
     } catch (_) {
       if (messenger.mounted) {
-        messenger.showSnackBar(const SnackBar(content: Text('未能保存删除操作，记录已保留')));
+        KazumiDialog.showToast(
+          messenger: messenger,
+          message: '未能保存删除操作，记录已保留',
+        );
       }
       return false;
     } finally {
