@@ -7,6 +7,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>NAKU播放器 macOS 更新</description>
     <language>zh-CN</language>
     <item>
+      <title>NAKU播放器 1.1.0</title>
+      <pubDate>Fri, 09 Oct 2026 02:41:42 +0000</pubDate>
+      <sparkle:version>9</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
+      <description>电影、剧集与动漫切换保留列表、搜索和滚动位置；收藏与历史按作品跨源合并。一起看持续配对、断线重连，可主动跟随同伴当前作品并在同步成功后通知对方。升级前自动备份资料。</description>
+      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.1.0/NAKUPlayer-1.1.0-macOS-universal.zip" length="56115623" type="application/octet-stream" sparkle:edSignature="wpps1qh+aR7Wg71C81LOu8k8tBXhLpfmspKIDVHdjXb/lSKg1NRqlVPaWVZCVCtYfVFu/SK/jkj7/iqaK4mzBQ=="></enclosure>
+    </item>
+    <item>
       <title>NAKU播放器 1.0.1</title>
       <pubDate>Fri, 09 Oct 2026 01:46:39 +0000</pubDate>
       <sparkle:version>8</sparkle:version>
@@ -26,6 +35,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: wbtMTfSWRDNhsrP+avfBWg+TYKhL9+AwShz7XW3y7HG0I/0HjP/Mf0AMubEfBxrxzVFexPBHzScmCmrGvn03Bw==
-length: 2532
+edSignature: +HTovaJxMK7D/au4Kecgo+KlZ2q9qZL6sEBFyEgdXXPaHWiC2M1ydgvQpkyRdVfCsg4rvegcc8E9SyLgP12EDg==
+length: 3417
 -->
