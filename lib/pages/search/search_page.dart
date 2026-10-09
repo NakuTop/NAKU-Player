@@ -23,10 +23,16 @@ part 'search_filter_sheet.dart';
 part 'search_widgets.dart';
 
 class SearchPage extends StatefulWidget {
-  const SearchPage({super.key, required this.controller, this.inputTag = ''});
+  const SearchPage({
+    super.key,
+    required this.controller,
+    this.inputTag = '',
+    this.embedded = false,
+  });
 
   final SearchPageController controller;
   final String inputTag;
+  final bool embedded;
 
   @override
   State<SearchPage> createState() => _SearchPageState();
@@ -368,8 +374,9 @@ class _SearchPageState extends State<SearchPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: const SysAppBar(
-          backgroundColor: Colors.transparent, title: Text('番剧搜索')),
+      appBar: SysAppBar(
+          embedded: widget.embedded,
+          backgroundColor: Colors.transparent, title: const Text('番剧搜索')),
       body: SafeArea(
           top: false,
           child: LayoutBuilder(builder: (context, constraints) {

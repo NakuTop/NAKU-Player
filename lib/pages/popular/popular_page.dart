@@ -18,9 +18,12 @@ class PopularPage extends StatefulWidget {
   const PopularPage({
     super.key,
     required this.controller,
+    this.embedded = false,
   });
 
   final PopularController controller;
+
+  final bool embedded;
 
   @override
   State<PopularPage> createState() => _PopularPageState();
@@ -162,7 +165,7 @@ class _PopularPageState extends State<PopularPage> {
     return SliverAppBar(
       pinned: true,
       stretch: true,
-      expandedHeight: 120,
+      expandedHeight: widget.embedded ? 76 : 120,
       elevation: 0,
       titleSpacing: 0,
       centerTitle: false,
@@ -173,7 +176,8 @@ class _PopularPageState extends State<PopularPage> {
         child: dtb.DragToMoveArea(
           child: LayoutBuilder(
             builder: (context, constraints) {
-              final double maxExtent = 120 - MediaQuery.of(context).padding.top;
+              final double maxExtent = (widget.embedded ? 76 : 120) -
+                  MediaQuery.of(context).padding.top;
               final t = (1 -
                   ((constraints.maxHeight - kToolbarHeight) /
                           (maxExtent - kToolbarHeight))
@@ -249,7 +253,9 @@ class _PopularPageState extends State<PopularPage> {
         onPressed: () => context.pushNamed('/settings/history/'),
         icon: const Icon(Icons.history),
       ),
-      if (isDesktop() && !DesktopWindowConfig.showWindowButton)
+      if (!widget.embedded &&
+          isDesktop() &&
+          !DesktopWindowConfig.showWindowButton)
         IconButton(
           tooltip: '退出',
           onPressed: () => windowManager.close(),

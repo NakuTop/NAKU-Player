@@ -23,9 +23,12 @@ class TimelinePage extends StatefulWidget {
   const TimelinePage({
     super.key,
     required this.controller,
+    this.embedded = false,
   });
 
   final TimelineController controller;
+
+  final bool embedded;
 
   @override
   State<TimelinePage> createState() => _TimelinePageState();
@@ -66,7 +69,7 @@ class _TimelinePageState extends State<TimelinePage> {
             child: ListView.separated(
               padding: materialBottomSheetContentPadding,
               itemCount: years.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 24),
+              separatorBuilder: (_, _) => const SizedBox(height: 24),
               itemBuilder: (context, index) {
                 final year = years[index];
                 return ContentSection(
@@ -176,6 +179,7 @@ class _TimelinePageState extends State<TimelinePage> {
         );
         return Scaffold(
           appBar: SysAppBar(
+            embedded: widget.embedded,
             needTopOffset: false,
             toolbarHeight: 72,
             title: narrowPortrait

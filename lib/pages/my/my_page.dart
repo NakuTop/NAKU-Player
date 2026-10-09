@@ -8,9 +8,10 @@ import 'package:kazumi/pages/my/my_controller.dart';
 import 'package:kazumi/pages/my/my_space_view.dart';
 
 class MyPage extends StatefulWidget {
-  const MyPage({super.key, required this.controller});
+  const MyPage({super.key, required this.controller, this.embedded = false});
 
   final MyController controller;
+  final bool embedded;
 
   @override
   State<MyPage> createState() => _MyPageState();
@@ -67,6 +68,7 @@ class _MyPageState extends State<MyPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: SysAppBar(
+        embedded: widget.embedded,
         toolbarHeight: 72,
         title: Text(
           '我的',

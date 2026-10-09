@@ -7,6 +7,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
+import 'package:kazumi/services/platform/desktop_window_close.dart';
 import 'package:kazumi/services/player/player_error_mapper.dart';
 import 'package:kazumi/services/video_source/video_source_service.dart';
 import 'package:kazumi/services/video_source/webview_video_source_service.dart';
@@ -484,6 +485,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   @override
   void initState() {
     super.initState();
+    DesktopExitTasks.instance.register(this, _saveBeforeApplicationExit);
     _bindTogether();
     unawaited(_together.initialize());
     WidgetsBinding.instance.addObserver(this);
@@ -961,6 +963,29 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Future<void>? _leaving;
   Future<void> _leave() => _leaving ??= _leaveOnce();
 
+  Future<void> _saveBeforeApplicationExit() async {
+    if (!mounted) return;
+    _closing = true;
+    ++_generation;
+    _historyTimer?.cancel();
+    _loadTimer?.cancel();
+    _resolver.cancel();
+    final playback = _playback;
+    // Save the final local progress before process termination. A window hide
+    // does not invoke this hook or disturb the current route/playback session.
+    try {
+      await _persistProgress(playback);
+      await widget.store.flush();
+    } finally {
+      _playback = null;
+      try {
+        await _together.detachPlayback(_syncOwner);
+      } finally {
+        if (playback != null) await playback.dispose();
+      }
+    }
+  }
+
   Future<void> _leaveOnce() async {
     if (_closing) return;
     _closing = true;
@@ -999,6 +1024,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   @override
   void dispose() {
+    DesktopExitTasks.instance.unregister(this);
     WidgetsBinding.instance.removeObserver(this);
     windowManager.removeListener(this);
     _panelRevision.dispose();

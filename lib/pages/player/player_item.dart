@@ -38,6 +38,7 @@ import 'package:kazumi/services/player/audio_controller.dart';
 import 'package:kazumi/services/player/timed_shutdown_service.dart';
 import 'package:kazumi/utils/device.dart';
 import 'package:kazumi/services/platform/player_menu_service.dart';
+import 'package:kazumi/services/platform/desktop_window_close.dart';
 
 class PlayerItem extends StatefulWidget {
   const PlayerItem({
@@ -1265,6 +1266,7 @@ class _PlayerItemState extends State<PlayerItem>
   @override
   void initState() {
     super.initState();
+    DesktopExitTasks.instance.register(this, _saveBeforeApplicationExit);
     playerController = widget.playerController;
     _initKeyboardActions();
     _initPlayerMenu();
@@ -1361,6 +1363,7 @@ class _PlayerItemState extends State<PlayerItem>
 
   @override
   void dispose() {
+    DesktopExitTasks.instance.unregister(this);
     // The route-scoped PlayerController owns playback disposal.
     _fullscreenListener();
     _playerSizeListener();
@@ -1380,6 +1383,23 @@ class _PlayerItemState extends State<PlayerItem>
     }
     playerController.panel.reset();
     super.dispose();
+  }
+
+  Future<void> _saveBeforeApplicationExit() async {
+    if (!mounted) return;
+    playerTimer?.cancel();
+    final identity = videoPageController.currentHistoryIdentity;
+    try {
+      if (!videoPageController.loading && identity?.canRecord == true) {
+        await historyController.updateHistory(
+          identity!,
+          playerController.playback.playerPosition,
+          duration: playerController.playback.playerDuration,
+        );
+      }
+    } finally {
+      await playerController.stop();
+    }
   }
 
   @override

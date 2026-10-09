@@ -6,6 +6,7 @@ import 'cinema_pane_transition.dart';
 import 'cinema_scroll_activity.dart';
 import 'cinema_catalog_view.dart';
 import 'cinema_settings_page.dart';
+import 'anime/cinema_anime_page.dart';
 import 'cinema_filters.dart';
 import 'cinema_aggregate_catalog.dart';
 import 'cinema_discovery_resolver.dart';
@@ -82,6 +83,7 @@ class CinemaHomePage extends StatefulWidget {
     this.searchDiscovery,
     this.catalogDiscovery,
     this.doubanThemeCatalog,
+    this.animePageBuilder,
   });
   final CinemaStore? store;
   final CinemaRepository? repository;
@@ -92,6 +94,7 @@ class CinemaHomePage extends StatefulWidget {
   final CinemaSearchDiscoveryRepository? searchDiscovery;
   final DoubanRepository? catalogDiscovery;
   final DoubanThemeCatalog? doubanThemeCatalog;
+  final Widget Function(BuildContext context, bool active)? animePageBuilder;
 
   @override
   State<CinemaHomePage> createState() => _CinemaHomePageState();
@@ -126,6 +129,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   StreamSubscription<String>? _togetherNotices;
   _Section _section = _Section.movies;
   bool _showSourceManager = false;
+  bool _animeOpened = false;
   String _applicationVersion = '正在读取版本';
   final _catalogs = {
     for (final section in _Section.values) section: _CatalogState(),
@@ -540,7 +544,8 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     _Section.settings => _showSourceManager ? '片源管理' : '设置',
   };
 
-  bool get _isCatalog => _section.index <= _Section.anime.index;
+  bool get _isCatalog =>
+      _section == _Section.movies || _section == _Section.series;
 
   bool get _showsCatalogSort =>
       _section == _Section.movies || _section == _Section.series;
@@ -638,6 +643,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     _scrollActivity.reset();
     setState(() {
       _section = value;
+      if (value == _Section.anime) _animeOpened = true;
       _showSourceManager = false;
     });
     final state = _catalog;
@@ -671,6 +677,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     bool refresh = false,
     bool append = false,
   }) async {
+    if (!_isCatalog) return;
     final state = _catalog;
     final section = _section;
     final generation = ++state.generation;
@@ -776,6 +783,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   }
 
   Future<void> _runSearch({bool loadMore = false}) async {
+    if (!_isCatalog) return;
     final state = _catalog;
     final section = _section;
     final keyword = loadMore ? state.activeKeyword : state.search.text.trim();
@@ -1485,12 +1493,40 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                                   ),
                                 ),
                                 Expanded(
-                                  child: CinemaPaneTransition(
-                                    destination: (_section, _showSourceManager),
-                                    child: CinemaScrollNotifications(
-                                      activity: _scrollActivity,
-                                      child: _content(wide),
-                                    ),
+                                  child: IndexedStack(
+                                    index: _section == _Section.anime ? 1 : 0,
+                                    children: [
+                                      TickerMode(
+                                        enabled: _section != _Section.anime,
+                                        child: CinemaPaneTransition(
+                                          destination: (
+                                            _section,
+                                            _showSourceManager,
+                                          ),
+                                          child: CinemaScrollNotifications(
+                                            activity: _scrollActivity,
+                                            child: _section == _Section.anime
+                                                ? const SizedBox.shrink()
+                                                : _content(wide),
+                                          ),
+                                        ),
+                                      ),
+                                      if (_animeOpened)
+                                        TickerMode(
+                                          enabled: _section == _Section.anime,
+                                          child:
+                                              widget.animePageBuilder?.call(
+                                                context,
+                                                _section == _Section.anime,
+                                              ) ??
+                                              CinemaAnimePage(
+                                                active:
+                                                    _section == _Section.anime,
+                                              ),
+                                        )
+                                      else
+                                        const SizedBox.shrink(),
+                                    ],
                                   ),
                                 ),
                               ],
@@ -1662,14 +1698,6 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         ),
         const SizedBox(height: 24),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 18),
-          child: TextButton.icon(
-            onPressed: () => context.pushNamed('/tab/popular/'),
-            icon: const Icon(Icons.auto_awesome_outlined, size: 17),
-            label: const Text('Bangumi 动漫目录', style: TextStyle(fontSize: 11)),
-          ),
-        ),
-        Padding(
           padding: const EdgeInsets.fromLTRB(26, 12, 20, 25),
           child: InkWell(
             onTap: () => showAboutDialog(
@@ -1809,8 +1837,12 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     if (_section == _Section.settings) {
       if (_showSourceManager) return _sourceManager(wide);
       return CinemaSettingsPage(
-        enabledSourceCount: _store.enabledSources.length,
-        sourceCount: _store.sources.length,
+        enabledSourceCount: _store.enabledSources
+            .where((source) => source.kind == CinemaSourceKind.maccms)
+            .length,
+        sourceCount: _store.sources
+            .where((source) => source.kind == CinemaSourceKind.maccms)
+            .length,
         onSources: () => setState(() => _showSourceManager = true),
         onAppearance: () => showCinemaAppearanceSheet(context),
         onUpdates: () => Navigator.of(
@@ -2482,9 +2514,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     children: [
       Row(
         children: [
-          const Expanded(
-            child: Text('你的片源，你来选择', style: TextStyle(fontSize: 21)),
-          ),
+          const Expanded(child: Text('片源管理', style: TextStyle(fontSize: 21))),
           FilledButton.icon(
             onPressed: () => _editSource(),
             icon: const Icon(Icons.add_rounded, size: 18),
@@ -2494,7 +2524,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       ),
       const SizedBox(height: 12),
       const Text(
-        '影视接口提供电影和剧集目录；Kazumi 规则用于动漫搜索。来源标注的画质不代表实测分辨率。',
+        '影视接口用于电影和剧集。动漫播放规则请在动漫 → 更多 → 规则管理中维护。',
         style: TextStyle(fontSize: 12, height: 1.8, color: CinemaTheme.muted),
       ),
       const SizedBox(height: 8),
@@ -2503,7 +2533,9 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         style: const TextStyle(fontSize: 11, color: CinemaTheme.muted),
       ),
       const SizedBox(height: 22),
-      for (final source in _store.sources)
+      for (final source in _store.sources.where(
+        (source) => source.kind == CinemaSourceKind.maccms,
+      ))
         Container(
           margin: const EdgeInsets.only(bottom: 12),
           decoration: BoxDecoration(
@@ -2593,9 +2625,9 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         runSpacing: 10,
         children: [
           OutlinedButton.icon(
-            onPressed: _importRules,
+            onPressed: () => context.pushNamed('/settings/plugin/'),
             icon: const Icon(Icons.data_object, size: 18),
-            label: const Text('导入 Kazumi 规则 JSON'),
+            label: const Text('动漫规则管理'),
           ),
           TextButton(
             onPressed: () => launchUrl(
@@ -2801,7 +2833,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                     await _store.saveSource(source);
                   }
                   if (context.mounted) Navigator.pop(context);
-                  _toast('已导入 ${sources.length} 条规则，可在动漫栏目直接搜索');
+                  _toast('已导入 ${sources.length} 条规则；动漫规则请在动漫的规则管理中导入');
                 } catch (e) {
                   setDialogState(() {
                     error = '导入失败：$e';

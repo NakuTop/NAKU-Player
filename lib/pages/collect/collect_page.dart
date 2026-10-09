@@ -21,9 +21,12 @@ class CollectPage extends StatefulWidget {
   const CollectPage({
     super.key,
     required this.controller,
+    this.embedded = false,
   });
 
   final CollectController controller;
+
+  final bool embedded;
 
   @override
   State<CollectPage> createState() => _CollectPageState();
@@ -109,6 +112,7 @@ class _CollectPageState extends State<CollectPage> with KazumiDialogOwner {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: SysAppBar(
+        embedded: widget.embedded,
         needTopOffset: false,
         toolbarHeight: 72,
         title: Text(

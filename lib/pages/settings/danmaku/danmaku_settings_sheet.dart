@@ -7,6 +7,7 @@ import 'package:kazumi/bean/settings/settings_list.dart';
 import 'package:kazumi/bean/widget/connected_tabs.dart';
 import 'package:kazumi/bean/widget/content_section.dart';
 import 'package:kazumi/pages/settings/danmaku/danmaku_ch_convert_tile.dart';
+import 'package:kazumi/pages/settings/danmaku/danmaku_service_status_tile.dart';
 import 'package:kazumi/pages/settings/danmaku/danmaku_shield_settings_sheet.dart';
 import 'package:kazumi/pages/settings/danmaku/danmaku_time_offset_sheet.dart';
 import 'package:kazumi/services/storage/storage.dart';
@@ -172,6 +173,11 @@ class _DanmakuSettingsSheetState extends State<_DanmakuSettingsSheet> {
               key: const PageStorageKey('danmaku-playback'),
               padding: materialBottomSheetContentPadding,
               children: [
+                ContentSection.group(
+                  title: '服务状态',
+                  children: const [DanmakuServiceStatusTile()],
+                ),
+                const SizedBox(height: 24),
                 ContentSection.group(title: '速度', children: [
                   SettingsSliderTile(
                     title: Text('停留时间'),

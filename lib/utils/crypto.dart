@@ -5,9 +5,13 @@ import 'package:crypto/crypto.dart';
 import 'package:kazumi/utils/bangumi_mirror_credentials.dart';
 import 'package:kazumi/utils/dandan_credentials.dart';
 
-String generateDandanSignature(String path, int timestamp) {
-  final id = dandanCredentials['id']!;
-  final value = dandanCredentials['value']!;
+String generateDandanSignature(
+  String path,
+  int timestamp, {
+  DandanCredentials credentials = dandanCredentials,
+}) {
+  final id = credentials.id;
+  final value = credentials.secret;
   final data = id + timestamp.toString() + path + value;
   final bytes = utf8.encode(data);
   final digest = sha256.convert(bytes);

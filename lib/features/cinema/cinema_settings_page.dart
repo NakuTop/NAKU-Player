@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'cinema_theme.dart';
+import 'cinema_window_close_settings.dart';
 
 /// Shared settings entry; source editing remains owned by the home store.
 class CinemaSettingsPage extends StatelessWidget {
@@ -47,6 +48,8 @@ class CinemaSettingsPage extends StatelessWidget {
                   subtitle: '调整磨砂玻璃背景的透明度',
                   onTap: onAppearance,
                 ),
+                const Divider(height: 1, indent: 68, endIndent: 20),
+                const CinemaWindowCloseSettings(),
                 const Divider(height: 1, indent: 68, endIndent: 20),
                 _entry(
                   key: 'settings-updates',

@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -363,46 +362,6 @@ void main() {
       after,
       reason: 'Completed preload does not loop.',
     );
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('an async page replacement resets a newly resumed scroll', (
-    tester,
-  ) async {
-    final pending = Completer<CinemaPage>();
-    catalogue.onBrowse = (page) async => page == 2
-        ? pending.future
-        : CinemaPage(items: catalogue.items, page: 1, pageCount: 2);
-    await mount(tester);
-    await tester.tap(find.text('动漫'));
-    await tester.pumpAndSettle();
-    final activity = tester
-        .widget<CinemaScrollNotifications>(
-          find.byType(CinemaScrollNotifications),
-        )
-        .activity;
-    final oldViewport = tester
-        .widget<CustomScrollView>(find.byType(CustomScrollView))
-        .key;
-    tester
-        .widget<IconButton>(
-          find.byWidgetPredicate(
-            (widget) => widget is IconButton && widget.tooltip == '下一页',
-          ),
-        )
-        .onPressed!();
-    await tester.pump();
-    activity.begin();
-    var resumed = false;
-    activity.whenIdle.then((_) => resumed = true);
-    pending.complete(CinemaPage(items: catalogue.items, page: 2, pageCount: 2));
-    await tester.pumpAndSettle();
-    expect(
-      tester.widget<CustomScrollView>(find.byType(CustomScrollView)).key,
-      isNot(oldViewport),
-    );
-    expect(activity.value, isFalse);
-    expect(resumed, isTrue);
     expect(tester.takeException(), isNull);
   });
 

@@ -14,6 +14,7 @@ class SysAppBar extends StatelessWidget implements PreferredSizeWidget {
   final List<Widget>? actions;
   final Widget? leading;
   final bool needTopOffset;
+  final bool embedded;
 
   const SysAppBar({
     super.key,
@@ -23,11 +24,12 @@ class SysAppBar extends StatelessWidget implements PreferredSizeWidget {
     this.actions,
     this.leading,
     this.needTopOffset = true,
+    this.embedded = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    final desktop = isDesktop();
+    final desktop = isDesktop() && !embedded;
     final appBarActions = <Widget>[...?actions];
     if (desktop) {
       if (!DesktopWindowConfig.showWindowButton) {
@@ -37,7 +39,8 @@ class SysAppBar extends StatelessWidget implements PreferredSizeWidget {
     }
     final appBarLeading =
         leading ??
-        ((ModalRoute.of(context)?.impliesAppBarDismissal ?? false)
+        ((!embedded &&
+                (ModalRoute.of(context)?.impliesAppBarDismissal ?? false))
             ? IconButton(
                 onPressed: () => context.maybePop(),
                 icon: const Icon(Icons.arrow_back),
@@ -51,20 +54,20 @@ class SysAppBar extends StatelessWidget implements PreferredSizeWidget {
         scrolledUnderElevation: 0.0,
         title: title != null
             ? EmbeddedNativeControlArea(
-                requireOffset: needTopOffset,
+                requireOffset: needTopOffset && !embedded,
                 child: title!,
               )
             : null,
         centerTitle: Platform.isIOS,
         actions: appBarActions.map((action) {
           return EmbeddedNativeControlArea(
-            requireOffset: needTopOffset,
+            requireOffset: needTopOffset && !embedded,
             child: action,
           );
         }).toList(),
         leading: appBarLeading != null
             ? EmbeddedNativeControlArea(
-                requireOffset: needTopOffset,
+                requireOffset: needTopOffset && !embedded,
                 child: appBarLeading,
               )
             : null,
@@ -89,6 +92,7 @@ class SysAppBar extends StatelessWidget implements PreferredSizeWidget {
     final topOffset =
         Platform.isMacOS &&
             needTopOffset &&
+            !embedded &&
             DesktopWindowConfig.showWindowButton
         ? 22.0
         : 0.0;

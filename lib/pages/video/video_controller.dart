@@ -23,6 +23,7 @@ import 'package:kazumi/utils/episode_url.dart';
 import 'package:kazumi/utils/http_headers.dart';
 import 'package:kazumi/utils/media.dart';
 import 'package:kazumi/utils/async_session.dart';
+import 'package:kazumi/utils/dandan_credentials.dart';
 import 'package:kazumi/services/platform/display_mode_service.dart';
 import 'package:kazumi/pages/video/video_fullscreen_controller.dart';
 
@@ -245,7 +246,7 @@ abstract class _VideoPageController with Store implements Disposable {
     final preferredDisplayRoad =
         _offlineOriginalRoadToDisplayRoad[preferredOriginalRoad];
     final roadIndices = <int>[
-      if (preferredDisplayRoad != null) preferredDisplayRoad,
+      ?preferredDisplayRoad,
       for (var i = 0; i < roadList.length; i++)
         if (i != preferredDisplayRoad) i,
     ];
@@ -562,14 +563,16 @@ abstract class _VideoPageController with Store implements Disposable {
         } else {
           playerController.danmaku.applyUnavailableDanmakuLoad(result);
           if (result.isFailed) {
-            KazumiDialog.showToast(message: '弹幕加载失败，可手动检索');
+            KazumiDialog.showToast(
+              message: result.failureMessage ?? '弹幕加载失败，可手动检索',
+            );
           }
         }
       }
     } catch (e) {
       if (session.isActive && danmakuSession.isActive) {
         playerController.danmaku.finishDanmakuLoad(disableDanmaku: true);
-        KazumiDialog.showToast(message: '弹幕加载失败，可手动检索');
+        KazumiDialog.showToast(message: danmakuFailureMessage(e));
       }
       KazumiLogger().w('VideoPageController: failed to load danmaku', error: e);
     }

@@ -17,6 +17,21 @@ flutter build macos --release --no-pub
 
 使用仓库指定的 Flutter / Dart、Xcode 和已提交的 `macos/Podfile.lock`。网络测试单独启用，并区分接口访问、实际视频播放、双方同步和更新安装链路的验收结果。不要把本地两客户端测试表述为已通过真实跨国网络验收。
 
+## 弹幕服务配置
+
+弹弹play 的在线接口需要本项目自己的 AppId / AppSecret，用户无需登录不等于接口无需应用签名。按[官方接入文档](https://doc.dandanplay.com/open/)前往[开发者平台](https://dev.dandanplay.com)申请；不要提取或复用其他应用的凭据。
+
+本项目保留编译时配置 `DANDANAPI_APPID` 和 `DANDANAPI_KEY`。将这两个字段保存在仓库之外、仅发布者可读的私有 JSON 文件，用环境变量 `NAKU_PRIVATE_DEFINES` 指向该文件，然后构建：
+
+```sh
+flutter build macos --release --no-pub \
+  --dart-define-from-file="$NAKU_PRIVATE_DEFINES"
+```
+
+不要把私有配置、实际字段值或展开后的构建命令写入 Git、日志或发布附件；CI 应使用本项目自己的保密配置。客户端编译时配置不是服务端密钥保险库，应遵守弹弹play 对客户端应用的授权要求。
+
+缺少任意一个字段时，应用不会发送空凭据签名请求，而是在弹幕加载及弹幕设置中提示当前版本未配置；普通视频播放、已有离线弹幕和弹幕显示设置仍保留。配置齐全的提示只表示字段存在，不代表服务连接或作品匹配已通过验收。自动分集匹配目前仍保留上游的分集 ID 拼接约定；此项更新未更改该机制，后续需要用实际分集响应单独验证匹配正确性。
+
 ## 代码签名与打包
 
 构建完成后，先完成应用及嵌套框架、Sparkle XPC 服务和辅助程序的代码签名。签名时保留应用所需的 App Sandbox、网络和 Sparkle mach-lookup entitlements；不要用 `codesign --deep --sign` 代替逐层签名。正式使用 Developer ID 时，再完成 Apple 公证与 stapling，然后打包。

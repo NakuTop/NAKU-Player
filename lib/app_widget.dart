@@ -1,5 +1,6 @@
 import 'package:kazumi/features/cinema/cinema_theme.dart';
 import 'dart:io';
+import 'dart:ui' show AppExitResponse;
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_modular/flutter_modular.dart';
@@ -9,6 +10,7 @@ import 'package:tray_manager/tray_manager.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/network/metered_network_service.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
+import 'package:kazumi/services/platform/desktop_window_close.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/bean/dialog/exit_confirmation_dialog.dart';
@@ -31,6 +33,17 @@ class _AppWidgetState extends State<AppWidget>
   bool _isHandlingWindowClose = false;
   bool _didApplyStoredThemeSettings = false;
   Brightness? _lastTitleBarBrightness;
+  late final _closeActions = DesktopWindowCloseActions(
+    beforeQuit: () => DesktopExitTasks.instance.prepare(
+      onError: (error, stack) => KazumiLogger().w(
+        'Window: final playback progress save failed',
+        error: error,
+        stackTrace: stack,
+      ),
+    ),
+    terminate: () => exit(0),
+    hideWindow: windowManager.hide,
+  );
 
   @override
   void initState() {
@@ -184,14 +197,14 @@ class _AppWidgetState extends State<AppWidget>
       case 'show_window':
         windowManager.show();
       case 'exit':
-        exit(0);
+        _closeActions.quit();
     }
   }
 
-  // windowManager.close() triggers this handler; exit() bypasses confirmation.
+  // The close button follows the saved choice; menu Quit bypasses this choice.
   @override
   Future<void> onWindowClose() async {
-    if (_isHandlingWindowClose || !mounted) return;
+    if (_isHandlingWindowClose || _closeActions.isQuitting || !mounted) return;
     _isHandlingWindowClose = true;
     try {
       var action = switch (GStorage.getSetting(SettingsKeys.exitBehavior)) {
@@ -203,7 +216,7 @@ class _AppWidgetState extends State<AppWidget>
         final result = await KazumiDialog.show<ExitDialogResult>(
           builder: (_) => const ExitConfirmationDialog(),
         );
-        if (result == null || !mounted) return;
+        if (result == null || !mounted || _closeActions.isQuitting) return;
 
         action = result.action;
         if (result.rememberChoice) {
@@ -214,16 +227,24 @@ class _AppWidgetState extends State<AppWidget>
         }
       }
 
-      if (!mounted) return;
+      if (!mounted || _closeActions.isQuitting) return;
       switch (action) {
         case ExitDialogAction.exit:
-          exit(0);
+          await _closeActions.quit();
         case ExitDialogAction.minimizeToTray:
-          await windowManager.hide();
+          await _closeActions.hide();
       }
     } finally {
       _isHandlingWindowClose = false;
     }
+  }
+
+  @override
+  Future<AppExitResponse> didRequestAppExit() async {
+    // macOS Cmd-Q / application menu termination is an explicit Quit, even when
+    // the close button has been configured to hide the window.
+    await _closeActions.prepareQuit();
+    return AppExitResponse.exit;
   }
 
   @override

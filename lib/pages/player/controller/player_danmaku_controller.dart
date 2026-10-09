@@ -8,6 +8,7 @@ import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:mobx/mobx.dart';
 import 'package:kazumi/utils/danmaku.dart';
+import 'package:kazumi/utils/dandan_credentials.dart';
 
 part 'player_danmaku_controller.g.dart';
 
@@ -25,6 +26,7 @@ class DanmakuLoadResult {
     required this.danmakus,
     required this.bangumiID,
     required this.status,
+    this.failureMessage,
   });
 
   factory DanmakuLoadResult.success({
@@ -42,17 +44,20 @@ class DanmakuLoadResult {
 
   factory DanmakuLoadResult.failed({
     required int bangumiID,
+    Object? error,
   }) {
     return DanmakuLoadResult(
       danmakus: const [],
       bangumiID: bangumiID,
       status: DanmakuLoadStatus.failed,
+      failureMessage: danmakuFailureMessage(error),
     );
   }
 
   final List<DanmakuEntry> danmakus;
   final int bangumiID;
   final DanmakuLoadStatus status;
+  final String? failureMessage;
 
   bool get hasDanmakus => status == DanmakuLoadStatus.success;
 
@@ -230,13 +235,13 @@ abstract class _PlayerDanmakuController with Store {
           KazumiLogger().w(
               'PlayerController: failed to fetch danmaku online (may be offline)',
               error: e);
-          return DanmakuLoadResult.failed(bangumiID: nextBangumiID);
+          return DanmakuLoadResult.failed(bangumiID: nextBangumiID, error: e);
         }
       }
     } catch (e) {
       KazumiLogger()
           .w('PlayerController: failed to load cached danmaku', error: e);
-      return DanmakuLoadResult.failed(bangumiID: nextBangumiID);
+      return DanmakuLoadResult.failed(bangumiID: nextBangumiID, error: e);
     }
     return DanmakuLoadResult.success(
       danmakus: const [],
@@ -290,8 +295,8 @@ abstract class _PlayerDanmakuController with Store {
       KazumiLogger().w(
           'PlayerController: failed to get danmaku [BgmBangumiID] $bgmBangumiID',
           error: e);
+      return DanmakuLoadResult.failed(bangumiID: nextBangumiID, error: e);
     }
-    return DanmakuLoadResult.failed(bangumiID: nextBangumiID);
   }
 
   @action

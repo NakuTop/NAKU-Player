@@ -15,6 +15,7 @@ import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
 import 'package:kazumi/features/cinema/cinema_theme.dart';
 import 'package:kazumi/features/cinema/cinema_watch_together.dart';
+import 'package:kazumi/services/platform/desktop_window_close.dart';
 
 const _source = CinemaSource(
   id: 'player-fixture',
@@ -268,6 +269,40 @@ void main() {
     }
     await tester.pumpAndSettle();
   }
+
+  testWidgets(
+    'application exit awaits the active cinema player and unregisters disposed routes',
+    (tester) async {
+      await mount(tester, withRoute: true);
+      var prepared = false;
+      final errors = <Object>[];
+      await tester.runAsync(() async {
+        // Both the saved store Future and this gate belong to the real clock.
+        together.detachGate = Completer<void>();
+        final preparation = DesktopExitTasks.instance.prepare(
+          onError: (error, _) => errors.add(error),
+        ).then((_) {
+          prepared = true;
+        });
+        await Future<void>.delayed(Duration.zero);
+        expect(together.detachStarted, isTrue);
+        expect(prepared, isFalse);
+        together.detachGate!.complete();
+        await preparation;
+      });
+      expect(errors, isEmpty);
+      expect(prepared, isTrue);
+      expect(together.detached, isTrue);
+      expect(find.byType(CinemaPlayerPage), findsOneWidget);
+      expect(store.history, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+      together.detachStarted = false;
+      await tester.runAsync(() => DesktopExitTasks.instance.prepare());
+      expect(together.detachStarted, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   for (final width in [1280.0, 430.0, 360.0]) {
     testWidgets(
