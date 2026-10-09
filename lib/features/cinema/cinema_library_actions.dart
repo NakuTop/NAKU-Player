@@ -16,12 +16,14 @@ class CinemaLibraryActions extends StatefulWidget {
     required this.title,
     required this.child,
     this.history = false,
+    this.removeOverride,
   });
 
   final CinemaStore store;
   final CinemaTitle title;
   final Widget child;
   final bool history;
+  final Future<CinemaLibraryUndo?> Function()? removeOverride;
 
   @override
   State<CinemaLibraryActions> createState() => _CinemaLibraryActionsState();
@@ -75,7 +77,9 @@ class _CinemaLibraryActionsState extends State<CinemaLibraryActions> {
     final messenger = ScaffoldMessenger.of(context);
     final message = widget.history ? '已删除观看记录' : '已取消收藏';
     try {
-      final undo = widget.history
+      final undo = widget.removeOverride != null
+          ? await widget.removeOverride!()
+          : widget.history
           ? await widget.store.removeHistory(widget.title)
           : await widget.store.removeFavorite(widget.title);
       if (undo == null) return false;
@@ -107,10 +111,7 @@ class _CinemaLibraryActionsState extends State<CinemaLibraryActions> {
       return true;
     } catch (_) {
       if (messenger.mounted) {
-        KazumiDialog.showToast(
-          messenger: messenger,
-          message: '未能保存删除操作，记录已保留',
-        );
+        KazumiDialog.showToast(messenger: messenger, message: '未能保存删除操作，记录已保留');
       }
       return false;
     } finally {

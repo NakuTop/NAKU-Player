@@ -47,6 +47,11 @@ class CinemaStartupTarget {
       _ => null,
     };
     if (legacyTab != null) {
+      if (legacyTab == CinemaAnimeStartupTab.collect) {
+        return const CinemaStartupTarget(
+          section: CinemaStartupSection.favorites,
+        );
+      }
       return CinemaStartupTarget(
         section: CinemaStartupSection.anime,
         animeTab: legacyTab,
@@ -63,6 +68,9 @@ class CinemaStartupTarget {
             orElse: () => CinemaAnimeStartupTab.popular,
           )
         : CinemaAnimeStartupTab.popular;
+    if (animeTab == CinemaAnimeStartupTab.collect) {
+      return const CinemaStartupTarget(section: CinemaStartupSection.favorites);
+    }
     return CinemaStartupTarget(section: section, animeTab: animeTab);
   }
 }
@@ -87,7 +95,6 @@ class CinemaStartupPreferences {
     '/cinema?section=anime': '动漫 · 热门',
     '/cinema?section=anime&animeTab=timeline': '动漫 · 时间表',
     '/cinema?section=anime&animeTab=search': '动漫 · 搜索',
-    '/cinema?section=anime&animeTab=collect': '动漫 · 追番',
     '/cinema?section=anime&animeTab=more': '动漫 · 更多',
     '/cinema?section=douban': '豆瓣榜单',
     '/cinema?section=favorites': '我的收藏',

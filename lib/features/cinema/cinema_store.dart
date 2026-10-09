@@ -18,6 +18,8 @@ class CinemaSourcePack {
 /// Restores only the removed work, once, without replacing newer user activity.
 class CinemaLibraryUndo {
   CinemaLibraryUndo._(this._restore);
+  factory CinemaLibraryUndo.action(Future<bool> Function() restore) =>
+      CinemaLibraryUndo._(restore);
 
   final Future<bool> Function() _restore;
   bool _used = false;

@@ -558,7 +558,32 @@ class SettingsKeys {
     group: SettingGroup.player,
   );
 
+  static const fineVideoScaling = SettingKey<bool>(
+    'fineVideoScaling',
+    false,
+    group: SettingGroup.player,
+  );
+  static const smoothVideoMotion = SettingKey<bool>(
+    'smoothVideoMotion',
+    false,
+    group: SettingGroup.player,
+  );
+  static const highestVideoBitrate = SettingKey<bool>(
+    'highestVideoBitrate',
+    true,
+    group: SettingGroup.player,
+  );
+  static const videoBufferMegabytes = SettingKey<int>(
+    'videoBufferMegabytes',
+    128,
+    group: SettingGroup.player,
+  );
+
   static final List<SettingKey<Object?>> all = [
+    fineVideoScaling,
+    smoothVideoMotion,
+    highestVideoBitrate,
+    videoBufferMegabytes,
     hAenable,
     hardwareDecoder,
     searchEnhanceEnable,
@@ -666,7 +691,7 @@ class SettingsKeys {
   static List<SettingKey<Object?>> byGroup(SettingGroup group) {
     return [
       for (final key in all)
-        if (key.group == group) key
+        if (key.group == group) key,
     ];
   }
 

@@ -160,6 +160,9 @@ class _Group {
   final List<CinemaTitle> variants;
 
   bool accepts(_Candidate candidate) {
+    if (candidate.title.isDirectMedia || variants.first.isDirectMedia) {
+      return candidate.title.key == variants.first.key;
+    }
     if (name.isEmpty || name != candidate.name) return false;
     if (doubanId.isNotEmpty &&
         candidate.doubanId.isNotEmpty &&

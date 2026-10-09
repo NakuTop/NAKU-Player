@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import 'package:kazumi/features/cinema/cinema_ratings.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
 import 'package:kazumi/features/cinema/cinema_watch_together.dart';
+import 'package:kazumi/features/cinema/cinema_video_gestures.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -256,6 +258,65 @@ void main() {
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pump();
     expect(tester.takeException(), isNull);
+  }
+
+  for (final initiallyPlaying in [true, false]) {
+    testWidgets(
+      'fullscreen entry and exit preserve playing=$initiallyPlaying without reloading',
+      (tester) async {
+        var fullScreen = false;
+        final transitions = <bool>[];
+        await mount(tester, {
+          'autoPlay': initiallyPlaying,
+          'backgroundPlayback': false,
+        });
+        messenger.setMockMethodCallHandler(channel, (call) async {
+          if (call.method == 'isFullScreen') return fullScreen;
+          if (call.method == 'setFullScreen') {
+            fullScreen = (call.arguments as Map)['isFullScreen'] as bool;
+            transitions.add(fullScreen);
+            tester.binding.handleAppLifecycleStateChanged(
+              AppLifecycleState.hidden,
+            );
+            tester.binding.handleAppLifecycleStateChanged(
+              AppLifecycleState.paused,
+            );
+            final done = Completer<void>();
+            messenger.handlePlatformMessage(
+              channel.name,
+              const StandardMethodCodec().encodeMethodCall(
+                MethodCall('onEvent', {
+                  'eventName': fullScreen
+                      ? 'enter-full-screen'
+                      : 'leave-full-screen',
+                }),
+              ),
+              (_) => done.complete(),
+            );
+            await done.future;
+            tester.binding.handleAppLifecycleStateChanged(
+              AppLifecycleState.resumed,
+            );
+          }
+          return null;
+        });
+        final player = backends.single;
+        await player.seek(const Duration(seconds: 90));
+        for (var i = 0; i < 2; i++) {
+          final surface = tester.getCenter(find.byType(CinemaVideoGestures));
+          await tester.tapAt(surface);
+          await tester.pump(const Duration(milliseconds: 80));
+          await tester.tapAt(surface);
+          await tester.pumpAndSettle();
+          expect(player.state.playing, initiallyPlaying);
+          expect(player.pauses, 0);
+          expect(backends.length, 1);
+          expect(player.state.position.inSeconds, 90);
+        }
+        expect(transitions, [true, false]);
+        await unmount(tester);
+      },
+    );
   }
 
   testWidgets(

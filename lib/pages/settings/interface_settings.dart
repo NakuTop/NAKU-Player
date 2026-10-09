@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/bean/settings/settings_detail_scaffold.dart';
 import 'package:kazumi/bean/settings/settings_dropdown_tile.dart';
 import 'package:kazumi/bean/settings/settings_list.dart';
 import 'package:kazumi/features/cinema/cinema_startup_preferences.dart';
-import 'package:kazumi/modules/collect/collect_layout.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:kazumi/utils/device.dart';
 
@@ -25,11 +23,10 @@ class _InterfaceSettingsPageState extends State<InterfaceSettingsPage> {
   CinemaStartupTarget? _startup;
   bool _savingStartup = false;
   String? _startupError;
-  late CollectLayout _defaultCollectLayout;
-  bool _savingCollectLayout = false;
   static const _exitBehaviorTitles = ['退出 NAKU播放器', '隐藏到托盘', '每次都询问'];
-  int _exitBehavior = GStorage.getSetting(SettingsKeys.exitBehavior)
-      .clamp(0, _exitBehaviorTitles.length - 1);
+  int _exitBehavior = GStorage.getSetting(
+    SettingsKeys.exitBehavior,
+  ).clamp(0, _exitBehaviorTitles.length - 1);
 
   @override
   void initState() {
@@ -40,13 +37,12 @@ class _InterfaceSettingsPageState extends State<InterfaceSettingsPage> {
     } catch (_) {
       _startupError = '启动设置暂时无法读取，请重新打开设置。';
     }
-    _defaultCollectLayout = CollectLayout.fromValue(
-      GStorage.getSetting(SettingsKeys.defaultCollectLayout),
-    );
   }
 
   Future<void> updateDefaultPage(String page) async {
-    if (_savingStartup || _startup == null || page == _startup!.location) return;
+    if (_savingStartup || _startup == null || page == _startup!.location) {
+      return;
+    }
     setState(() {
       _savingStartup = true;
       _startupError = null;
@@ -62,62 +58,49 @@ class _InterfaceSettingsPageState extends State<InterfaceSettingsPage> {
     }
   }
 
-  Future<void> _updateDefaultCollectLayout(CollectLayout layout) async {
-    if (_savingCollectLayout || layout == _defaultCollectLayout) return;
-    setState(() => _savingCollectLayout = true);
-    try {
-      await GStorage.putSetting(SettingsKeys.defaultCollectLayout, layout.name);
-      if (mounted) setState(() => _defaultCollectLayout = layout);
-    } catch (_) {
-      if (mounted) KazumiDialog.showToast(message: '追番默认布局保存失败，请重试');
-    } finally {
-      if (mounted) setState(() => _savingCollectLayout = false);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return SettingsDetailScaffold(
       title: Text('界面设置'),
       body: SettingsList(
         sections: [
-          SettingsSection(title: Text('启动'), tiles: [
-            SettingsDropdownTile<String>(
-              leading: Icons.home_rounded,
-              title: const Text('启动页面'),
-              description: Text(_startupError ??
-                  (_savingStartup ? '正在保存…' : '下次启动 NAKU播放器时打开此页面')),
-              value: _startup?.location ?? '',
-              options: CinemaStartupPreferences.options,
-              fallbackLabel: '暂不可用',
-              enabled: !_savingStartup && _startup != null,
-              onChanged: updateDefaultPage,
-            ),
-          ]),
-          SettingsSection(title: Text('动漫展示'), tiles: [
-            SettingsDropdownTile<CollectLayout>(
-              leading: Icons.view_agenda_rounded,
-              title: const Text('动漫追番默认布局'),
-              description: const Text('仅影响动漫追番页；下次打开时使用，页内切换不会改变此设置'),
-              enabled: !_savingCollectLayout,
-              value: _defaultCollectLayout,
-              options: {
-                for (final layout in CollectLayout.values) layout: layout.label,
-              },
-              onChanged: _updateDefaultCollectLayout,
-            ),
-            SettingsTile.switchTile(
-              leading: Icons.star_rounded,
-              onToggle: (value) async {
-                showRating = value ?? !showRating;
-                await GStorage.putSetting(SettingsKeys.showRating, showRating);
-                setState(() {});
-              },
-              title: Text('显示动漫评分'),
-              description: Text('仅影响动漫概览和番剧列表，不改变电影、剧集与豆瓣榜单评分'),
-              initialValue: showRating,
-            ),
-          ]),
+          SettingsSection(
+            title: Text('启动'),
+            tiles: [
+              SettingsDropdownTile<String>(
+                leading: Icons.home_rounded,
+                title: const Text('启动页面'),
+                description: Text(
+                  _startupError ??
+                      (_savingStartup ? '正在保存…' : '下次启动 NAKU播放器时打开此页面'),
+                ),
+                value: _startup?.location ?? '',
+                options: CinemaStartupPreferences.options,
+                fallbackLabel: '暂不可用',
+                enabled: !_savingStartup && _startup != null,
+                onChanged: updateDefaultPage,
+              ),
+            ],
+          ),
+          SettingsSection(
+            title: Text('动漫展示'),
+            tiles: [
+              SettingsTile.switchTile(
+                leading: Icons.star_rounded,
+                onToggle: (value) async {
+                  showRating = value ?? !showRating;
+                  await GStorage.putSetting(
+                    SettingsKeys.showRating,
+                    showRating,
+                  );
+                  setState(() {});
+                },
+                title: Text('显示动漫评分'),
+                description: Text('仅影响动漫概览和番剧列表，不改变电影、剧集与豆瓣榜单评分'),
+                initialValue: showRating,
+              ),
+            ],
+          ),
           if (isDesktop())
             SettingsSection(
               title: const Text('窗口行为'),

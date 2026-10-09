@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:canvas_danmaku/models/danmaku_content_item.dart';
 import 'package:flutter/material.dart';
+import 'package:kazumi/features/cinema/cinema_quality_sheet.dart';
 import 'package:flutter_mobx/flutter_mobx.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:kazumi/bean/widget/kazumi_menu.dart';
@@ -861,6 +862,23 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                     label: '弹幕切换',
                   ),
                   if (compact) _danmakuSettingsMenuItem,
+                  KazumiMenuItem(
+                    onPressed: () async {
+                      final player = playerController.playback.mediaPlayer;
+                      if (player == null) return;
+                      final hold = widget.acquirePlayerPanelHold();
+                      try {
+                        await showCinemaQualitySheet(context, player);
+                      } finally {
+                        if (mounted) {
+                          hold.release();
+                        } else {
+                          hold.releaseSilently();
+                        }
+                      }
+                    },
+                    label: '画质信息与处理',
+                  ),
                   KazumiMenuItem(
                     onPressed: widget.showVideoInfo,
                     label: '视频详情',

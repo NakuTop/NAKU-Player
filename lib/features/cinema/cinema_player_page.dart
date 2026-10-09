@@ -1,3 +1,6 @@
+import 'package:kazumi/services/player/playback_quality.dart';
+import 'cinema_quality_sheet.dart';
+import 'package:kazumi/services/player/playback_lifecycle.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -32,6 +35,7 @@ import 'cinema_playback_candidates.dart';
 import 'cinema_repository.dart';
 import 'cinema_store.dart';
 import 'cinema_player_preferences.dart';
+import 'cinema_video_gestures.dart';
 
 /// Locate the saved episode in a fresh catalogue without trusting old indexes.
 ({int routeIndex, int episodeIndex})? cinemaResumeSelection(
@@ -164,6 +168,7 @@ bool cinemaUsesDirectMedia(
   CinemaRoute route,
   CinemaEpisode episode,
 ) =>
+    source.kind == CinemaSourceKind.direct ||
     episode.isDirect ||
     (source.kind == CinemaSourceKind.maccms &&
         RegExp(
@@ -257,6 +262,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   double? _beforeForwardRate;
   bool _forwardHeld = false;
   bool _backgroundPaused = false;
+  int _lifecycleRevision = 0;
   late final _preferences =
       widget.preferences ?? CinemaPlayerPreferences.read();
   final _playerFocus = FocusScopeNode(debugLabel: 'NAKU player');
@@ -695,6 +701,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           'http-proxy',
           MacOSSystemProxy.proxyFor(Uri.parse(mediaUrl))?.toString() ?? '',
         );
+        if (!_isCurrent(generation)) return;
+        try {
+          await PlaybackQualityPreferences.read().apply(native);
+        } catch (_) {
+          _playbackNotice = '部分画质增强无法应用，已保留原始播放';
+        }
         if (!_isCurrent(generation)) return;
         candidate.logStage('native-config-ready');
       }
@@ -1150,12 +1162,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (!_preferences.backgroundPlayback &&
+    final revision = ++_lifecycleRevision;
+    if (!_fullscreenChanging &&
+        _fullscreenTransition == null &&
+        !_pipChanging &&
+        !_preferences.backgroundPlayback &&
         (state == AppLifecycleState.hidden ||
             state == AppLifecycleState.paused) &&
         !_pip) {
-      _backgroundPaused = true;
-      unawaited(_playback?.player.pause());
+      unawaited(_pauseInBackground(revision));
     } else if (state == AppLifecycleState.resumed) {
       _backgroundPaused = false;
     }
@@ -1164,6 +1179,20 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         state == AppLifecycleState.detached) {
       unawaited(_persistProgress());
     }
+  }
+
+  Future<void> _pauseInBackground(int revision) async {
+    if (!await isPlaybackWindowBackgrounded() ||
+        !mounted ||
+        _closing ||
+        revision != _lifecycleRevision ||
+        _fullscreenChanging ||
+        _fullscreenTransition != null ||
+        _pipChanging) {
+      return;
+    }
+    _backgroundPaused = true;
+    await _playback?.player.pause();
   }
 
   @override
@@ -1493,22 +1522,23 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         ),
       ],
       const SizedBox(height: 24),
-      CinemaRatingsPanel(
-        key: ValueKey('playing-work-details:${widget.title.key}'),
-        // Playback routes belong to the same verified work. Keep its metadata
-        // anchor stable while changing source or episode, including ID-less ones.
-        title: widget.title,
-        sourceName: widget.source.name,
-        repository: widget.ratingsRepository,
-        reviewsRepository: widget.reviewsRepository,
-        onRecommendationSelected: widget.onRecommendationSelected == null
-            ? null
-            : (recommendation) async {
-                final onSelected = widget.onRecommendationSelected!;
-                await _leave();
-                onSelected(recommendation);
-              },
-      ),
+      if (!widget.title.isDirectMedia)
+        CinemaRatingsPanel(
+          key: ValueKey('playing-work-details:${widget.title.key}'),
+          // Playback routes belong to the same verified work. Keep its metadata
+          // anchor stable while changing source or episode, including ID-less ones.
+          title: widget.title,
+          sourceName: widget.source.name,
+          repository: widget.ratingsRepository,
+          reviewsRepository: widget.reviewsRepository,
+          onRecommendationSelected: widget.onRecommendationSelected == null
+              ? null
+              : (recommendation) async {
+                  final onSelected = widget.onRecommendationSelected!;
+                  await _leave();
+                  onSelected(recommendation);
+                },
+        ),
     ],
   );
 
@@ -1520,6 +1550,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final controlsTheme = MaterialDesktopVideoControlsThemeData(
       visibleOnMount: true,
       toggleFullscreenOnDoublePress: false,
+      playAndPauseOnTap: false,
       keyboardShortcuts: const {},
       controlsHoverDuration: _preferences.controlsHoverDuration,
       controlsTransitionDuration: _preferences.disableAnimations
@@ -1642,6 +1673,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         const MaterialDesktopPositionIndicator(),
         const Spacer(),
         IconButton(
+          tooltip: '画质信息',
+          icon: const Icon(Icons.high_quality_outlined),
+          onPressed: playback == null
+              ? null
+              : () => showCinemaQualitySheet(context, playback.player),
+        ),
+        IconButton(
           tooltip: _fullscreen ? '退出全屏' : '全屏',
           onPressed: _toggleFullscreen,
           icon: Icon(_fullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
@@ -1654,19 +1692,30 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         fit: StackFit.expand,
         children: [
           if (playback != null)
-            MaterialDesktopVideoControlsTheme(
-              normal: controlsTheme,
-              fullscreen: controlsTheme,
-              child:
-                  widget.videoSurfaceBuilder?.call(context, playback.player) ??
-                  Video(
-                    key: ValueKey(playback),
-                    controller: playback.controller,
-                    fit: _preferences.aspectRatio.fit,
-                    aspectRatio: _preferences.aspectRatio.frameAspectRatio,
-                    controls: MaterialDesktopVideoControls,
-                    pauseUponEnteringBackgroundMode: false,
-                  ),
+            CinemaVideoGestures(
+              onTogglePlayback: () {
+                if (!_loading && !_closing) {
+                  unawaited(playback.player.playOrPause());
+                }
+              },
+              onToggleFullscreen: () => unawaited(_toggleFullscreen()),
+              child: MaterialDesktopVideoControlsTheme(
+                normal: controlsTheme,
+                fullscreen: controlsTheme,
+                child:
+                    widget.videoSurfaceBuilder?.call(
+                      context,
+                      playback.player,
+                    ) ??
+                    Video(
+                      key: ValueKey(playback),
+                      controller: playback.controller,
+                      fit: _preferences.aspectRatio.fit,
+                      aspectRatio: _preferences.aspectRatio.frameAspectRatio,
+                      controls: MaterialDesktopVideoControls,
+                      pauseUponEnteringBackgroundMode: false,
+                    ),
+              ),
             ),
           if (_loading || _error != null)
             ColoredBox(

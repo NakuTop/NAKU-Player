@@ -28,6 +28,13 @@ class CinemaSettingsGroup {
 const cinemaSettingsGroups = <CinemaSettingsGroup>[
   CinemaSettingsGroup('播放与画质', [
     CinemaSettingsDestination(
+      id: 'quality',
+      title: '画质与流畅度',
+      description: '高清码率、影视缩放、帧节奏与缓冲',
+      icon: Icons.high_quality_rounded,
+      route: '/settings/player/quality',
+    ),
+    CinemaSettingsDestination(
       id: 'player',
       title: '播放设置',
       description: '倍速、续播、连播、控制栏与缓冲；新打开播放器时生效',
@@ -98,7 +105,7 @@ const cinemaSettingsGroups = <CinemaSettingsGroup>[
     CinemaSettingsDestination(
       id: 'interface',
       title: '界面设置',
-      description: '启动界面、动漫评分与追番布局',
+      description: '启动界面、动漫评分与窗口行为',
       icon: Icons.pages_rounded,
       route: '/settings/interface',
     ),

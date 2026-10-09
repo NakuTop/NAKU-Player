@@ -1,3 +1,4 @@
+import 'package:kazumi/services/player/playback_quality.dart';
 // ignore_for_file: library_private_types_in_public_api
 
 import 'dart:io';
@@ -320,6 +321,11 @@ abstract class _PlayerPlaybackController with Store {
       // media-kit 默认启用硬盘作为双重缓存，这可以维持大缓存的前提下减轻内存压力
       // media-kit 内部硬盘缓存目录按照 Linux 配置，这导致该功能在其他平台上被损坏
       // 该设置可以在所有平台上正确启用双重缓存
+      try {
+        await PlaybackQualityPreferences.read().apply(pp);
+      } catch (_) {
+        KazumiLogger().w('Optional quality settings unavailable on this output');
+      }
       await pp.setProperty("demuxer-cache-dir", await getPlayerTempPath());
       if (!isCurrentPlayer(player)) {
         return await _discardIfNotCurrent(candidate);

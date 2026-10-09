@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:kazumi/services/player/playback_lifecycle.dart';
 import 'dart:io';
 import 'package:kazumi/pages/player/player_item_panel.dart';
 import 'package:kazumi/pages/player/player_keyboard_shortcuts.dart';
@@ -147,6 +148,7 @@ class _PlayerItemState extends State<PlayerItem>
   late mobx.ReactionDisposer _playerSizeListener;
 
   late mobx.ReactionDisposer _fullscreenListener;
+  int _lifecycleRevision = 0;
 
   @override
   void didChangeMetrics() {
@@ -157,7 +159,16 @@ class _PlayerItemState extends State<PlayerItem>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) async {
     super.didChangeAppLifecycleState(state);
-    if (state == AppLifecycleState.paused && !backgroundPlayback) {
+    final revision = ++_lifecycleRevision;
+    if (state == AppLifecycleState.paused &&
+        !backgroundPlayback &&
+        !videoPageController.fullscreen.isTransitioning) {
+      if (!await isPlaybackWindowBackgrounded() ||
+          !mounted ||
+          revision != _lifecycleRevision ||
+          videoPageController.fullscreen.isTransitioning) {
+        return;
+      }
       // Suspend before awaiting pause so a later resume wins; pause alone keeps prefetching.
       final suspend = playerController.playback.setPrefetchSuspended(true);
       if (playerController.playback.mediaPlayer != null &&

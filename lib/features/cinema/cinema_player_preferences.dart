@@ -1,3 +1,4 @@
+import 'package:kazumi/services/player/playback_quality.dart';
 import 'package:kazumi/pages/player/controller/player_aspect_ratio.dart';
 import 'package:kazumi/pages/player/controller/player_super_resolution.dart';
 import 'package:kazumi/services/network/metered_network_service.dart';
@@ -129,7 +130,11 @@ class CinemaPlayerPreferences {
             isMetered: isMetered ?? MeteredNetworkService.isMetered,
           )
           ? 2 * 1024 * 1024
-          : 64 * 1024 * 1024,
+          : PlaybackQualityPreferences.normalizeBuffer(
+                  read(SettingsKeys.videoBufferMegabytes),
+                ) *
+                1024 *
+                1024,
       shortcuts: Map.unmodifiable(shortcuts),
     );
   }

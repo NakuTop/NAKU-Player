@@ -11,6 +11,7 @@ Stream<List<CinemaTitle>> discoverCinemaWorkSources({
   required CinemaRepository repository,
   required bool Function() isCurrent,
 }) async* {
+  if (anchor.isDirectMedia) return;
   final variants = groupCinemaTitles([
     anchor,
     ...known,

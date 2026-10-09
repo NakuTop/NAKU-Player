@@ -10,6 +10,7 @@ import 'package:hive_ce/hive.dart';
 import 'package:kazumi/bean/card/bangumi_card.dart';
 import 'package:kazumi/features/cinema/anime/cinema_anime_page.dart';
 import 'package:kazumi/features/cinema/cinema_theme.dart';
+import 'package:kazumi/features/cinema/cinema_settings_host_binding.dart';
 import 'package:kazumi/navigation.dart';
 import 'package:kazumi/modules/search/search_history_module.dart';
 import 'package:kazumi/pages/settings/settings_module.dart';
@@ -181,8 +182,19 @@ void main() {
       expect(adapter.trendingRequests, loadedRequests);
       await tab(tester, 1);
       expect(adapter.calendarRequests, 1);
+      final owner = Object();
+      var openedFavorites = 0;
+      CinemaSettingsHostBinding.instance.bind(
+        owner,
+        onSources: () {},
+        onFavorites: () => openedFavorites++,
+        enabledSourceCount: () => 0,
+        sourceCount: () => 0,
+      );
+      addTearDown(() => CinemaSettingsHostBinding.instance.unbind(owner));
       await tab(tester, 3);
-      expect(find.byType(CollectPage), findsOneWidget);
+      expect(openedFavorites, 1);
+      expect(find.byType(CollectPage, skipOffstage: false), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
@@ -247,7 +259,10 @@ void main() {
         RouteVisibility.isCoveredOf(tester.element(find.byType(MyPage))),
         isTrue,
       );
-      expect(TickerMode.valuesOf(tester.element(find.byType(MyPage))).enabled, isFalse);
+      expect(
+        TickerMode.valuesOf(tester.element(find.byType(MyPage))).enabled,
+        isFalse,
+      );
       active.value = true;
       await tester.pump();
       expect(myController.viewers, 1);

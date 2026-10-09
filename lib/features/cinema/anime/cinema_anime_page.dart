@@ -1,8 +1,7 @@
+import '../cinema_settings_host_binding.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:kazumi/navigation.dart';
-import 'package:kazumi/pages/collect/collect_controller.dart';
-import 'package:kazumi/pages/collect/collect_page.dart';
 import 'package:kazumi/pages/menu/route_visibility.dart';
 import 'package:kazumi/pages/my/my_controller.dart';
 import 'package:kazumi/pages/my/my_page.dart';
@@ -41,7 +40,7 @@ class _CinemaAnimePageState extends State<CinemaAnimePage> with RouteAware {
     ('热门', Icons.local_fire_department_outlined),
     ('时间表', Icons.calendar_month_outlined),
     ('搜索', Icons.search_rounded),
-    ('追番', Icons.favorite_border_rounded),
+    ('收藏', Icons.favorite_border_rounded),
     ('更多', Icons.tune_rounded),
   ];
   final _pages = <int, Widget>{};
@@ -49,6 +48,17 @@ class _CinemaAnimePageState extends State<CinemaAnimePage> with RouteAware {
   late int _selected = widget.initialTab.clamp(0, _destinations.length - 1);
   bool _covered = false;
   PageRoute<void>? _route;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_selected == 3) {
+      _selected = 0;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _select(3);
+      });
+    }
+  }
 
   @override
   void didChangeDependencies() {
@@ -99,12 +109,18 @@ class _CinemaAnimePageState extends State<CinemaAnimePage> with RouteAware {
         controller: context.read<SearchPageController>(),
         embedded: true,
       ),
-      3 => CollectPage(controller: inject<CollectController>(), embedded: true),
+      3 => const SizedBox.shrink(),
       _ => MyPage(controller: inject<MyController>(), embedded: true),
     },
   );
 
   void _select(int index) {
+    if (index == 3) {
+      if (!CinemaSettingsHostBinding.instance.openLibrary(history: false)) {
+        context.navigate('/cinema?section=favorites');
+      }
+      return;
+    }
     if (index == _selected) return;
     _focusScope.unfocus();
     setState(() => _selected = index);

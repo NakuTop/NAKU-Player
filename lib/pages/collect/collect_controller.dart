@@ -40,6 +40,17 @@ abstract class _CollectController with Store {
     return _collectCrudRepository.getCollectType(bangumiItem.id);
   }
 
+  Future<void> toggleFavorite(BangumiItem item) async {
+    if (getCollectType(item) != 0) {
+      await _deleteCollectLocally(item);
+      if (GStorage.getSetting(SettingsKeys.bangumiSyncEnable)) {
+        KazumiDialog.showToast(message: '已取消本地收藏，Bangumi 账号内的记录保留');
+      }
+    } else {
+      await addCollect(item, type: CollectType.planToWatch.value);
+    }
+  }
+
   @action
   Future<void> addCollect(BangumiItem bangumiItem, {type = 1}) async {
     if (type == 0) {

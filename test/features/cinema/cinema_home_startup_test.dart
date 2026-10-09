@@ -21,7 +21,7 @@ import 'package:kazumi/features/cinema/douban/douban_repository.dart';
 import 'package:kazumi/features/cinema/douban/douban_themes.dart';
 import 'package:kazumi/navigation.dart';
 import 'package:kazumi/pages/collect/collect_controller.dart';
-import 'package:kazumi/pages/collect/collect_page.dart';
+import 'package:kazumi/features/cinema/cinema_unified_library.dart';
 import 'package:kazumi/pages/my/my_controller.dart';
 import 'package:kazumi/pages/my/my_page.dart';
 import 'package:kazumi/pages/popular/popular_page.dart';
@@ -181,10 +181,27 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets(
+    'legacy anime collection opens unified favorites and anime shortcut returns there',
+    (tester) async {
+      await mount(tester, '/tab/collect/');
+      expect(selected(tester, '我的收藏'), isTrue);
+      expect(find.byType(CinemaUnifiedLibrary), findsOneWidget);
+      expect(repository.browsed, isEmpty);
+      await tester.tap(find.widgetWithText(ListTile, '动漫').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('anime-tab-3')));
+      await tester.pumpAndSettle();
+      expect(selected(tester, '我的收藏'), isTrue);
+      expect(find.byType(CinemaUnifiedLibrary), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   for (final entry in {
     '/tab/popular/': (0, PopularPage),
     '/tab/timeline/': (1, TimelinePage),
-    '/tab/collect/': (3, CollectPage),
     '/tab/my/': (4, MyPage),
   }.entries) {
     testWidgets('${entry.key} opens its real anime page in the NAKU shell', (

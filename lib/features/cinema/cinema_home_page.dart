@@ -9,6 +9,12 @@ import 'cinema_settings_page.dart';
 import 'cinema_settings_host_binding.dart';
 import 'cinema_startup_preferences.dart';
 import 'anime/cinema_anime_page.dart';
+import 'anime/cinema_anime_library.dart';
+import 'cinema_unified_library.dart';
+import 'package:kazumi/modules/history/history_module.dart';
+import 'package:kazumi/services/player/history_playback_service.dart';
+import 'package:kazumi/services/plugin/rule_engine_models.dart'
+    show RuleCancelToken;
 import 'cinema_filters.dart';
 import 'cinema_aggregate_catalog.dart';
 import 'cinema_discovery_resolver.dart';
@@ -37,13 +43,13 @@ import 'naku_update_page.dart';
 import 'naku_update_service.dart';
 import 'cinema_grouping.dart';
 import 'cinema_card_ratings.dart';
+import 'cinema_direct_media.dart';
 import 'cinema_repository.dart';
 import 'cinema_ratings_panel.dart';
 import 'cinema_ratings.dart';
 import 'cinema_rating_title_resolver.dart';
 import 'cinema_rating_identity_search.dart';
 import 'cinema_store.dart';
-import 'cinema_library_actions.dart';
 import 'cinema_player_page.dart';
 import 'cinema_theme.dart';
 import 'cinema_websites_page.dart';
@@ -105,7 +111,9 @@ class CinemaHomePage extends StatefulWidget {
   State<CinemaHomePage> createState() => _CinemaHomePageState();
 }
 
-class _CinemaHomePageState extends State<CinemaHomePage> {
+class _CinemaHomePageState extends State<CinemaHomePage>
+    with KazumiDialogOwner {
+  CinemaAnimeLibrary? _animeLibrary;
   late final CinemaStore _store = widget.store ?? CinemaStore();
   late final CinemaRepository _repository =
       widget.repository ?? CinemaRepository();
@@ -214,6 +222,11 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   @override
   void initState() {
     super.initState();
+    try {
+      _animeLibrary = CinemaAnimeLibrary();
+    } catch (_) {
+      // A standalone widget test may have no anime storage initialized.
+    }
     _section = switch (widget.initialStartup.section) {
       CinemaStartupSection.series => _Section.series,
       CinemaStartupSection.anime => _Section.anime,
@@ -222,6 +235,10 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
       CinemaStartupSection.settings => _Section.settings,
       _ => _Section.movies,
     };
+    if (_section == _Section.anime &&
+        widget.initialStartup.animeTab == CinemaAnimeStartupTab.collect) {
+      _section = _Section.favorites;
+    }
     _animeOpened = _section == _Section.anime;
     if (widget.initialStartup.section == CinemaStartupSection.douban) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -231,6 +248,8 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     CinemaSettingsHostBinding.instance.bind(
       this,
       onSources: _openSourceSettings,
+      onFavorites: () => _openLibrary(false),
+      onHistory: () => _openLibrary(true),
       enabledSourceCount: () => _store.enabledSources
           .where((source) => source.kind == CinemaSourceKind.maccms)
           .length,
@@ -280,6 +299,15 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         ),
       ),
     );
+  }
+
+  void _openLibrary(bool history) {
+    if (!mounted) return;
+    final route = ModalRoute.of(context);
+    if (route != null) {
+      Navigator.of(context).popUntil((candidate) => candidate == route);
+    }
+    unawaited(_selectSection(history ? _Section.history : _Section.favorites));
   }
 
   void _openSourceSettings() {
@@ -587,6 +615,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
 
   @override
   void dispose() {
+    _animeLibrary?.dispose();
     CinemaSettingsHostBinding.instance.unbind(this);
     _ratings.changes.removeListener(_onRatingsChanged);
     _ratingRefresh?.cancel();
@@ -709,6 +738,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   }
 
   CinemaSource? _findSource(String id) {
+    if (id == cinemaDirectSource.id) return cinemaDirectSource;
     for (final source in _store.sources) {
       if (source.id == id) return source;
     }
@@ -1358,6 +1388,17 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     List<CinemaTitle> variants = const [],
     bool keepBrowseRoute = false,
   }) async {
+    if (title.isDirectMedia) {
+      final saved = resume ?? _store.historyFor(title);
+      _playTitle(
+        title,
+        cinemaDirectSource,
+        saved?.routeIndex ?? 0,
+        saved?.episodeIndex ?? 0,
+        const [],
+      );
+      return;
+    }
     if (title.sourceId == 'douban-discovery') {
       final found = await resolveCinemaDiscoverySources(
         context,
@@ -1433,6 +1474,32 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     if (mounted) {
       setState(() {}); // Refresh poster summaries after rating edits.
     }
+  }
+
+  Future<void> _openAnimeHistory(History history) async {
+    if (dialogs.isRunning) return;
+    await dialogs.run((task) async {
+      final token = RuleCancelToken();
+      final result = await task.loading(
+        message: '正在恢复动漫进度',
+        barrierDismissible: true,
+        onCancel: token.cancel,
+        action: () =>
+            inject<HistoryPlaybackService>().open(history, cancelToken: token),
+      );
+      switch (result) {
+        case HistoryPlaybackReady(:final args):
+          task.withContext(
+            (context) => context.pushNamed('/video/', arguments: args),
+          );
+        case HistoryPlaybackUnavailable(:final reason):
+          task.withContext(
+            (context) =>
+                context.pushNamed('/info/', arguments: history.bangumiItem),
+          );
+          _toast(reason);
+      }
+    }, errorMessage: '暂时无法继续播放，请重试');
   }
 
   void _toast(String message) {
@@ -1703,6 +1770,27 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
               ),
             ),
         ],
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.add_link_rounded, size: 20),
+            title: const Text('高清直链', style: TextStyle(fontSize: 14)),
+            onTap: () async {
+              if (closeDrawer) Navigator.pop(context);
+              final result = await showCinemaDirectMediaDialog(context);
+              if (!mounted || result == null) return;
+              try {
+                if (result.favorite && !_store.isFavorite(result.title)) {
+                  await _store.toggleFavorite(result.title);
+                }
+                if (mounted) await _openTitle(result.title);
+              } catch (_) {
+                if (mounted) _toast('直链未能保存或打开，请重试。');
+              }
+            },
+          ),
+        ),
         if (widget.enableWatchTogether)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
@@ -1903,78 +1991,19 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         ).push(MaterialPageRoute<void>(builder: (_) => const NakuUpdatePage())),
       );
     }
-    if (_section == _Section.favorites) {
-      return Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28),
-            child: CinemaFilterBar(
-              value: _catalog.filters,
-              items: _store.favorites,
-              scope: '全部收藏',
-              onChanged: (v) => setState(() => _catalog.filters = v),
-            ),
-          ),
-          Expanded(
-            child: _library(
-              _store.favorites.where(_catalog.filters.matches).toList(),
-              wide,
-              '没有符合条件的收藏。',
-            ),
-          ),
-        ],
-      );
-    }
-    if (_section == _Section.history) {
-      if (_store.history.isEmpty) return _empty('暂无观看记录', '播放后会在这里保留剧集和进度。');
-      final history = _store.history
-          .where((h) => _catalog.filters.matches(h.title))
-          .toList();
-      return Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28),
-            child: CinemaFilterBar(
-              value: _catalog.filters,
-              items: _store.history.map((h) => h.title).toList(),
-              scope: '全部历史',
-              onChanged: (v) => setState(() => _catalog.filters = v),
-            ),
-          ),
-          Expanded(
-            child: ListView.separated(
-              key: const PageStorageKey('cinema-history-scroll'),
-              padding: const EdgeInsets.all(28),
-              itemCount: history.length,
-              separatorBuilder: (_, _) => const Divider(height: 25),
-              itemBuilder: (context, index) {
-                final h = history[index];
-                return CinemaLibraryActions(
-                  key: ValueKey('history-actions:${h.title.key}'),
-                  store: _store,
-                  title: h.title,
-                  history: true,
-                  child: ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: SizedBox(
-                      width: 48,
-                      child: _poster(h.title, 48, 68),
-                    ),
-                    title: Text(h.title.title),
-                    subtitle: Text(
-                      '${_findSource(h.title.sourceId)?.name ?? '已移除的片源'}  ·  第 ${h.episodeIndex + 1} 集  ·  ${Duration(seconds: h.positionSeconds).inMinutes} 分钟',
-                    ),
-                    trailing: const Icon(
-                      Icons.play_circle_outline_rounded,
-                      color: CinemaTheme.copper,
-                    ),
-                    onTap: () => _openTitle(h.title, resume: h),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
+    if (_section == _Section.favorites || _section == _Section.history) {
+      return CinemaUnifiedLibrary(
+        key: ValueKey(_section),
+        store: _store,
+        anime: _animeLibrary,
+        history: _section == _Section.history,
+        filters: _catalog.filters,
+        onFilters: (value) => setState(() => _catalog.filters = value),
+        titleCard: _titleCard,
+        poster: _poster,
+        onCinemaPlay: (record) => _openTitle(record.title, resume: record),
+        onAnimePlay: _openAnimeHistory,
+        sourceName: (id) => _findSource(id)?.name ?? '已移除的片源',
       );
     }
     final padding = wide ? 36.0 : 18.0;
@@ -2379,27 +2408,6 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     );
   }
 
-  Widget _library(List<CinemaTitle> items, bool wide, String emptyMessage) {
-    if (items.isEmpty) return _empty('暂无收藏', emptyMessage);
-    return GridView.builder(
-      key: const PageStorageKey('cinema-favorites-scroll'),
-      padding: EdgeInsets.all(wide ? 36 : 18),
-      itemCount: items.length,
-      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 190,
-        crossAxisSpacing: 18,
-        mainAxisSpacing: 24,
-        childAspectRatio: .51,
-      ),
-      itemBuilder: (_, i) => CinemaLibraryActions(
-        key: ValueKey('favorite-actions:${items[i].key}'),
-        store: _store,
-        title: items[i],
-        child: _titleCard(items[i]),
-      ),
-    );
-  }
-
   Widget _poster(CinemaTitle title, double? width, double? height) => ClipRRect(
     borderRadius: BorderRadius.circular(9),
     child: SizedBox(
@@ -2520,11 +2528,12 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             style: const TextStyle(fontSize: 10, color: CinemaTheme.muted),
           ),
           const SizedBox(height: 5),
-          CinemaCardRatings(
-            title: title,
-            repository: _ratings,
-            resolveTitle: _ratingTitles.resolve,
-          ),
+          if (!title.isDirectMedia)
+            CinemaCardRatings(
+              title: title,
+              repository: _ratings,
+              resolveTitle: _ratingTitles.resolve,
+            ),
         ],
       ),
     ),

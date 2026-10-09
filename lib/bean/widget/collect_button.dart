@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
-import 'package:kazumi/bean/widget/kazumi_menu.dart';
+import 'package:kazumi/bean/dialog/dialog_helper.dart';
+import 'package:kazumi/repositories/collect_crud_repository.dart';
 import 'package:kazumi/modules/bangumi/bangumi_item.dart';
-import 'package:kazumi/modules/collect/collect_type.dart';
 import 'package:kazumi/pages/collect/collect_controller.dart';
 
 class CollectButton extends StatefulWidget {
@@ -35,55 +35,42 @@ class CollectButton extends StatefulWidget {
 class _CollectButtonState extends State<CollectButton> {
   final _collectController = inject<CollectController>();
 
-  String _labelFor(CollectType type) =>
-      type == CollectType.none ? '未追' : type.label;
-
-  IconData _iconFor(CollectType type) => switch (type) {
-    CollectType.none => Icons.favorite_border,
-    CollectType.watching => Icons.favorite,
-    CollectType.planToWatch => Icons.star_rounded,
-    CollectType.onHold => Icons.pending_actions,
-    CollectType.watched => Icons.done,
-    CollectType.abandoned => Icons.heart_broken,
-  };
-
-  Future<void> _selectType(CollectType type) async {
-    if (!mounted ||
-        type.value == _collectController.getCollectType(widget.bangumiItem)) {
-      return;
+  late final _changes = inject<ICollectCrudRepository>().changes;
+  bool _busy = false;
+  Future<void> _toggle() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    widget.onOpen?.call();
+    try {
+      await _collectController.toggleFavorite(widget.bangumiItem);
+    } catch (_) {
+      if (mounted) {
+        KazumiDialog.showToast(context: context, message: '收藏未能保存，请重试');
+      }
+    } finally {
+      widget.onClose?.call();
+      if (mounted) setState(() => _busy = false);
     }
-    await _collectController.addCollect(widget.bangumiItem, type: type.value);
-    if (mounted) setState(() {});
   }
 
   @override
-  Widget build(BuildContext context) {
-    final collectType = CollectType.fromValue(
-      _collectController.getCollectType(widget.bangumiItem),
-    );
-    return KazumiMenuButton(
-      onClose: widget.onClose,
-      onOpen: widget.onOpen,
-      crossAxisUnconstrained: false,
-      builder: (context, toggle) => widget._isExtended
+  Widget build(BuildContext context) => StreamBuilder<void>(
+    stream: _changes,
+    builder: (context, _) {
+      final saved = _collectController.getCollectType(widget.bangumiItem) != 0;
+      final label = saved ? '已收藏' : '收藏';
+      final icon = saved ? Icons.favorite : Icons.favorite_border;
+      return widget._isExtended
           ? FilledButton.icon(
-              onPressed: toggle,
-              icon: Icon(_iconFor(collectType)),
-              label: Text(_labelFor(collectType)),
+              onPressed: _busy ? null : _toggle,
+              icon: Icon(icon),
+              label: Text(label),
             )
           : IconButton(
-              onPressed: toggle,
-              tooltip: _labelFor(collectType),
-              icon: Icon(_iconFor(collectType), color: widget.color),
-            ),
-      menuChildren: [
-        for (final type in CollectType.values)
-          KazumiMenuItem(
-            label: _labelFor(type),
-            selected: type == collectType,
-            onPressed: () => _selectType(type),
-          ),
-      ],
-    );
-  }
+              onPressed: _busy ? null : _toggle,
+              tooltip: label,
+              icon: Icon(icon, color: widget.color),
+            );
+    },
+  );
 }

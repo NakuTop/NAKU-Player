@@ -26,7 +26,7 @@ void main() {
     );
     expect(p.rate, 1);
     expect(p.initialVolume, 100);
-    expect(p.playerConfiguration.bufferSize, 64 * 1024 * 1024);
+    expect(p.playerConfiguration.bufferSize, 128 * 1024 * 1024);
     expect(p.videoConfiguration.enableHardwareAcceleration, isTrue);
     expect(p.superResolution, SuperResolutionMode.off);
     expect(p.shortcuts['forward'], ['Arrow Right']);
@@ -91,7 +91,7 @@ void main() {
       expect(preferences({}, metered: true).bufferSize, 2 * 1024 * 1024);
       expect(
         preferences({'lowMemoryPolicy': 'never'}, metered: true).bufferSize,
-        64 * 1024 * 1024,
+        128 * 1024 * 1024,
       );
       expect(
         preferences({'lowMemoryPolicy': 'always'}).bufferSize,

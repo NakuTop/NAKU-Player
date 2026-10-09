@@ -90,7 +90,7 @@ class CinemaRepository {
     int page = 1,
   }) async {
     source.validate();
-    if (source.kind == CinemaSourceKind.kazumi) {
+    if (source.kind != CinemaSourceKind.maccms) {
       return const CinemaPage(items: []);
     }
     final key = (source.id, _sourceIdentity(source), categoryId ?? '', page);
@@ -116,7 +116,7 @@ class CinemaRepository {
 
   Future<List<CinemaCategory>> categories(CinemaSource source) async {
     source.validate();
-    if (source.kind == CinemaSourceKind.kazumi) return [];
+    if (source.kind != CinemaSourceKind.maccms) return [];
     final key = (source.id, _sourceIdentity(source));
     return _categories.load(key, () async {
       final body = await _request(source, {'ac': 'list', 'pg': '1'});
@@ -182,7 +182,9 @@ class CinemaRepository {
   }) async {
     source.validate();
     final query = keyword.trim();
-    if (query.isEmpty || (source.kind == CinemaSourceKind.kazumi && page > 1)) {
+    if (source.kind == CinemaSourceKind.direct ||
+        query.isEmpty ||
+        (source.kind == CinemaSourceKind.kazumi && page > 1)) {
       return const CinemaPage(items: []);
     }
     // Keep case and interior whitespace: those can affect remote semantics.
@@ -245,6 +247,7 @@ class CinemaRepository {
     if (title.sourceId != source.id) {
       throw const CinemaSourceException('影片与当前片源不匹配');
     }
+    if (source.kind == CinemaSourceKind.direct) return title;
     if (source.kind == CinemaSourceKind.maccms) {
       final body = await _request(source, {'ac': 'detail', 'ids': title.id});
       final items = parseMacCmsPage(source, body).items;

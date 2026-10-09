@@ -1,3 +1,4 @@
+import 'package:kazumi/features/cinema/cinema_settings_host_binding.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_mobx/flutter_mobx.dart';
 import 'package:flutter_modular/flutter_modular.dart';
@@ -51,8 +52,9 @@ class _MyPageState extends State<MyPage> {
     }
   }
 
-  void _open(MyDestination destination) =>
-      context.pushNamed(switch (destination) {
+  void _open(MyDestination destination) {
+    if (destination == MyDestination.history && CinemaSettingsHostBinding.instance.openLibrary(history: true)) return;
+    context.pushNamed(switch (destination) {
         MyDestination.theme => '/settings/theme',
         MyDestination.player => '/settings/player',
         MyDestination.danmaku => '/settings/danmaku/',
@@ -63,6 +65,7 @@ class _MyPageState extends State<MyPage> {
         MyDestination.storage => '/settings/storage',
         MyDestination.about => '/settings/about/',
       });
+  }
 
   @override
   Widget build(BuildContext context) {

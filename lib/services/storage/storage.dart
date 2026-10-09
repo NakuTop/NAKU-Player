@@ -135,6 +135,16 @@ class GStorage {
     });
   }
 
+  /// Undo must never overwrite a newer favorite or a newly synced status.
+  static Future<bool> restoreCollectibleIfAbsent(CollectedBangumi collectible) {
+    return _runCollectChangesWriteExclusive(() async {
+      if (collectibles.containsKey(collectible.bangumiItem.id)) return false;
+      await collectibles.put(collectible.bangumiItem.id, collectible);
+      await collectibles.flush();
+      return true;
+    });
+  }
+
   /// Delete a collectible using the shared collect write queue.
   static Future<void> deleteCollectible(int bangumiId) {
     return _runCollectChangesWriteExclusive(() async {

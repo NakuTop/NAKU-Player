@@ -1,6 +1,14 @@
 import 'package:html/parser.dart' as html;
 
-enum CinemaSourceKind { maccms, kazumi }
+enum CinemaSourceKind { maccms, kazumi, direct }
+
+/// A local library entry, never a searchable catalogue or web resolver.
+const cinemaDirectSource = CinemaSource(
+  id: 'direct-media',
+  name: '高清直链',
+  kind: CinemaSourceKind.direct,
+  url: 'https://direct.invalid/',
+);
 
 /// Sorting is limited to the supplied, already loaded catalogue items.
 enum CinemaCatalogSort { latest, popular, rating }
@@ -219,6 +227,7 @@ class CinemaTitle {
   final String rottenTomatoesId;
   final List<CinemaRoute> routes;
   String get key => '$sourceId::$id';
+  bool get isDirectMedia => sourceId == cinemaDirectSource.id;
   CinemaTitle copyWith({
     List<CinemaRoute>? routes,
     String? doubanId,

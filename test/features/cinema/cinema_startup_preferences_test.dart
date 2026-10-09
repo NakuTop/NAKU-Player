@@ -48,7 +48,6 @@ void main() {
   for (final legacy in {
     '/tab/popular/': CinemaAnimeStartupTab.popular,
     '/tab/timeline/': CinemaAnimeStartupTab.timeline,
-    '/tab/collect/': CinemaAnimeStartupTab.collect,
     '/tab/my/': CinemaAnimeStartupTab.more,
   }.entries) {
     test('legacy ${legacy.key} keeps the corresponding anime tab', () {
@@ -58,6 +57,17 @@ void main() {
       expect(CinemaStartupPreferences.options, contains(target.location));
     });
   }
+
+  test('old anime collection startup opens the unified favorites', () {
+    for (final location in [
+      '/tab/collect/',
+      '/cinema?section=anime&animeTab=collect',
+    ]) {
+      final target = CinemaStartupTarget.fromStored(location);
+      expect(target.section, CinemaStartupSection.favorites);
+      expect(CinemaStartupPreferences.options, contains(target.location));
+    }
+  });
 
   test('missing and unknown settings fall back to movies without writing', () {
     final writes = <String>[];
@@ -98,7 +108,7 @@ void main() {
         SettingsKeys.defaultStartupPage,
         '/tab/collect/',
       );
-      expect(preferences.read().animeTab, CinemaAnimeStartupTab.collect);
+      expect(preferences.read().section, CinemaStartupSection.favorites);
       expect(
         GStorage.getSetting(SettingsKeys.defaultStartupPage),
         '/tab/collect/',
@@ -213,7 +223,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await mount(tester, CinemaStartupPreferences(readValue: () => null));
-    expect(find.text('动漫追番默认布局'), findsOneWidget);
+    expect(find.text('动漫追番默认布局'), findsNothing);
     expect(find.text('显示动漫评分'), findsOneWidget);
     expect(find.textContaining('不改变电影、剧集与豆瓣榜单评分'), findsOneWidget);
     final exit = tester.widget<SettingsDropdownTile<int>>(

@@ -87,7 +87,7 @@ def installation_text(version: str) -> str:
 
 安装要求：macOS 12 或更新版本；支持 Apple Silicon 和 Intel。
 
-1. 将“NAKU播放器.app”拖入“Applications”（应用程序）文件夹。
+1. 解压 ZIP 或打开 DMG，将“NAKU播放器.app”拖入“Applications”（应用程序）文件夹。
 2. 从应用程序中打开 NAKU播放器，不要直接从 DMG 运行。
 3. 从映川或旧版 NAKU 升级时先退出旧程序；正常替换应用会保留片源、收藏和观看记录。
 
@@ -124,10 +124,10 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def package(app: Path, output: Path, version: str) -> None:
+def package(app: Path, output: Path, version: str, *, zip_only: bool = False) -> None:
     if sys.platform != "darwin":
         raise ValueError("Packaging requires macOS")
-    for tool in ("codesign", "lipo", "ditto", "hdiutil"):
+    for tool in ("codesign", "lipo", "ditto", *(() if zip_only else ("hdiutil",))):
         if shutil.which(tool) is None:
             raise ValueError(f"Required macOS tool is unavailable: {tool}")
     if not app.is_dir() or app.suffix != ".app":
@@ -157,18 +157,19 @@ def package(app: Path, output: Path, version: str) -> None:
         # No enclosing directory: Sparkle finds the one app at archive root.
         run("ditto", "-c", "-k", "--sequesterRsrc", stage, zip_path)
         dmg_path = work / filenames[1]
-        run(
-            "hdiutil", "create", "-volname", f"NAKU播放器 {version}",
-            "-srcfolder", stage, "-format", "UDZO", "-ov", dmg_path,
-        )
-        run("hdiutil", "verify", dmg_path)
+        if not zip_only:
+            run(
+                "hdiutil", "create", "-volname", f"NAKU播放器 {version}",
+                "-srcfolder", stage, "-format", "UDZO", "-ov", dmg_path,
+            )
+            run("hdiutil", "verify", dmg_path)
         # Archive extraction must preserve the app signature and install alias.
         extracted = work / "zip-check"
         run("ditto", "-x", "-k", zip_path, extracted)
         run("codesign", "--verify", "--deep", "--strict", extracted / DISPLAY_NAME)
         if not (extracted / "Applications").is_symlink():
             raise ValueError("ZIP did not preserve the Applications symlink")
-        artifacts = [zip_path, dmg_path, guide]
+        artifacts = [zip_path, *([] if zip_only else [dmg_path]), guide]
         manifest = work / "SHA256SUMS"
         manifest.write_text(
             "".join(f"{sha256(path)}  {path.name}\n" for path in artifacts),
@@ -178,7 +179,7 @@ def package(app: Path, output: Path, version: str) -> None:
         # written when signing, architecture, or archive validation fails.
         for artifact in [*artifacts, manifest]:
             artifact.rename(output / artifact.name)
-    print(f"Created {filenames[0]}, {filenames[1]}, INSTALL-zh-CN.txt and SHA256SUMS")
+    print("Created " + ", ".join(path.name for path in [*artifacts, manifest]))
     print("The app was not modified or re-signed. Sign the ZIP and appcast before publishing.")
 
 
@@ -187,11 +188,12 @@ def main() -> int:
     parser.add_argument("--app", type=Path, required=True, help="Already signed universal .app bundle")
     parser.add_argument("--output", type=Path, required=True, help="Release artifact directory")
     parser.add_argument("--version", required=True, help="Exact CFBundleShortVersionString, e.g. 1.0.0")
+    parser.add_argument("--zip-only", action="store_true", help="Create the verified Sparkle/install ZIP without a DMG (for hosts without disk-image services)")
     args = parser.parse_args()
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?", args.version):
         parser.error("--version must be a dotted semantic version such as 1.0.0")
     try:
-        package(args.app.expanduser().resolve(), args.output.expanduser().resolve(), args.version)
+        package(args.app.expanduser().resolve(), args.output.expanduser().resolve(), args.version, zip_only=args.zip_only)
     except subprocess.CalledProcessError as error:
         print(f"Packaging failed: {error.cmd[0]} exited {error.returncode}", file=sys.stderr)
         if error.stdout:

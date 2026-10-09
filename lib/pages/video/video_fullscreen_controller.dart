@@ -17,6 +17,8 @@ class VideoFullscreenController {
   Future<void> _lastRequest = Future.value();
   Future<void>? _closeFuture;
 
+  bool get isTransitioning => _pendingRequests > 0;
+
   bool get isFullscreen => _entry.value != null;
 
   void attach(ModalRoute<dynamic> route) {
