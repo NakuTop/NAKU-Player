@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_card_ratings.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_ratings.dart';
+import 'package:kazumi/features/cinema/cinema_scroll_activity.dart';
 import 'package:kazumi/features/cinema/cinema_theme.dart';
 
 const _title = CinemaTitle(
@@ -37,17 +38,33 @@ const _result = CinemaRatings(
   ],
 );
 
+class _ObservedNotifier extends ChangeNotifier {
+  bool get isObserved => hasListeners;
+}
+
+class _ObservedScrollActivity extends CinemaScrollActivity {
+  bool get isObserved => hasListeners;
+}
+
 class _FakeRepository extends CinemaRatingsRepository {
   CinemaRatings? cached;
-  final updates = ChangeNotifier();
+  final updates = _ObservedNotifier();
   @override
   Listenable get changes => updates;
   final requests = <CinemaTitle>[];
   final isCurrentCallbacks = <bool Function()?>[];
   Future<CinemaRatings> Function(CinemaTitle)? onLoad;
+  int peeks = 0;
+  int revision = 0;
 
   @override
-  CinemaRatings? peek(CinemaTitle title) => cached;
+  int get bindingRevision => revision;
+
+  @override
+  CinemaRatings? peek(CinemaTitle title) {
+    peeks++;
+    return cached;
+  }
 
   @override
   Future<CinemaRatings> loadForCard(
@@ -69,7 +86,12 @@ void main() {
     double width = 220,
     bool settle = true,
     VoidCallback? onTap,
+    CinemaScrollActivity? activity,
   }) async {
+    final card = GestureDetector(
+      onTap: onTap,
+      child: CinemaCardRatings(title: title, repository: repository),
+    );
     await tester.pumpWidget(
       MaterialApp(
         theme: CinemaTheme.data,
@@ -78,10 +100,9 @@ void main() {
             alignment: Alignment.topLeft,
             child: SizedBox(
               width: width,
-              child: GestureDetector(
-                onTap: onTap,
-                child: CinemaCardRatings(title: title, repository: repository),
-              ),
+              child: activity == null
+                  ? card
+                  : CinemaScrollActivityScope(activity: activity, child: card),
             ),
           ),
         ),
@@ -93,6 +114,268 @@ void main() {
   String tooltip(WidgetTester tester, String provider) => tester
       .widget<Tooltip>(find.byKey(ValueKey('card-rating-$provider')))
       .message!;
+
+  testWidgets('a card mounted during scrolling shows cache before querying', (
+    tester,
+  ) async {
+    final activity = _ObservedScrollActivity()..value = true;
+    final repository = _FakeRepository()..cached = _result;
+    await mount(tester, repository, activity: activity);
+    expect(find.text('IMDb 8.7'), findsOneWidget);
+    expect(repository.requests, isEmpty);
+    expect(repository.peeks, 1);
+
+    activity.value = false;
+    await tester.pumpAndSettle();
+    expect(repository.requests, hasLength(1));
+    expect(find.text('IMDb 8.7'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    activity.dispose();
+  });
+
+  testWidgets('a card mounted during scrolling retains source score fallback', (
+    tester,
+  ) async {
+    final activity = _ObservedScrollActivity()..value = true;
+    final repository = _FakeRepository();
+    await mount(tester, repository, activity: activity);
+    expect(find.text('豆瓣 9.4*'), findsOneWidget);
+    expect(find.text('IMDb —'), findsOneWidget);
+    expect(repository.requests, isEmpty);
+    activity.value = false;
+    await tester.pumpAndSettle();
+    expect(repository.requests, hasLength(1));
+    expect(find.text('豆瓣 9.4'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    activity.dispose();
+  });
+
+  testWidgets('scrolling coalesces cache updates into one idle lookup', (
+    tester,
+  ) async {
+    final activity = _ObservedScrollActivity();
+    final repository = _FakeRepository()..cached = _result;
+    await mount(tester, repository, activity: activity);
+    activity.value = true;
+    final peeksBefore = repository.peeks;
+    final labelsBefore = tester.widget<Text>(find.text('IMDb 8.7'));
+    repository.cached = const CinemaRatings(
+      identity: RatingIdentity(imdbId: 'tt0816692'),
+      ratings: [
+        CinemaRating(
+          provider: 'IMDb',
+          value: 8.8,
+          verified: true,
+          note: '官方数据',
+        ),
+      ],
+      message: '',
+    );
+    for (var i = 0; i < 20; i++) {
+      repository.updates.notifyListeners();
+      await tester.pump();
+    }
+    expect(repository.peeks, peeksBefore);
+    expect(tester.widget<Text>(find.text('IMDb 8.7')), same(labelsBefore));
+    expect(find.text('IMDb 8.8'), findsNothing);
+    activity.value = false;
+    await tester.pump();
+    expect(repository.peeks, peeksBefore + 1);
+    expect(find.text('IMDb 8.8'), findsOneWidget);
+    expect(repository.requests, hasLength(1));
+    await tester.pumpWidget(const SizedBox());
+    activity.dispose();
+  });
+
+  testWidgets(
+    'in-flight results stay valid and are displayed after scrolling',
+    (tester) async {
+      final activity = _ObservedScrollActivity();
+      final pending = Completer<CinemaRatings>();
+      final repository = _FakeRepository()..onLoad = (_) => pending.future;
+      await mount(tester, repository, activity: activity, settle: false);
+      final isCurrent = repository.isCurrentCallbacks.single!;
+      activity.value = true;
+      final peeksBefore = repository.peeks;
+      expect(isCurrent(), isTrue);
+      pending.complete(_result);
+      await tester.pumpAndSettle();
+      expect(isCurrent(), isTrue);
+      expect(repository.peeks, peeksBefore);
+      expect(find.text('IMDb —'), findsOneWidget);
+      activity.value = false;
+      await tester.pump();
+      expect(find.text('IMDb 8.7'), findsOneWidget);
+      expect(repository.peeks, peeksBefore + 1);
+      expect(repository.requests, hasLength(1));
+      await tester.pumpWidget(const SizedBox());
+      activity.dispose();
+    },
+  );
+
+  testWidgets('an in-flight error is deferred without dropping cached scores', (
+    tester,
+  ) async {
+    final activity = _ObservedScrollActivity();
+    final pending = Completer<CinemaRatings>();
+    final repository = _FakeRepository()
+      ..cached = const CinemaRatings(
+        identity: RatingIdentity(imdbId: 'tt0816692'),
+        ratings: [
+          CinemaRating(
+            provider: 'IMDb',
+            value: 8.7,
+            verified: true,
+            note: '官方数据',
+          ),
+        ],
+        message: '',
+      )
+      ..onLoad = (_) => pending.future;
+    await mount(tester, repository, activity: activity, settle: false);
+    activity.value = true;
+    final peeksBefore = repository.peeks;
+    pending.completeError(const FormatException('离线'));
+    await tester.pumpAndSettle();
+    expect(repository.peeks, peeksBefore);
+    expect(tooltip(tester, '烂番茄'), isNot(contains('离线')));
+    activity.value = false;
+    await tester.pump();
+    expect(find.text('IMDb 8.7'), findsOneWidget);
+    expect(tooltip(tester, '烂番茄'), contains('离线'));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    activity.dispose();
+  });
+
+  testWidgets(
+    'recycled cards cannot apply a completion deferred for old title',
+    (tester) async {
+      final activity = _ObservedScrollActivity();
+      final pending = Completer<CinemaRatings>();
+      final repository = _FakeRepository()
+        ..onLoad = (title) => title.id == _title.id
+            ? pending.future
+            : Future.value(
+                const CinemaRatings(
+                  identity: RatingIdentity(imdbId: 'tt0111161'),
+                  ratings: [
+                    CinemaRating(provider: 'IMDb', value: 9.3, note: '官方数据'),
+                  ],
+                  message: '',
+                ),
+              );
+      await mount(tester, repository, activity: activity, settle: false);
+      final oldCurrent = repository.isCurrentCallbacks.single!;
+      activity.value = true;
+      pending.complete(_result);
+      await tester.pump();
+      await mount(
+        tester,
+        repository,
+        activity: activity,
+        title: const CinemaTitle(
+          id: 'another',
+          sourceId: 'fixture',
+          title: '另一电影',
+          imdbId: 'tt0111161',
+        ),
+      );
+      expect(oldCurrent(), isFalse);
+      expect(find.text('IMDb 8.7'), findsNothing);
+      expect(repository.requests, hasLength(1));
+      activity.value = false;
+      await tester.pumpAndSettle();
+      expect(find.text('IMDb 9.3'), findsOneWidget);
+      expect(repository.requests, hasLength(2));
+      expect(repository.requests.last.id, 'another');
+      await tester.pumpWidget(const SizedBox());
+      activity.dispose();
+    },
+  );
+
+  testWidgets('repository changes while scrolling detach old notifications', (
+    tester,
+  ) async {
+    final activity = _ObservedScrollActivity()..value = true;
+    final oldRepository = _FakeRepository()..cached = _result;
+    final repository = _FakeRepository();
+    await mount(tester, oldRepository, activity: activity);
+    await mount(tester, repository, activity: activity);
+    expect(find.text('IMDb 8.7'), findsNothing);
+    final peeksBefore = repository.peeks;
+    oldRepository.updates.notifyListeners();
+    expect(repository.peeks, peeksBefore);
+    expect(oldRepository.updates.isObserved, isFalse);
+    activity.value = false;
+    await tester.pumpAndSettle();
+    expect(oldRepository.requests, isEmpty);
+    expect(repository.requests, hasLength(1));
+    await tester.pumpWidget(const SizedBox());
+    expect(repository.updates.isObserved, isFalse);
+    expect(activity.isObserved, isFalse);
+    activity.dispose();
+  });
+
+  testWidgets('moving to an idle scope resumes and detaches the old scope', (
+    tester,
+  ) async {
+    final scrolling = _ObservedScrollActivity()..value = true;
+    final idle = _ObservedScrollActivity();
+    final repository = _FakeRepository();
+    await mount(tester, repository, activity: scrolling);
+    expect(repository.requests, isEmpty);
+    expect(scrolling.isObserved, isTrue);
+    final peeksBefore = repository.peeks;
+    await mount(tester, repository, activity: scrolling);
+    expect(repository.peeks, peeksBefore);
+    await mount(tester, repository, activity: idle);
+    expect(repository.requests, hasLength(1));
+    expect(find.text('IMDb 8.7'), findsOneWidget);
+    expect(scrolling.isObserved, isFalse);
+    final peeksAfter = repository.peeks;
+    scrolling.value = false;
+    await tester.pump();
+    expect(repository.peeks, peeksAfter);
+    expect(repository.requests, hasLength(1));
+    await tester.pumpWidget(const SizedBox());
+    expect(idle.isObserved, isFalse);
+    scrolling.dispose();
+    idle.dispose();
+  });
+
+  testWidgets('a binding correction during scrolling supersedes old results', (
+    tester,
+  ) async {
+    final activity = _ObservedScrollActivity();
+    final pending = Completer<CinemaRatings>();
+    final repository = _FakeRepository()..onLoad = (_) => pending.future;
+    await mount(tester, repository, activity: activity, settle: false);
+    final oldCurrent = repository.isCurrentCallbacks.single!;
+    activity.value = true;
+    pending.complete(_result);
+    await tester.pump();
+    repository.revision++;
+    repository.onLoad = (_) async => const CinemaRatings(
+      identity: RatingIdentity(doubanId: '1292052', confirmed: true),
+      ratings: [CinemaRating(provider: '豆瓣', note: '关联已改，不使用原片源分数')],
+      message: '',
+    );
+    final peeksBefore = repository.peeks;
+    repository.updates.notifyListeners();
+    await tester.pump();
+    expect(repository.peeks, peeksBefore);
+    expect(repository.requests, hasLength(1));
+    activity.value = false;
+    await tester.pumpAndSettle();
+    expect(oldCurrent(), isFalse);
+    expect(repository.requests, hasLength(2));
+    expect(find.text('IMDb 8.7'), findsNothing);
+    expect(find.text('豆瓣 —'), findsOneWidget);
+    expect(tooltip(tester, '豆瓣'), contains('不使用原片源分数'));
+    await tester.pumpWidget(const SizedBox());
+    activity.dispose();
+  });
 
   testWidgets(
     'no IDs still checks local bindings and keeps unbound source fallback',

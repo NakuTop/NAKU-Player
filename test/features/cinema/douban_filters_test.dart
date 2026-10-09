@@ -81,6 +81,7 @@ class _Repository extends DoubanRepository {
   bool manyItems = false, failPage = false, failFilters = false;
   List<String> recommendedTags = ['旅行', '摄影'];
   List<DoubanCategoryGroup>? categoryOverride;
+  List<DoubanTagGroup>? tagGroupOverride;
   final themeRequests =
       <({DoubanKind kind, String? seed, CancelToken? token})>[];
   List<String> discoveredThemes = [];
@@ -166,11 +167,15 @@ class _Repository extends DoubanRepository {
   }) async {
     filterRequests.add(kind);
     if (failFilters) throw const DoubanException('filters offline');
-    return [
-      const DoubanTagGroup(name: '年代', tags: ['全部', '2024', '2023', '2010年代']),
-      if (kind == DoubanKind.tv)
-        const DoubanTagGroup(name: '平台', tags: ['全部', 'Netflix', 'HBO']),
-    ];
+    return tagGroupOverride ??
+        [
+          const DoubanTagGroup(
+            name: '年代',
+            tags: ['全部', '2024', '2023', '2010年代'],
+          ),
+          if (kind == DoubanKind.tv)
+            const DoubanTagGroup(name: '平台', tags: ['全部', 'Netflix', 'HBO']),
+        ];
   }
 }
 
@@ -642,6 +647,39 @@ void main() {
   );
 
   testWidgets(
+    'partial later taxonomy keeps every observed genre region and year option',
+    (tester) async {
+      final repo = _Repository();
+      await mount(tester, repo);
+      await choose(tester, 'region', '中国大陆');
+      repo.categoryOverride = const [
+        DoubanCategoryGroup(name: '类型', tags: ['纪录片']),
+        DoubanCategoryGroup(name: '地区', tags: ['英国']),
+      ];
+      repo.tagGroupOverride = const [
+        DoubanTagGroup(name: '年代', tags: ['全部', '1990年代']),
+      ];
+      await tester.tap(find.byTooltip('刷新'));
+      await tester.pumpAndSettle();
+      List<String?> values(String name) => tester
+          .widget<DropdownButton<String>>(
+            find.byKey(ValueKey('douban-filter-$name')),
+          )
+          .items!
+          .map((item) => item.value)
+          .toList();
+      expect(values('genre'), containsAll(['科幻', '喜剧', '纪录片']));
+      expect(values('region'), containsAll(['美国', '中国大陆', '英国']));
+      expect(values('year'), containsAll(['2024', '2023', '2010年代', '1990年代']));
+      expect(selected(tester, 'region'), '中国大陆');
+      await choose(tester, 'genre', '科幻');
+      expect(repo.requests.last.filters.genre, '科幻');
+      expect(repo.requests.last.filters.region, '中国大陆');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'more themes preserves the board, selections and scroll while keeping topics beyond forty',
     (tester) async {
       final repo = _Repository()
@@ -736,6 +774,73 @@ void main() {
         findsOneWidget,
       );
       expect(find.byKey(const ValueKey('douban-theme-本次推荐')), findsOneWidget);
+    },
+  );
+
+  testWidgets('theme panel can collapse and reopen after nested scrolling', (
+    tester,
+  ) async {
+    final repo = _Repository()
+      ..recommendedTags = [for (var i = 0; i < 180; i++) '主题$i'];
+    await mount(tester, repo);
+    final inner = find.byType(SingleChildScrollView);
+    await tester.drag(inner, const Offset(0, -500));
+    await tester.pumpAndSettle();
+    final originalOffset = tester
+        .widget<SingleChildScrollView>(inner)
+        .controller!
+        .offset;
+    expect(originalOffset, greaterThan(0));
+    for (var i = 0; i < 3; i++) {
+      await tester.tap(find.text('风格与主题'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('风格与主题'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.byType(ErrorWidget), findsNothing);
+      expect(
+        tester.widget<SingleChildScrollView>(inner).controller!.offset,
+        closeTo(originalOffset, 1),
+      );
+    }
+    await tester.tap(find.text('剧集'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('风格与主题'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('电影'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.byType(ErrorWidget), findsNothing);
+  });
+
+  testWidgets(
+    'all discovered themes can be revealed and selected beyond the compact viewport',
+    (tester) async {
+      final repo = _Repository()
+        ..recommendedTags = [for (var i = 0; i < 280; i++) '多元主题$i'];
+      await mount(tester, repo);
+      final calls = repo.requests.length;
+      await tester.tap(find.byKey(const ValueKey('douban-show-all-themes')));
+      await tester.pumpAndSettle();
+      expect(find.byType(SingleChildScrollView), findsNothing);
+      expect(repo.requests, hasLength(calls));
+      final last = find.byKey(const ValueKey('douban-theme-多元主题279'));
+      await tester.ensureVisible(last);
+      await tester.pumpAndSettle();
+      expect(last.hitTestable(), findsOneWidget);
+      await tester.tap(last);
+      await tester.pumpAndSettle();
+      expect(repo.requests.last.tags, ['多元主题279']);
+      expect(tester.widget<FilterChip>(last).selected, isTrue);
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('douban-show-all-themes')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('douban-show-all-themes')));
+      await tester.pumpAndSettle();
+      expect(find.byType(SingleChildScrollView), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      expect(find.byType(ErrorWidget), findsNothing);
     },
   );
 

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'cinema_models.dart';
 import 'cinema_ratings.dart';
+import 'cinema_scroll_activity.dart';
 import 'cinema_theme.dart';
 
 /// A compact, non-interactive summary that shares the detail rating cache.
@@ -27,6 +28,11 @@ class _CinemaCardRatingsState extends State<CinemaCardRatings> {
   bool _loading = false;
   int _request = 0;
   int _bindingRevision = 0;
+  CinemaScrollActivity? _scrollActivity;
+  bool _initialized = false;
+  bool _loadDeferred = false;
+  bool _refreshDeferred = false;
+  ({CinemaRatings? ratings, String? error})? _deferredCompletion;
 
   CinemaRatingsRepository get _repository =>
       widget.repository ?? CinemaRatingsRepository.instance;
@@ -35,7 +41,27 @@ class _CinemaCardRatingsState extends State<CinemaCardRatings> {
   void initState() {
     super.initState();
     _repository.changes.addListener(_cacheChanged);
-    _begin();
+  }
+
+  bool get _isScrolling => _scrollActivity?.value ?? false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final activity = CinemaScrollActivityScope.maybeOf(context);
+    if (!identical(activity, _scrollActivity)) {
+      _scrollActivity?.removeListener(_scrollChanged);
+      _scrollActivity = activity;
+      activity?.addListener(_scrollChanged);
+    }
+    if (!_initialized) {
+      _initialized = true;
+      _begin();
+    } else if (!_isScrolling) {
+      // This lifecycle already schedules a build, including when a card moves
+      // from a scrolling scope to an idle scope (or out of a scope entirely).
+      _resume();
+    }
   }
 
   @override
@@ -51,12 +77,22 @@ class _CinemaCardRatingsState extends State<CinemaCardRatings> {
       _begin();
     } else {
       // Detail-page refreshes can update this shared cache between rebuilds.
-      _ratings = _repository.peek(widget.title) ?? _ratings;
+      if (_isScrolling) {
+        _refreshDeferred = true;
+      } else {
+        _ratings = _repository.peek(widget.title) ?? _ratings;
+      }
     }
   }
 
   void _cacheChanged() {
     if (!mounted) return;
+    if (_isScrolling) {
+      // Rating requests publish independently. A long grid must not perform a
+      // cache lookup and rebuild each mounted card for every provider update.
+      _refreshDeferred = true;
+      return;
+    }
     if (_bindingRevision != _repository.bindingRevision) {
       setState(_begin);
       return;
@@ -69,12 +105,50 @@ class _CinemaCardRatingsState extends State<CinemaCardRatings> {
 
   @override
   void dispose() {
+    _scrollActivity?.removeListener(_scrollChanged);
     _repository.changes.removeListener(_cacheChanged);
     super.dispose();
   }
 
-  // Both callers are lifecycle methods followed by a build, so the immediate
-  // cache/fallback assignment needs no extra setState or waiting frame.
+  void _scrollChanged() {
+    if (!mounted || _isScrolling) return;
+    if (_loadDeferred ||
+        _refreshDeferred ||
+        _deferredCompletion != null ||
+        _bindingRevision != _repository.bindingRevision) {
+      setState(_resume);
+    }
+  }
+
+  void _resume() {
+    if (_bindingRevision != _repository.bindingRevision) {
+      _begin();
+      return;
+    }
+    if (!_loadDeferred && !_refreshDeferred && _deferredCompletion == null) {
+      return;
+    }
+    // Read once after the gesture settles, even if many provider completions
+    // arrived during it. Keep a completed result when the repository has no
+    // cache entry (for example a handled lookup failure).
+    _ratings =
+        _repository.peek(widget.title) ??
+        _deferredCompletion?.ratings ??
+        _ratings;
+    if (_deferredCompletion case final completion?) {
+      _error = completion.error;
+      _loading = false;
+    }
+    _deferredCompletion = null;
+    _refreshDeferred = false;
+    if (_loadDeferred) {
+      _loadDeferred = false;
+      _load(widget.title, _repository, _request);
+    }
+  }
+
+  // Callers either run before a lifecycle build or inside setState. A newly
+  // visible card can show local values without starting work during a fling.
   void _begin() {
     final request = ++_request;
     final title = widget.title;
@@ -83,9 +157,12 @@ class _CinemaCardRatingsState extends State<CinemaCardRatings> {
     _error = null;
     _ratings = repository.peek(title);
     _loading = true;
+    _refreshDeferred = false;
+    _deferredCompletion = null;
+    _loadDeferred = _isScrolling;
     // Even titles without source IDs can have a saved manual binding. The
     // repository reads that local state before deciding whether network is needed.
-    _load(title, repository, request);
+    if (!_loadDeferred) _load(title, repository, request);
   }
 
   Future<void> _load(
@@ -100,14 +177,23 @@ class _CinemaCardRatingsState extends State<CinemaCardRatings> {
         isCurrent: () => mounted && request == _request,
       );
       if (!mounted || request != _request) return;
+      if (_isScrolling) {
+        _deferredCompletion = (ratings: ratings, error: null);
+        return;
+      }
       setState(() {
         _ratings = repository.peek(title) ?? ratings;
         _loading = false;
       });
     } catch (error) {
       if (!mounted || request != _request) return;
+      final message = error is FormatException ? error.message : '评分服务暂不可用';
+      if (_isScrolling) {
+        _deferredCompletion = (ratings: null, error: message);
+        return;
+      }
       setState(() {
-        _error = error is FormatException ? error.message : '评分服务暂不可用';
+        _error = message;
         _loading = false;
       });
     }

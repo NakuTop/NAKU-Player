@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -7,6 +8,7 @@ import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_ratings.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
+import 'package:kazumi/features/cinema/cinema_scroll_activity.dart';
 
 const _source = CinemaSource(
   id: 'rating-source',
@@ -28,6 +30,7 @@ class _Catalogue extends CinemaRepository {
   _Catalogue(this.items);
   final List<CinemaTitle> items;
   int detailCalls = 0, browseCalls = 0;
+  Future<CinemaPage> Function(int page)? onBrowse;
 
   @override
   Future<List<CinemaCategory>> categories(CinemaSource source) async => const [
@@ -41,8 +44,16 @@ class _Catalogue extends CinemaRepository {
     int page = 1,
   }) async {
     browseCalls++;
+    if (onBrowse != null) return onBrowse!(page);
     return CinemaPage(items: items, total: items.length);
   }
+
+  @override
+  Future<CinemaPage> search(
+    CinemaSource source,
+    String keyword, {
+    int page = 1,
+  }) async => CinemaPage(items: items, total: items.length);
 
   @override
   Future<CinemaTitle> detail(CinemaSource source, CinemaTitle title) async {
@@ -249,6 +260,153 @@ void main() {
   );
 
   testWidgets(
+    'rating results do not reorder a scrolling grid and catch up after idle',
+    (tester) async {
+      ratings.setScores('A', {'豆瓣': 8.5});
+      ratings.setScores('B', {'豆瓣': 7.0});
+      ratings.setScores('C', {'豆瓣': null});
+      ratings.setScores('D', {'豆瓣': 6.0});
+      await mount(tester);
+      await selectRatingSort(tester);
+      final activity = tester
+          .widget<CinemaScrollNotifications>(
+            find.byType(CinemaScrollNotifications),
+          )
+          .activity;
+      activity.begin();
+      for (var i = 0; i < 20; i++) {
+        ratings.setScores('C', {'豆瓣': 9.6}, notify: true);
+      }
+      await tester.pump(const Duration(milliseconds: 800));
+      expect(visualOrder(tester, ['A', 'B', 'C', 'D']), ['A', 'B', 'D', 'C']);
+      activity.end();
+      await tester.pump(const Duration(milliseconds: 121));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      expect(visualOrder(tester, ['A', 'B', 'C', 'D']), ['C', 'A', 'B', 'D']);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'a pending score refresh cannot reorder during a scrolling layout rebuild',
+    (tester) async {
+      ratings.setScores('A', {'豆瓣': 8.5});
+      ratings.setScores('B', {'豆瓣': 7.0});
+      ratings.setScores('C', {'豆瓣': null});
+      ratings.setScores('D', {'豆瓣': 6.0});
+      await mount(tester);
+      await selectRatingSort(tester);
+      final activity = tester
+          .widget<CinemaScrollNotifications>(
+            find.byType(CinemaScrollNotifications),
+          )
+          .activity;
+      ratings.setScores('C', {'豆瓣': 9.6}, notify: true);
+      activity.begin();
+      tester.view.physicalSize = const Size(1300, 1000);
+      await tester.pump(const Duration(milliseconds: 800));
+      expect(visualOrder(tester, ['A', 'B', 'C', 'D']), ['A', 'B', 'D', 'C']);
+      activity.end();
+      await tester.pump(const Duration(milliseconds: 121));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      expect(visualOrder(tester, ['A', 'B', 'C', 'D']), ['C', 'A', 'B', 'D']);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('a new search releases preload work from the replaced viewport', (
+    tester,
+  ) async {
+    catalogue = _Catalogue([for (var i = 0; i < 60; i++) _title('影片$i')]);
+    await mount(tester);
+    await selectRatingSort(tester);
+    final activity = tester
+        .widget<CinemaScrollNotifications>(
+          find.byType(CinemaScrollNotifications),
+        )
+        .activity;
+    final oldViewport = tester
+        .widget<CustomScrollView>(find.byType(CustomScrollView))
+        .key;
+    activity.begin();
+    final before = Map<String, int>.of(ratings.cardCalls);
+    tester
+        .widget<DropdownButton<String>>(
+          find.byKey(const ValueKey('catalog-rating-provider')),
+        )
+        .onChanged!('IMDb');
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(
+      ratings.cardCalls,
+      before,
+      reason: 'Preload waits during scrolling.',
+    );
+    await tester.enterText(find.byType(TextField).first, '新搜索');
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<CustomScrollView>(find.byType(CustomScrollView)).key,
+      isNot(oldViewport),
+    );
+    expect(activity.value, isFalse);
+    expect(
+      ratings.cardCalls['影片59'],
+      greaterThan(before['影片59']!),
+      reason: 'The new search resumes the selected provider even offscreen.',
+    );
+    final after = Map<String, int>.of(ratings.cardCalls);
+    await tester.pump(const Duration(seconds: 2));
+    expect(
+      ratings.cardCalls,
+      after,
+      reason: 'Completed preload does not loop.',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('an async page replacement resets a newly resumed scroll', (
+    tester,
+  ) async {
+    final pending = Completer<CinemaPage>();
+    catalogue.onBrowse = (page) async => page == 2
+        ? pending.future
+        : CinemaPage(items: catalogue.items, page: 1, pageCount: 2);
+    await mount(tester);
+    await tester.tap(find.text('动漫'));
+    await tester.pumpAndSettle();
+    final activity = tester
+        .widget<CinemaScrollNotifications>(
+          find.byType(CinemaScrollNotifications),
+        )
+        .activity;
+    final oldViewport = tester
+        .widget<CustomScrollView>(find.byType(CustomScrollView))
+        .key;
+    tester
+        .widget<IconButton>(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == '下一页',
+          ),
+        )
+        .onPressed!();
+    await tester.pump();
+    activity.begin();
+    var resumed = false;
+    activity.whenIdle.then((_) => resumed = true);
+    pending.complete(CinemaPage(items: catalogue.items, page: 2, pageCount: 2));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<CustomScrollView>(find.byType(CustomScrollView)).key,
+      isNot(oldViewport),
+    );
+    expect(activity.value, isFalse);
+    expect(resumed, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
     'rating preloading covers offscreen loaded works and settles after rebuilds',
     (tester) async {
       catalogue = _Catalogue([for (var i = 0; i < 60; i++) _title('影片$i')]);
@@ -305,6 +463,19 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('two preload workers safely finish an odd number of works', (
+    tester,
+  ) async {
+    catalogue = _Catalogue([_title('A'), _title('B'), _title('C')]);
+    await mount(tester);
+    await selectRatingSort(tester);
+    expect(ratings.cardCalls.keys.toSet(), {'A', 'B', 'C'});
+    final completed = Map<String, int>.of(ratings.cardCalls);
+    await tester.pump(const Duration(seconds: 2));
+    expect(ratings.cardCalls, completed);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'Douban board route has no forward or reverse visual transition',

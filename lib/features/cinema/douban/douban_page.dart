@@ -37,7 +37,8 @@ class _KindState {
   List<String> themes = [];
   final selectedThemes = <String>{};
   bool themesLoading = false, themesInitialized = false;
-  int themeGeneration = 0, themeSeedIndex = 0;
+  int themeGeneration = 0;
+  bool showAllThemes = false;
   String? themeMessage;
   CancelToken? themeToken;
   bool loading = false, filtersLoading = false, more = false;
@@ -59,11 +60,23 @@ class _DoubanPageState extends State<DoubanPage> {
     for (final kind in DoubanKind.values) {
       _states[kind]!.themes = _themeCatalog.topics(kind);
     }
+    _themeCatalog.addListener(_restoreThemes);
+    unawaited(_themeCatalog.initialize());
     _loadKind(_kind);
+  }
+
+  void _restoreThemes() {
+    if (!mounted) return;
+    setState(() {
+      for (final kind in DoubanKind.values) {
+        _states[kind]!.themes = _themeCatalog.topics(kind);
+      }
+    });
   }
 
   @override
   void dispose() {
+    _themeCatalog.removeListener(_restoreThemes);
     for (final state in _states.values) {
       state.generation++;
       state.filterGeneration++;
@@ -152,9 +165,26 @@ class _DoubanPageState extends State<DoubanPage> {
           if (page.sorts.isNotEmpty) state.sorts = page.sorts;
         }
         for (final group in page.categoryGroups) {
-          if (!append || !state.categories.containsKey(group.name)) {
-            state.categories[group.name] = group;
-          }
+          final previous = state.categories[group.name];
+          state.categories[group.name] = previous == null
+              ? group
+              : DoubanCategoryGroup(
+                  name: group.name,
+                  groupName: group.groupName.isNotEmpty
+                      ? group.groupName
+                      : previous.groupName,
+                  tags: {...previous.tags, ...group.tags}.toList(),
+                  groups: {
+                    for (final key in {
+                      ...previous.groups.keys,
+                      ...group.groups.keys,
+                    })
+                      key: {
+                        ...?previous.groups[key],
+                        ...?group.groups[key],
+                      }.toList(),
+                  },
+                );
         }
         state.loading = false;
       });
@@ -188,9 +218,9 @@ class _DoubanPageState extends State<DoubanPage> {
     try {
       // Warm up at most two contexts, then one request per explicit click.
       for (var round = 0; round < rounds.clamp(1, 2); round++) {
-        final seed = state.themes.isEmpty
-            ? null
-            : state.themes[state.themeSeedIndex++ % state.themes.length];
+        await _themeCatalog.initialize();
+        if (!mounted || generation != state.themeGeneration) return;
+        final seed = _themeCatalog.nextSeed(kind);
         final topics = await _repository.discoverThemes(
           kind: kind,
           seed: seed,
@@ -247,7 +277,10 @@ class _DoubanPageState extends State<DoubanPage> {
       if (!mounted || generation != state.filterGeneration) return;
       _change(state, () {
         for (final group in groups) {
-          state.tagGroups[group.name] = group.tags;
+          state.tagGroups[group.name] = {
+            ...?state.tagGroups[group.name],
+            ...group.tags,
+          }.toList();
         }
         state.filtersLoading = false;
       });
@@ -337,6 +370,37 @@ class _DoubanPageState extends State<DoubanPage> {
       ),
     );
   }
+
+  Widget _themeChips(_KindState state) => Align(
+    alignment: Alignment.centerLeft,
+    child: Wrap(
+      spacing: 7,
+      runSpacing: 6,
+      children: [
+        for (final theme in state.themes)
+          FilterChip(
+            key: ValueKey('douban-theme-$theme'),
+            label: Text(theme, style: const TextStyle(fontSize: 12)),
+            selected: state.selectedThemes.contains(theme),
+            onSelected:
+                state.selectedThemes.length >= 6 &&
+                    !state.selectedThemes.contains(theme)
+                ? null
+                : (selected) {
+                    setState(() {
+                      if (selected) {
+                        state.selectedThemes.add(theme);
+                      } else {
+                        state.selectedThemes.remove(theme);
+                      }
+                    });
+                    if (state.scroll.hasClients) state.scroll.jumpTo(0);
+                    unawaited(_loadPage(_kind));
+                  },
+          ),
+      ],
+    ),
+  );
 
   Widget _filters() {
     final state = _state, filters = state.filters;
@@ -513,56 +577,56 @@ class _DoubanPageState extends State<DoubanPage> {
                         ),
                       ),
                     ),
-                  SizedBox(
-                    height: 144,
-                    child: Scrollbar(
-                      controller: state.themeScroll,
-                      thumbVisibility: true,
-                      child: SingleChildScrollView(
+                  if (state.showAllThemes)
+                    _themeChips(state)
+                  else
+                    SizedBox(
+                      height: 144,
+                      child: Scrollbar(
                         controller: state.themeScroll,
-                        padding: const EdgeInsets.only(right: 12),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: Wrap(
-                            spacing: 7,
-                            runSpacing: 6,
-                            children: [
-                              for (final theme in state.themes)
-                                FilterChip(
-                                  key: ValueKey('douban-theme-$theme'),
-                                  label: Text(
-                                    theme,
-                                    style: const TextStyle(fontSize: 12),
-                                  ),
-                                  selected: state.selectedThemes.contains(
-                                    theme,
-                                  ),
-                                  onSelected:
-                                      state.selectedThemes.length >= 6 &&
-                                          !state.selectedThemes.contains(theme)
-                                      ? null
-                                      : (selected) {
-                                          setState(() {
-                                            if (selected) {
-                                              state.selectedThemes.add(theme);
-                                            } else {
-                                              state.selectedThemes.remove(
-                                                theme,
-                                              );
-                                            }
-                                          });
-                                          if (state.scroll.hasClients) {
-                                            state.scroll.jumpTo(0);
-                                          }
-                                          unawaited(_loadPage(_kind));
-                                        },
-                                ),
-                            ],
+                        thumbVisibility: true,
+                        child: SingleChildScrollView(
+                          // ExpansionTile stores a bool in PageStorage. This
+                          // nested scroller needs its own key for a double offset.
+                          key: PageStorageKey(
+                            'douban-${_kind.name}-theme-scroll',
                           ),
+                          controller: state.themeScroll,
+                          padding: const EdgeInsets.only(right: 12),
+                          child: _themeChips(state),
                         ),
                       ),
                     ),
-                  ),
+                  if (state.themes.isNotEmpty)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        key: const ValueKey('douban-show-all-themes'),
+                        onPressed: () => setState(
+                          () => state.showAllThemes = !state.showAllThemes,
+                        ),
+                        icon: Icon(
+                          state.showAllThemes
+                              ? Icons.unfold_less
+                              : Icons.unfold_more,
+                          size: 16,
+                        ),
+                        label: Text(
+                          state.showAllThemes
+                              ? '收起为滚动列表'
+                              : '展开全部 ${state.themes.length} 个主题',
+                        ),
+                      ),
+                    ),
+                  if (_themeCatalog.storageError != null)
+                    TextButton.icon(
+                      onPressed: _themeCatalog.retryPersistence,
+                      icon: const Icon(Icons.info_outline, size: 14),
+                      label: Text(
+                        _themeCatalog.storageError!,
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                    ),
                   SizedBox(
                     height: 32,
                     child: Align(

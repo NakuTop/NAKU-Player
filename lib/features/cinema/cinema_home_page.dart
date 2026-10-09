@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'cinema_appearance_settings.dart';
 import 'cinema_pane_transition.dart';
+import 'cinema_scroll_activity.dart';
 import 'cinema_catalog_view.dart';
 import 'cinema_settings_page.dart';
 import 'cinema_filters.dart';
@@ -116,6 +117,8 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   final _ratingLoadedContexts = <(_Section, String), String>{};
   Timer? _ratingRefresh;
   int _ratingRevision = 0;
+  final _scrollActivity = CinemaScrollActivity();
+  bool _ratingsChangedWhileScrolling = false;
   late final _together = widget.watchTogether ?? CinemaWatchTogether.instance;
   StreamSubscription<String>? _togetherNotices;
   _Section _section = _Section.movies;
@@ -147,6 +150,10 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   int get _page => _catalog.page;
   int get _pageCount => _catalog.pageCount;
 
+  String get _catalogViewportKey => _aggregates(_section) && !_searching
+      ? 'catalog-${_section.name}-unified-${_catalog.filters.year}-${_catalog.filters.region}-${_catalog.filters.genre}'
+      : 'catalog-${_section.name}-${_source?.id}-${_searching ? _catalog.activeKeyword : _categoryId}-$_page';
+
   String _sourceKey(CinemaSource source) => jsonEncode(source.toJson());
 
   bool _aggregates(_Section section) =>
@@ -177,7 +184,14 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   void _changed(_CatalogState state, VoidCallback change) {
     if (!mounted) return;
     if (identical(state, _catalog)) {
+      final previousViewport = _catalogViewportKey;
       setState(change);
+      if (previousViewport != _catalogViewportKey) {
+        // Disposing a moving ScrollPosition need not send ScrollEnd. Reset at
+        // the data change that replaces its key, including async page results,
+        // so enrichment cannot remain waiting on a viewport that no longer exists.
+        _scrollActivity.reset();
+      }
     } else {
       change();
     }
@@ -188,6 +202,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     super.initState();
     _store.addListener(_onStoreChanged);
     _ratings.changes.addListener(_onRatingsChanged);
+    _scrollActivity.addListener(_onScrollActivityChanged);
     if (widget.enableWatchTogether) {
       _together.onFollowRequested = _followPeer;
       _togetherNotices = _together.notices.listen((message) {
@@ -201,20 +216,38 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   String get _scoreProvider => _scoreProviders[_section] ?? '豆瓣';
 
   void _onRatingsChanged() {
-    _ratingRevision++;
+    if (_scrollActivity.value) {
+      _ratingsChangedWhileScrolling = true;
+      return;
+    }
     if (!mounted ||
         !_showsCatalogSort ||
         _currentCatalogSort != CinemaCatalogSort.rating) {
+      _ratingRevision++;
       return;
     }
     _ratingRefresh ??= Timer(const Duration(milliseconds: 350), () {
       _ratingRefresh = null;
+      _ratingRevision++;
       if (mounted &&
           _showsCatalogSort &&
           _currentCatalogSort == CinemaCatalogSort.rating) {
         setState(() {});
       }
     });
+  }
+
+  void _onScrollActivityChanged() {
+    if (_scrollActivity.value) {
+      if (_ratingRefresh != null) {
+        _ratingsChangedWhileScrolling = true;
+        _ratingRefresh?.cancel();
+        _ratingRefresh = null;
+      }
+    } else if (_ratingsChangedWhileScrolling) {
+      _ratingsChangedWhileScrolling = false;
+      _onRatingsChanged();
+    }
   }
 
   Future<void> _preloadRatings(_Section section) async {
@@ -278,6 +311,9 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     var next = 0;
     Future<void> worker() async {
       while (current() && next < titles.length) {
+        await _scrollActivity.whenIdle;
+        // Another worker can claim the final item while both await idle.
+        if (!current() || next >= titles.length) return;
         final title = titles[next++];
         try {
           await _ratings.loadForProvider(
@@ -447,6 +483,8 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   void dispose() {
     _ratings.changes.removeListener(_onRatingsChanged);
     _ratingRefresh?.cancel();
+    _scrollActivity.removeListener(_onScrollActivityChanged);
+    _scrollActivity.dispose();
     _ratingTitles.dispose();
     for (final controller in _aggregateControllers.values) {
       controller.dispose();
@@ -571,6 +609,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
 
   Future<void> _selectSection(_Section value) async {
     if (value == _section && !_showSourceManager) return;
+    _scrollActivity.reset();
     setState(() {
       _section = value;
       _showSourceManager = false;
@@ -611,10 +650,12 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     final generation = ++state.generation;
     state.discoveryCancel?.cancel();
     if (_aggregates(section)) {
-      state.searching = false;
-      state.source = null;
-      state.categories = [];
-      state.categoryId = null;
+      _changed(state, () {
+        state.searching = false;
+        state.source = null;
+        state.categories = [];
+        state.categoryId = null;
+      });
       await _aggregateFor(section).load(
         sources: _store.enabledSources,
         kind: section == _Section.movies
@@ -669,7 +710,10 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         _knownCategories[sourceKey] = result.categories;
       }
       if (state.categoryId == null) {
-        state.categoryId = _preferredCategory(state, section);
+        _changed(
+          state,
+          () => state.categoryId = _preferredCategory(state, section),
+        );
         if (state.categoryId != null) {
           result = await _repository.browse(
             source,
@@ -1004,7 +1048,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
 
   void _changeCatalogueFilters(CinemaFilters value) {
     if (_aggregates(_section) && !_searching) {
-      setState(() => _catalog.filters = value);
+      _changed(_catalog, () => _catalog.filters = value);
       unawaited(_browse());
       return;
     }
@@ -1018,10 +1062,10 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
               )
               .firstOrNull
         : null;
-    setState(() => _catalog.filters = value);
+    _changed(_catalog, () => _catalog.filters = value);
     if (_searching) unawaited(_preloadRatings(_section));
     if (category != null && category.id != _categoryId) {
-      _categoryId = category.id;
+      _changed(_catalog, () => _categoryId = category.id);
       _browse();
     }
   }
@@ -1387,7 +1431,10 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                                 Expanded(
                                   child: CinemaPaneTransition(
                                     destination: (_section, _showSourceManager),
-                                    child: _content(wide),
+                                    child: CinemaScrollNotifications(
+                                      activity: _scrollActivity,
+                                      child: _content(wide),
+                                    ),
                                   ),
                                 ),
                               ],
@@ -1791,11 +1838,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     final visibleItems = view.visible;
     final variantsByKey = view.variants;
     return CustomScrollView(
-      key: PageStorageKey(
-        aggregated
-            ? 'catalog-${_section.name}-unified-${_catalog.filters.year}-${_catalog.filters.region}-${_catalog.filters.genre}'
-            : 'catalog-${_section.name}-${_source?.id}-${_searching ? _catalog.activeKeyword : _categoryId}-$_page',
-      ),
+      key: PageStorageKey(_catalogViewportKey),
       slivers: [
         SliverToBoxAdapter(
           child: Padding(
@@ -1900,9 +1943,11 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                                 )
                                 .toList(),
                             onChanged: (id) {
-                              _source = _findSource(id!);
-                              _categories = [];
-                              _categoryId = null;
+                              _changed(_catalog, () {
+                                _source = _findSource(id!);
+                                _categories = [];
+                                _categoryId = null;
+                              });
                               _browse();
                             },
                           ),
@@ -1969,7 +2014,10 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                                   ),
                                   selected: c.id == _categoryId,
                                   onSelected: (_) {
-                                    _categoryId = c.id;
+                                    _changed(
+                                      _catalog,
+                                      () => _categoryId = c.id,
+                                    );
                                     _browse();
                                   },
                                 ),
@@ -2212,6 +2260,8 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
           ? _posterFallback(title.title)
           : CachedNetworkImage(
               memCacheWidth: 480,
+              fadeInDuration: Duration.zero,
+              fadeOutDuration: Duration.zero,
               imageUrl: title.poster,
               httpHeaders: title.sourceId == 'douban-discovery'
                   ? doubanImageHeaders

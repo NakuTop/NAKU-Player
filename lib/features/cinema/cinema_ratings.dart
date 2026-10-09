@@ -110,6 +110,63 @@ class CinemaRatings {
 }
 
 typedef RatingsFetch = Future<List<int>> Function(Uri uri, int maxBytes);
+typedef RatingsCacheWriter =
+    Future<void> Function(String path, Map<String, dynamic> snapshot);
+
+class _RatingsSaveWaiter {
+  _RatingsSaveWaiter(this.revision);
+  final int revision;
+  final completion = Completer<void>();
+}
+
+// Keep JSON encoding and filesystem work off the UI isolate. This top-level
+// entry captures only the serializable snapshot, never repository futures.
+Future<void> _writeRatingsCacheInBackground(
+  String path,
+  Map<String, dynamic> snapshot,
+) => Isolate.run(() async {
+  final encoded = jsonEncode(snapshot);
+  final file = File(path);
+  await file.parent.create(recursive: true);
+  final temp = File('$path.tmp');
+  await temp.writeAsString(encoded, flush: true);
+  await temp.rename(path);
+});
+
+// Copying megabytes of unchanged claims into an isolate also pauses the UI.
+// Reconstruct unchanged entries from disk and send only the compact delta.
+Future<bool> _writeRatingsCachePatchInBackground(
+  String path,
+  Map<String, dynamic> changed,
+  Map<String, List<String>> retainedKeys,
+) => Isolate.run(() async {
+  final file = File(path);
+  final data = await file.exists()
+      ? Map<String, dynamic>.from(jsonDecode(await file.readAsString()))
+      : <String, dynamic>{'version': 1};
+  if (data['version'] != 1) throw const FormatException('评分文件格式无效');
+  for (final section in retainedKeys.keys) {
+    final values = Map<String, dynamic>.from(data[section] as Map? ?? {});
+    final updates = changed[section] as Map<String, dynamic>;
+    final retained = retainedKeys[section]!.toSet();
+    // If the base file was removed externally, request a full snapshot instead
+    // of silently dropping unchanged entries still held in memory.
+    if (retained.any(
+      (key) => !values.containsKey(key) && !updates.containsKey(key),
+    )) {
+      return false;
+    }
+    values.removeWhere((key, _) => !retained.contains(key));
+    values.addAll(updates);
+    data[section] = values;
+  }
+  final encoded = jsonEncode(data);
+  await file.parent.create(recursive: true);
+  final temp = File('$path.tmp');
+  await temp.writeAsString(encoded, flush: true);
+  await temp.rename(path);
+  return true;
+});
 
 // Top-level isolate entry wrappers avoid capturing repository futures/clients.
 Future<(double, int)?> _readImdbInBackground(String path, String id) =>
@@ -123,12 +180,17 @@ Future<void> _validateImdbInBackground(List<int> bytes) => Isolate.run(() {
 
 /// On-demand, exact-ID lookups. Ratings never affect catalogue/playback success.
 class CinemaRatingsRepository {
-  CinemaRatingsRepository({Directory? directory, RatingsFetch? fetch})
-    : _directory = directory,
-      _rawFetch = fetch ?? _networkFetch;
+  CinemaRatingsRepository({
+    Directory? directory,
+    RatingsFetch? fetch,
+    RatingsCacheWriter? cacheWriter,
+  }) : _directory = directory,
+       _rawFetch = fetch ?? _networkFetch,
+       _cacheWriter = cacheWriter;
   static final instance = CinemaRatingsRepository();
   Directory? _directory;
   final RatingsFetch _rawFetch;
+  final RatingsCacheWriter? _cacheWriter;
   final _networkWork = _RatingsWorkPool(3);
   final _secondaryNetworkWork = _RatingsWorkPool(2);
   final _primaryWork = _RatingsWorkPool(3);
@@ -164,13 +226,17 @@ class CinemaRatingsRepository {
   Map<String, dynamic> _details = {};
   final _subjectMemory = <String, DoubanSubjectDetails>{};
   final _subjectKinds = <String, String>{};
+  final _subjectDiskEntries = <String, dynamic>{};
   final _mobileSubjectPending = <String, Future<DoubanSubjectDetails>>{};
   final _subjectPending = <String, Future<DoubanSubjectDetails>>{};
   final _detailsPending = <String, Future<DoubanSubjectDetails>>{};
   Future<void>? _loading, _dataset;
   DateTime? _datasetFailedAt;
   String _datasetFailure = '';
-  Future<void> _writes = Future.value();
+  Future<void>? _writes;
+  final _saveWaiters = <_RatingsSaveWaiter>[];
+  int _cacheRevision = 0, _savedCacheRevision = 0;
+  Map<String, dynamic> _savedSnapshot = {};
   final Map<String, Future<CinemaRatings>> _pending = {};
   int _bindingRevision = 0;
   final Map<String, CinemaRatings> _memory = {};
@@ -211,7 +277,11 @@ class CinemaRatingsRepository {
               Map<String, dynamic>.from(item['data']),
             );
             if (subject.doubanId == entry.key) {
-              _rememberSubject(subject, kind: item['kind']?.toString() ?? '');
+              _rememberSubject(
+                subject,
+                kind: item['kind']?.toString() ?? '',
+                restored: true,
+              );
             }
           } catch (_) {
             /* Invalid optional metadata does not invalidate bindings. */
@@ -224,37 +294,102 @@ class CinemaRatingsRepository {
           _details.remove(_details.keys.first);
         }
       }
+      _savedSnapshot = _cacheSnapshot();
     } catch (_) {
       // Keep a malformed file intact; never silently replace user bindings.
       _storageWarning = '评分设置文件无法读取，已保留原文件；本次结果不保存';
     }
   }
 
-  Future<void> _save() async {
-    if (_storageWarning != null) return;
-    final directory = await _dir;
-    final encoded = jsonEncode({
-      'version': 1,
-      'bindings': _bindings,
-      'cache': _cache,
-      'mappings': _mappings,
-      'doubanDetails': _details,
-      'doubanSubjects': {
-        for (final entry in _subjectMemory.entries)
-          entry.key: {
-            'data': entry.value.toJson(),
-            'kind': _subjectKinds[entry.key] ?? '',
-          },
-      },
-    });
-    final operation = _writes.catchError((_) {}).then((_) async {
-      await directory.create(recursive: true);
-      final temp = File('${directory.path}/ratings-v1.json.tmp');
-      await temp.writeAsString(encoded, flush: true);
-      await temp.rename('${directory.path}/ratings-v1.json');
-    });
+  void _cacheChanged() => _cacheRevision++;
+
+  Map<String, dynamic> _cacheSnapshot() => {
+    'version': 1,
+    // Entries are immutable after insertion. Copy the outer maps so a later
+    // response cannot mutate an already queued snapshot.
+    'bindings': Map<String, dynamic>.from(_bindings),
+    'cache': Map<String, dynamic>.from(_cache),
+    'mappings': Map<String, dynamic>.from(_mappings),
+    'doubanDetails': Map<String, dynamic>.from(_details),
+    'doubanSubjects': Map<String, dynamic>.from(_subjectDiskEntries),
+  };
+
+  Future<void> _save() {
+    if (_storageWarning != null) return Future.value();
+    if (_savedCacheRevision == _cacheRevision) return Future.value();
+    final waiter = _RatingsSaveWaiter(_cacheRevision);
+    _saveWaiters.add(waiter);
+    _startCacheWrites();
+    return waiter.completion.future;
+  }
+
+  void _startCacheWrites() {
+    if (_writes != null) return;
+    late final Future<void> operation;
+    operation = _drainCacheWrites()
+        .catchError((Object error, StackTrace stack) {
+          final failed = List<_RatingsSaveWaiter>.of(_saveWaiters);
+          _saveWaiters.clear();
+          for (final waiter in failed) {
+            waiter.completion.completeError(error, stack);
+          }
+        })
+        .whenComplete(() {
+          if (identical(_writes, operation)) {
+            _writes = null;
+            if (_saveWaiters.isNotEmpty) _startCacheWrites();
+          }
+        });
     _writes = operation;
-    await operation;
+  }
+
+  Future<void> _drainCacheWrites() async {
+    final directory = await _dir;
+    // Concurrent card/provider completions share one writer. A response that
+    // arrives during a write is included in the next latest-state snapshot;
+    // Each caller waits only for its requested revision. A later write failure
+    // must not roll back an earlier identity correction already saved to disk.
+    while (_saveWaiters.isNotEmpty) {
+      // Briefly combine provider/card completions while preserving the contract
+      // that awaited loads and manual corrections have finished persistence.
+      await Future<void>.delayed(const Duration(milliseconds: 75));
+      final revision = _cacheRevision;
+      final snapshot = _cacheSnapshot();
+      final path = '${directory.path}/ratings-v1.json';
+      final writer = _cacheWriter;
+      if (writer != null) {
+        await writer(path, snapshot);
+      } else {
+        final changed = <String, dynamic>{};
+        final retained = <String, List<String>>{};
+        for (final section in snapshot.keys.where((key) => key != 'version')) {
+          final values = snapshot[section] as Map<String, dynamic>;
+          final previous = _savedSnapshot[section] as Map? ?? const {};
+          changed[section] = <String, dynamic>{
+            for (final entry in values.entries)
+              if (!identical(previous[entry.key], entry.value))
+                entry.key: entry.value,
+          };
+          retained[section] = values.keys.toList();
+        }
+        if (!await _writeRatingsCachePatchInBackground(
+          path,
+          changed,
+          retained,
+        )) {
+          await _writeRatingsCacheInBackground(path, snapshot);
+        }
+      }
+      _savedSnapshot = snapshot;
+      _savedCacheRevision = revision;
+      final finished = _saveWaiters
+          .where((waiter) => waiter.revision <= revision)
+          .toList();
+      _saveWaiters.removeWhere((waiter) => waiter.revision <= revision);
+      for (final waiter in finished) {
+        waiter.completion.complete();
+      }
+    }
   }
 
   Future<void> setIdentity(CinemaTitle title, RatingIdentity identity) async {
@@ -263,6 +398,7 @@ class CinemaRatingsRepository {
     if (_storageWarning != null) throw StateError(_storageWarning!);
     final previous = _bindings[title.key];
     _bindings[title.key] = identity.toJson();
+    _cacheChanged();
     _bindingRevision++;
     _memory.clear();
     _profiles.clear();
@@ -277,6 +413,7 @@ class CinemaRatingsRepository {
       } else {
         _bindings[title.key] = previous;
       }
+      _cacheChanged();
       _bindingRevision++;
       _memory.clear();
       _profiles.clear();
@@ -904,6 +1041,7 @@ class CinemaRatingsRepository {
             'failureSchema': 2,
             'failure': _readable(error),
           };
+          _cacheChanged();
         }
         rethrow;
       } finally {
@@ -963,6 +1101,7 @@ class CinemaRatingsRepository {
         'qid': qid,
         'entity': entity,
       };
+      _cacheChanged();
     }
     try {
       return identityFromEntity(
@@ -1159,16 +1298,26 @@ class CinemaRatingsRepository {
     return null;
   }
 
-  void _rememberSubject(DoubanSubjectDetails subject, {String kind = ''}) {
+  void _rememberSubject(
+    DoubanSubjectDetails subject, {
+    String kind = '',
+    bool restored = false,
+  }) {
     final id = subject.doubanId;
     _subjectMemory.remove(id);
     _subjectMemory[id] = subject;
     if (['movie', 'tv'].contains(kind)) _subjectKinds[id] = kind;
+    _subjectDiskEntries[id] = {
+      'data': subject.toJson(),
+      'kind': _subjectKinds[id] ?? '',
+    };
     while (_subjectMemory.length > 80) {
       final oldest = _subjectMemory.keys.first;
       _subjectMemory.remove(oldest);
       _subjectKinds.remove(oldest);
+      _subjectDiskEntries.remove(oldest);
     }
+    if (!restored) _cacheChanged();
   }
 
   Future<DoubanSubjectDetails> _mobileSubject(String id, bool force) {
@@ -1283,6 +1432,7 @@ class CinemaRatingsRepository {
         }
       } catch (_) {
         _details.remove(id);
+        _cacheChanged();
         previous = null;
       }
     }
@@ -1425,6 +1575,7 @@ class CinemaRatingsRepository {
     while (_details.length > 64) {
       _details.remove(_details.keys.first);
     }
+    _cacheChanged();
     try {
       await _save();
     } catch (_) {
@@ -1496,6 +1647,7 @@ class CinemaRatingsRepository {
         return CinemaRating.fromJson(Map<String, dynamic>.from(cached));
       } catch (_) {
         _cache.remove(key);
+        _cacheChanged();
       }
     }
     final url = switch (provider) {
@@ -1585,6 +1737,7 @@ class CinemaRatingsRepository {
       if (cardOnly && result.value == null) 'cardOnlyFailure': true,
       'attemptedAt': DateTime.now().toIso8601String(),
     };
+    _cacheChanged();
     _changes.changed();
     return result;
   }
