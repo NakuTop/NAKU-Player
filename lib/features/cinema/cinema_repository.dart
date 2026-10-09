@@ -18,7 +18,18 @@ class CinemaSourceException implements Exception {
 
 /// MacCMS is a catalogue of its own. No Bangumi title matching is involved.
 class CinemaRepository {
-  CinemaRepository({Dio? dio}) : _dio = dio ?? _createDefaultDio();
+  CinemaRepository({Dio? dio, DateTime Function()? now})
+    : _dio = dio ?? _createDefaultDio(),
+      _categories = _CatalogueCache(
+        lifetime: const Duration(minutes: 30),
+        capacity: 24,
+        now: now ?? DateTime.now,
+      ),
+      _pages = _CatalogueCache(
+        lifetime: const Duration(minutes: 5),
+        capacity: 48,
+        now: now ?? DateTime.now,
+      );
 
   static Dio _createDefaultDio() {
     final dio = Dio(
@@ -28,7 +39,7 @@ class CinemaRepository {
         sendTimeout: const Duration(seconds: 12),
         responseType: ResponseType.plain,
         headers: {
-          'User-Agent': 'NAKUPlayer/1.0.0',
+          'User-Agent': 'NAKUPlayer/1.1.0',
           'Accept': 'application/json',
         },
       ),
@@ -48,7 +59,18 @@ class CinemaRepository {
   }
 
   final Dio _dio;
-  final Map<String, List<CinemaCategory>> _categories = {};
+  final _CatalogueCache<(String, String), List<CinemaCategory>> _categories;
+  final _CatalogueCache<(String, String, String, int), CinemaPage> _pages;
+
+  /// A manual refresh also detaches earlier requests, so a response that was
+  /// already loading cannot overwrite the refreshed catalogue in the cache.
+  void invalidateBrowseCache({CinemaSource? source}) {
+    _categories.invalidate((key) => source == null || key.$1 == source.id);
+    _pages.invalidate((key) => source == null || key.$1 == source.id);
+  }
+
+  static String _sourceIdentity(CinemaSource source) =>
+      jsonEncode(_canonicalConfig(source.toJson()));
 
   Future<CinemaPage> browse(
     CinemaSource source, {
@@ -59,40 +81,44 @@ class CinemaRepository {
     if (source.kind == CinemaSourceKind.kazumi) {
       return const CinemaPage(items: []);
     }
-    final categoriesFuture = categories(source);
-    final bodyFuture = _request(source, {
-      'ac': 'detail',
-      'pg': '$page',
-      if (categoryId != null && categoryId.isNotEmpty) 't': categoryId,
+    final key = (source.id, _sourceIdentity(source), categoryId ?? '', page);
+    return _pages.load(key, () async {
+      final categoriesFuture = categories(source);
+      final bodyFuture = _request(source, {
+        'ac': 'detail',
+        'pg': '$page',
+        if (categoryId != null && categoryId.isNotEmpty) 't': categoryId,
+      });
+      // Register both futures immediately so either error remains observable.
+      final responses = await Future.wait<Object>([
+        categoriesFuture,
+        bodyFuture,
+      ]);
+      return parseMacCmsPage(
+        source,
+        responses[1] as Map<String, dynamic>,
+        categories: responses[0] as List<CinemaCategory>,
+      );
     });
-    // Register both futures immediately so either error remains observable.
-    final responses = await Future.wait<Object>([categoriesFuture, bodyFuture]);
-    return parseMacCmsPage(
-      source,
-      responses[1] as Map<String, dynamic>,
-      categories: responses[0] as List<CinemaCategory>,
-    );
   }
 
   Future<List<CinemaCategory>> categories(CinemaSource source) async {
     source.validate();
     if (source.kind == CinemaSourceKind.kazumi) return [];
-    final cacheKey = '${source.id}|${source.url}';
-    final cached = _categories[cacheKey];
-    if (cached != null) return cached;
-    final body = await _request(source, {'ac': 'list', 'pg': '1'});
-    final result = jsonMaps(body['class'])
-        .map(
-          (entry) => CinemaCategory(
-            id: textValue(entry['type_id']),
-            name: cleanCinemaText(entry['type_name']),
-            parentId: textValue(entry['type_pid']),
-          ),
-        )
-        .where((entry) => entry.id.isNotEmpty && entry.name.isNotEmpty)
-        .toList();
-    _categories[cacheKey] = result;
-    return result;
+    final key = (source.id, _sourceIdentity(source));
+    return _categories.load(key, () async {
+      final body = await _request(source, {'ac': 'list', 'pg': '1'});
+      return jsonMaps(body['class'])
+          .map(
+            (entry) => CinemaCategory(
+              id: textValue(entry['type_id']),
+              name: cleanCinemaText(entry['type_name']),
+              parentId: textValue(entry['type_pid']),
+            ),
+          )
+          .where((entry) => entry.id.isNotEmpty && entry.name.isNotEmpty)
+          .toList();
+    });
   }
 
   Future<CinemaPage> search(
@@ -111,7 +137,8 @@ class CinemaRepository {
       return parseMacCmsPage(
         source,
         body,
-        categories: _categories['${source.id}|${source.url}'] ?? [],
+        categories:
+            _categories.peek((source.id, _sourceIdentity(source))) ?? [],
       );
     }
     if (page > 1) return const CinemaPage(items: []);
@@ -379,5 +406,67 @@ class CinemaRepository {
       ...routes.where((route) => route.episodes.first.isDirect),
       ...routes.where((route) => !route.episodes.first.isDirect),
     ];
+  }
+}
+
+/// Map ordering must not turn equivalent source settings into different keys.
+Object? _canonicalConfig(Object? value) {
+  if (value is Map) {
+    final keys = value.keys.cast<String>().toList()..sort();
+    return {for (final key in keys) key: _canonicalConfig(value[key])};
+  }
+  if (value is List) return value.map(_canonicalConfig).toList();
+  return value;
+}
+
+class _CatalogueCache<K, V> {
+  _CatalogueCache({
+    required this.lifetime,
+    required this.capacity,
+    required this.now,
+  });
+
+  final Duration lifetime;
+  final int capacity;
+  final DateTime Function() now;
+  final _values = <K, ({V value, DateTime expires})>{};
+  final _pending = <K, Future<V>>{};
+
+  V? peek(K key) {
+    final entry = _values.remove(key);
+    if (entry == null || !entry.expires.isAfter(now())) return null;
+    _values[key] = entry;
+    return entry.value;
+  }
+
+  Future<V> load(K key, Future<V> Function() request) {
+    final cached = peek(key);
+    if (cached != null) return Future.value(cached);
+    final pending = _pending[key];
+    if (pending != null) return pending;
+    late final Future<V> future;
+    future = Future<V>.sync(request).then(
+      (value) {
+        if (identical(_pending[key], future)) {
+          _pending.remove(key);
+          _values[key] = (value: value, expires: now().add(lifetime));
+          while (_values.length > capacity) {
+            _values.remove(_values.keys.first);
+          }
+        }
+        return value;
+      },
+      onError: (Object error, StackTrace stack) {
+        if (identical(_pending[key], future)) _pending.remove(key);
+        Error.throwWithStackTrace(error, stack);
+      },
+    );
+    _pending[key] = future;
+    return future;
+  }
+
+  void invalidate(bool Function(K) matches) {
+    _values.removeWhere((key, _) => matches(key));
+    _pending.removeWhere((key, _) => matches(key));
   }
 }

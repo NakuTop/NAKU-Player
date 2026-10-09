@@ -122,6 +122,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: CinemaHomePage(
+          enableWatchTogether: false,
           store: store,
           repository: repository,
           ratingsRepository: RatingsStub(),

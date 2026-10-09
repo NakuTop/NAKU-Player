@@ -614,6 +614,7 @@ class SyncplayClient {
         'type': 'hello',
         'username': json['Hello']['username'],
         'room': json['Hello']['room']['name'],
+        'features': json['Hello']['features'],
       });
       return;
     }

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'cinema_models.dart';
+import 'cinema_library_identity.dart';
 
 /// A one-time addition of presets, independent of the user's current choices.
 class CinemaSourcePack {
@@ -37,6 +38,11 @@ class CinemaStore extends ChangeNotifier {
   final Set<String> _freshSourcePackIds;
   final Set<String> _appliedSourcePacks = {};
   Map<String, dynamic> _libraryExtras = {};
+  final Map<String, Map<String, dynamic>> _sourceDocuments = {};
+  final Map<String, Map<String, dynamic>> _favoriteDocuments = {};
+  final Map<String, Map<String, dynamic>> _historyDocuments = {};
+  List<CinemaTitle>? _identityTitles;
+  final Map<(bool, String), Set<String>> _identityMatches = {};
   final List<CinemaSource> _sources = [];
   final List<CinemaTitle> _favorites = [];
   final List<CinemaHistory> _history = [];
@@ -68,12 +74,34 @@ class CinemaStore extends ChangeNotifier {
         final raw = _validatedLibrary(jsonDecode(utf8.decode(original)));
         final sourceMaps = _strictMaps(raw['sources']);
         final sources = sourceMaps.map(CinemaSource.fromJson).toList();
-        final favorites = _strictMaps(
-          raw['favorites'],
-        ).map(CinemaTitle.fromJson).toList();
-        final history =
-            _strictMaps(raw['history']).map(CinemaHistory.fromJson).toList()
-              ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+        final favoriteMaps = _strictMaps(raw['favorites']);
+        final historyMaps = _strictMaps(raw['history']);
+        // Keep stable order for ties; the first history is the most recently
+        // watched complete source/route/episode snapshot, never mixed fields.
+        final sortedHistory = historyMaps.indexed.toList()
+          ..sort((a, b) {
+            final comparison = CinemaHistory.fromJson(
+              b.$2,
+            ).updatedAt.compareTo(CinemaHistory.fromJson(a.$2).updatedAt);
+            return comparison == 0 ? a.$1.compareTo(b.$1) : comparison;
+          });
+        final context = [
+          ...favoriteMaps.expand((map) => _recordTitles(map, history: false)),
+          ...historyMaps.expand((map) => _recordTitles(map, history: true)),
+        ];
+        final compactFavorites = _consolidateRecords(
+          favoriteMaps,
+          history: false,
+          context: context,
+        );
+        final compactHistory = _consolidateRecords(
+          sortedHistory.map((entry) => entry.$2).toList(),
+          history: true,
+          context: context,
+        );
+        final needsConsolidation =
+            compactFavorites.length != favoriteMaps.length ||
+            compactHistory.length != historyMaps.length;
         final applied = _readAppliedPacks(raw);
         final pending = _sourcePacks
             .where((pack) => !applied.contains(pack.id))
@@ -106,14 +134,21 @@ class CinemaStore extends ChangeNotifier {
             insertion,
             additions.map((source) => source.toJson()),
           );
+        }
+        if (pending.isNotEmpty || needsConsolidation) {
           final upgraded = {
             ...raw,
-            'sources': sourceMaps,
-            'appliedSourcePacks': applied.toList(),
+            if (pending.isNotEmpty) 'sources': sourceMaps,
+            if (pending.isNotEmpty) 'appliedSourcePacks': applied.toList(),
+            if (needsConsolidation) 'favorites': compactFavorites,
+            if (needsConsolidation) 'history': compactHistory,
           };
-          // Validate the full old document before creating either file. Keep
-          // original favourites/history and unknown fields verbatim in JSON.
-          await _backupBeforeSourceUpgrade(original);
+          // Back up exact original bytes before either migration writes. A
+          // library-only consolidation must not mark a source pack installed.
+          if (needsConsolidation) {
+            await _backupBeforeWorkConsolidation(original);
+          }
+          if (pending.isNotEmpty) await _backupBeforeSourceUpgrade(original);
           await _writeEncoded(
             const JsonEncoder.withIndent('  ').convert(upgraded),
           );
@@ -130,8 +165,19 @@ class CinemaStore extends ChangeNotifier {
           );
         _appliedSourcePacks.addAll(applied);
         _sources.addAll(sources);
-        _favorites.addAll(favorites);
-        _history.addAll(history);
+        for (final map in sourceMaps) {
+          _sourceDocuments[map['id'] as String] = map;
+        }
+        for (final map in compactFavorites) {
+          final title = CinemaTitle.fromJson(map);
+          _favorites.add(title);
+          _favoriteDocuments[title.key] = map;
+        }
+        for (final map in compactHistory) {
+          final item = CinemaHistory.fromJson(map);
+          _history.add(item);
+          _historyDocuments[item.title.key] = map;
+        }
       } else {
         for (final source in _defaults) {
           source.validate();
@@ -140,6 +186,7 @@ class CinemaStore extends ChangeNotifier {
         _sources.addAll(_defaults);
         _appliedSourcePacks.addAll(_freshSourcePackIds);
       }
+      _invalidateIdentityCache();
       _loaded = true;
       lastError = null;
       _notify();
@@ -152,14 +199,62 @@ class CinemaStore extends ChangeNotifier {
 
   CinemaSource? sourceById(String id) =>
       _sources.where((source) => source.id == id).firstOrNull;
-  bool isFavorite(CinemaTitle title) =>
-      _favorites.any((item) => item.key == title.key);
+  bool isFavorite(CinemaTitle title) => _favoriteMatches(title).isNotEmpty;
+
+  /// Route and episode indexes belong to a source. A different source's latest
+  /// work history must never silently become this source's resume position.
   CinemaHistory? historyFor(CinemaTitle title) =>
       _history.where((item) => item.title.key == title.key).firstOrNull;
+
+  /// For display/navigation: open the returned title to resume its saved source.
+  CinemaHistory? historyForWork(CinemaTitle title) {
+    final matches = _historyMatches(title);
+    return _history
+        .where((item) => matches.contains(item.title.key))
+        .firstOrNull;
+  }
+
+  List<CinemaTitle> get _identityContext => _identityTitles ??= [
+    ..._favoriteDocuments.values.expand(
+      (m) => _recordTitles(m, history: false),
+    ),
+    ..._historyDocuments.values.expand((m) => _recordTitles(m, history: true)),
+  ];
+
+  void _invalidateIdentityCache() {
+    _identityTitles = null;
+    _identityMatches.clear();
+  }
+
+  Set<String> _matches(CinemaTitle title, {required bool history}) {
+    final key = (history, _identitySignature(title));
+    final cached = _identityMatches[key];
+    if (cached != null) return cached;
+    final result = _matchingRecordKeys(
+      title,
+      history ? _historyDocuments.values : _favoriteDocuments.values,
+      history: history,
+      context: _identityContext,
+    );
+    if (_identityMatches.length >= 512) {
+      _identityMatches.remove(_identityMatches.keys.first);
+    }
+    _identityMatches[key] = result;
+    return result;
+  }
+
+  Set<String> _favoriteMatches(CinemaTitle title) =>
+      _matches(title, history: false);
+  Set<String> _historyMatches(CinemaTitle title) =>
+      _matches(title, history: true);
 
   Future<void> saveSource(CinemaSource source) async {
     source.validate();
     await load();
+    final document = Map<String, dynamic>.of(_sourceDocuments[source.id] ?? {})
+      ..remove('headers')
+      ..remove('rule');
+    _sourceDocuments[source.id] = {...document, ...source.toJson()};
     final index = _sources.indexWhere((item) => item.id == source.id);
     if (index < 0) {
       _sources.add(source);
@@ -173,17 +268,22 @@ class CinemaStore extends ChangeNotifier {
   Future<void> removeSource(String id) async {
     await load();
     _sources.removeWhere((source) => source.id == id);
+    _sourceDocuments.remove(id);
     _notify();
     await _persist();
   }
 
   Future<void> toggleFavorite(CinemaTitle title) async {
     await load();
-    if (isFavorite(title)) {
-      _favorites.removeWhere((item) => item.key == title.key);
+    final matches = _favoriteMatches(title);
+    if (matches.isNotEmpty) {
+      _favorites.removeWhere((item) => matches.contains(item.key));
+      _favoriteDocuments.removeWhere((key, _) => matches.contains(key));
     } else {
       _favorites.insert(0, title);
+      _favoriteDocuments[title.key] = title.toJson();
     }
+    _invalidateIdentityCache();
     _notify();
     await _persist();
   }
@@ -202,26 +302,60 @@ class CinemaStore extends ChangeNotifier {
         durationSeconds < 0) {
       throw const FormatException('播放进度不能为负数');
     }
-    _history.removeWhere((item) => item.title.key == title.key);
-    _history.insert(
-      0,
-      CinemaHistory(
-        title: title,
-        routeIndex: routeIndex,
-        episodeIndex: episodeIndex,
-        positionSeconds: positionSeconds,
-        durationSeconds: durationSeconds,
-        updatedAt: DateTime.now().toUtc(),
-      ),
+    final matches = _historyMatches(title);
+    final previous = [
+      for (final item in _history)
+        if (matches.contains(item.title.key))
+          _historyDocuments[item.title.key]!,
+    ];
+    var identityChanged =
+        previous.length != 1 ||
+        _identitySignature(_recordTitle(previous.single, history: true)) !=
+            _identitySignature(title);
+    final item = CinemaHistory(
+      title: title,
+      routeIndex: routeIndex,
+      episodeIndex: episodeIndex,
+      positionSeconds: positionSeconds,
+      durationSeconds: durationSeconds,
+      updatedAt: DateTime.now().toUtc(),
     );
-    if (_history.length > 200) _history.removeRange(200, _history.length);
+    final sameSource =
+        _historyDocuments[title.key] ??
+        previous
+            .expand((m) => [m, ..._mergedEntries(m)])
+            .where((m) => _recordTitle(m, history: true).key == title.key)
+            .firstOrNull;
+    final document = _mergeKnownDocument(sameSource, item.toJson());
+    final combined = _mergeRecordDocuments(
+      document,
+      previous.where((m) => _recordTitle(m, history: true).key != title.key),
+      history: true,
+    );
+    _history.removeWhere((item) => matches.contains(item.title.key));
+    _historyDocuments.removeWhere((key, _) => matches.contains(key));
+    _history.insert(0, item);
+    _historyDocuments[title.key] = combined;
+    if (_history.length > 200) {
+      identityChanged = true;
+      final removed = _history
+          .sublist(200)
+          .map((item) => item.title.key)
+          .toSet();
+      _history.removeRange(200, _history.length);
+      _historyDocuments.removeWhere((key, _) => removed.contains(key));
+    }
+    if (identityChanged) _invalidateIdentityCache();
     _notify();
     await _persist();
   }
 
   Future<void> removeHistory(CinemaTitle title) async {
     await load();
-    _history.removeWhere((item) => item.title.key == title.key);
+    final matches = _historyMatches(title);
+    _history.removeWhere((item) => matches.contains(item.title.key));
+    _historyDocuments.removeWhere((key, _) => matches.contains(key));
+    _invalidateIdentityCache();
     _notify();
     await _persist();
   }
@@ -229,6 +363,8 @@ class CinemaStore extends ChangeNotifier {
   Future<void> clearHistory() async {
     await load();
     _history.clear();
+    _historyDocuments.clear();
+    _invalidateIdentityCache();
     _notify();
     await _persist();
   }
@@ -237,9 +373,18 @@ class CinemaStore extends ChangeNotifier {
     final encoded = const JsonEncoder.withIndent('  ').convert({
       ..._libraryExtras,
       'version': 1,
-      'sources': _sources.map((item) => item.toJson()).toList(),
-      'favorites': _favorites.map((item) => item.toJson()).toList(),
-      'history': _history.map((item) => item.toJson()).toList(),
+      'sources': _sources
+          .map(
+            (item) =>
+                _mergeKnownDocument(_sourceDocuments[item.id], item.toJson()),
+          )
+          .toList(),
+      'favorites': _favorites
+          .map((item) => _favoriteDocuments[item.key]!)
+          .toList(),
+      'history': _history
+          .map((item) => _historyDocuments[item.title.key]!)
+          .toList(),
       'appliedSourcePacks': _appliedSourcePacks.toList(),
     });
     // A failed write is reported to its caller and does not poison later writes.
@@ -273,6 +418,22 @@ class CinemaStore extends ChangeNotifier {
     await temporary.rename(backup.path);
   }
 
+  Future<void> _backupBeforeWorkConsolidation(List<int> original) async {
+    final base = '${_file!.path}.pre-work-dedup-v1';
+    var backup = File('$base.bak');
+    if (await backup.exists()) {
+      if (listEquals(await backup.readAsBytes(), original)) return;
+      var suffix = DateTime.now().microsecondsSinceEpoch;
+      do {
+        backup = File('$base.$suffix.bak');
+        suffix++;
+      } while (await backup.exists());
+    }
+    final temporary = File('${backup.path}.tmp');
+    await temporary.writeAsBytes(original, flush: true);
+    await temporary.rename(backup.path);
+  }
+
   /// Await this before closing the player or the application.
   Future<void> flush() => _writeTail;
 
@@ -285,6 +446,187 @@ class CinemaStore extends ChangeNotifier {
     _disposed = true;
     super.dispose();
   }
+}
+
+// The visible arrays remain one record per work. Removed source snapshots
+// remain here so unknown per-entry data and stronger identity evidence survive.
+const _workEntriesKey = 'nakuWorkEntriesV1';
+
+List<Map<String, dynamic>> _mergedEntries(Map<String, dynamic> document) {
+  if (!document.containsKey(_workEntriesKey)) return const [];
+  final result = _strictMaps(document[_workEntriesKey]);
+  if (result.any((entry) => entry.containsKey(_workEntriesKey))) {
+    throw const FormatException('影院合并记录不可嵌套，原文件已保留');
+  }
+  return result;
+}
+
+String _identitySignature(CinemaTitle title) => jsonEncode([
+  title.sourceId,
+  title.id,
+  title.title,
+  title.year,
+  title.category,
+  title.doubanId,
+]);
+
+CinemaTitle _recordTitle(
+  Map<String, dynamic> document, {
+  required bool history,
+}) {
+  final title = history
+      ? Map<String, dynamic>.from(document['title'] as Map)
+      : document;
+  // Identity checks never need to parse stored media routes or signed URLs.
+  return CinemaTitle.fromJson({
+    for (final key in [
+      'id',
+      'sourceId',
+      'title',
+      'year',
+      'category',
+      'doubanId',
+    ])
+      key: title[key],
+  });
+}
+
+Iterable<CinemaTitle> _recordTitles(
+  Map<String, dynamic> document, {
+  required bool history,
+}) sync* {
+  yield _recordTitle(document, history: history);
+  for (final original in _mergedEntries(document)) {
+    yield _recordTitle(original, history: history);
+  }
+}
+
+Set<String> _matchingRecordKeys(
+  CinemaTitle query,
+  Iterable<Map<String, dynamic>> documents, {
+  required bool history,
+  required Iterable<CinemaTitle> context,
+}) {
+  final records = documents.toList();
+  final groups = groupCinemaLibraryTitles([
+    ...context,
+    ...records.expand((m) => _recordTitles(m, history: history)),
+    query,
+  ]);
+  final group = groups
+      .where((g) => g.variants.any((v) => v.key == query.key))
+      .firstOrNull;
+  if (group == null) return {};
+  final keys = group.variants.map((v) => v.key).toSet();
+  return {
+    for (final record in records)
+      if (_recordTitles(
+        record,
+        history: history,
+      ).any((v) => keys.contains(v.key)))
+        _recordTitle(record, history: history).key,
+  };
+}
+
+List<Map<String, dynamic>> _consolidateRecords(
+  List<Map<String, dynamic>> originals, {
+  required bool history,
+  required List<CinemaTitle> context,
+}) {
+  final groups = groupCinemaLibraryTitles(context);
+  final groupByKey = <String, int>{};
+  for (var i = 0; i < groups.length; i++) {
+    for (final title in groups[i].variants) {
+      groupByKey[title.key] = i;
+    }
+  }
+  final compact = <Map<String, dynamic>>[];
+  final savedByGroup = <int, Set<int>>{};
+  for (final original in originals) {
+    final title = _recordTitle(original, history: history);
+    final group = groupByKey[title.key];
+    final matches = savedByGroup[group] ?? const <int>{};
+    final int index;
+    if (matches.length == 1) {
+      index = matches.single;
+      compact[index] = _mergeRecordDocuments(compact[index], [
+        original,
+      ], history: history);
+    } else {
+      // Multiple possible saved works must not be joined through weak metadata.
+      index = compact.length;
+      compact.add(original);
+    }
+    for (final identity in _recordTitles(original, history: history)) {
+      final group = groupByKey[identity.key];
+      if (group != null) savedByGroup.putIfAbsent(group, () => {}).add(index);
+    }
+  }
+  return compact;
+}
+
+Map<String, dynamic> _mergeRecordDocuments(
+  Map<String, dynamic> primary,
+  Iterable<Map<String, dynamic>> others, {
+  required bool history,
+}) {
+  var result = Map<String, dynamic>.of(primary)..remove(_workEntriesKey);
+  final key = _recordTitle(primary, history: history).key;
+  final archived = <String, Map<String, dynamic>>{};
+  // Newer visible snapshots precede already archived snapshots for a source.
+  final candidates = [
+    ...others,
+    ..._mergedEntries(primary),
+    ...others.expand(_mergedEntries),
+  ];
+  for (final document in candidates) {
+    final clean = Map<String, dynamic>.of(document)..remove(_workEntriesKey);
+    final candidateKey = _recordTitle(clean, history: history).key;
+    if (candidateKey == key) {
+      result = _mergeKnownDocument(clean, result);
+    } else {
+      final newer = archived[candidateKey];
+      archived[candidateKey] = newer == null
+          ? clean
+          : _mergeKnownDocument(clean, newer);
+    }
+  }
+  if (archived.isNotEmpty) result[_workEntriesKey] = archived.values.toList();
+  return result;
+}
+
+/// Preserve unrecognized fields on an existing entry while honoring every
+/// explicit replacement (including removed headers/rules) in known fields.
+Map<String, dynamic> _mergeKnownDocument(
+  Map<String, dynamic>? old,
+  Map<String, dynamic> fresh,
+) {
+  if (old == null) return fresh;
+  final result = {...old, ...fresh};
+  if (old['title'] is Map<String, dynamic> &&
+      fresh['title'] is Map<String, dynamic>) {
+    result['title'] = _mergeKnownDocument(
+      old['title'] as Map<String, dynamic>,
+      fresh['title'] as Map<String, dynamic>,
+    );
+  }
+  for (final field in ['routes', 'episodes']) {
+    if (old[field] is! List || fresh[field] is! List) continue;
+    final previous = _strictMaps(old[field]);
+    result[field] = _strictMaps(fresh[field]).map((entry) {
+      final candidates = previous
+          .where(
+            (other) => field == 'episodes'
+                ? other['url'] == entry['url']
+                : other['name'] == entry['name'],
+          )
+          .toList();
+      return candidates.length == 1
+          ? _mergeKnownDocument(candidates.single, entry)
+          : entry;
+    }).toList();
+  }
+  return result;
 }
 
 List<Map<String, dynamic>> _strictMaps(Object? value) {
@@ -374,8 +716,15 @@ Map<String, dynamic> _validatedLibrary(Object? value) {
   }
   for (final title in _strictMaps(raw['favorites'])) {
     _validateTitleMap(title);
+    for (final archived in _mergedEntries(title)) {
+      _validateTitleMap(archived);
+    }
   }
-  for (final history in _strictMaps(raw['history'])) {
+  final historyRecords = _strictMaps(raw['history']);
+  for (final history in [
+    ...historyRecords,
+    ...historyRecords.expand(_mergedEntries),
+  ]) {
     final title = history['title'];
     if (title is! Map<String, dynamic>) {
       throw const FormatException('观看记录影片资料无效，原文件已保留');

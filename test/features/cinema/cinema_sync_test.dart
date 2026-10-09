@@ -10,6 +10,8 @@ class FakeClient extends SyncplayClient {
   final rooms = StreamController<Map<String, dynamic>>.broadcast();
   final files = StreamController<Map<String, dynamic>>.broadcast();
   final positions = StreamController<Map<String, dynamic>>.broadcast();
+  final chat = StreamController<Map<String, dynamic>>.broadcast();
+  final chats = <String>[];
   bool online = false;
   bool? tls;
   String? announced;
@@ -23,6 +25,13 @@ class FakeClient extends SyncplayClient {
   Stream<Map<String, dynamic>> get onFileChangedMessage => files.stream;
   @override
   Stream<Map<String, dynamic>> get onPositionChangedMessage => positions.stream;
+  @override
+  Stream<Map<String, dynamic>> get onChatMessage => chat.stream;
+  @override
+  Future<void> sendChatMessage(String message) async {
+    chats.add(message);
+  }
+
   @override
   Future<void> connect({required bool enableTLS}) async {
     online = true;

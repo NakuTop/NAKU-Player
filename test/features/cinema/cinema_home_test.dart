@@ -18,6 +18,10 @@ class _Repository extends CinemaRepository {
   Completer<CinemaPage>? pending;
   final browsed = <String?>[];
   bool useMetadata = false;
+  bool manyItems = false;
+  bool failBrowse = false;
+  final searched = <String>[];
+  final delayedBrowse = <String, Completer<CinemaPage>>{};
 
   List<CinemaTitle> _metadataItems(String? categoryId, int page) {
     final prefix = categoryId == '22' ? '剧集' : '电影';
@@ -56,10 +60,22 @@ class _Repository extends CinemaRepository {
     int page = 1,
   }) async {
     browsed.add(categoryId);
+    if (failBrowse) throw const CinemaSourceException('fixture offline');
+    if (delayedBrowse[categoryId] case final pending?) return pending.future;
     return CinemaPage(
       page: page,
       pageCount: useMetadata ? 2 : 1,
-      items: useMetadata
+      items: manyItems
+          ? List.generate(
+              30,
+              (index) => CinemaTitle(
+                id: '$categoryId-$index',
+                sourceId: source.id,
+                title: '${categoryId == '22' ? '剧集' : '电影'}作品 $index',
+                category: categoryId == '22' ? '欧美剧' : '剧情片',
+              ),
+            )
+          : useMetadata
           ? _metadataItems(categoryId, page)
           : [
               CinemaTitle(
@@ -88,6 +104,7 @@ class _Repository extends CinemaRepository {
     String keyword, {
     int page = 1,
   }) async {
+    searched.add(keyword);
     if (keyword == '延迟') return (pending = Completer<CinemaPage>()).future;
     if (keyword == '排序搜索') {
       return const CinemaPage(
@@ -162,7 +179,11 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         theme: ThemeData.dark(),
-        home: CinemaHomePage(store: store, repository: repository),
+        home: CinemaHomePage(
+          enableWatchTogether: false,
+          store: store,
+          repository: repository,
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -343,6 +364,165 @@ void main() {
     expect(find.text('第2页作品'), findsWidgets);
     expect(find.text('加载更多搜索结果'), findsNothing);
   });
+
+  testWidgets('returning to a catalogue keeps its page and makes no requests', (
+    tester,
+  ) async {
+    repository.useMetadata = true;
+    await mount(tester);
+    await tester.ensureVisible(find.byTooltip('下一页'));
+    await tester.tap(find.byTooltip('下一页'));
+    await tester.pumpAndSettle();
+    expect(find.text('2 / 2'), findsOneWidget);
+    await tester.tap(find.text('剧集'));
+    await tester.pumpAndSettle();
+    final calls = repository.browsed.length;
+    await tester.tap(find.text('电影'));
+    await tester.pump();
+    expect(find.text('2 / 2'), findsOneWidget);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    await tester.pumpAndSettle();
+    expect(repository.browsed, hasLength(calls));
+    expect(find.text('电影最近更新第2页'), findsWidgets);
+    // Series can reuse the categories already loaded by Movies.
+    expect(repository.browsed.where((id) => id == null), hasLength(1));
+  });
+
+  testWidgets('an offscreen catalogue finishes once and is ready on return', (
+    tester,
+  ) async {
+    await mount(tester);
+    final pending = repository.delayedBrowse['22'] = Completer<CinemaPage>();
+    await tester.tap(find.text('剧集'));
+    await tester.pump();
+    await tester.tap(find.text('电影'));
+    await tester.pumpAndSettle();
+    expect(find.text('电影测试作品'), findsWidgets);
+    pending.complete(
+      const CinemaPage(
+        items: [
+          CinemaTitle(
+            id: 'ready-series',
+            sourceId: 'fixture',
+            title: '后台完成的剧集',
+            category: '欧美剧',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+    final calls = repository.browsed.length;
+    expect(find.text('后台完成的剧集'), findsNothing);
+    await tester.tap(find.text('剧集'));
+    await tester.pumpAndSettle();
+    expect(find.text('后台完成的剧集'), findsWidgets);
+    expect(repository.browsed, hasLength(calls));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('movie and series retain independent scroll offsets on return', (
+    tester,
+  ) async {
+    repository.manyItems = true;
+    await mount(tester);
+    final catalogue = find.byType(CustomScrollView);
+    final verticalScroll = find.descendant(
+      of: catalogue,
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is Scrollable && widget.axisDirection == AxisDirection.down,
+      ),
+    );
+    double offset() =>
+        tester.state<ScrollableState>(verticalScroll).position.pixels;
+
+    await tester.drag(catalogue, const Offset(0, -650));
+    await tester.pumpAndSettle();
+    final movieOffset = offset();
+    expect(movieOffset, greaterThan(500));
+
+    await tester.tap(find.text('剧集'));
+    await tester.pumpAndSettle();
+    expect(offset(), 0);
+    await tester.drag(catalogue, const Offset(0, -280));
+    await tester.pumpAndSettle();
+    final seriesOffset = offset();
+    expect(seriesOffset, greaterThan(150));
+    final calls = repository.browsed.length;
+
+    await tester.tap(find.text('电影'));
+    await tester.pumpAndSettle();
+    expect(offset(), closeTo(movieOffset, 1));
+    await tester.tap(find.text('剧集'));
+    await tester.pumpAndSettle();
+    expect(offset(), closeTo(seriesOffset, 1));
+    expect(repository.browsed, hasLength(calls));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('search results and input survive a sidebar round trip', (
+    tester,
+  ) async {
+    await mount(tester);
+    await tester.enterText(find.byType(TextField), '星际穿越');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('剧集'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      isEmpty,
+    );
+    await tester.tap(find.text('电影'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      '星际穿越',
+    );
+    expect(find.text('星际穿越'), findsWidgets);
+    expect(repository.searched, ['星际穿越']);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+  });
+
+  testWidgets('refresh failure leaves previously loaded cards usable', (
+    tester,
+  ) async {
+    await mount(tester);
+    repository.failBrowse = true;
+    await tester.tap(find.byTooltip('刷新'));
+    await tester.pumpAndSettle();
+    expect(find.text('电影测试作品'), findsWidgets);
+    expect(find.text('暂时无法刷新，保留上次加载的内容。'), findsOneWidget);
+    expect(find.text('暂时未能连接'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('library changes do not invalidate an already loaded catalogue', (
+    tester,
+  ) async {
+    await mount(tester);
+    final calls = repository.browsed.length;
+    await tester.runAsync(
+      () => store.toggleFavorite(
+        const CinemaTitle(id: 'saved', sourceId: 'fixture', title: '收藏测试'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('电影测试作品'), findsWidgets);
+    expect(repository.browsed, hasLength(calls));
+  });
+
+  testWidgets(
+    'failed category switch cannot show cards from the previous category',
+    (tester) async {
+      await mount(tester);
+      repository.failBrowse = true;
+      await tester.tap(find.text('奇幻片'));
+      await tester.pumpAndSettle();
+      expect(find.text('电影测试作品'), findsNothing);
+      expect(find.text('暂时未能连接'), findsOneWidget);
+    },
+  );
 
   testWidgets('compact window exposes navigation without layout overflow', (
     tester,

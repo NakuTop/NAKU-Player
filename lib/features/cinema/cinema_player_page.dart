@@ -14,7 +14,7 @@ import 'package:kazumi/services/video_source/webview_video_source_service.dart';
 import 'cinema_models.dart';
 import 'cinema_theme.dart';
 import 'cinema_work_sources.dart';
-import 'cinema_sync_session.dart';
+import 'cinema_watch_together.dart';
 import 'cinema_sync_sheet.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:kazumi/services/player/pip_utils.dart';
@@ -175,6 +175,7 @@ class CinemaPlayerPage extends StatefulWidget {
     this.episodeIndex = 0,
     this.variants = const [],
     this.repository,
+    this.watchTogether,
   });
 
   final CinemaTitle title;
@@ -184,6 +185,7 @@ class CinemaPlayerPage extends StatefulWidget {
   final int episodeIndex;
   final List<CinemaTitle> variants;
   final CinemaRepository? repository;
+  final CinemaWatchTogether? watchTogether;
 
   @override
   State<CinemaPlayerPage> createState() => _CinemaPlayerPageState();
@@ -320,7 +322,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   final _shaders = ShaderAssetService();
   Future<void>? _shaderReady;
   Future<void>? _discovering;
-  late final CinemaSyncSession _sync = CinemaSyncSession(
+  late final _together = widget.watchTogether ?? CinemaWatchTogether.instance;
+  final _syncOwner = Object();
+
+  void _bindTogether() => _together.bindPlayback(
+    owner: _syncOwner,
+    closePlayback: _leave,
     position: () => _playback?.position ?? Duration.zero,
     duration: () => _playback?.duration ?? Duration.zero,
     playing: () => _playback?.player.state.playing ?? false,
@@ -468,6 +475,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   @override
   void initState() {
     super.initState();
+    _bindTogether();
+    unawaited(_together.initialize());
     WidgetsBinding.instance.addObserver(this);
     windowManager.addListener(this);
     unawaited(
@@ -541,6 +550,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _positionForEpisode(routeIndex, episodeIndex, title: selectedTitle);
     final old = _playback;
     final generation = ++_generation;
+    unawaited(_together.clearPlaybackMedia(_syncOwner));
     _resolver.cancel();
     _loadTimer?.cancel();
     _playback = null;
@@ -746,7 +756,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return;
     }
     playback.ready = true;
-    if (_episode != null) unawaited(_sync.updateMedia(_title, _episode!));
+    if (_episode != null) {
+      unawaited(_together.updateMedia(_syncOwner, _title, _episode!));
+    }
     if (_superResolution != SuperResolutionMode.off) {
       unawaited(_applyShader(_superResolution, save: false));
     }
@@ -778,6 +790,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _resolver.cancel();
     _loadTimer?.cancel();
     final old = _playback;
+    unawaited(_together.clearPlaybackMedia(_syncOwner));
     _playback = null;
     if (old != null) {
       _volume = old.player.state.volume;
@@ -936,7 +949,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
   }
 
-  Future<void> _leave() async {
+  Future<void>? _leaving;
+  Future<void> _leave() => _leaving ??= _leaveOnce();
+
+  Future<void> _leaveOnce() async {
     if (_closing) return;
     _closing = true;
     await _pipTransition?.future;
@@ -945,12 +961,21 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       await _restoreWindow();
       _pip = false;
     }
-    await _sync.disconnect();
+    try {
+      await _playback?.player.pause();
+    } catch (_) {
+      // Disposal below still closes a backend that is already failing.
+    }
+    await _together.detachPlayback(_syncOwner);
     _resolver.cancel();
     await _persistProgress();
     try {
       await widget.store.flush();
     } catch (_) {}
+    // Close the old backend before Home resolves/pushes a follow target.
+    final old = _playback;
+    _playback = null;
+    if (old != null) await old.dispose();
     if (mounted) Navigator.of(context).pop();
   }
 
@@ -968,7 +993,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     WidgetsBinding.instance.removeObserver(this);
     windowManager.removeListener(this);
     _panelRevision.dispose();
-    _sync.dispose();
+    unawaited(_together.detachPlayback(_syncOwner));
     if (_pip) unawaited(_restoreWindow());
     _closing = true;
     ++_generation;
@@ -1001,7 +1026,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             LogicalKeyboardKey.keyF: _toggleFullscreen,
             LogicalKeyboardKey.keyE: _showEpisodes,
             LogicalKeyboardKey.keyP: _togglePip,
-            LogicalKeyboardKey.keyW: () => showCinemaSyncSheet(context, _sync),
+            LogicalKeyboardKey.keyW: () =>
+                showCinemaSyncSheet(context, coordinator: _together),
             LogicalKeyboardKey.keyB: _toggleFavorite,
             LogicalKeyboardKey.space: () {
               _playback?.player.playOrPause();
@@ -1195,7 +1221,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             child: _tag('超分辨率 · ${_superResolution.label} ▾'),
           ),
           OutlinedButton.icon(
-            onPressed: () => showCinemaSyncSheet(context, _sync),
+            onPressed: () =>
+                showCinemaSyncSheet(context, coordinator: _together),
             icon: const Icon(Icons.group_outlined, size: 17),
             label: const Text('一起看'),
           ),
@@ -1301,7 +1328,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         const SingleActivator(LogicalKeyboardKey.keyE): _showEpisodes,
         const SingleActivator(LogicalKeyboardKey.keyP): _togglePip,
         const SingleActivator(LogicalKeyboardKey.keyW): () =>
-            showCinemaSyncSheet(context, _sync),
+            showCinemaSyncSheet(context, coordinator: _together),
         const SingleActivator(LogicalKeyboardKey.keyB): _toggleFavorite,
 
         const SingleActivator(LogicalKeyboardKey.escape): () {
@@ -1380,7 +1407,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                         _videoAction(
                           '一起看',
                           Icons.group_outlined,
-                          () => showCinemaSyncSheet(context, _sync),
+                          () => showCinemaSyncSheet(
+                            context,
+                            coordinator: _together,
+                          ),
                         ),
                         _videoAction(
                           widget.store.isFavorite(_title) ? '已收藏' : '收藏',

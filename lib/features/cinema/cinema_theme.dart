@@ -11,7 +11,7 @@ abstract final class CinemaTheme {
   static const text = Color(0xFFF5F5F7);
   static const muted = Color(0xFFB3B0B5);
   static const border = Color(0x30FFFFFF);
-  static ThemeData get data => ThemeData(
+  static final ThemeData data = ThemeData(
     useMaterial3: true,
     brightness: Brightness.dark,
     fontFamily: '.AppleSystemUIFont',

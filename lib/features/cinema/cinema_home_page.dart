@@ -9,6 +9,10 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 
 import 'cinema_models.dart';
+import 'cinema_follow_resolver.dart';
+import 'cinema_sync_session.dart';
+import 'cinema_sync_sheet.dart';
+import 'cinema_watch_together.dart';
 import 'cinema_work_sources.dart';
 import 'douban/douban_page.dart';
 import 'douban/douban_models.dart';
@@ -26,16 +30,38 @@ import 'cinema_websites_page.dart';
 
 enum _Section { movies, series, anime, favorites, history, sources }
 
+/// Each sidebar destination owns its catalogue, search and scroll state.
+/// Requests may finish offscreen, but can only update the state they started in.
+class _CatalogState {
+  final search = TextEditingController();
+  List<CinemaTitle> items = [];
+  List<CinemaCategory> categories = [];
+  final sourceStatus = <String, String>{};
+  final searchPages = <String, int>{};
+  final searchMore = <String>{};
+  String activeKeyword = '';
+  String? itemsContext;
+  CinemaSource? source;
+  String? categoryId, error;
+  bool loading = false, searching = false, initialized = false;
+  int page = 1, pageCount = 1, generation = 0;
+  DateTime? fetchedAt;
+}
+
 class CinemaHomePage extends StatefulWidget {
   const CinemaHomePage({
     super.key,
     this.store,
     this.repository,
     this.ratingsRepository,
+    this.watchTogether,
+    this.enableWatchTogether = true,
   });
   final CinemaStore? store;
   final CinemaRepository? repository;
   final CinemaRatingsRepository? ratingsRepository;
+  final CinemaWatchTogether? watchTogether;
+  final bool enableWatchTogether;
 
   @override
   State<CinemaHomePage> createState() => _CinemaHomePageState();
@@ -45,48 +71,174 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   late final CinemaStore _store = widget.store ?? CinemaStore();
   late final CinemaRepository _repository =
       widget.repository ?? CinemaRepository();
-  final _search = TextEditingController();
+  late final _together = widget.watchTogether ?? CinemaWatchTogether.instance;
+  StreamSubscription<String>? _togetherNotices;
   _Section _section = _Section.movies;
+  final _catalogs = {
+    for (final section in _Section.values) section: _CatalogState(),
+  };
+  final _knownCategories = <String, List<CinemaCategory>>{};
+  String _sourceConfiguration = '';
   final Map<_Section, CinemaCatalogSort> _catalogSort = {
     _Section.movies: CinemaCatalogSort.latest,
     _Section.series: CinemaCatalogSort.latest,
   };
-  List<CinemaTitle> _items = [];
-  List<CinemaCategory> _categories = [];
-  final Map<String, String> _sourceStatus = {};
-  final Map<String, int> _searchPages = {};
-  final Set<String> _searchMore = {};
-  String _activeKeyword = '';
-  CinemaSource? _source;
-  String? _categoryId;
-  String? _error;
-  bool _loading = true;
-  bool _searching = false;
-  int _page = 1;
-  int _pageCount = 1;
-  int _generation = 0;
+  _CatalogState get _catalog => _catalogs[_section]!;
+  TextEditingController get _search => _catalog.search;
+  List<CinemaTitle> get _items => _catalog.items;
+  List<CinemaCategory> get _categories => _catalog.categories;
+  set _categories(List<CinemaCategory> value) => _catalog.categories = value;
+  Map<String, String> get _sourceStatus => _catalog.sourceStatus;
+  Set<String> get _searchMore => _catalog.searchMore;
+  CinemaSource? get _source => _catalog.source;
+  set _source(CinemaSource? value) => _catalog.source = value;
+  String? get _categoryId => _catalog.categoryId;
+  set _categoryId(String? value) => _catalog.categoryId = value;
+  String? get _error => _catalog.error;
+  bool get _loading => _catalog.loading;
+  bool get _searching => _catalog.searching;
+  int get _page => _catalog.page;
+  int get _pageCount => _catalog.pageCount;
+
+  String _sourceKey(CinemaSource source) => jsonEncode(source.toJson());
+
+  void _changed(_CatalogState state, VoidCallback change) {
+    if (!mounted) return;
+    if (identical(state, _catalog)) {
+      setState(change);
+    } else {
+      change();
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     _store.addListener(_onStoreChanged);
+    if (widget.enableWatchTogether) {
+      _together.onFollowRequested = _followPeer;
+      _togetherNotices = _together.notices.listen((message) {
+        if (mounted) _toast(message);
+      });
+      unawaited(_initializeTogether());
+    }
     unawaited(_initialize());
   }
 
+  Future<void> _initializeTogether() async {
+    try {
+      await _together.initialize();
+    } catch (_) {
+      if (mounted) _toast('一起看设置暂时无法读取，请稍后重试。');
+    }
+  }
+
+  Future<bool> _followPeer(CinemaPeerActivity peer) async {
+    final media = peer.media;
+    if (media == null) return false;
+    final room = _together.roomName;
+    final endpoint = _together.endpoint;
+    bool current() =>
+        mounted &&
+        _together.isPaired &&
+        _together.isCurrentFollow(peer) &&
+        _together.roomName == room &&
+        _together.endpoint == endpoint &&
+        _together.peers.any(
+          (p) =>
+              p.username == peer.username &&
+              p.media?.identity == media.identity,
+        );
+    await _store.load();
+    final candidate = await resolveCinemaPeerPlayback(
+      media: media,
+      sources: _store.enabledSources,
+      repository: _repository,
+      isCurrent: current,
+    );
+    if (!current()) return false;
+    if (candidate == null) {
+      _toast('当前启用的片源未找到对方正在看的同一作品和集数，可启用其他片源后重试。');
+      return false;
+    }
+    _playTitle(
+      candidate.title,
+      candidate.source,
+      candidate.routeIndex,
+      candidate.episodeIndex,
+      [candidate.title],
+    );
+    return true;
+  }
+
+  void _playTitle(
+    CinemaTitle detail,
+    CinemaSource source,
+    int road,
+    int episode,
+    List<CinemaTitle> variants,
+  ) {
+    unawaited(
+      Navigator.of(context)
+          .push(
+            MaterialPageRoute<void>(
+              builder: (_) => Theme(
+                data: CinemaTheme.data,
+                child: CinemaPlayerPage(
+                  title: detail,
+                  source: source,
+                  watchTogether: widget.enableWatchTogether ? _together : null,
+                  store: _store,
+                  variants: variants,
+                  repository: _repository,
+                  routeIndex: road,
+                  episodeIndex: episode,
+                ),
+              ),
+            ),
+          )
+          .then((_) {
+            if (mounted) setState(() {});
+          }),
+    );
+  }
+
   void _onStoreChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    final configuration = jsonEncode(
+      _store.sources.map((s) => s.toJson()).toList(),
+    );
+    final sourcesChanged = configuration != _sourceConfiguration;
+    if (sourcesChanged) {
+      _sourceConfiguration = configuration;
+      _knownCategories.clear();
+      _repository.invalidateBrowseCache();
+      for (final state in _catalogs.values) {
+        state.generation++;
+        state.initialized = false;
+        state.loading = false;
+        state.items = [];
+        state.categories = [];
+        state.categoryId = null;
+      }
+    }
+    // Progress saves every few seconds should not rebuild an offscreen poster grid.
+    if (sourcesChanged || !_isCatalog) setState(() {});
   }
 
   Future<void> _initialize() async {
     try {
       await _store.load();
+      _sourceConfiguration = jsonEncode(
+        _store.sources.map((s) => s.toJson()).toList(),
+      );
       if (!mounted) return;
       await _browse();
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = '$e';
-          _loading = false;
+          _catalog.error = '$e';
+          _catalog.loading = false;
         });
       }
     }
@@ -94,11 +246,18 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
 
   @override
   void dispose() {
-    _generation++;
+    for (final state in _catalogs.values) {
+      state.generation++;
+      state.search.dispose();
+    }
+    unawaited(_togetherNotices?.cancel());
+    if (widget.enableWatchTogether &&
+        _together.onFollowRequested == _followPeer) {
+      _together.onFollowRequested = null;
+    }
     _store.removeListener(_onStoreChanged);
     unawaited(_store.flush());
     if (widget.store == null) _store.dispose();
-    _search.dispose();
     super.dispose();
   }
 
@@ -139,8 +298,8 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         : '$scope按片源更新时间排序，不是影片上映时间。';
   }
 
-  bool _matchesCategory(String name) {
-    return switch (_section) {
+  bool _matchesCategory(String name, [_Section? section]) {
+    return switch (section ?? _section) {
       _Section.movies => RegExp(
         '电影|动作片|喜剧片|爱情片|科幻片|恐怖片|剧情片|战争片|纪录片|记录片|悬疑片|动画片|犯罪片|奇幻片|冒险片|惊悚片',
       ).hasMatch(name),
@@ -155,12 +314,18 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   bool _ordinaryCategory(String name) =>
       !RegExp('伦理|福利|情色|成人|里番|写真|三级').hasMatch(name);
 
-  List<CinemaCategory> get _visibleCategories {
-    final roots = _categories
-        .where((c) => _matchesCategory(c.name))
+  List<CinemaCategory> get _visibleCategories =>
+      _categoryChoices(_categories, _section);
+
+  List<CinemaCategory> _categoryChoices(
+    List<CinemaCategory> categories,
+    _Section section,
+  ) {
+    final roots = categories
+        .where((c) => _matchesCategory(c.name, section))
         .map((c) => c.id)
         .toSet();
-    final matches = _categories
+    final matches = categories
         .where(
           (c) =>
               _ordinaryCategory(c.name) &&
@@ -184,177 +349,194 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
 
   Future<void> _selectSection(_Section value) async {
     if (value == _section) return;
-    _generation++;
-    setState(() {
-      _section = value;
-      _categoryId = null;
-      _searching = false;
-      _search.clear();
-      _error = null;
-      _items = [];
-      _page = 1;
-      _sourceStatus.clear();
-      _loading = false;
-    });
-    if (_isCatalog) await _browse();
+    setState(() => _section = value);
+    final state = _catalog;
+    if (!_isCatalog || state.loading) return;
+    if (!state.initialized) {
+      await _browse();
+    } else if (!state.searching &&
+        state.fetchedAt != null &&
+        DateTime.now().difference(state.fetchedAt!) >
+            const Duration(minutes: 5)) {
+      // Refresh stale catalogues in place; the visible cards remain available.
+      await _browse(page: state.page);
+    }
   }
 
-  Future<void> _browse({int page = 1}) async {
-    final generation = ++_generation;
+  String? _preferredCategory(_CatalogState state, _Section section) {
+    final names = switch (section) {
+      _Section.movies => ['剧情片', '科幻片', '动作片'],
+      _Section.series => ['欧美剧', '美国剧', '国产剧', '大陆剧', '日剧'],
+      _ => ['日韩动漫', '日本动漫', '国产动漫'],
+    };
+    for (final name in names) {
+      final match = state.categories.where((c) => c.name == name).firstOrNull;
+      if (match != null) return match.id;
+    }
+    return _categoryChoices(state.categories, section).firstOrNull?.id;
+  }
+
+  Future<void> _browse({int page = 1, bool refresh = false}) async {
+    final state = _catalog;
+    final section = _section;
+    final generation = ++state.generation;
     final choices = _store.enabledSources
         .where((s) => s.kind == CinemaSourceKind.maccms)
         .toList();
     if (choices.isEmpty) {
-      setState(() {
-        _loading = false;
-        _items = [];
-        _source = null;
-        _error = '还没有启用的影视接口。请到片源管理添加或启用一个接口。';
+      _changed(state, () {
+        state.loading = false;
+        state.items = [];
+        state.source = null;
+        state.error = '还没有启用的影视接口。请到片源管理添加或启用一个接口。';
       });
       return;
     }
     final source =
-        choices.where((s) => s.id == _source?.id).firstOrNull ??
+        choices.where((s) => s.id == state.source?.id).firstOrNull ??
         choices.where((s) => s.id == 'maccms-modu').firstOrNull ??
         choices.first;
-    setState(() {
-      _source = source;
-      _loading = true;
-      _error = null;
-      _searching = false;
+    if (refresh) _repository.invalidateBrowseCache(source: source);
+    final sourceKey = _sourceKey(source);
+    _changed(state, () {
+      state.source = source;
+      state.loading = true;
+      state.error = null;
+      state.searching = false;
+      state.categories = _knownCategories[sourceKey] ?? state.categories;
+      state.categoryId ??= _preferredCategory(state, section);
+      if (state.itemsContext != '$sourceKey|${state.categoryId}') {
+        state.items = [];
+        state.page = page;
+        state.pageCount = 1;
+      }
     });
     try {
       var result = await _repository.browse(
         source,
-        categoryId: _categoryId,
+        categoryId: state.categoryId,
         page: page,
       );
-      if (!mounted || generation != _generation) return;
-      if (result.categories.isNotEmpty) _categories = result.categories;
-      // Category identifiers belong to each source; never assume 1/2/4.
-      if (_categoryId == null) {
-        final names = switch (_section) {
-          _Section.movies => ['剧情片', '科幻片', '动作片'],
-          _Section.series => ['欧美剧', '美国剧', '国产剧', '大陆剧', '日剧'],
-          _ => ['日韩动漫', '日本动漫', '国产动漫'],
-        };
-        CinemaCategory? match;
-        for (final name in names) {
-          match = _categories.where((c) => c.name == name).firstOrNull;
-          if (match != null) break;
-        }
-        match ??= _visibleCategories.firstOrNull;
-        if (match != null) {
-          _categoryId = match.id;
+      if (!mounted || generation != state.generation) return;
+      if (result.categories.isNotEmpty) {
+        state.categories = result.categories;
+        _knownCategories[sourceKey] = result.categories;
+      }
+      if (state.categoryId == null) {
+        state.categoryId = _preferredCategory(state, section);
+        if (state.categoryId != null) {
           result = await _repository.browse(
             source,
-            categoryId: _categoryId,
+            categoryId: state.categoryId,
             page: page,
           );
-          if (!mounted || generation != _generation) return;
+          if (!mounted || generation != state.generation) return;
         }
       }
-      setState(() {
-        _items = result.items
+      _changed(state, () {
+        state.items = result.items
             .where((t) => _ordinaryCategory(t.category))
             .toList();
-        _page = result.page;
-        _pageCount = result.pageCount;
-        _loading = false;
+        state.itemsContext = '$sourceKey|${state.categoryId}';
+        state.page = result.page;
+        state.pageCount = result.pageCount;
+        state.loading = false;
+        state.initialized = true;
+        state.fetchedAt = DateTime.now();
       });
     } catch (e) {
-      if (mounted && generation == _generation) {
-        setState(() {
-          _error = '$e';
-          _loading = false;
-          _items = [];
+      if (mounted && generation == state.generation) {
+        _changed(state, () {
+          state.error = '$e';
+          state.loading = false;
         });
       }
     }
   }
 
   Future<void> _runSearch({bool loadMore = false}) async {
-    final keyword = loadMore ? _activeKeyword : _search.text.trim();
+    final state = _catalog;
+    final section = _section;
+    final keyword = loadMore ? state.activeKeyword : state.search.text.trim();
     if (keyword.isEmpty) {
       await _browse();
       return;
     }
-    final generation = ++_generation;
+    final generation = ++state.generation;
     final sources = _store.enabledSources
         .where(
           (s) =>
-              (_section == _Section.anime ||
+              (section == _Section.anime ||
                   s.kind == CinemaSourceKind.maccms) &&
-              (!loadMore || _searchMore.contains(s.id)),
+              (!loadMore || state.searchMore.contains(s.id)),
         )
         .toList();
-    setState(() {
-      _loading = true;
-      _error = null;
-      _searching = true;
+    _changed(state, () {
+      state.loading = true;
+      state.error = null;
+      state.searching = true;
+      state.itemsContext = null;
+      state.initialized = true;
       if (!loadMore) {
-        _items = [];
-        _sourceStatus.clear();
-        _searchPages.clear();
-        _searchMore.clear();
-        _activeKeyword = keyword;
+        state.items = [];
+        state.sourceStatus.clear();
+        state.searchPages.clear();
+        state.searchMore.clear();
+        state.activeKeyword = keyword;
       }
       for (final source in sources) {
-        _sourceStatus[source.name] = '搜索中';
+        state.sourceStatus[source.name] = '搜索中';
       }
     });
     if (sources.isEmpty) {
-      setState(() {
-        _error = '没有启用的片源，请先添加或启用。';
-        _loading = false;
+      _changed(state, () {
+        state.error = '没有启用的片源，请先添加或启用。';
+        state.loading = false;
       });
       return;
     }
-    // Bounded batches avoid flooding user-configured sources.
+    // Each destination has its own generation: switching tabs doesn't discard work.
     for (var offset = 0; offset < sources.length; offset += 3) {
       await Future.wait(
         sources.skip(offset).take(3).map((source) async {
           try {
-            final page = loadMore ? (_searchPages[source.id] ?? 1) + 1 : 1;
+            final page = loadMore ? (state.searchPages[source.id] ?? 1) + 1 : 1;
             final result = await _repository.search(
               source,
               keyword,
               page: page,
             );
-            if (!mounted || generation != _generation) return;
-            setState(() {
+            if (!mounted || generation != state.generation) return;
+            _changed(state, () {
               final items = result.items
                   .where(
                     (t) =>
                         _ordinaryCategory(t.category) &&
-                        (t.category.isEmpty || _matchesCategory(t.category)),
+                        (t.category.isEmpty ||
+                            _matchesCategory(t.category, section)),
                   )
                   .toList();
-              final existing = _items.map((item) => item.key).toSet();
-              _items.addAll(
+              final existing = state.items.map((item) => item.key).toSet();
+              state.items.addAll(
                 items.where((item) => !existing.contains(item.key)),
               );
-              _searchPages[source.id] = result.page;
+              state.searchPages[source.id] = result.page;
               if (result.hasMore) {
-                _searchMore.add(source.id);
+                state.searchMore.add(source.id);
               } else {
-                _searchMore.remove(source.id);
+                state.searchMore.remove(source.id);
               }
-              _sourceStatus[source.name] = '${items.length} 个结果';
+              state.sourceStatus[source.name] = '${items.length} 个结果';
             });
           } catch (e) {
-            if (!mounted || generation != _generation) return;
-            setState(() {
-              _sourceStatus[source.name] = '连接失败：$e';
-            });
+            if (!mounted || generation != state.generation) return;
+            _changed(state, () => state.sourceStatus[source.name] = '连接失败：$e');
           }
         }),
       );
-      if (!mounted || generation != _generation) return;
+      if (!mounted || generation != state.generation) return;
     }
-    setState(() {
-      _loading = false;
-    });
+    _changed(state, () => state.loading = false);
   }
 
   Future<void> _openTitle(
@@ -382,22 +564,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         resume: resume,
         onPlay: (detail, selectedSource, road, episode, allVariants) {
           Navigator.pop(context);
-          Navigator.of(this.context).push(
-            MaterialPageRoute<void>(
-              builder: (_) => Theme(
-                data: CinemaTheme.data,
-                child: CinemaPlayerPage(
-                  title: detail,
-                  source: selectedSource,
-                  store: _store,
-                  variants: allVariants,
-                  repository: _repository,
-                  routeIndex: road,
-                  episodeIndex: episode,
-                ),
-              ),
-            ),
-          );
+          _playTitle(detail, selectedSource, road, episode, allVariants);
         },
       ),
     );
@@ -524,7 +691,21 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                                     ],
                                   ),
                                 ),
-                                Expanded(child: _content(wide)),
+                                Expanded(
+                                  child: AnimatedSwitcher(
+                                    duration:
+                                        MediaQuery.disableAnimationsOf(context)
+                                        ? Duration.zero
+                                        : const Duration(milliseconds: 160),
+                                    // Only paint the incoming pane; don't blend two large grids.
+                                    layoutBuilder: (current, previous) =>
+                                        current ?? const SizedBox(),
+                                    child: RepaintBoundary(
+                                      key: ValueKey(_section),
+                                      child: _content(wide),
+                                    ),
+                                  ),
+                                ),
                               ],
                             ),
                           ),
@@ -620,6 +801,40 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
               ),
             ),
         ],
+        if (widget.enableWatchTogether)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+            child: ListenableBuilder(
+              listenable: _together,
+              builder: (context, _) => ListTile(
+                key: const ValueKey('watch-together-entry'),
+                dense: true,
+                leading: Icon(
+                  Icons.people_outline_rounded,
+                  size: 20,
+                  color: _together.isPaired
+                      ? CinemaTheme.copper
+                      : CinemaTheme.muted,
+                ),
+                title: const Text('一起看', style: TextStyle(fontSize: 14)),
+                subtitle: _together.isPaired
+                    ? Text(
+                        _together.session.connected
+                            ? '已配对 · ${_together.peers.length} 人在线'
+                            : '已配对 · 正在重连',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: CinemaTheme.muted,
+                        ),
+                      )
+                    : null,
+                onTap: () {
+                  if (closeDrawer) Navigator.pop(this.context);
+                  showCinemaSyncSheet(this.context, coordinator: _together);
+                },
+              ),
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
           child: ListTile(
@@ -678,7 +893,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             onTap: () => showAboutDialog(
               context: context,
               applicationName: 'NAKU播放器',
-              applicationVersion: '1.0.1',
+              applicationVersion: '1.1.0',
               applicationLegalese:
                   '基于 Kazumi，GPL-3.0。\n个人电影、剧集与动漫客户端。\n片源及其内容由对应第三方提供。',
               children: [
@@ -696,7 +911,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
               ],
             ),
             child: const Text(
-              'NAKU播放器  1.0.1',
+              'NAKU播放器  1.1.0',
               style: TextStyle(
                 fontSize: 10,
                 height: 1.8,
@@ -769,6 +984,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
     if (_section == _Section.history) {
       if (_store.history.isEmpty) return _empty('暂无观看记录', '播放后会在这里保留剧集和进度。');
       return ListView.separated(
+        key: const PageStorageKey('cinema-history-scroll'),
         padding: const EdgeInsets.all(28),
         itemCount: _store.history.length,
         separatorBuilder: (_, _) => const Divider(height: 25),
@@ -800,6 +1016,9 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
         ? sortCinemaTitles(_items, _currentCatalogSort)
         : _items;
     return CustomScrollView(
+      key: PageStorageKey(
+        'catalog-${_section.name}-${_source?.id}-${_searching ? _catalog.activeKeyword : _categoryId}-$_page',
+      ),
       slivers: [
         SliverToBoxAdapter(
           child: Padding(
@@ -844,7 +1063,9 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
                         ),
                       IconButton(
                         tooltip: '刷新',
-                        onPressed: _loading ? null : () => _browse(),
+                        onPressed: _loading
+                            ? null
+                            : () => _browse(page: _page, refresh: true),
                         icon: const Icon(Icons.refresh_rounded, size: 19),
                       ),
                     ],
@@ -933,7 +1154,35 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
             ),
           ),
         ),
-        if (_error != null)
+        if (_error != null && _items.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(padding, 0, padding, 16),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.cloud_off_outlined,
+                    size: 18,
+                    color: CinemaTheme.muted,
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      '暂时无法刷新，保留上次加载的内容。',
+                      style: TextStyle(color: CinemaTheme.muted),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => _searching
+                        ? _runSearch()
+                        : _browse(page: _page, refresh: true),
+                    child: const Text('重试'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        if (_error != null && _items.isEmpty)
           SliverFillRemaining(
             hasScrollBody: false,
             child: _empty(
@@ -1033,6 +1282,7 @@ class _CinemaHomePageState extends State<CinemaHomePage> {
   Widget _library(List<CinemaTitle> items, bool wide, String emptyMessage) {
     if (items.isEmpty) return _empty('暂无收藏', emptyMessage);
     return GridView.builder(
+      key: const PageStorageKey('cinema-favorites-scroll'),
       padding: EdgeInsets.all(wide ? 36 : 18),
       itemCount: items.length,
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
@@ -1613,6 +1863,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
       child: FutureBuilder<CinemaTitle>(
         key: ValueKey(_selectedTitle.key),
         future: _detail,
+        initialData: _selectedTitle.routes.isNotEmpty ? _selectedTitle : null,
         builder: (context, snapshot) {
           final title = snapshot.data ?? _selectedTitle;
           return CinemaCoverBackdrop(

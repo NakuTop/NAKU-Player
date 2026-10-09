@@ -1,6 +1,6 @@
 {
   "name": "NAKU播放器",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "upstream": "https://github.com/Predidit/Kazumi",
   "upstream_tag": "2.3.8",
   "upstream_commit": "11671bc0ec61727e99e34810f142a1b5e4121a8e",
