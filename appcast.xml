@@ -6,15 +6,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <link>https://github.com/NakuTop/NAKU-Player</link>
     <description>NAKU播放器 macOS 更新</description>
     <item>
-      <title>NAKU播放器 1.9.0</title>
-      <sparkle:version>19</sparkle:version>
-      <sparkle:shortVersionString>1.9.0</sparkle:shortVersionString>
+      <title>NAKU播放器 1.9.1</title>
+      <sparkle:version>20</sparkle:version>
+      <sparkle:shortVersionString>1.9.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <description><![CDATA[<p>动漫播放器新增独立 Bilibili 弹幕：粘贴视频或番剧链接，确认分集后应用，无需弹弹play凭据；支持本地 XML/JSON 导入和离线弹幕缓存。</p><p>电影、剧集、动漫和高清直链统一提供下载管理；影视播放器提供下载本集与下一集，窗口和全屏均可用，下载完成后可离线续播。</p><p>修复 HLS 独立音轨、初始化片段、续传及下载任务竞争。弹幕设置即时生效，弹弹play凭据可保存在本机钥匙串。本版不加入 AI 插帧。</p>]]></description>
-      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.9.0/NAKUPlayer-1.9.0-macOS-universal.zip" length="56969073" type="application/octet-stream" sparkle:edSignature="AmBsi2XR68fWsPah/OP1nPB/Rp8OyRbgRRqjm301qfCUzG9HK3WOyv8UVUlnAhhWZ4yPVr58yzwlIP08BmnXBQ=="></enclosure>
+      <description><![CDATA[<p>修复下载管理的 route not found，增加明确的返回按钮，返回时保留原页面。</p><p>动漫播放与换集自动按 Bangumi 作品及实际集号加载 Bilibili 弹幕，无需粘贴链接或弹弹play凭据。弹幕显示开关与来源筛选保留用户设置。</p><p>多个版本或集号不一致时可在弹幕切换中确认一次，记住版本和集号偏移。已加载弹幕可离线重用；无痕播放不写入新缓存和匹配记录。B 站没有对应番剧、公开弹幕或接口受限时会提示。</p>]]></description>
+      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.9.1/NAKUPlayer-1.9.1-macOS-universal.zip" length="57032827" type="application/octet-stream" sparkle:edSignature="CIc0HrhvvHV9hYbXwYzfpeaxO8sLxjnD/GKwqYRqOWOt6UewsCQdLI6Ck8ZmpDEEbC3Pt52EHMPe+WM6YjY2BA=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: YREyQwY077XdXzcNPIrcRKUnJRkXEpolGeDC7IJeupbat8Kc/96OlQqBEGhnSaFkTktNLdty2p9NLRVFX+pJCA==
-length: 1699
+edSignature: IRiNJEsClHdwY0qEXKq4ylaELpQ0vrPIT7u+1NLrXy/5sppNi25E5PDeEoCyB+i1yBL2csmsJT/ykaw3PfYXAA==
+length: 1697
 -->
