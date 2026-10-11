@@ -6,15 +6,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <link>https://github.com/NakuTop/NAKU-Player</link>
     <description>NAKU播放器 macOS 更新</description>
     <item>
-      <title>NAKU播放器 1.9.1</title>
-      <sparkle:version>20</sparkle:version>
-      <sparkle:shortVersionString>1.9.1</sparkle:shortVersionString>
+      <title>NAKU播放器 1.10.0</title>
+      <sparkle:version>21</sparkle:version>
+      <sparkle:shortVersionString>1.10.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <description><![CDATA[<p>修复下载管理的 route not found，增加明确的返回按钮，返回时保留原页面。</p><p>动漫播放与换集自动按 Bangumi 作品及实际集号加载 Bilibili 弹幕，无需粘贴链接或弹弹play凭据。弹幕显示开关与来源筛选保留用户设置。</p><p>多个版本或集号不一致时可在弹幕切换中确认一次，记住版本和集号偏移。已加载弹幕可离线重用；无痕播放不写入新缓存和匹配记录。B 站没有对应番剧、公开弹幕或接口受限时会提示。</p>]]></description>
-      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.9.1/NAKUPlayer-1.9.1-macOS-universal.zip" length="57032827" type="application/octet-stream" sparkle:edSignature="CIc0HrhvvHV9hYbXwYzfpeaxO8sLxjnD/GKwqYRqOWOt6UewsCQdLI6Ck8ZmpDEEbC3Pt52EHMPe+WM6YjY2BA=="></enclosure>
+      <description><![CDATA[<p>片源支持拖动排序并保存播放优先级；默认加入非凡影视、巨量资源，移除魔都影视、360影视，保留收藏和历史。</p><p>修复主页作品查不到片源及多季合集的季名匹配。播放器与详情下载沿用 Kazumi 控件，可多选、全选整季；改进解析超时、同集换线和硬解回退，增加可选的视频直连。</p><p>下载期间可阻止自动系统休眠，熄屏和锁屏可继续下载。合盖或手动睡眠仍受 macOS 控制，实际睡眠期间不能下载。</p>]]></description>
+      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.10.0/NAKUPlayer-1.10.0-macOS-universal.zip" length="57092498" type="application/octet-stream" sparkle:edSignature="beKL+jVvT5kz5Nbmf74CwDszW+bLxftyS5BP9r4//nYf5XDf6FVa0sEmckwkQGnriNLDFf5ks2/aJkBqeoHGDg=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: IRiNJEsClHdwY0qEXKq4ylaELpQ0vrPIT7u+1NLrXy/5sppNi25E5PDeEoCyB+i1yBL2csmsJT/ykaw3PfYXAA==
-length: 1697
+edSignature: 9x+uB+Ptn5igH51NpxnTHnBWcbuSAv++GAxaGOhzPHaeUaA5wCYBZ3006Frc8xQIjfOMza0CcSY3caLGuLCLAA==
+length: 1699
 -->
