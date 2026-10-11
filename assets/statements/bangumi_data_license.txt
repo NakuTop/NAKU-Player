@@ -1,0 +1,12 @@
+bangumi-data
+
+Copyright bangumi-data contributors.
+Source: https://github.com/bangumi-data/bangumi-data
+Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0):
+https://creativecommons.org/licenses/by/4.0/
+
+NAKU modification: extracted the Bangumi subject IDs and mainland Bilibili
+media IDs from the upstream dataset retrieved on 2026-10-11. This derived
+mapping is distributed as assets/data/bangumi_bilibili.json, under CC BY 4.0.
+The file includes the source URL, retrieval date and upstream SHA-256.
+No endorsement by bangumi-data or Bilibili is implied.

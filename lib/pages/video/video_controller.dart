@@ -551,6 +551,7 @@ abstract class _VideoPageController with Store implements Disposable {
         params.bangumiId,
         params.pluginName,
         params.danmakuEpisodeNumber,
+        subject: bangumiItem,
       );
       if (session.isActive && danmakuSession.isActive) {
         if (result.hasDanmakus) {

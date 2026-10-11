@@ -191,13 +191,10 @@ void main() {
       const MaterialApp(home: Scaffold(body: DanmakuServiceStatusTile())),
     );
     expect(
-      find.text(dandanCredentials.isConfigured ? '弹幕服务已配置' : '弹幕服务尚未配置'),
+      find.text(dandanCredentials.isConfigured ? '弹弹play已配置' : '弹弹play（可选）'),
       findsOneWidget,
     );
-    expect(find.textContaining('官方接入说明'), findsOneWidget);
-    if (!dandanCredentials.isConfigured) {
-      expect(find.textContaining('已有离线弹幕仍可使用'), findsOneWidget);
-    }
+    expect(find.textContaining('Bilibili 自动弹幕无需此项配置'), findsOneWidget);
     expect(
       DanmakuServiceStatusTile.guideUri.toString(),
       'https://doc.dandanplay.com/open/',

@@ -35,9 +35,9 @@ class _DanmakuServiceStatusTileState extends State<DanmakuServiceStatusTile> {
   @override
   Widget build(BuildContext context) => SettingsTile(
     leading: _configured ? Icons.check_circle_outline : Icons.settings_outlined,
-    title: Text(_configured ? '弹幕服务已配置' : '弹幕服务尚未配置'),
+    title: Text(_configured ? '弹弹play已配置' : '弹弹play（可选）'),
     description: const Text(
-      '填写凭据并测试连接，保存后立即生效。已有离线弹幕仍可使用；也可导入 XML / JSON。内含官方接入说明。',
+      'Bilibili 自动弹幕无需此项配置。填写自有凭据后可增加弹弹play聚合弹幕；也可导入 XML / JSON。',
     ),
     trailing: const Icon(Icons.chevron_right_rounded),
     onPressed: (context) async {
@@ -113,7 +113,7 @@ class _DanmakuServiceDialogState extends State<DanmakuServiceDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              '使用你申请的弹弹play开发者凭据。凭据仅保存在本机钥匙串，不参与备份或同步。没有凭据时，可在播放器的弹幕切换中导入本地弹幕。',
+              '使用你申请的弹弹play开发者凭据。凭据仅保存在本机钥匙串，不参与备份或同步。没有凭据时，仍可自动加载 Bilibili 弹幕或导入本地弹幕。',
             ),
             const SizedBox(height: 18),
             TextField(

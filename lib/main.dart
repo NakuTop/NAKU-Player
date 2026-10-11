@@ -9,6 +9,7 @@ import 'package:kazumi/services/storage/storage.dart';
 import 'package:hive_ce_flutter/hive_flutter.dart';
 import 'package:kazumi/services/network/metered_network_service.dart';
 import 'package:kazumi/services/network/ech_http_licenses.dart';
+import 'package:kazumi/services/player/bangumi_data_licenses.dart';
 import 'package:kazumi/services/network/proxy_manager.dart';
 import 'package:kazumi/services/network/system_proxy_service.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
@@ -26,6 +27,7 @@ import 'package:kazumi/navigation.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   registerEchHttpLicenses();
+  registerBangumiDataLicenses();
   MediaKit.ensureInitialized();
   if (Platform.isAndroid || Platform.isIOS) {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);

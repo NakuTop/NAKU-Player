@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'cinema_downloads.dart';
 import 'package:kazumi/pages/download/download_controller.dart';
+import 'package:kazumi/pages/download/download_page.dart';
 import 'package:kazumi/modules/download/download_module.dart';
 import 'package:dio/dio.dart';
 import 'cinema_appearance_settings.dart';
@@ -1872,7 +1873,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             title: const Text('下载管理', style: TextStyle(fontSize: 14)),
             onTap: () {
               if (closeDrawer) Navigator.pop(context);
-              context.pushNamed('/download/');
+              context.pushNamed(DownloadPage.routePath);
             },
           ),
         ),

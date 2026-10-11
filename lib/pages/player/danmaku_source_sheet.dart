@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'bilibili_danmaku_dialog.dart';
+import 'bilibili_anime_danmaku_dialog.dart';
+import 'package:kazumi/modules/bangumi/bangumi_item.dart';
 import 'package:kazumi/modules/danmaku/danmaku_module.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
@@ -39,6 +41,7 @@ Future<void> showDanmakuSourceSheet(
   required PlayerDanmakuController danmakuController,
   required VoidCallback onBeforeApply,
   int? episodeNumber,
+  BangumiItem? subject,
   bool Function()? isCurrent,
 }) async {
   Widget buildSheet(BuildContext _) => _DanmakuSourceSheet(
@@ -47,6 +50,7 @@ Future<void> showDanmakuSourceSheet(
     danmakuController: danmakuController,
     onBeforeApply: onBeforeApply,
     episodeNumber: episodeNumber,
+    subject: subject,
     isCurrent: isCurrent,
   );
 
@@ -97,6 +101,7 @@ class _DanmakuSourceSheet extends StatefulWidget {
     required this.danmakuController,
     required this.onBeforeApply,
     this.episodeNumber,
+    this.subject,
     this.isCurrent,
   });
 
@@ -105,6 +110,7 @@ class _DanmakuSourceSheet extends StatefulWidget {
   final PlayerDanmakuController danmakuController;
   final VoidCallback onBeforeApply;
   final int? episodeNumber;
+  final BangumiItem? subject;
   final bool Function()? isCurrent;
 
   @override
@@ -371,16 +377,25 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
     if (_loading || widget.episodeNumber == null) return;
     final entries = await showDialog<List<DanmakuEntry>>(
       context: context,
-      builder: (_) => const BilibiliDanmakuDialog(),
+      builder: (_) => widget.subject == null
+          ? const BilibiliDanmakuDialog()
+          : BilibiliAnimeDanmakuDialog(
+              subject: widget.subject!,
+              episode: widget.episodeNumber!,
+              matcher: widget.danmakuController.bilibiliMatcher,
+            ),
     );
     if (!mounted || !_canApply || entries == null) return;
     setState(() => _loading = true);
     try {
-      await widget.danmakuController.localStore.save(
-        widget.bangumiId,
-        widget.episodeNumber!,
-        entries,
-      );
+      final private = GStorage.getSetting(SettingsKeys.privateMode);
+      if (!private) {
+        await widget.danmakuController.localStore.save(
+          widget.bangumiId,
+          widget.episodeNumber!,
+          entries,
+        );
+      }
       await GStorage.putSetting(SettingsKeys.danmakuBiliBiliSource, true);
       if (!mounted || !_canApply) return;
       widget.onBeforeApply();
@@ -390,7 +405,9 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
         enableDanmaku: true,
       );
       KazumiDialog.dismiss(context: context);
-      KazumiDialog.showToast(message: '已加载 ${entries.length} 条 B 站弹幕并保存到本集');
+      KazumiDialog.showToast(
+        message: '已加载 ${entries.length} 条 B 站弹幕${private ? '' : '并保存到本集'}',
+      );
     } catch (_) {
       if (mounted) setState(() => _error = '弹幕保存失败，请检查本机存储空间');
     } finally {
@@ -510,7 +527,7 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
                   FilledButton.tonalIcon(
                     onPressed: _importBilibili,
                     icon: const Icon(Icons.subtitles_outlined),
-                    label: const Text('从 Bilibili 加载本集弹幕'),
+                    label: const Text('重新匹配本集弹幕（Bilibili）'),
                   ),
                 const DanmakuServiceStatusTile(),
                 if (widget.episodeNumber != null)

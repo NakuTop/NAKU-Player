@@ -10,6 +10,9 @@ import 'package:mobx/mobx.dart';
 import 'package:kazumi/utils/danmaku.dart';
 import 'package:kazumi/utils/dandan_credentials.dart';
 import 'package:kazumi/services/player/local_danmaku_store.dart';
+import 'package:kazumi/services/player/bilibili_anime_matcher.dart';
+import 'package:kazumi/services/platform/dandan_credential_store.dart';
+import 'package:kazumi/modules/bangumi/bangumi_item.dart';
 
 part 'player_danmaku_controller.g.dart';
 
@@ -39,12 +42,16 @@ class DanmakuLoadResult {
     );
   }
 
-  factory DanmakuLoadResult.failed({required int bangumiID, Object? error}) {
+  factory DanmakuLoadResult.failed({
+    required int bangumiID,
+    Object? error,
+    String? message,
+  }) {
     return DanmakuLoadResult(
       danmakus: const [],
       bangumiID: bangumiID,
       status: DanmakuLoadStatus.failed,
-      failureMessage: danmakuFailureMessage(error),
+      failureMessage: message ?? danmakuFailureMessage(error),
     );
   }
 
@@ -88,9 +95,12 @@ abstract class _PlayerDanmakuController with Store {
     required this.isLocalPlayback,
     required this.downloadController,
     LocalDanmakuStore? localStore,
-  }) : localStore = localStore ?? LocalDanmakuStore.instance;
+    BilibiliAnimeMatcher? bilibiliMatcher,
+  }) : localStore = localStore ?? LocalDanmakuStore.instance,
+       bilibiliMatcher = bilibiliMatcher ?? BilibiliAnimeMatcher.instance;
 
   final LocalDanmakuStore localStore;
+  final BilibiliAnimeMatcher bilibiliMatcher;
 
   final bool Function() isLocalPlayback;
   final DownloadController downloadController;
@@ -142,11 +152,58 @@ abstract class _PlayerDanmakuController with Store {
   Future<DanmakuLoadResult> fetchDanmaku(
     int bangumiId,
     String pluginName,
-    int episode,
-  ) async {
+    int episode, {
+    BangumiItem? subject,
+  }) async {
     final local = await localStore.read(bangumiId, episode);
     if (local != null && local.isNotEmpty) {
       return DanmakuLoadResult.success(danmakus: local, bangumiID: 0);
+    }
+    if (subject != null && subject.id == bangumiId) {
+      if (isLocalPlayback()) {
+        final cached = await downloadController.getCachedDanmakus(
+          bangumiId,
+          pluginName,
+          episode,
+        );
+        if (cached != null && cached.isNotEmpty) {
+          return DanmakuLoadResult.success(danmakus: cached, bangumiID: 0);
+        }
+      }
+      // Preserve a configured aggregation service; Bilibili works on its own
+      // when credentials are absent or that service cannot find the episode.
+      try {
+        if ((await DandanCredentialStore.instance.read()).isConfigured) {
+          final aggregated = await _fetchDanDanmakuByBgmBangumiID(
+            bangumiId,
+            episode,
+          );
+          if (aggregated.hasDanmakus) return aggregated;
+        }
+      } catch (_) {
+        /* Public Bilibili matching does not depend on Keychain. */
+      }
+      if (!GStorage.getSetting(SettingsKeys.danmakuBiliBiliSource)) {
+        return DanmakuLoadResult.failed(
+          bangumiID: 0,
+          message: '请在弹幕设置开启 Bilibili 来源，或配置弹弹play',
+        );
+      }
+      try {
+        final entries = await bilibiliMatcher.load(
+          subject,
+          episode,
+          persist: !GStorage.getSetting(SettingsKeys.privateMode),
+        );
+        return DanmakuLoadResult.success(danmakus: entries, bangumiID: 0);
+      } on FormatException catch (e) {
+        return DanmakuLoadResult.failed(bangumiID: 0, message: e.message);
+      } catch (_) {
+        return DanmakuLoadResult.failed(
+          bangumiID: 0,
+          message: '自动弹幕暂时无法加载，可在弹幕切换中重试',
+        );
+      }
     }
     if (isLocalPlayback()) {
       return await _fetchCachedDanmaku(bangumiId, pluginName, episode);

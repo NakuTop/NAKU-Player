@@ -14,6 +14,7 @@ import 'package:kazumi/utils/format.dart';
 
 class DownloadPage extends StatefulWidget {
   const DownloadPage({super.key, required this.controller});
+  static const routePath = '/settings/download/';
 
   final DownloadController controller;
 
@@ -45,7 +46,18 @@ class _DownloadPageState extends State<DownloadPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: const SysAppBar(title: Text('下载管理')),
+      appBar: SysAppBar(
+        title: const Text('下载管理'),
+        leading: IconButton(
+          tooltip: '返回',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (!context.maybePop()) {
+              context.navigate('/cinema');
+            }
+          },
+        ),
+      ),
       body: Observer(
         builder: (context) {
           final recordKeys = downloadController.recordKeys.toList();

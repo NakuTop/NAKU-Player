@@ -23,6 +23,10 @@ import 'package:kazumi/navigation.dart';
 import 'package:kazumi/pages/collect/collect_controller.dart';
 import 'package:kazumi/features/cinema/cinema_unified_library.dart';
 import 'package:kazumi/pages/my/my_controller.dart';
+import 'package:kazumi/pages/download/download_controller.dart';
+import 'package:kazumi/pages/download/download_page.dart';
+import 'package:kazumi/pages/settings/settings_module.dart';
+import 'package:mobx/mobx.dart';
 import 'package:kazumi/pages/my/my_page.dart';
 import 'package:kazumi/pages/popular/popular_page.dart';
 import 'package:kazumi/pages/timeline/timeline_page.dart';
@@ -87,7 +91,11 @@ void main() {
     await directory.delete(recursive: true);
   });
 
-  Future<void> mount(WidgetTester tester, String startup) async {
+  Future<void> mount(
+    WidgetTester tester,
+    String startup, {
+    String? initialRoute,
+  }) async {
     tester.view.physicalSize = const Size(1280, 1000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -101,6 +109,8 @@ void main() {
           ..addSingleton<ISearchHistoryRepository>(SearchHistoryRepository.new)
           ..addSingleton<CollectController>(CollectController.new)
           ..addInstance<MyController>(_MyController())
+          ..addInstance<DownloadController>(_DownloadController())
+          ..module(settingsModule)
           ..route(
             '/cinema',
             provide: provideCinemaAnimeControllers,
@@ -121,7 +131,7 @@ void main() {
     await tester.pumpWidget(
       ModularApp(
         module: module,
-        initialRoute: target.location,
+        initialRoute: initialRoute ?? target.location,
         navigatorObservers: [rootRouteObserver],
         defaultTransition: TransitionType.none,
         child: Builder(
@@ -138,6 +148,37 @@ void main() {
   bool selected(WidgetTester tester, String label) => tester
       .widget<ListTile>(find.widgetWithText(ListTile, label).first)
       .selected;
+
+  testWidgets(
+    'real sidebar download route opens and back preserves series browsing',
+    (tester) async {
+      await mount(tester, '/cinema?section=series');
+      final reads = repository.browsed.toList();
+      await tester.tap(find.widgetWithText(ListTile, '下载管理'));
+      await tester.pumpAndSettle();
+      expect(find.byType(DownloadPage), findsOneWidget);
+      expect(find.text('还没有下载记录'), findsOneWidget);
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+      expect(find.byType(DownloadPage), findsNothing);
+      expect(selected(tester, '剧集'), isTrue);
+      expect(repository.browsed, reads);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('direct download route always offers a return to the home page', (
+    tester,
+  ) async {
+    await mount(tester, '/cinema', initialRoute: '/settings/download/');
+    expect(find.byType(DownloadPage), findsOneWidget);
+    await tester.tap(find.byTooltip('返回'));
+    await tester.pumpAndSettle();
+    expect(find.byType(CinemaHomePage), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('settings startup reaches the real pane without loading movies', (
     tester,
@@ -366,6 +407,13 @@ class _MyController extends MyController {
 class _History extends Fake implements IHistoryRepository {}
 
 class _Downloads extends Fake implements IDownloadRepository {}
+
+class _DownloadController extends Fake implements DownloadController {
+  @override
+  final recordKeys = ObservableList<String>();
+  @override
+  void refreshRecords() {}
+}
 
 class _Shield extends Fake implements IDanmakuShieldRepository {}
 

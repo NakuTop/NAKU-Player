@@ -15,6 +15,31 @@ class _Adapter implements HttpClientAdapter {
     Future<void>? cancel,
   ) async {
     requests.add(options);
+    if (options.uri.path == '/pgc/review/user') {
+      return _json({
+        'code': 0,
+        'result': {
+          'media': {'season_id': 42},
+        },
+      });
+    }
+    if (options.uri.path == '/x/web-interface/search/type') {
+      return _json({
+        'code': 0,
+        'data': {
+          'result': [
+            {
+              'season_id': 42,
+              'title': '<em class="keyword">孤独摇滚</em>！',
+              'org_title': 'ぼっち・ざ・ろっく！',
+              'pubtime':
+                  DateTime.utc(2022, 10, 8).millisecondsSinceEpoch ~/ 1000,
+            },
+            {'title': 'invalid'},
+          ],
+        },
+      });
+    }
     if (options.uri.host == 'comment.bilibili.com') {
       final bytes = ZLibEncoder(raw: true).convert(
         utf8.encode('<i><d p="3.5,1,25,16777215,0,0,0">fixture</d></i>'),
@@ -47,6 +72,12 @@ class _Adapter implements HttpClientAdapter {
                     'title': '2',
                     'long_title': 'Episode 2',
                   },
+                  {
+                    'id': 102,
+                    'cid': 203,
+                    'title': 'PV',
+                    'long_title': 'Preview',
+                  },
                 ]
               : [
                   {'page': 1, 'cid': 201, 'part': 'Part 1'},
@@ -60,6 +91,14 @@ class _Adapter implements HttpClientAdapter {
       },
     );
   }
+
+  ResponseBody _json(Object value) => ResponseBody.fromString(
+    jsonEncode(value),
+    200,
+    headers: {
+      'content-type': ['application/json'],
+    },
+  );
 
   @override
   void close({bool force = false}) {}
@@ -83,6 +122,13 @@ void main() {
         '101',
       );
       expect(BilibiliDanmakuLink.parse('ss200').kind, 'ss');
+      expect(BilibiliDanmakuLink.parse('md28339735').kind, 'md');
+      expect(
+        BilibiliDanmakuLink.parse(
+          'https://www.bilibili.com/bangumi/media/md28339735/',
+        ).id,
+        '28339735',
+      );
       for (final input in [
         'https://evil.invalid/video/BV1GJ411x7h7',
         'https://www.bilibili.com.evil.invalid/video/BV1GJ411x7h7',
@@ -96,6 +142,36 @@ void main() {
       }
     },
   );
+  test(
+    'media IDs resolve to seasons, preserving numeric episode identities',
+    () async {
+      final adapter = _Adapter(), dio = Dio();
+      dio.httpClientAdapter = adapter;
+      addTearDown(dio.close);
+      final client = BilibiliDanmakuClient(dio: dio);
+      final video = await client.video('md28339735');
+      expect(adapter.requests[0].queryParameters, {'media_id': '28339735'});
+      expect(adapter.requests[1].queryParameters, {'season_id': '42'});
+      expect(video.pages.map((p) => p.episodeNumber), [1, 2, null]);
+    },
+  );
+  test('anime search decodes highlighted names, year and season IDs', () async {
+    final adapter = _Adapter(), dio = Dio();
+    dio.httpClientAdapter = adapter;
+    addTearDown(dio.close);
+    final client = BilibiliDanmakuClient(dio: dio);
+    await expectLater(client.searchAnime('  '), throwsFormatException);
+    expect(adapter.requests, isEmpty);
+    final result = await client.searchAnime('  孤独摇滚  ');
+    expect(result.single.reference, 'ss42');
+    expect(result.single.title, '孤独摇滚！');
+    expect(result.single.originalTitle, 'ぼっち・ざ・ろっく！');
+    expect(result.single.year, 2022);
+    expect(adapter.requests.single.queryParameters, {
+      'search_type': 'media_bangumi',
+      'keyword': '孤独摇滚',
+    });
+  });
   test(
     'UGC page/PGC episode selection and raw deflate work without credentials',
     () async {

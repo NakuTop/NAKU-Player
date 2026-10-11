@@ -3,14 +3,27 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:html/parser.dart' as html;
 import 'package:kazumi/modules/danmaku/danmaku_module.dart';
 import 'package:kazumi/request/core/dio_factory.dart';
 import 'package:kazumi/services/player/local_danmaku_store.dart';
 
 class BilibiliDanmakuPage {
-  const BilibiliDanmakuPage(this.cid, this.name);
+  const BilibiliDanmakuPage(this.cid, this.name, {this.episodeNumber});
   final int cid;
   final String name;
+  final int? episodeNumber;
+}
+
+class BilibiliAnimeCandidate {
+  const BilibiliAnimeCandidate(
+    this.reference,
+    this.title, {
+    this.originalTitle = '',
+    this.year,
+  });
+  final String reference, title, originalTitle;
+  final int? year;
 }
 
 class BilibiliDanmakuVideo {
@@ -29,7 +42,7 @@ class BilibiliDanmakuLink {
   static BilibiliDanmakuLink parse(String text) {
     final value = text.trim();
     final short = RegExp(
-      r'^(BV[0-9A-Za-z]{10}|av[0-9]+|ep[0-9]+|ss[0-9]+)$',
+      r'^(BV[0-9A-Za-z]{10}|av[0-9]+|ep[0-9]+|ss[0-9]+|md[0-9]+)$',
     ).firstMatch(value);
     var id = short?.group(1);
     var page = 1;
@@ -44,11 +57,11 @@ class BilibiliDanmakuLink {
           ].contains(uri.host) ||
           uri.userInfo.isNotEmpty ||
           (uri.hasPort && uri.port != 443 && uri.port != 80)) {
-        throw const FormatException('请粘贴 B 站完整视频/番剧链接，或 BV、av、ep、ss 编号');
+        throw const FormatException('请粘贴 B 站完整视频/番剧链接，或 BV、av、ep、ss、md 编号');
       }
       id = RegExp(
-        r'^/(?:video/(BV[0-9A-Za-z]{10}|av[0-9]+)|bangumi/play/(ep[0-9]+|ss[0-9]+))/?$',
-      ).firstMatch(uri.path)?.groups([1, 2]).whereType<String>().firstOrNull;
+        r'^/(?:video/(BV[0-9A-Za-z]{10}|av[0-9]+)|bangumi/play/(ep[0-9]+|ss[0-9]+)|bangumi/media/(md[0-9]+))/?$',
+      ).firstMatch(uri.path)?.groups([1, 2, 3]).whereType<String>().firstOrNull;
       page = int.tryParse(uri.queryParameters['p'] ?? '1') ?? 0;
     }
     if (id == null || page <= 0) throw const FormatException('视频链接或分 P 编号无效');
@@ -71,11 +84,73 @@ class BilibiliDanmakuClient {
     'Accept-Encoding': 'identity',
   };
 
+  Future<List<BilibiliAnimeCandidate>> searchAnime(
+    String keyword, {
+    CancelToken? cancelToken,
+  }) async {
+    final query = keyword.trim();
+    if (query.isEmpty) throw const FormatException('请输入动漫名称');
+    final response = await _http.get<dynamic>(
+      'https://api.bilibili.com/x/web-interface/search/type',
+      queryParameters: {
+        'search_type': 'media_bangumi',
+        'keyword': query.substring(0, query.length.clamp(0, 160)),
+      },
+      options: Options(
+        headers: _headers,
+        receiveTimeout: const Duration(seconds: 12),
+      ),
+      cancelToken: cancelToken,
+    );
+    final data = response.data;
+    if (data is! Map || data['code'] != 0 || data['data'] is! Map) {
+      throw const FormatException('B 站番剧搜索暂时不可用，请稍后重试');
+    }
+    final entries = data['data']['result'];
+    if (entries is! List) return const [];
+    return [
+      for (final e in entries.take(30))
+        if (e is Map && e['season_id'] is int && e['season_id'] > 0)
+          BilibiliAnimeCandidate(
+            'ss${e['season_id']}',
+            html.parseFragment('${e['title'] ?? ''}').text ?? '',
+            originalTitle:
+                html.parseFragment('${e['org_title'] ?? ''}').text ?? '',
+            year: e['pubtime'] is num && e['pubtime'] > 0
+                ? DateTime.fromMillisecondsSinceEpoch(
+                    (e['pubtime'] as num).toInt() * 1000,
+                    isUtc: true,
+                  ).year
+                : null,
+          ),
+    ];
+  }
+
   Future<BilibiliDanmakuVideo> video(
     String input, {
     CancelToken? cancelToken,
   }) async {
-    final link = BilibiliDanmakuLink.parse(input);
+    var link = BilibiliDanmakuLink.parse(input);
+    if (link.kind == 'md') {
+      final response = await _http.get<dynamic>(
+        'https://api.bilibili.com/pgc/review/user',
+        queryParameters: {'media_id': link.id},
+        options: Options(
+          headers: _headers,
+          receiveTimeout: const Duration(seconds: 12),
+        ),
+        cancelToken: cancelToken,
+      );
+      final data = response.data;
+      final media = data is Map && data['code'] == 0 && data['result'] is Map
+          ? data['result']['media']
+          : null;
+      final season = media is Map ? media['season_id'] : null;
+      if (season is! int || season <= 0) {
+        throw const FormatException('B 站未提供该番剧的分集资料');
+      }
+      link = BilibiliDanmakuLink('ss', '$season', 1);
+    }
     final ugc = link.kind == 'BV' || link.kind == 'av';
     final response = await _http.get<dynamic>(
       'https://api.bilibili.com/${ugc ? 'x/web-interface/view' : 'pgc/view/web/season'}',
@@ -117,6 +192,9 @@ class BilibiliDanmakuClient {
             ugc
                 ? 'P${item['page']} · ${item['part'] ?? ''}'
                 : '${item['title'] ?? ''} ${item['long_title'] ?? ''}'.trim(),
+            episodeNumber: ugc
+                ? item['page'] as int?
+                : int.tryParse('${item['title']}'),
           ),
         );
       }
