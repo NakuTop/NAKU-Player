@@ -6,15 +6,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <link>https://github.com/NakuTop/NAKU-Player</link>
     <description>NAKU播放器 macOS 更新</description>
     <item>
-      <title>NAKU播放器 1.8.0</title>
-      <sparkle:version>18</sparkle:version>
-      <sparkle:shortVersionString>1.8.0</sparkle:shortVersionString>
+      <title>NAKU播放器 1.9.0</title>
+      <sparkle:version>19</sparkle:version>
+      <sparkle:shortVersionString>1.9.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <description><![CDATA[<p>单击播放或暂停、双击进入或退出全屏；全屏切换保持当前播放状态。</p><p>新增高清直链播放、收藏与续播，支持可解码的 4K 视频；新增实际画质面板、最高码率偏好、缓存、精细缩放和实验性帧节奏设置。</p><p>电影、剧集与动漫共用收藏和继续观看入口，动漫跨源历史按作品合并，支持删除与撤销。保留原有数据和 Anime4K；本地处理不等于原生 4K 或 AI 运动补偿插帧。</p>]]></description>
-      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.8.0/NAKUPlayer-1.8.0-macOS-universal.zip" length="56410893" type="application/octet-stream" sparkle:edSignature="DVTb8rRclGgGxgdbjRdl8RxAEWfyn8KGuhd7u4kla5+Z9EEFatqj59v3B356k3xd4jUONkwh/j71f+VUu8xmCQ=="></enclosure>
+      <description><![CDATA[<p>动漫播放器新增独立 Bilibili 弹幕：粘贴视频或番剧链接，确认分集后应用，无需弹弹play凭据；支持本地 XML/JSON 导入和离线弹幕缓存。</p><p>电影、剧集、动漫和高清直链统一提供下载管理；影视播放器提供下载本集与下一集，窗口和全屏均可用，下载完成后可离线续播。</p><p>修复 HLS 独立音轨、初始化片段、续传及下载任务竞争。弹幕设置即时生效，弹弹play凭据可保存在本机钥匙串。本版不加入 AI 插帧。</p>]]></description>
+      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v1.9.0/NAKUPlayer-1.9.0-macOS-universal.zip" length="56969073" type="application/octet-stream" sparkle:edSignature="AmBsi2XR68fWsPah/OP1nPB/Rp8OyRbgRRqjm301qfCUzG9HK3WOyv8UVUlnAhhWZ4yPVr58yzwlIP08BmnXBQ=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: hyczxzpN7gxUvRxkGKBZ20ZViBOocmDShf2la9FE01Bq37imdKMODsovDyZfwWr9QLDKuJLnvFbOw2v/xxwfDQ==
-length: 1652
+edSignature: YREyQwY077XdXzcNPIrcRKUnJRkXEpolGeDC7IJeupbat8Kc/96OlQqBEGhnSaFkTktNLdty2p9NLRVFX+pJCA==
+length: 1699
 -->
