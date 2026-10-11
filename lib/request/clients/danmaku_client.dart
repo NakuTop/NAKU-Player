@@ -4,15 +4,22 @@ import 'package:kazumi/request/core/network_error_mapper.dart';
 import 'package:kazumi/utils/dandan_credentials.dart';
 import 'package:kazumi/utils/http_headers.dart';
 import 'package:kazumi/utils/crypto.dart';
+import 'package:kazumi/services/platform/dandan_credential_store.dart';
 
 class DanmakuClient {
-  DanmakuClient({DandanCredentials credentials = dandanCredentials, Dio? dio})
-    : _credentials = credentials,
-      _dio = dio;
+  DanmakuClient({
+    DandanCredentials? credentials,
+    Dio? dio,
+    Future<DandanCredentials> Function()? credentialProvider,
+  }) : _credentials = credentials,
+       _credentialProvider =
+           credentialProvider ?? DandanCredentialStore.instance.read,
+       _dio = dio;
 
   static final DanmakuClient instance = DanmakuClient();
 
-  final DandanCredentials _credentials;
+  final DandanCredentials? _credentials;
+  final Future<DandanCredentials> Function() _credentialProvider;
   final Dio? _dio;
 
   Future<dynamic> get(
@@ -23,7 +30,8 @@ class DanmakuClient {
   }) async {
     // Fail before creating a transport or a signature. Cached offline danmaku
     // does not use this client and remains available in personal builds.
-    if (!_credentials.isConfigured) {
+    final credentials = _credentials ?? await _credentialProvider();
+    if (!credentials.isConfigured) {
       throw const DanmakuNotConfiguredException();
     }
     final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
@@ -32,12 +40,12 @@ class DanmakuClient {
       'user-agent': getRandomUA(),
       'referer': '',
       'X-Auth': 1,
-      'X-AppId': _credentials.id,
+      'X-AppId': credentials.id,
       'X-Timestamp': timestamp,
       'X-Signature': generateDandanSignature(
         uri.path,
         timestamp,
-        credentials: _credentials,
+        credentials: credentials,
       ),
       ...headers,
     };
@@ -49,7 +57,11 @@ class DanmakuClient {
         options: Options(headers: requestHeaders),
         cancelToken: cancelToken,
       );
-      return response.data;
+      final data = response.data;
+      if (data is Map && data['success'] == false) {
+        throw const DanmakuServiceException();
+      }
+      return data;
     } on DioException catch (e) {
       throw await NetworkErrorMapper.mapException(e);
     }

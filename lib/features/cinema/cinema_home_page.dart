@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'cinema_downloads.dart';
+import 'package:kazumi/pages/download/download_controller.dart';
+import 'package:kazumi/modules/download/download_module.dart';
 import 'package:dio/dio.dart';
 import 'cinema_appearance_settings.dart';
 import 'cinema_pane_transition.dart';
@@ -250,6 +253,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       onSources: _openSourceSettings,
       onFavorites: () => _openLibrary(false),
       onHistory: () => _openLibrary(true),
+      onOfflinePlayback: _playOffline,
       enabledSourceCount: () => _store.enabledSources
           .where((source) => source.kind == CinemaSourceKind.maccms)
           .length,
@@ -513,6 +517,35 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     return true;
   }
 
+  void _playOffline(DownloadRecord record, DownloadEpisode episode) {
+    try {
+      final downloads = inject<DownloadController>();
+      final playback = CinemaOfflinePlayback.fromRecord(
+        record,
+        episode,
+        (entry) => downloads.getLocalVideoPath(
+          record.bangumiId,
+          record.pluginName,
+          entry.episodeNumber,
+        ),
+      );
+      if (playback == null) {
+        _toast('本地文件不存在，请重新下载');
+        return;
+      }
+      _playTitle(
+        playback.title,
+        playback.source,
+        0,
+        playback.episodeIndex,
+        [],
+        offlinePaths: playback.paths,
+      );
+    } catch (_) {
+      _toast('下载记录暂时无法打开，请重新下载');
+    }
+  }
+
   void _playTitle(
     CinemaTitle detail,
     CinemaSource source,
@@ -520,6 +553,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     int episode,
     List<CinemaTitle> variants, {
     bool keepBrowseRoute = false,
+    Map<String, String>? offlinePaths,
   }) {
     unawaited(
       Navigator.of(context)
@@ -530,6 +564,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 child: CinemaPlayerPage(
                   title: detail,
                   source: source,
+                  offlinePaths: offlinePaths,
                   watchTogether: widget.enableWatchTogether ? _together : null,
                   store: _store,
                   variants: variants,
@@ -1388,6 +1423,44 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     List<CinemaTitle> variants = const [],
     bool keepBrowseRoute = false,
   }) async {
+    // Continue Watching should work immediately without catalogue access when
+    // this exact episode has already been saved.
+    if (resume != null) {
+      try {
+        final downloads = inject<DownloadController>();
+        final route = resume.title.routes.elementAtOrNull(resume.routeIndex);
+        final url = route?.episodes.elementAtOrNull(resume.episodeIndex)?.url;
+        if (url != null) {
+          for (final record in downloads.records.where((r) => r.isCinema)) {
+            for (final episode in record.episodes.values) {
+              if (episode.episodePageUrl != url ||
+                  downloads.getLocalVideoPath(
+                        record.bangumiId,
+                        record.pluginName,
+                        episode.episodeNumber,
+                      ) ==
+                      null) {
+                continue;
+              }
+              final offline = CinemaOfflinePlayback.fromRecord(
+                record,
+                episode,
+                (e) => downloads.getLocalVideoPath(
+                  record.bangumiId,
+                  record.pluginName,
+                  e.episodeNumber,
+                ),
+              );
+              if (offline?.title.key != resume.title.key) continue;
+              _playOffline(record, episode);
+              return;
+            }
+          }
+        }
+      } catch (_) {
+        /* Invalid or unavailable downloads fall back to online. */
+      }
+    }
     if (title.isDirectMedia) {
       final saved = resume ?? _store.historyFor(title);
       _playTitle(
@@ -1788,6 +1861,18 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               } catch (_) {
                 if (mounted) _toast('直链未能保存或打开，请重试。');
               }
+            },
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.download_for_offline_outlined, size: 20),
+            title: const Text('下载管理', style: TextStyle(fontSize: 14)),
+            onTap: () {
+              if (closeDrawer) Navigator.pop(context);
+              context.pushNamed('/download/');
             },
           ),
         ),

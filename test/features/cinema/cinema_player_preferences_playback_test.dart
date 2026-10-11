@@ -208,6 +208,8 @@ void main() {
     WidgetTester tester,
     Map<String, Object?> values, {
     bool failFirst = false,
+    Map<String, String>? offlinePaths,
+    bool renderToolbar = false,
   }) async {
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1;
@@ -229,6 +231,7 @@ void main() {
       MaterialApp(
         home: CinemaPlayerPage(
           title: _title,
+          offlinePaths: offlinePaths,
           source: _source,
           store: store,
           watchTogether: together,
@@ -243,11 +246,26 @@ void main() {
             backends.add(backend);
             return _Player(backend);
           },
-          videoSurfaceBuilder: (_, _) =>
-              const SizedBox.expand(child: Text('fake video')),
+          videoSurfaceBuilder: (_, _) => renderToolbar
+              ? Builder(
+                  builder: (context) => Column(
+                    children: [
+                      ...MaterialDesktopVideoControlsTheme.of(
+                        context,
+                      ).normal.topButtonBar,
+                      const Expanded(child: Text('fake video')),
+                    ],
+                  ),
+                )
+              : const SizedBox.expand(child: Text('fake video')),
         ),
       ),
     );
+    if (offlinePaths != null) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+    }
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   }
@@ -259,6 +277,69 @@ void main() {
     await tester.pump();
     expect(tester.takeException(), isNull);
   }
+
+  for (final fullscreen in [false, true]) {
+    testWidgets(
+      'next episode is available in fullscreen=$fullscreen and disabled at end',
+      (tester) async {
+        await mount(tester, {'autoPlay': true}, renderToolbar: fullscreen);
+        if (fullscreen) {
+          final done = Completer<void>();
+          messenger.handlePlatformMessage(
+            channel.name,
+            const StandardMethodCodec().encodeMethodCall(
+              const MethodCall('onEvent', {'eventName': 'enter-full-screen'}),
+            ),
+            (_) => done.complete(),
+          );
+          await done.future;
+          await tester.pumpAndSettle();
+        }
+        final next = fullscreen
+            ? find.widgetWithIcon(IconButton, Icons.skip_next_rounded)
+            : find.widgetWithText(OutlinedButton, '下一集');
+        expect(next, findsOneWidget);
+        await tester.ensureVisible(next);
+        await tester.tap(next);
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.pumpAndSettle();
+        expect(backends.last.opened!.uri, 'https://fixture.invalid/2.mp4');
+        expect(backends.last.state.playing, isTrue);
+        if (fullscreen) {
+          expect(tester.widget<IconButton>(next).onPressed, isNull);
+        } else {
+          expect(tester.widget<OutlinedButton>(next).onPressed, isNull);
+        }
+        await unmount(tester);
+      },
+    );
+  }
+  testWidgets(
+    'offline media opens local file and shares original online history identity',
+    (tester) async {
+      final local = File('${directory.path}/offline.mp4');
+      await tester.runAsync(() async {
+        await local.writeAsBytes([0, 1, 2, 3]);
+        await store.recordProgress(
+          title: _title,
+          routeIndex: 0,
+          episodeIndex: 0,
+          positionSeconds: 42,
+          durationSeconds: 1200,
+        );
+      });
+      await mount(
+        tester,
+        {'autoPlay': true, 'privateMode': false},
+        offlinePaths: {'https://fixture.invalid/1.mp4': local.path},
+      );
+      expect(backends.single.opened!.uri, local.path);
+      expect(backends.single.state.position.inSeconds, 42);
+      expect(find.text('离线播放'), findsOneWidget);
+      await unmount(tester);
+      expect(store.historyFor(_title)!.title.key, _title.key);
+    },
+  );
 
   for (final initiallyPlaying in [true, false]) {
     testWidgets(

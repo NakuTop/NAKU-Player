@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
@@ -34,6 +35,7 @@ class DownloadTask {
   final int episodeNumber;
   CancelToken cancelToken;
   bool isPaused;
+  final finished = Completer<void>();
 
   DownloadTask({
     required this.recordKey,
@@ -43,8 +45,13 @@ class DownloadTask {
   }) : cancelToken = cancelToken ?? CancelToken();
 }
 
-typedef ProgressCallback = void Function(
-    String recordKey, int episodeNumber, DownloadEpisode episode, double speed);
+typedef ProgressCallback =
+    void Function(
+      String recordKey,
+      int episodeNumber,
+      DownloadEpisode episode,
+      double speed,
+    );
 
 final _m3u8SegmentFileNamePattern = RegExp(r'^seg_\d+\.ts$');
 
@@ -102,10 +109,16 @@ abstract class IDownloadManager {
   void cancel(String recordKey, int episodeNumber);
   String? getLocalVideoPath(DownloadEpisode? episode);
   Future<void> deleteEpisodeFiles(
-      int bangumiId, String pluginName, int episodeNumber,
-      {DownloadEpisode? episode});
-  Future<void> deleteRecordFiles(int bangumiId, String pluginName,
-      {DownloadRecord? record});
+    int bangumiId,
+    String pluginName,
+    int episodeNumber, {
+    DownloadEpisode? episode,
+  });
+  Future<void> deleteRecordFiles(
+    int bangumiId,
+    String pluginName, {
+    DownloadRecord? record,
+  });
   double getSpeed(String recordKey, int episodeNumber);
 }
 
@@ -141,6 +154,7 @@ class DownloadManager implements IDownloadManager {
 
   final Map<String, DownloadTask> _activeTasks = {};
   final List<DownloadRequest> _queue = [];
+  final Map<String, DownloadTask> _runningTasks = {};
   final Map<String, _SpeedTracker> _speedTrackers = {};
   int maxParallelEpisodes = 2;
   int maxParallelSegments = 3;
@@ -153,10 +167,12 @@ class DownloadManager implements IDownloadManager {
   static const _storageChannel = MethodChannel('com.predidit.kazumi/storage');
 
   void _loadSettings() {
-    maxParallelEpisodes =
-        GStorage.getSetting(SettingsKeys.downloadParallelEpisodes);
-    maxParallelSegments =
-        GStorage.getSetting(SettingsKeys.downloadParallelSegments);
+    maxParallelEpisodes = GStorage.getSetting(
+      SettingsKeys.downloadParallelEpisodes,
+    );
+    maxParallelSegments = GStorage.getSetting(
+      SettingsKeys.downloadParallelSegments,
+    );
   }
 
   /// Returns available bytes, or -1 if unable to determine
@@ -175,8 +191,10 @@ class DownloadManager implements IDownloadManager {
     }
   }
 
-  Future<void> _checkStorageSpace(String downloadDir,
-      {int requiredBytes = 0}) async {
+  Future<void> _checkStorageSpace(
+    String downloadDir, {
+    int requiredBytes = 0,
+  }) async {
     final available = await _getAvailableStorage(downloadDir);
     if (available == -1) return; // Skip check if unable to determine
 
@@ -217,24 +235,33 @@ class DownloadManager implements IDownloadManager {
 
   Future<String> get _downloadBaseDir async {
     if (supportsCustomDownloadDirectory) {
-      final customDir =
-          GStorage.getSetting(SettingsKeys.downloadDirectory).trim();
+      final customDir = GStorage.getSetting(
+        SettingsKeys.downloadDirectory,
+      ).trim();
       if (customDir.isNotEmpty) {
         // On macOS this re-establishes sandbox access after a restart;
         // elsewhere it returns the path unchanged.
         final usable = await SecureBookmarkService.restore(customDir);
         if (usable != null) return usable;
         KazumiLogger().w(
-            'DownloadManager: custom download directory unavailable, falling back to default');
+          'DownloadManager: custom download directory unavailable, falling back to default',
+        );
       }
     }
     return getDefaultDownloadDirectory();
   }
 
-  String _getEpisodeDir(String downloadBase, int bangumiId, String pluginName,
-      int episodeNumber) {
+  String _getEpisodeDir(
+    String downloadBase,
+    int bangumiId,
+    String pluginName,
+    int episodeNumber,
+  ) {
     return path.join(
-        downloadBase, '${bangumiId}_$pluginName', '$episodeNumber');
+      downloadBase,
+      '${bangumiId}_$pluginName',
+      '$episodeNumber',
+    );
   }
 
   /// Resolves the episode directory (kept from a previous attempt if any),
@@ -249,7 +276,11 @@ class DownloadManager implements IDownloadManager {
     final episodeDir = storedDir.isNotEmpty
         ? storedDir
         : _getEpisodeDir(
-            await _downloadBaseDir, bangumiId, pluginName, episodeNumber);
+            await _downloadBaseDir,
+            bangumiId,
+            pluginName,
+            episodeNumber,
+          );
     await ensureDirectoryWritable(episodeDir);
     episode.downloadDirectory = episodeDir;
     await _checkStorageSpace(episodeDir);
@@ -266,14 +297,29 @@ class DownloadManager implements IDownloadManager {
   ) async {
     final storedDir = episode?.downloadDirectory.trim() ?? '';
     if (storedDir.isNotEmpty) return storedDir;
-    return _getEpisodeDir(await getDefaultDownloadDirectory(), bangumiId,
-        pluginName, episodeNumber);
+    return _getEpisodeDir(
+      await getDefaultDownloadDirectory(),
+      bangumiId,
+      pluginName,
+      episodeNumber,
+    );
   }
 
   @override
   Future<void> enqueue(DownloadRequest request) async {
     final key = _taskKey(request.recordKey, request.episodeNumber);
-    if (_activeTasks.containsKey(key)) return;
+    final running = _runningTasks[key];
+    if (running != null && running.cancelToken.isCancelled) {
+      await running.finished.future;
+    }
+    final old = _activeTasks[key];
+    if (old != null && !old.cancelToken.isCancelled) return;
+    _activeTasks.remove(key);
+    _queue.removeWhere(
+      (r) =>
+          r.recordKey == request.recordKey &&
+          r.episodeNumber == request.episodeNumber,
+    );
 
     final task = DownloadTask(
       recordKey: request.recordKey,
@@ -302,31 +348,19 @@ class DownloadManager implements IDownloadManager {
   @override
   Future<void> enqueuePriority(DownloadRequest request) async {
     final key = _taskKey(request.recordKey, request.episodeNumber);
-
+    if (_runningTasks.containsKey(key)) return;
     _queue.removeWhere(
       (r) =>
           r.recordKey == request.recordKey &&
           r.episodeNumber == request.episodeNumber,
     );
-    _activeTasks.remove(key);
-
-    final task = DownloadTask(
+    _activeTasks[key] = DownloadTask(
       recordKey: request.recordKey,
       episodeNumber: request.episodeNumber,
     );
-
-    // Start immediately, bypassing the parallel limit (priority download)
-    _runningCount++;
-    _activeTasks[key] = task;
-    _runEpisodeDownload(
-      task: task,
-      bangumiId: request.bangumiId,
-      pluginName: request.pluginName,
-      m3u8Url: request.m3u8Url,
-      httpHeaders: request.httpHeaders,
-      adBlockerEnabled: request.adBlockerEnabled,
-      episode: request.episode,
-    );
+    request.episode.status = DownloadStatus.pending;
+    _queue.insert(0, request);
+    _processQueue();
   }
 
   @override
@@ -340,31 +374,7 @@ class DownloadManager implements IDownloadManager {
   }
 
   @override
-  Future<void> resume(DownloadRequest request) async {
-    final key = _taskKey(request.recordKey, request.episodeNumber);
-    _activeTasks.remove(key);
-
-    final task = DownloadTask(
-      recordKey: request.recordKey,
-      episodeNumber: request.episodeNumber,
-    );
-    _activeTasks[key] = task;
-
-    if (_runningCount < maxParallelEpisodes) {
-      _runningCount++;
-      _runEpisodeDownload(
-        task: task,
-        bangumiId: request.bangumiId,
-        pluginName: request.pluginName,
-        m3u8Url: request.m3u8Url,
-        httpHeaders: request.httpHeaders,
-        adBlockerEnabled: request.adBlockerEnabled,
-        episode: request.episode,
-      );
-    } else {
-      _queue.add(request);
-    }
-  }
+  Future<void> resume(DownloadRequest request) => enqueue(request);
 
   @override
   void cancel(String recordKey, int episodeNumber) {
@@ -414,9 +424,14 @@ class DownloadManager implements IDownloadManager {
     required DownloadEpisode episode,
   }) async {
     final key = _taskKey(task.recordKey, task.episodeNumber);
+    _runningTasks[key] = task;
     try {
       final episodeDir = await _prepareEpisodeDir(
-          episode, bangumiId, pluginName, task.episodeNumber);
+        episode,
+        bangumiId,
+        pluginName,
+        task.episodeNumber,
+      );
 
       episode.status = DownloadStatus.downloading;
       episode.networkM3u8Url = m3u8Url;
@@ -441,20 +456,40 @@ class DownloadManager implements IDownloadManager {
         return;
       }
 
-      final type = M3u8Parser.detectType(m3u8Content);
       String mediaM3u8Content = m3u8Content;
       String mediaM3u8Url = m3u8Url;
+      String? audioUrl;
 
-      if (type == M3u8Type.master) {
-        final master = M3u8Parser.parseMasterPlaylist(m3u8Content, m3u8Url);
+      for (
+        var depth = 0;
+        M3u8Parser.detectType(mediaM3u8Content) == M3u8Type.master;
+        depth++
+      ) {
+        if (depth >= 3) throw const FormatException('视频播放列表嵌套过深');
+        final master = M3u8Parser.parseMasterPlaylist(
+          mediaM3u8Content,
+          mediaM3u8Url,
+        );
         final bestVariant = master.bestVariant;
+        final audio = master.audio
+            .where((a) => a.group == bestVariant.audioGroup)
+            .toList();
+        if (audio.isNotEmpty) {
+          audioUrl =
+              (audio.where((a) => a.isDefault).firstOrNull ?? audio.first).uri;
+        }
         mediaM3u8Url = bestVariant.uri;
-        mediaM3u8Content =
-            await _fetchM3u8(mediaM3u8Url, httpHeaders, task.cancelToken);
+        mediaM3u8Content = await _fetchM3u8(
+          mediaM3u8Url,
+          httpHeaders,
+          task.cancelToken,
+        );
       }
 
-      final playlist =
-          M3u8Parser.parseMediaPlaylist(mediaM3u8Content, mediaM3u8Url);
+      final playlist = M3u8Parser.parseMediaPlaylist(
+        mediaM3u8Content,
+        mediaM3u8Url,
+      );
 
       // 展开嵌套 m3u8 片段（部分源将实际内容嵌套在 m3u8 引用中）
       final resolvedSegments = await M3u8Parser.resolveNestedSegments(
@@ -482,9 +517,11 @@ class DownloadManager implements IDownloadManager {
       }
 
       List<M3u8Segment> segments = resolvedPlaylist.segments;
-      if (adBlockerEnabled) {
+      final filterAds = adBlockerEnabled && audioUrl == null;
+      if (filterAds) {
         segments = M3u8AdFilter.filterAds(segments);
       }
+      await _prepareHlsPlan(segments, episodeDir);
 
       final keys = M3u8Parser.extractUniqueKeys(
         M3u8MediaPlaylist(
@@ -498,9 +535,20 @@ class DownloadManager implements IDownloadManager {
         final keyFile = 'key_$i.key';
         final keyPath = path.join(episodeDir, keyFile);
         await _downloadFile(
-            keys[i].uri, keyPath, httpHeaders, task.cancelToken);
+          keys[i].uri,
+          keyPath,
+          httpHeaders,
+          task.cancelToken,
+        );
         keyUriToLocal[keys[i].uri] = keyFile;
       }
+
+      final initializationToLocal = await _cacheInitializations(
+        segments,
+        episodeDir,
+        httpHeaders,
+        task.cancelToken,
+      );
 
       episode.totalSegments = segments.length;
       episode.downloadedSegments = 0;
@@ -520,7 +568,8 @@ class DownloadManager implements IDownloadManager {
       var existingBytes = 0;
       for (int i = 0; i < segments.length; i++) {
         final segFile = File(
-            path.join(episodeDir, 'seg_${i.toString().padLeft(5, '0')}.ts'));
+          path.join(episodeDir, 'seg_${i.toString().padLeft(5, '0')}.ts'),
+        );
         if (await segFile.exists()) {
           final segmentBytes = await segFile.length();
           if (segmentBytes <= 0) continue;
@@ -543,30 +592,23 @@ class DownloadManager implements IDownloadManager {
       }
 
       var sessionBytes = 0;
-      final completer = Completer<void>();
-      int completedCount = 0;
       int failedCount = 0;
-      final semaphore = _Semaphore(maxParallelSegments);
-
+      var nextIndex = 0;
       _speedTrackers[key] = _SpeedTracker();
-
-      if (pendingIndices.isEmpty) {
-      } else {
-        for (final idx in pendingIndices) {
-          if (task.isPaused || task.cancelToken.isCancelled) break;
-
-          await semaphore.acquire();
-          if (task.isPaused || task.cancelToken.isCancelled) {
-            semaphore.release();
-            break;
-          }
-
-          _downloadSegmentWithRetry(
-            segments[idx].uri,
-            path.join(episodeDir, 'seg_${idx.toString().padLeft(5, '0')}.ts'),
-            httpHeaders,
-            task.cancelToken,
-          ).then((bytes) {
+      Future<void> worker() async {
+        while (nextIndex < pendingIndices.length &&
+            !task.isPaused &&
+            !task.cancelToken.isCancelled) {
+          final idx = pendingIndices[nextIndex++];
+          try {
+            final bytes = await _downloadSegmentWithRetry(
+              segments[idx].uri,
+              path.join(episodeDir, 'seg_${idx.toString().padLeft(5, '0')}.ts'),
+              httpHeaders,
+              task.cancelToken,
+              byteRange: segments[idx].byteRange,
+            );
+            if (task.isPaused || task.cancelToken.isCancelled) return;
             sessionBytes += bytes;
             episode.downloadedSegments++;
             episode.totalBytes = existingBytes + sessionBytes;
@@ -574,26 +616,17 @@ class DownloadManager implements IDownloadManager {
                 episode.downloadedSegments / episode.totalSegments;
             _speedTrackers[key]?.update(sessionBytes);
             _notifyProgress(task.recordKey, task.episodeNumber, episode);
-            completedCount++;
-            semaphore.release();
-            if (completedCount + failedCount == pendingIndices.length) {
-              completer.complete();
-            }
-          }).catchError((e) {
+          } catch (_) {
             failedCount++;
-            semaphore.release();
-            if (completedCount + failedCount == pendingIndices.length) {
-              completer.complete();
-            }
-          });
-        }
-
-        if (!task.isPaused &&
-            !task.cancelToken.isCancelled &&
-            pendingIndices.isNotEmpty) {
-          await completer.future;
+          }
         }
       }
+
+      // Await workers even after cancellation, so deletion/resume cannot race
+      // a late segment rename from the old attempt.
+      await Future.wait(
+        List.generate(maxParallelSegments.clamp(1, 12), (_) => worker()),
+      );
 
       if (task.isPaused || task.cancelToken.isCancelled) {
         if (task.isPaused) {
@@ -610,24 +643,52 @@ class DownloadManager implements IDownloadManager {
         return;
       }
 
-      final targetDuration = adBlockerEnabled
+      final targetDuration = filterAds
           ? M3u8AdFilter.calculateTargetDuration(segments)
           : resolvedPlaylist.targetDuration;
       final localM3u8 = M3u8Parser.buildLocalM3u8(
         segments,
         targetDuration: targetDuration,
         keyUriToLocal: keyUriToLocal,
+        initializationToLocal: initializationToLocal,
       );
       final m3u8Path = path.join(episodeDir, 'playlist.m3u8');
       await File(m3u8Path).writeAsString(localM3u8);
       final finalVideoBytes = await calculateM3u8VideoBytes(episodeDir);
+      var localPath = m3u8Path;
+      var extraBytes = 0;
+      if (audioUrl != null) {
+        extraBytes = await _cacheAudio(
+          audioUrl,
+          path.join(episodeDir, 'audio'),
+          httpHeaders,
+          task.cancelToken,
+          onProgress: (done, total) {
+            episode.totalSegments = segments.length + total;
+            episode.downloadedSegments = segments.length + done;
+            episode.progressPercent =
+                episode.downloadedSegments / episode.totalSegments;
+            _notifyProgress(task.recordKey, task.episodeNumber, episode);
+          },
+        );
+        localPath = path.join(episodeDir, 'master.m3u8');
+        await File(localPath).writeAsString(
+          '#EXTM3U\n#EXT-X-VERSION:7\n'
+          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="音轨",DEFAULT=YES,AUTOSELECT=YES,URI="audio/playlist.m3u8"\n'
+          '#EXT-X-STREAM-INF:BANDWIDTH=10000000,AUDIO="audio"\nplaylist.m3u8\n',
+        );
+      }
+      if (task.isPaused || task.cancelToken.isCancelled) return;
 
       episode.status = DownloadStatus.completed;
-      episode.localM3u8Path = m3u8Path;
+      episode.localM3u8Path = localPath;
       episode.progressPercent = 1.0;
       episode.completedAt = DateTime.now();
       episode.totalBytes =
-          finalVideoBytes > 0 ? finalVideoBytes : existingBytes + sessionBytes;
+          (finalVideoBytes > 0
+              ? finalVideoBytes
+              : existingBytes + sessionBytes) +
+          extraBytes;
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
 
       KazumiLogger().i(
@@ -656,12 +717,14 @@ class DownloadManager implements IDownloadManager {
       }
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
     } catch (e) {
-      episode.status = DownloadStatus.failed;
-      episode.errorMessage = e.toString();
+      episode.status = task.isPaused
+          ? DownloadStatus.paused
+          : DownloadStatus.failed;
+      episode.errorMessage = task.isPaused ? '' : e.toString();
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
       KazumiLogger().e('DownloadManager: episode download failed', error: e);
     } finally {
-      _onTaskComplete(key);
+      _onTaskComplete(key, task);
     }
   }
 
@@ -676,7 +739,11 @@ class DownloadManager implements IDownloadManager {
     final key = _taskKey(task.recordKey, task.episodeNumber);
     try {
       final episodeDir = await _prepareEpisodeDir(
-          episode, bangumiId, pluginName, task.episodeNumber);
+        episode,
+        bangumiId,
+        pluginName,
+        task.episodeNumber,
+      );
 
       final filePath = path.join(episodeDir, 'video.mp4');
       final tmpPath = '$filePath.tmp';
@@ -725,8 +792,29 @@ class DownloadManager implements IDownloadManager {
       }
 
       final contentRange = response.headers.value('content-range');
-      final contentLength = int.tryParse(
-              response.headers.value(Headers.contentLengthHeader) ?? '') ??
+      if (response.statusCode == 200 && existingBytes > 0) {
+        // Some servers ignore Range. Restart instead of appending a complete
+        // response to a partial file and silently corrupting the video.
+        existingBytes = 0;
+      }
+      if (response.statusCode == 206) {
+        final start = RegExp(r'^bytes (\d+)-').firstMatch(contentRange ?? '');
+        if (start == null || int.parse(start.group(1)!) != existingBytes) {
+          await response.data!.stream.listen(null).cancel();
+          throw const FormatException('片源返回了错误的断点续传范围，请重新下载');
+        }
+      }
+      final type = response.headers.value('content-type')?.toLowerCase() ?? '';
+      if (type.contains('text/html') ||
+          type.contains('application/json') ||
+          type.contains('dash+xml')) {
+        await response.data!.stream.listen(null).cancel();
+        throw const FormatException('此地址返回网页或 DASH 清单，请选择 MP4 或 HLS 线路下载');
+      }
+      final contentLength =
+          int.tryParse(
+            response.headers.value(Headers.contentLengthHeader) ?? '',
+          ) ??
           0;
       int totalSize;
       if (contentRange != null) {
@@ -737,7 +825,8 @@ class DownloadManager implements IDownloadManager {
       }
 
       final raf = await tmpFile.open(
-          mode: existingBytes > 0 ? FileMode.append : FileMode.write);
+        mode: existingBytes > 0 ? FileMode.append : FileMode.write,
+      );
       int received = existingBytes;
 
       _speedTrackers[key] = _SpeedTracker();
@@ -745,6 +834,18 @@ class DownloadManager implements IDownloadManager {
       try {
         await for (final chunk in response.data!.stream) {
           if (task.isPaused || task.cancelToken.isCancelled) break;
+          if (received == 0) {
+            final prefix = ascii
+                .decode(chunk.take(256).toList(), allowInvalid: true)
+                .trimLeft()
+                .toLowerCase();
+            if (prefix.startsWith('<!doctype') ||
+                prefix.startsWith('<html') ||
+                prefix.startsWith('<?xml') ||
+                prefix.startsWith('<mpd')) {
+              throw const FormatException('片源返回的不是可保存的视频文件');
+            }
+          }
           await raf.writeFrom(chunk);
           received += chunk.length;
           episode.totalBytes = received;
@@ -765,6 +866,9 @@ class DownloadManager implements IDownloadManager {
         return;
       }
 
+      if (received == 0 || (totalSize > 0 && received != totalSize)) {
+        throw const FormatException('视频传输不完整，请继续下载');
+      }
       await File(tmpPath).rename(filePath);
 
       episode.status = DownloadStatus.completed;
@@ -801,31 +905,46 @@ class DownloadManager implements IDownloadManager {
       }
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
     } catch (e) {
-      episode.status = DownloadStatus.failed;
-      episode.errorMessage = e.toString();
+      episode.status = task.isPaused
+          ? DownloadStatus.paused
+          : DownloadStatus.failed;
+      episode.errorMessage = task.isPaused ? '' : e.toString();
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
-      KazumiLogger()
-          .e('DownloadManager: direct file download failed', error: e);
+      KazumiLogger().e(
+        'DownloadManager: direct file download failed',
+        error: e,
+      );
     }
   }
 
-  void _onTaskComplete(String key) {
-    _activeTasks.remove(key);
+  void _onTaskComplete(String key, DownloadTask task) {
+    if (identical(_activeTasks[key], task)) _activeTasks.remove(key);
+    if (identical(_runningTasks[key], task)) _runningTasks.remove(key);
     _speedTrackers.remove(key);
     _runningCount--;
+    if (!task.finished.isCompleted) task.finished.complete();
     _processQueue();
   }
 
   void _notifyProgress(
-      String recordKey, int episodeNumber, DownloadEpisode episode) {
+    String recordKey,
+    int episodeNumber,
+    DownloadEpisode episode,
+  ) {
     final key = _taskKey(recordKey, episodeNumber);
     final speed = _speedTrackers[key]?.currentSpeed ?? 0.0;
     onProgress?.call(recordKey, episodeNumber, episode, speed);
   }
 
   Future<String> _fetchM3u8(
-      String url, Map<String, String> headers, CancelToken cancelToken) async {
+    String url,
+    Map<String, String> headers,
+    CancelToken cancelToken,
+  ) async {
     final fetchToken = CancelToken();
+    unawaited(
+      cancelToken.whenCancel.then((_) => fetchToken.cancel('task cancelled')),
+    );
 
     if (cancelToken.isCancelled) {
       throw NetworkException(
@@ -866,14 +985,145 @@ class DownloadManager implements IDownloadManager {
     }
   }
 
-  Future<void> _downloadFile(String url, String savePath,
-      Map<String, String> headers, CancelToken cancelToken) async {
-    await _http.download(
-      url,
-      savePath,
-      headers: headers,
-      cancelToken: cancelToken,
+  Future<void> _prepareHlsPlan(
+    List<M3u8Segment> segments,
+    String directory,
+  ) async {
+    await Directory(directory).create(recursive: true);
+    final file = File(path.join(directory, 'download-plan.json'));
+    final plan = jsonEncode(
+      segments
+          .map(
+            (s) => [
+              s.uri,
+              s.byteRange?.identity,
+              s.initializationIdentity,
+              s.key?.uri,
+              s.key?.iv,
+              s.sequence,
+            ],
+          )
+          .toList(),
     );
+    if (!await file.exists() || await file.readAsString() != plan) {
+      await for (final entry in Directory(directory).list(followLinks: false)) {
+        if (entry is File &&
+            RegExp(
+              r'^(seg_\d+\.ts|init_\d+\.mp4|key_\d+\.key)(\.tmp)?$',
+            ).hasMatch(path.basename(entry.path))) {
+          await entry.delete();
+        }
+      }
+      await file.writeAsString(plan, flush: true);
+    }
+  }
+
+  Future<Map<String, String>> _cacheInitializations(
+    List<M3u8Segment> segments,
+    String directory,
+    Map<String, String> headers,
+    CancelToken token,
+  ) async {
+    final files = <String, String>{};
+    for (final segment in segments) {
+      final id = segment.initializationIdentity;
+      if (id == null || files.containsKey(id)) continue;
+      if (segment.key != null && segment.key!.iv == null) {
+        throw const FormatException('加密初始化分片缺少 IV，无法保存');
+      }
+      final name = 'init_${files.length}.mp4';
+      await _downloadSegmentWithRetry(
+        segment.initializationUri!,
+        path.join(directory, name),
+        headers,
+        token,
+        byteRange: segment.initializationRange,
+      );
+      files[id] = name;
+    }
+    return files;
+  }
+
+  Future<int> _cacheAudio(
+    String url,
+    String directory,
+    Map<String, String> headers,
+    CancelToken token, {
+    required void Function(int, int) onProgress,
+  }) async {
+    var content = await _fetchM3u8(url, headers, token);
+    for (
+      var depth = 0;
+      M3u8Parser.detectType(content) == M3u8Type.master;
+      depth++
+    ) {
+      if (depth >= 3) throw const FormatException('音轨播放列表嵌套过深');
+      url = M3u8Parser.parseMasterPlaylist(content, url).bestVariant.uri;
+      content = await _fetchM3u8(url, headers, token);
+    }
+    final playlist = M3u8Parser.parseMediaPlaylist(content, url);
+    if (!playlist.isVod || playlist.segments.isEmpty) {
+      throw const FormatException('此音轨无法离线保存，请选择其他线路');
+    }
+    final segments = await M3u8Parser.resolveNestedSegments(
+      playlist.segments,
+      (uri) => _fetchM3u8(uri, headers, token),
+    );
+    await _prepareHlsPlan(segments, directory);
+    final keys = <String, String>{};
+    for (final segment in segments) {
+      final key = segment.key;
+      if (key == null || keys.containsKey(key.uri)) continue;
+      final name = 'key_${keys.length}.key';
+      await _downloadFile(key.uri, path.join(directory, name), headers, token);
+      keys[key.uri] = name;
+    }
+    final init = await _cacheInitializations(
+      segments,
+      directory,
+      headers,
+      token,
+    );
+    var bytes = 0;
+    onProgress(0, segments.length);
+    for (var i = 0; i < segments.length; i++) {
+      if (token.isCancelled) throw const FormatException('下载已暂停');
+      final file = File(
+        path.join(directory, 'seg_${i.toString().padLeft(5, '0')}.ts'),
+      );
+      if (!await file.exists() || await file.length() == 0) {
+        await _downloadSegmentWithRetry(
+          segments[i].uri,
+          file.path,
+          headers,
+          token,
+          byteRange: segments[i].byteRange,
+        );
+      }
+      bytes += await file.length();
+      onProgress(i + 1, segments.length);
+    }
+    await File(path.join(directory, 'playlist.m3u8')).writeAsString(
+      M3u8Parser.buildLocalM3u8(
+        segments,
+        targetDuration: playlist.targetDuration,
+        keyUriToLocal: keys,
+        initializationToLocal: init,
+      ),
+    );
+    return bytes;
+  }
+
+  Future<void> _downloadFile(
+    String url,
+    String savePath,
+    Map<String, String> headers,
+    CancelToken cancelToken,
+  ) async {
+    await _downloadSegmentWithRetry(url, savePath, headers, cancelToken);
+    if (await File(savePath).length() != 16) {
+      throw const FormatException('AES-128 密钥长度不正确');
+    }
   }
 
   Future<int> _downloadSegmentWithRetry(
@@ -882,17 +1132,53 @@ class DownloadManager implements IDownloadManager {
     Map<String, String> headers,
     CancelToken cancelToken, {
     int maxRetries = 3,
+    M3u8ByteRange? byteRange,
   }) async {
     final tmpPath = '$savePath.tmp';
     int retryCount = 0;
     while (true) {
       try {
-        await _http.download(
-          url,
-          tmpPath,
-          headers: headers,
-          cancelToken: cancelToken,
-        );
+        if (byteRange == null) {
+          await _http.download(
+            url,
+            tmpPath,
+            headers: headers,
+            cancelToken: cancelToken,
+          );
+        } else {
+          final response = await _http.getStream(
+            url,
+            headers: {...headers, 'Range': byteRange.header},
+            cancelToken: cancelToken,
+          );
+          final range = response.headers.value('content-range') ?? '';
+          if (response.statusCode != 206 ||
+              !range.startsWith(
+                'bytes ${byteRange.offset}-${byteRange.offset + byteRange.length - 1}/',
+              )) {
+            await response.data!.stream.listen(null).cancel();
+            throw const FormatException('片源不支持视频分段下载');
+          }
+          final sink = File(tmpPath).openWrite();
+          var bytes = 0;
+          try {
+            await for (final chunk in response.data!.stream) {
+              bytes += chunk.length;
+              if (bytes > byteRange.length) {
+                throw const FormatException('视频分段大小不匹配');
+              }
+              sink.add(chunk);
+            }
+          } finally {
+            await sink.close();
+          }
+          if (bytes != byteRange.length) {
+            throw const FormatException('视频分段下载不完整');
+          }
+        }
+        if (await File(tmpPath).length() == 0) {
+          throw const FormatException('片源返回空分片');
+        }
         await File(tmpPath).rename(savePath);
         return await File(savePath).length();
       } catch (e) {
@@ -911,21 +1197,52 @@ class DownloadManager implements IDownloadManager {
 
   @override
   Future<void> deleteEpisodeFiles(
-      int bangumiId, String pluginName, int episodeNumber,
-      {DownloadEpisode? episode}) async {
-    final dir = Directory(await _episodeDirForDeletion(
-        episode, bangumiId, pluginName, episodeNumber));
+    int bangumiId,
+    String pluginName,
+    int episodeNumber, {
+    DownloadEpisode? episode,
+  }) async {
+    final recordKey = '${pluginName}_$bangumiId';
+    final running = _runningTasks[_taskKey(recordKey, episodeNumber)];
+    cancel(recordKey, episodeNumber);
+    if (running != null) await running.finished.future;
+    final dir = Directory(
+      await _episodeDirForDeletion(
+        episode,
+        bangumiId,
+        pluginName,
+        episodeNumber,
+      ),
+    );
     if (await dir.exists()) {
       await dir.delete(recursive: true);
     }
   }
 
   @override
-  Future<void> deleteRecordFiles(int bangumiId, String pluginName,
-      {DownloadRecord? record}) async {
+  Future<void> deleteRecordFiles(
+    int bangumiId,
+    String pluginName, {
+    DownloadRecord? record,
+  }) async {
+    final recordKey = '${pluginName}_$bangumiId';
+    final tasks = _activeTasks.values
+        .where((t) => t.recordKey == recordKey)
+        .toList();
+    final running = _runningTasks.values
+        .where((t) => t.recordKey == recordKey)
+        .toList();
+    for (final task in tasks) {
+      cancel(recordKey, task.episodeNumber);
+    }
+    await Future.wait(running.map((t) => t.finished.future));
     if (record == null) {
-      final dir = Directory(path.join(
-          await getDefaultDownloadDirectory(), '${bangumiId}_$pluginName'));
+      final dir = Directory(
+        path.join(
+          await getDefaultDownloadDirectory(),
+          '${bangumiId}_$pluginName',
+        ),
+      );
       if (await dir.exists()) {
         await dir.delete(recursive: true);
       }
@@ -937,7 +1254,11 @@ class DownloadManager implements IDownloadManager {
     final parentDirs = <String>{};
     for (final entry in record.episodes.entries) {
       final episodeDir = await _episodeDirForDeletion(
-          entry.value, bangumiId, pluginName, entry.key);
+        entry.value,
+        bangumiId,
+        pluginName,
+        entry.key,
+      );
       final dir = Directory(episodeDir);
       if (await dir.exists()) {
         await dir.delete(recursive: true);
@@ -962,32 +1283,5 @@ class DownloadManager implements IDownloadManager {
     final file = File(episode.localM3u8Path);
     if (!file.existsSync()) return null;
     return episode.localM3u8Path;
-  }
-}
-
-class _Semaphore {
-  final int maxCount;
-  int _currentCount = 0;
-  final _waitQueue = <Completer<void>>[];
-
-  _Semaphore(this.maxCount);
-
-  Future<void> acquire() async {
-    if (_currentCount < maxCount) {
-      _currentCount++;
-      return;
-    }
-    final completer = Completer<void>();
-    _waitQueue.add(completer);
-    return completer.future;
-  }
-
-  void release() {
-    if (_waitQueue.isNotEmpty) {
-      final completer = _waitQueue.removeAt(0);
-      completer.complete();
-    } else {
-      _currentCount--;
-    }
   }
 }

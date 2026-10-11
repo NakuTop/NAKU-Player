@@ -3,6 +3,9 @@ import 'cinema_quality_sheet.dart';
 import 'package:kazumi/services/player/playback_lifecycle.dart';
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter_modular/flutter_modular.dart';
+import 'package:kazumi/pages/download/download_controller.dart';
+import 'cinema_downloads.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -194,10 +197,14 @@ class CinemaPlayerPage extends StatefulWidget {
     this.preferences,
     this.createPlayer,
     this.videoSurfaceBuilder,
+    this.offlinePaths,
   });
 
   final CinemaTitle title;
   final CinemaSource source;
+
+  /// Original episode URLs mapped to verified local files, for offline-only use.
+  final Map<String, String>? offlinePaths;
   final CinemaStore store;
   final int routeIndex;
   final int episodeIndex;
@@ -251,6 +258,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   ({String titleKey, int routeIndex, int episodeIndex, int positionSeconds})?
   _lastPlaybackProgress;
   bool _loading = true;
+  bool _queueingDownload = false;
   bool _closing = false;
   String _phase = '正在准备播放';
   String? _error;
@@ -383,6 +391,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   );
 
   Future<void> _discoverRoutes() async {
+    if (widget.offlinePaths != null) return;
     await for (final variants in discoverCinemaWorkSources(
       anchor: widget.title,
       known: widget.variants,
@@ -640,8 +649,16 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     );
 
     try {
-      var mediaUrl = requireHttpUrl(episode.url).toString();
-      if (!cinemaUsesDirectMedia(selectedSource, route, episode)) {
+      final localFile = widget.offlinePaths?[episode.url];
+      if (widget.offlinePaths != null &&
+          (localFile == null || !await File(localFile).exists())) {
+        throw const FormatException('本地视频不存在，请重新下载');
+      }
+      var mediaUrl = localFile == null
+          ? requireHttpUrl(episode.url).toString()
+          : File(localFile).uri.toString();
+      if (localFile == null &&
+          !cinemaUsesDirectMedia(selectedSource, route, episode)) {
         setState(() => _phase = '正在解析播放页面');
         final resolved = await _resolver
             .resolve(
@@ -672,6 +689,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         widget.createPlayer,
       );
       _playback = candidate;
+      candidate.mediaUrl = mediaUrl;
       candidate.logStage('player-created');
       _listenTo(candidate, generation);
       setState(
@@ -715,7 +733,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         Media(
           mediaUrl,
           start: Duration(seconds: offset),
-          httpHeaders: selectedSource.headers,
+          httpHeaders: localFile == null ? selectedSource.headers : const {},
         ),
         play: _preferences.autoPlay && !_backgroundPaused,
       );
@@ -873,6 +891,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Future<void> _advanceAfterFailure(String message) async {
+    if (widget.offlinePaths != null) {
+      _releasePlayback();
+      setState(() {
+        _loading = false;
+        _error = message;
+      });
+      return;
+    }
     final generation = ++_generation;
     final anchor = _failoverAnchor;
     final position = _positionForEpisode(_routeIndex, _episodeIndex);
@@ -1003,6 +1029,42 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           ? '此片源暂无线路，请选择其他片源。'
           : '无法确认这条线路的对应集数，请在播放列表中手动选择。';
     });
+  }
+
+  Future<void> _downloadCurrent() async {
+    if (_queueingDownload || widget.offlinePaths != null) return;
+    final playback = _playback;
+    final mediaUrl = playback?.mediaUrl;
+    if (playback?.ready != true || mediaUrl == null || _episode == null) {
+      KazumiDialog.showToast(context: context, message: '请等待视频开始播放后下载');
+      return;
+    }
+    final title = _title, source = _source, episode = _episode!;
+    final road = _routeIndex, index = _episodeIndex;
+    setState(() => _queueingDownload = true);
+    try {
+      await inject<DownloadController>().startDirectDownload(
+        media: cinemaDownloadRecord(title, source, road),
+        episodeNumber: index + 1,
+        episodeName: episode.name,
+        road: road,
+        episodePageUrl: episode.url,
+        mediaUrl: mediaUrl,
+        headers: source.headers,
+      );
+      if (mounted) {
+        KazumiDialog.showToast(context: context, message: '已加入下载，可在下载管理查看进度');
+      }
+    } catch (_) {
+      if (mounted) {
+        KazumiDialog.showToast(
+          context: context,
+          message: '无法添加下载，请在下载管理检查任务后重试',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _queueingDownload = false);
+    }
   }
 
   Future<void> _setRate(double rate) async {
@@ -1451,6 +1513,18 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             icon: const Icon(Icons.playlist_play, size: 18),
             label: const Text('线路 / 选集'),
           ),
+          OutlinedButton.icon(
+            onPressed: _hasNext && !_loading ? () => _changeEpisode(1) : null,
+            icon: const Icon(Icons.skip_next_rounded, size: 20),
+            label: const Text('下一集'),
+          ),
+          OutlinedButton.icon(
+            onPressed: widget.offlinePaths != null || _queueingDownload
+                ? null
+                : _downloadCurrent,
+            icon: const Icon(Icons.download_rounded, size: 18),
+            label: Text(widget.offlinePaths != null ? '离线播放' : '下载本集'),
+          ),
           PopupMenuButton<double>(
             tooltip: '播放倍速',
             onSelected: _setRate,
@@ -1522,7 +1596,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         ),
       ],
       const SizedBox(height: 24),
-      if (!widget.title.isDirectMedia)
+      if (!widget.title.isDirectMedia && widget.offlinePaths == null)
         CinemaRatingsPanel(
           key: ValueKey('playing-work-details:${widget.title.key}'),
           // Playback routes belong to the same verified work. Keep its metadata
@@ -1652,6 +1726,19 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                           Icons.playlist_play,
                           _showEpisodes,
                         ),
+                        IconButton(
+                          tooltip: '下一集',
+                          icon: const Icon(Icons.skip_next_rounded, size: 22),
+                          onPressed: _hasNext && !_loading
+                              ? () => _changeEpisode(1)
+                              : null,
+                        ),
+                        if (widget.offlinePaths == null)
+                          _videoAction(
+                            '下载本集',
+                            Icons.download_rounded,
+                            _downloadCurrent,
+                          ),
                         IconButton(
                           tooltip: '跳过 ${_preferences.buttonSkipSeconds} 秒',
                           icon: const Icon(
@@ -2117,6 +2204,7 @@ class _CinemaPlayback {
   int width = 0;
   int height = 0;
   bool opened = false;
+  String? mediaUrl;
   bool ready = false;
   bool completed = false;
   Future<void>? _disposal;

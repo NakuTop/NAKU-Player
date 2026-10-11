@@ -1,4 +1,11 @@
 import 'dart:async';
+import 'bilibili_danmaku_dialog.dart';
+import 'package:kazumi/modules/danmaku/danmaku_module.dart';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:kazumi/services/player/local_danmaku_store.dart';
+import 'package:kazumi/pages/settings/danmaku/danmaku_service_status_tile.dart';
 import 'package:kazumi/utils/dandan_credentials.dart';
 import 'dart:math' as math;
 import 'dart:ui' show PointerDeviceKind;
@@ -31,13 +38,17 @@ Future<void> showDanmakuSourceSheet(
   required String initialKeyword,
   required PlayerDanmakuController danmakuController,
   required VoidCallback onBeforeApply,
+  int? episodeNumber,
+  bool Function()? isCurrent,
 }) async {
   Widget buildSheet(BuildContext _) => _DanmakuSourceSheet(
-        bangumiId: bangumiId,
-        initialKeyword: initialKeyword,
-        danmakuController: danmakuController,
-        onBeforeApply: onBeforeApply,
-      );
+    bangumiId: bangumiId,
+    initialKeyword: initialKeyword,
+    danmakuController: danmakuController,
+    onBeforeApply: onBeforeApply,
+    episodeNumber: episodeNumber,
+    isCurrent: isCurrent,
+  );
 
   if (MediaQuery.orientationOf(context) == Orientation.portrait) {
     await showAdaptiveBottomSheet<void>(
@@ -85,20 +96,25 @@ class _DanmakuSourceSheet extends StatefulWidget {
     required this.initialKeyword,
     required this.danmakuController,
     required this.onBeforeApply,
+    this.episodeNumber,
+    this.isCurrent,
   });
 
   final int bangumiId;
   final String initialKeyword;
   final PlayerDanmakuController danmakuController;
   final VoidCallback onBeforeApply;
+  final int? episodeNumber;
+  final bool Function()? isCurrent;
 
   @override
   State<_DanmakuSourceSheet> createState() => _DanmakuSourceSheetState();
 }
 
 class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
-  late final _keywordController =
-      TextEditingController(text: widget.initialKeyword);
+  late final _keywordController = TextEditingController(
+    text: widget.initialKeyword,
+  );
   final _episodeSearchController = TextEditingController();
   final _episodeJumpController = TextEditingController();
   final _episodeScrollController = ScrollController();
@@ -113,6 +129,7 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
   int? _segmentStart;
   String? _error;
   bool _loading = false;
+  bool get _canApply => mounted && (widget.isCurrent?.call() ?? true);
   bool _hasMore = false;
 
   @override
@@ -151,12 +168,17 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
       }
     });
     if (recordSearch) {
-      unawaited(GStorage.putStringListSettingByName(
-        _historyKey,
-        List<String>.of(_recentKeywords),
-      ).catchError((Object error) {
-        KazumiLogger().w('Danmaku search history failed to save', error: error);
-      }));
+      unawaited(
+        GStorage.putStringListSettingByName(
+          _historyKey,
+          List<String>.of(_recentKeywords),
+        ).catchError((Object error) {
+          KazumiLogger().w(
+            'Danmaku search history failed to save',
+            error: error,
+          );
+        }),
+      );
     }
     try {
       final response = await DanmakuApi.searchAnimes(keyword);
@@ -189,8 +211,9 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
       _segmentStart = null;
     });
     try {
-      final response =
-          await DanmakuApi.getDanDanEpisodesByDanDanBangumiID(anime.animeId);
+      final response = await DanmakuApi.getDanDanEpisodesByDanDanBangumiID(
+        anime.animeId,
+      );
       if (!mounted) return;
       setState(() {
         _loading = false;
@@ -210,15 +233,27 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
   Future<void> _selectEpisode(DanmakuEpisode episode) async {
     setState(() => _loading = true);
     try {
+      final entries = await DanmakuApi.getDanDanmakuByEpisodeID(
+        episode.episodeId,
+      );
+      if (!mounted || !_canApply) return;
       widget.onBeforeApply();
-      final hasDanmakus = await widget.danmakuController
-          .getDanDanmakuByEpisodeID(episode.episodeId);
-      if (!mounted) return;
+      if (widget.episodeNumber != null) {
+        await widget.danmakuController.localStore.remove(
+          widget.bangumiId,
+          widget.episodeNumber!,
+        );
+      }
+      if (!mounted || !_canApply) return;
+      widget.danmakuController.clearAndInvalidateScheduledDanmakus();
+      widget.danmakuController.applyDanmakuLoad(
+        DanmakuLoadResult.success(danmakus: entries, bangumiID: 0),
+        enableDanmaku: entries.isNotEmpty,
+      );
+      final hasDanmakus = entries.isNotEmpty;
       widget.danmakuController.setDanmakuEnabled(hasDanmakus);
       KazumiDialog.dismiss(context: context);
-      KazumiDialog.showToast(
-        message: hasDanmakus ? '已切换弹幕源' : '暂无弹幕',
-      );
+      KazumiDialog.showToast(message: hasDanmakus ? '已切换弹幕源' : '暂无弹幕');
     } catch (error) {
       if (!mounted) return;
       setState(() => _loading = false);
@@ -291,8 +326,9 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
   void _goBack() {
     setState(() {
       _error = null;
-      _step =
-          _step == _SourceStep.episode ? _SourceStep.anime : _SourceStep.search;
+      _step = _step == _SourceStep.episode
+          ? _SourceStep.anime
+          : _SourceStep.search;
     });
   }
 
@@ -318,8 +354,9 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
                 step: _step,
                 keyword: _keywordController.text.trim(),
                 animeTitle: _animeTitle,
-                onBack:
-                    _step == _SourceStep.search || _loading ? null : _goBack,
+                onBack: _step == _SourceStep.search || _loading
+                    ? null
+                    : _goBack,
                 onClose: () => KazumiDialog.dismiss(context: context),
               ),
               Flexible(child: _loading ? _buildLoading() : _buildBody()),
@@ -328,6 +365,84 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
         ),
       ),
     );
+  }
+
+  Future<void> _importBilibili() async {
+    if (_loading || widget.episodeNumber == null) return;
+    final entries = await showDialog<List<DanmakuEntry>>(
+      context: context,
+      builder: (_) => const BilibiliDanmakuDialog(),
+    );
+    if (!mounted || !_canApply || entries == null) return;
+    setState(() => _loading = true);
+    try {
+      await widget.danmakuController.localStore.save(
+        widget.bangumiId,
+        widget.episodeNumber!,
+        entries,
+      );
+      await GStorage.putSetting(SettingsKeys.danmakuBiliBiliSource, true);
+      if (!mounted || !_canApply) return;
+      widget.onBeforeApply();
+      widget.danmakuController.clearAndInvalidateScheduledDanmakus();
+      widget.danmakuController.applyDanmakuLoad(
+        DanmakuLoadResult.success(danmakus: entries, bangumiID: 0),
+        enableDanmaku: true,
+      );
+      KazumiDialog.dismiss(context: context);
+      KazumiDialog.showToast(message: '已加载 ${entries.length} 条 B 站弹幕并保存到本集');
+    } catch (_) {
+      if (mounted) setState(() => _error = '弹幕保存失败，请检查本机存储空间');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _importLocal() async {
+    if (_loading || widget.episodeNumber == null) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final selection = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xml', 'json'],
+        withData: false,
+      );
+      if (selection == null || !_canApply) return;
+      final file = File(selection.files.single.path!);
+      if (await file.length() > maxDanmakuImportBytes) {
+        throw const FormatException('请选择小于 8 MB 的弹幕文件');
+      }
+      final entries = await compute(
+        parseLocalDanmaku,
+        await file.readAsString(),
+      );
+      if (!mounted || !_canApply) return;
+      await widget.danmakuController.localStore.save(
+        widget.bangumiId,
+        widget.episodeNumber!,
+        entries,
+      );
+      if (!mounted || !_canApply) return;
+      widget.onBeforeApply();
+      widget.danmakuController.clearAndInvalidateScheduledDanmakus();
+      widget.danmakuController.applyDanmakuLoad(
+        DanmakuLoadResult.success(danmakus: entries, bangumiID: 0),
+        enableDanmaku: true,
+      );
+      KazumiDialog.dismiss(context: context);
+      KazumiDialog.showToast(
+        message: '已导入 ${entries.length} 条弹幕，本集再次播放或离线播放时自动加载',
+      );
+    } on FormatException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (_) {
+      if (mounted) setState(() => _error = '弹幕文件无法读取，请检查文件格式');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   Widget _buildLoading() {
@@ -391,15 +506,25 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                if (widget.episodeNumber != null)
+                  FilledButton.tonalIcon(
+                    onPressed: _importBilibili,
+                    icon: const Icon(Icons.subtitles_outlined),
+                    label: const Text('从 Bilibili 加载本集弹幕'),
+                  ),
+                const DanmakuServiceStatusTile(),
+                if (widget.episodeNumber != null)
+                  OutlinedButton.icon(
+                    onPressed: _importLocal,
+                    icon: const Icon(Icons.file_open_outlined),
+                    label: const Text('导入本集弹幕（XML / JSON）'),
+                  ),
                 if (_error != null) ...[
                   Text(_error!, style: TextStyle(color: colors.error)),
                   const SizedBox(height: 12),
                 ],
                 if (_recentKeywords.isNotEmpty) ...[
-                  Text(
-                    '最近搜索',
-                    style: Theme.of(context).textTheme.labelLarge,
-                  ),
+                  Text('最近搜索', style: Theme.of(context).textTheme.labelLarge),
                   const SizedBox(height: 10),
                   Wrap(
                     spacing: 8,
@@ -456,9 +581,7 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
         compact: true,
         icon: Icons.search_off,
         title: _error!,
-        actions: [
-          StateActionButton.tonal(onPressed: _goBack, text: '返回搜索'),
-        ],
+        actions: [StateActionButton.tonal(onPressed: _goBack, text: '返回搜索')],
       );
     }
     return Column(
@@ -477,20 +600,23 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
             shrinkWrap: true,
             padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
             itemCount: _animes.length,
-            separatorBuilder: (_, _) =>
-                const SizedBox(height: splitListRowGap),
+            separatorBuilder: (_, _) => const SizedBox(height: splitListRowGap),
             itemBuilder: (context, index) {
               final anime = _animes[index];
               return SplitListRow(
-                topRadius:
-                    index == 0 ? splitListOuterRadius : splitListInnerRadius,
+                topRadius: index == 0
+                    ? splitListOuterRadius
+                    : splitListInnerRadius,
                 bottomRadius: index == _animes.length - 1
                     ? splitListOuterRadius
                     : splitListInnerRadius,
                 onTap: () => _selectAnime(anime),
                 child: ListTile(
-                  title: Text(anime.animeTitle,
-                      maxLines: 2, overflow: TextOverflow.ellipsis),
+                  title: Text(
+                    anime.animeTitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                   subtitle: anime.typeDescription.isEmpty
                       ? null
                       : Text(anime.typeDescription),
@@ -548,7 +674,8 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
                     final episode = visible[index];
                     return Padding(
                       padding: const EdgeInsets.symmetric(
-                          vertical: splitListRowGap / 2),
+                        vertical: splitListRowGap / 2,
+                      ),
                       child: SplitListRow(
                         topRadius: index == 0
                             ? splitListOuterRadius
@@ -558,8 +685,11 @@ class _DanmakuSourceSheetState extends State<_DanmakuSourceSheet> {
                             : splitListInnerRadius,
                         onTap: () => _selectEpisode(episode),
                         child: ListTile(
-                          title: Text(episode.episodeTitle,
-                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                          title: Text(
+                            episode.episodeTitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       ),
                     );
@@ -587,16 +717,16 @@ class _SheetHeader extends StatelessWidget {
   final VoidCallback onClose;
 
   String get title => switch (step) {
-        _SourceStep.search => '选择弹幕源',
-        _SourceStep.anime => '选择番剧',
-        _SourceStep.episode => '选择分集',
-      };
+    _SourceStep.search => '选择弹幕源',
+    _SourceStep.anime => '选择番剧',
+    _SourceStep.episode => '选择分集',
+  };
 
   String? get subtitle => switch (step) {
-        _SourceStep.search => null,
-        _SourceStep.anime => keyword,
-        _SourceStep.episode => animeTitle,
-      };
+    _SourceStep.search => null,
+    _SourceStep.anime => keyword,
+    _SourceStep.episode => animeTitle,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -623,10 +753,12 @@ class _SheetHeader extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 24),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text(subtitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall),
+                child: Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
               ),
             ),
           const SizedBox(height: 10),
@@ -637,13 +769,14 @@ class _SheetHeader extends StatelessWidget {
                 final color = index == step.index
                     ? colors.primary
                     : index < step.index
-                        ? colors.primaryContainer
-                        : colors.outlineVariant;
+                    ? colors.primaryContainer
+                    : colors.outlineVariant;
                 return Expanded(
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 200),
                     margin: EdgeInsets.only(
-                        right: index == _SourceStep.values.length - 1 ? 0 : 6),
+                      right: index == _SourceStep.values.length - 1 ? 0 : 6,
+                    ),
                     height: 4,
                     decoration: BoxDecoration(
                       color: color,
@@ -752,10 +885,7 @@ class _EpisodeToolbar extends StatelessWidget {
               height: 32,
               child: Row(
                 children: [
-                  Text(
-                    '集数',
-                    style: Theme.of(context).textTheme.labelMedium,
-                  ),
+                  Text('集数', style: Theme.of(context).textTheme.labelMedium),
                   const SizedBox(width: 10),
                   Expanded(
                     child: ScrollConfiguration(
@@ -777,7 +907,8 @@ class _EpisodeToolbar extends StatelessWidget {
                             _SegmentChip(
                               label:
                                   '${index * _episodeSegmentSize + 1}-${((index + 1) * _episodeSegmentSize).clamp(0, total)}',
-                              selected: segmentStart ==
+                              selected:
+                                  segmentStart ==
                                   index * _episodeSegmentSize + 1,
                               onTap: () =>
                                   onSegment(index * _episodeSegmentSize + 1),

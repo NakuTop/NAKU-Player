@@ -82,6 +82,47 @@ void main() {
     },
   );
 
+  test(
+    'runtime credentials are refreshed on each request; service rejection stays failure',
+    () async {
+      var current = const DandanCredentials(id: 'first', secret: 'fixture');
+      final adapter = _RecordingAdapter();
+      final dio = Dio()..httpClientAdapter = adapter;
+      addTearDown(dio.close);
+      final client = DanmakuClient(
+        dio: dio,
+        credentialProvider: () async => current,
+      );
+      const url = 'https://api.dandanplay.net/api/v2/comment/1';
+      await client.get(url);
+      current = const DandanCredentials(id: 'second', secret: 'fixture2');
+      await client.get(url);
+      expect(adapter.requests.map((r) => r.headers['X-AppId']), [
+        'first',
+        'second',
+      ]);
+      current = const DandanCredentials(id: '', secret: '');
+      await expectLater(
+        client.get(url),
+        throwsA(isA<DanmakuNotConfiguredException>()),
+      );
+      expect(adapter.requests.length, 2);
+      dio.httpClientAdapter = _RecordingAdapter(
+        body: '{"success":false,"errorCode":403}',
+      );
+      await expectLater(
+        DanmakuClient(
+          dio: dio,
+          credentials: const DandanCredentials(
+            id: 'fixture',
+            secret: 'fixture',
+          ),
+        ).get(url),
+        throwsA(isA<DanmakuServiceException>()),
+      );
+    },
+  );
+
   test('configuration failures remain distinct from empty danmaku', () {
     final result = DanmakuLoadResult.failed(
       bangumiID: 0,
@@ -166,6 +207,8 @@ void main() {
 }
 
 class _RecordingAdapter implements HttpClientAdapter {
+  _RecordingAdapter({this.body = '{"comments":[]}'});
+  final String body;
   final requests = <RequestOptions>[];
 
   @override
@@ -176,7 +219,7 @@ class _RecordingAdapter implements HttpClientAdapter {
   ) async {
     requests.add(options);
     return ResponseBody.fromString(
-      '{"comments":[]}',
+      body,
       200,
       headers: {
         Headers.contentTypeHeader: [Headers.jsonContentType],

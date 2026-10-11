@@ -17,9 +17,30 @@ flutter build macos --release --no-pub
 
 使用仓库指定的 Flutter / Dart、Xcode 和已提交的 `macos/Podfile.lock`。网络测试单独启用，并区分接口访问、实际视频播放、双方同步和更新安装链路的验收结果。不要把本地两客户端测试表述为已通过真实跨国网络验收。
 
+1.9.0 起在 `pubspec.yaml` 中按项目关闭 SwiftPM，macOS 原生依赖统一通过 CocoaPods 构建。`Podfile` 为锁定的 media-kit 版本显式加入上游 C 桥接文件及公开头文件，保持其 `mpv/` 目录结构；不修改全局插件缓存。切换构建方式时应清理旧的构建产物，避免 SwiftPM 残留的同名 `.swiftmodule` 优先于 CocoaPods 框架被载入。本版本包含新的钥匙串原生通道，不能复用旧版应用宿主。
+
+如果受限构建环境无法打开 `.xcworkspace`，在 `flutter pub get` 和 `pod install` 后，可从仓库根目录按顺序构建 Pods 和应用项目；两个命令必须使用相同的产物目录：
+
+```sh
+xcodebuild build -project macos/Pods/Pods.xcodeproj -target Pods-Runner \
+  -configuration Release -sdk macosx -arch arm64 -arch x86_64 \
+  ONLY_ACTIVE_ARCH=NO \
+  SYMROOT="$PWD/build/macos/Build/Products" \
+  OBJROOT="$PWD/build/macos/Build/Intermediates.noindex"
+xcodebuild build -project macos/Runner.xcodeproj -scheme Runner \
+  -configuration Release -sdk macosx -destination 'generic/platform=macOS' \
+  -derivedDataPath build/macos ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO \
+  SYMROOT="$PWD/build/macos/Build/Products" \
+  OBJROOT="$PWD/build/macos/Build/Intermediates.noindex"
+```
+
+这仍是完整的原生与 Flutter 构建。系统缓存目录权限需由宿主授权，不应通过改动依赖代码绕过。
+
 ## 弹幕服务配置
 
 弹弹play 的在线接口需要本项目自己的 AppId / AppSecret，用户无需登录不等于接口无需应用签名。按[官方接入文档](https://doc.dandanplay.com/open/)前往[开发者平台](https://dev.dandanplay.com)申请；不要提取或复用其他应用的凭据。
+
+macOS 1.9.0 起也可在「设置 → 弹幕 → 弹幕服务配置」填写、保存和测试连接。运行时配置仅写入本机钥匙串，不进入 Hive/WebDAV/导出；其他平台暂保留编译时配置。Bilibili公开弹幕和本地文件导入独立可用，见[使用说明](DOWNLOADS_AND_DANMAKU.md)。
 
 本项目保留编译时配置 `DANDANAPI_APPID` 和 `DANDANAPI_KEY`。将这两个字段保存在仓库之外、仅发布者可读的私有 JSON 文件，用环境变量 `NAKU_PRIVATE_DEFINES` 指向该文件，然后构建：
 

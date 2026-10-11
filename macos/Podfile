@@ -39,5 +39,36 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_macos_build_settings(target)
+    # This media-kit revision keeps its C bridge outside the podspec directory.
+    # CocoaPods' source glob omits those parent-directory files; include the same
+    # bridge used by its SwiftPM target so Swift and Dart share one mpv library.
+    if target.name == 'media_kit_video'
+      plugin_root = File.realpath(File.join(__dir__, 'Flutter/ephemeral/.symlinks/plugins/media_kit_video'))
+      bridge = File.join(plugin_root, 'common/mpv/media_kit_mpv.c')
+      reference = installer.pods_project.new_file(bridge)
+      target.source_build_phase.add_file_reference(reference, true)
+      target.build_configurations.each do |config|
+        config.build_settings['HEADER_SEARCH_PATHS'] = ['$(inherited)', '"$(PODS_ROOT)/../Flutter/ephemeral/.symlinks/plugins/media_kit_video/common/mpv/include"']
+        config.build_settings['CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES'] = 'YES'
+      end
+      # Runner also imports the generated Swift module. Export the C headers
+      # with their mpv/ hierarchy so it does not rely on private search paths.
+      headers = ['media_kit_mpv.h'] + Dir.children(File.join(plugin_root, 'common/mpv/include/mpv')).grep(/\.h$/).sort.map { |name| "mpv/#{name}" }
+      phase = target.new_shell_script_build_phase('Export media-kit mpv bridge headers')
+      phase.input_paths = headers.map { |name| "$(PODS_ROOT)/../Flutter/ephemeral/.symlinks/plugins/media_kit_video/common/mpv/include/#{name}" }
+      phase.output_paths = headers.map { |name| "$(TARGET_BUILD_DIR)/$(PUBLIC_HEADERS_FOLDER_PATH)/#{name}" }
+      phase.shell_script = <<~'SCRIPT'
+        set -eu
+        bridge_headers="${PODS_ROOT}/../Flutter/ephemeral/.symlinks/plugins/media_kit_video/common/mpv/include"
+        public_headers="${TARGET_BUILD_DIR}/${PUBLIC_HEADERS_FOLDER_PATH}"
+        mkdir -p "${public_headers}/mpv"
+        cp "${bridge_headers}/media_kit_mpv.h" "${public_headers}/media_kit_mpv.h"
+        cp "${bridge_headers}/mpv/"*.h "${public_headers}/mpv/"
+      SCRIPT
+      target.build_phases.unshift(target.build_phases.delete(phase))
+      umbrella = File.join(installer.sandbox.root, 'Target Support Files/media_kit_video/media_kit_video-umbrella.h')
+      header = File.read(umbrella)
+      File.write(umbrella, header + "\n#import \"media_kit_mpv.h\"\n") unless header.include?('media_kit_mpv.h')
+    end
   end
 end

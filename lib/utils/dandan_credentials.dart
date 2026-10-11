@@ -17,10 +17,16 @@ class DandanCredentials {
 class DanmakuNotConfiguredException implements Exception {
   const DanmakuNotConfiguredException();
 
-  static const message = '此版本尚未配置弹幕服务，请在弹幕设置查看说明';
+  static const message = '尚未配置弹幕服务，请在弹幕设置填写凭据，或导入本地弹幕';
 
   @override
   String toString() => message;
+}
+
+class DanmakuServiceException implements Exception {
+  const DanmakuServiceException();
+  @override
+  String toString() => '弹幕服务未通过验证，请检查凭据或稍后重试';
 }
 
 String danmakuFailureMessage(
@@ -28,4 +34,6 @@ String danmakuFailureMessage(
   String fallback = '弹幕加载失败，可手动检索',
 }) => error is DanmakuNotConfiguredException
     ? DanmakuNotConfiguredException.message
+    : error is DanmakuServiceException
+    ? error.toString()
     : fallback;

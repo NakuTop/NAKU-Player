@@ -22,6 +22,16 @@ class DownloadRecord {
   @HiveField(5)
   DateTime createdAt;
 
+  /// Original cinema identity and routes. Empty for existing anime records.
+  @HiveField(6, defaultValue: '')
+  String mediaMetadata;
+
+  @HiveField(7, defaultValue: '')
+  String sourceLabel;
+
+  bool get isCinema => mediaMetadata.isNotEmpty;
+  String get displaySource => sourceLabel.isEmpty ? pluginName : sourceLabel;
+
   String get key => '${pluginName}_$bangumiId';
 
   DownloadRecord(
@@ -30,8 +40,10 @@ class DownloadRecord {
     this.bangumiCover,
     this.pluginName,
     this.episodes,
-    this.createdAt,
-  );
+    this.createdAt, {
+    this.mediaMetadata = '',
+    this.sourceLabel = '',
+  });
 }
 
 @HiveType(typeId: 8)
@@ -87,6 +99,10 @@ class DownloadEpisode {
   @HiveField(15, defaultValue: 0)
   int danDanBangumiID;
 
+  /// Headers needed to resume a resolved direct-media download after restart.
+  @HiveField(16, defaultValue: '')
+  String requestHeadersJson;
+
   DownloadEpisode(
     this.episodeNumber,
     this.episodeName,
@@ -104,6 +120,7 @@ class DownloadEpisode {
     this.episodePageUrl, {
     this.danmakuData = '',
     this.danDanBangumiID = 0,
+    this.requestHeadersJson = '',
   });
 }
 

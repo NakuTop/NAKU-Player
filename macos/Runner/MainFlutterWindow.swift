@@ -3,6 +3,7 @@ import FlutterMacOS
 import window_manager
 import CFNetwork
 import Sparkle
+import Security
 
 // Decoration must never become the target of a mouse event. Flutter handles
 // activation clicks itself, including when the app has just regained focus.
@@ -109,6 +110,58 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+
+    let danmakuChannel = FlutterMethodChannel(
+      name: "naku/danmaku-credentials", binaryMessenger: flutterViewController.engine.binaryMessenger)
+    danmakuChannel.setMethodCallHandler { call, result in
+      let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: "com.shenminghao.yingchuan.dandanplay",
+        kSecAttrAccount as String: "client",
+        kSecAttrSynchronizable as String: false,
+      ]
+      func failure(_ status: OSStatus) {
+        result(FlutterError(code: "keychain", message: "无法访问本机钥匙串 (\(status))", details: nil))
+      }
+      switch call.method {
+      case "read":
+        var request = query
+        request[kSecReturnData as String] = true
+        request[kSecMatchLimit as String] = kSecMatchLimitOne
+        var value: CFTypeRef?
+        let status = SecItemCopyMatching(request as CFDictionary, &value)
+        if status == errSecItemNotFound { result(nil); return }
+        guard status == errSecSuccess else { failure(status); return }
+        guard let data = value as? Data,
+              let credentials = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
+          result(FlutterError(code: "keychain_data", message: "弹幕凭据无法读取，请重新填写", details: nil))
+          return
+        }
+        result(credentials)
+      case "save":
+        guard let args = call.arguments as? [String: String],
+              let id = args["id"], let secret = args["secret"],
+              !id.isEmpty, !secret.isEmpty, id.count <= 256, secret.count <= 1024,
+              !id.contains("\n"), !id.contains("\r"),
+              !secret.contains("\n"), !secret.contains("\r"),
+              let data = try? JSONSerialization.data(withJSONObject: ["id": id, "secret": secret]) else {
+          result(FlutterError(code: "invalid", message: "请填写有效的弹幕凭据", details: nil)); return
+        }
+        let updates = [kSecValueData as String: data] as CFDictionary
+        var status = SecItemUpdate(query as CFDictionary, updates)
+        if status == errSecItemNotFound {
+          var item = query
+          item[kSecValueData as String] = data
+          item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+          status = SecItemAdd(item as CFDictionary, nil)
+        }
+        if status == errSecSuccess { result(nil) } else { failure(status) }
+      case "clear":
+        let status = SecItemDelete(query as CFDictionary)
+        if status == errSecSuccess || status == errSecItemNotFound { result(nil) } else { failure(status) }
+      default: result(FlutterMethodNotImplemented)
+      }
+    }
 
     let appearanceChannel = FlutterMethodChannel(
       name: "naku/appearance", binaryMessenger: flutterViewController.engine.binaryMessenger)
