@@ -8,6 +8,7 @@ import 'package:kazumi/plugins/plugins.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 
 import 'cinema_models.dart';
+import 'cinema_seasons.dart';
 
 class CinemaSourceException implements Exception {
   const CinemaSourceException(this.message);
@@ -181,7 +182,7 @@ class CinemaRepository {
     int page = 1,
   }) async {
     source.validate();
-    final query = keyword.trim();
+    final query = cinemaSourceQuery(keyword);
     if (source.kind == CinemaSourceKind.direct ||
         query.isEmpty ||
         (source.kind == CinemaSourceKind.kazumi && page > 1)) {
@@ -249,8 +250,15 @@ class CinemaRepository {
     }
     if (source.kind == CinemaSourceKind.direct) return title;
     if (source.kind == CinemaSourceKind.maccms) {
-      final body = await _request(source, {'ac': 'detail', 'ids': title.id});
-      final items = parseMacCmsPage(source, body).items;
+      final body = await _request(source, {
+        'ac': 'detail',
+        'ids': cinemaCatalogId(title.id),
+      });
+      final items = parseMacCmsPage(
+        source,
+        body,
+        splitSeasons: cinemaIsSeasonProjection(title),
+      ).items;
       final match = items.where((item) => item.id == title.id).firstOrNull;
       if (match == null) throw const CinemaSourceException('片源未返回此影片详情，可能已下架');
       return match;
@@ -357,6 +365,7 @@ class CinemaRepository {
     CinemaSource source,
     Map<String, dynamic> data, {
     List<CinemaCategory> categories = const [],
+    bool splitSeasons = true,
   }) {
     if (data['list'] is! List) throw const FormatException('缺少 MacCMS list 数组');
     if ((data['list'] as List).any((entry) => entry is! Map)) {
@@ -417,7 +426,7 @@ class CinemaRepository {
       );
     }).toList();
     return CinemaPage(
-      items: items,
+      items: splitSeasons ? items.expand(cinemaSplitSeasons).toList() : items,
       categories: categories,
       page: intValue(data['page'], 1),
       pageCount: intValue(data['pagecount'], 1),

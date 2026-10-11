@@ -51,12 +51,17 @@ class DioFactory {
   );
 
   static Dio get downloadDio => _downloadDio ??= _create(
-    NetworkConfig.fromSettings(
+    NetworkConfig.forMedia(
       connectTimeout: const Duration(seconds: 15),
       receiveTimeout: const Duration(seconds: 30),
     ),
     defaultHeaders: {'user-agent': getRandomUA()},
   );
+
+  static void resetDownloadClient() {
+    _downloadDio?.close();
+    _downloadDio = null;
+  }
 
   static Dio createForConfig(NetworkConfig config) {
     return _create(config);

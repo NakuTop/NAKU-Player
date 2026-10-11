@@ -7,12 +7,19 @@ import 'package:path_provider/path_provider.dart';
 import 'cinema_models.dart';
 import 'cinema_library_identity.dart';
 
-/// A one-time addition of presets, independent of the user's current choices.
+/// A one-time preset migration. Library records are never removed with sources.
 class CinemaSourcePack {
-  const CinemaSourcePack({required this.id, required this.sources});
+  const CinemaSourcePack({
+    required this.id,
+    required this.sources,
+    this.removedSourceIds = const [],
+    this.backupVersion = '0.3.0',
+  });
 
   final String id;
   final List<CinemaSource> sources;
+  final List<String> removedSourceIds;
+  final String backupVersion;
 }
 
 /// Restores only the removed work, once, without replacing newer user activity.
@@ -126,12 +133,16 @@ class CinemaStore extends ChangeNotifier {
             .toList();
         _validatePacks(_sourcePacks);
         if (pending.isNotEmpty) {
-          final ids = sources.map((source) => source.id).toSet();
-          final urls = sources
-              .map((source) => _canonicalUrl(source.url))
-              .toSet();
-          final additions = <CinemaSource>[];
           for (final pack in pending) {
+            sources.removeWhere((s) => pack.removedSourceIds.contains(s.id));
+            sourceMaps.removeWhere(
+              (s) => pack.removedSourceIds.contains(s['id']),
+            );
+            final ids = sources.map((source) => source.id).toSet();
+            final urls = sources
+                .map((source) => _canonicalUrl(source.url))
+                .toSet();
+            final additions = <CinemaSource>[];
             for (final source in pack.sources) {
               final url = _canonicalUrl(source.url);
               if (ids.contains(source.id) || urls.contains(url)) continue;
@@ -139,19 +150,19 @@ class CinemaStore extends ChangeNotifier {
               ids.add(source.id);
               urls.add(url);
             }
-            // Even a skipped preset is handled: removing a user-owned duplicate
-            // later must not cause the corresponding preset to come back.
+            final insertion =
+                sources.lastIndexWhere(
+                  (source) => source.kind == CinemaSourceKind.maccms,
+                ) +
+                1;
+            sources.insertAll(insertion, additions);
+            sourceMaps.insertAll(
+              insertion,
+              additions.map((source) => source.toJson()),
+            );
+            // A skipped duplicate is handled too; a deleted preset stays deleted.
             applied.add(pack.id);
           }
-          final lastMovieSource = sources.lastIndexWhere(
-            (source) => source.kind == CinemaSourceKind.maccms,
-          );
-          final insertion = lastMovieSource + 1;
-          sources.insertAll(insertion, additions);
-          sourceMaps.insertAll(
-            insertion,
-            additions.map((source) => source.toJson()),
-          );
         }
         if (pending.isNotEmpty || needsConsolidation) {
           final upgraded = {
@@ -166,7 +177,9 @@ class CinemaStore extends ChangeNotifier {
           if (needsConsolidation) {
             await _backupBeforeWorkConsolidation(original);
           }
-          if (pending.isNotEmpty) await _backupBeforeSourceUpgrade(original);
+          for (final pack in pending) {
+            await _backupBeforeSourceUpgrade(original, pack.backupVersion);
+          }
           await _writeEncoded(
             const JsonEncoder.withIndent('  ').convert(upgraded),
           );
@@ -278,6 +291,27 @@ class CinemaStore extends ChangeNotifier {
       _sources.add(source);
     } else {
       _sources[index] = source;
+    }
+    _notify();
+    await _persist();
+  }
+
+  Future<void> reorderMovieSources(List<String> ids) async {
+    await load();
+    final movieSources = {
+      for (final s in _sources)
+        if (s.kind == CinemaSourceKind.maccms) s.id: s,
+    };
+    if (ids.length != movieSources.length ||
+        ids.toSet().length != ids.length ||
+        !ids.every(movieSources.containsKey)) {
+      throw const FormatException('片源列表已变化，请重新拖动');
+    }
+    var next = 0;
+    for (var i = 0; i < _sources.length; i++) {
+      if (_sources[i].kind == CinemaSourceKind.maccms) {
+        _sources[i] = movieSources[ids[next++]]!;
+      }
     }
     _notify();
     await _persist();
@@ -521,8 +555,11 @@ class CinemaStore extends ChangeNotifier {
     await temporary.rename(file.path);
   }
 
-  Future<void> _backupBeforeSourceUpgrade(List<int> original) async {
-    final backup = File('${_file!.path}.pre-0.3.0.bak');
+  Future<void> _backupBeforeSourceUpgrade(
+    List<int> original,
+    String version,
+  ) async {
+    final backup = File('${_file!.path}.pre-$version.bak');
     if (await backup.exists()) return;
     final temporary = File('${backup.path}.tmp');
     await temporary.writeAsBytes(original, flush: true);
@@ -866,7 +903,9 @@ Map<String, dynamic> _validatedLibrary(Object? value) {
 void _validatePacks(List<CinemaSourcePack> packs) {
   final ids = <String>{};
   for (final pack in packs) {
-    if (pack.id.trim().isEmpty || !ids.add(pack.id)) {
+    if (pack.id.trim().isEmpty ||
+        !ids.add(pack.id) ||
+        !RegExp(r'^\d+\.\d+\.\d+$').hasMatch(pack.backupVersion)) {
       throw const FormatException('片源升级包 ID 无效');
     }
     for (final source in pack.sources) {
@@ -919,24 +958,40 @@ const cinema030SourcePack = CinemaSourcePack(
   ],
 );
 
-const bundledCinemaSourcePacks = [cinema030SourcePack];
+const cinema110SourcePack = CinemaSourcePack(
+  id: 'cinema-sources-1.10.0',
+  backupVersion: '1.10.0',
+  removedSourceIds: ['maccms-modu', 'maccms-360'],
+  sources: [
+    CinemaSource(
+      id: 'maccms-feifan',
+      name: '非凡影视',
+      kind: CinemaSourceKind.maccms,
+      url: 'http://ffzy5.tv/api.php/provide/vod',
+      description: '第三方电影 / 剧集目录',
+    ),
+    CinemaSource(
+      id: 'maccms-juliang',
+      name: '巨量资源',
+      kind: CinemaSourceKind.maccms,
+      url: 'https://api.juliang.live/api/provide/vod/',
+      description: '第三方电影 / 剧集目录',
+    ),
+  ],
+);
+
+const bundledCinemaSourcePacks = [cinema030SourcePack, cinema110SourcePack];
 
 /// Public third-party catalogues verified on 2026-10-08. Availability and quality
 /// are claims of each provider; these are not Netflix or studio endpoints.
 final List<CinemaSource> bundledCinemaSources = [
+  ...cinema110SourcePack.sources,
   const CinemaSource(
     id: 'maccms-guangsu',
     name: '光速影视',
     kind: CinemaSourceKind.maccms,
     url: 'https://api.guangsuapi.com/api.php/provide/vod/',
     description: '第三方 MacCMS 目录 · 电影 / 剧集 / 动漫',
-  ),
-  const CinemaSource(
-    id: 'maccms-modu',
-    name: '魔都影视',
-    kind: CinemaSourceKind.maccms,
-    url: 'https://www.mdzyapi.com/api.php/provide/vod/',
-    description: '第三方备用目录 · 短样本 1920×1080，非全片验证',
   ),
   const CinemaSource(
     id: 'maccms-haohua',
@@ -952,7 +1007,7 @@ final List<CinemaSource> bundledCinemaSources = [
     url: 'https://api.wujinapi.me/api.php/provide/vod/',
     description: '第三方 MacCMS 目录 · 电影样本发现时间轴异常，请按片核验',
   ),
-  ...cinema030SourcePack.sources,
+  ...cinema030SourcePack.sources.where((s) => s.id != 'maccms-360'),
   CinemaSource(
     id: 'kazumi-dm84',
     name: 'DM84',

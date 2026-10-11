@@ -20,12 +20,12 @@ CinemaTitle _title(
 
 void main() {
   test(
-    'same work keeps all source variants and prefers Modu as representative',
+    'same work keeps all source variants and prefers Feifan as representative',
     () {
       final first = _title('a', source: 'maccms-360', doubanId: '1889243');
       final preferred = CinemaTitle(
         id: 'b',
-        sourceId: 'maccms-modu',
+        sourceId: 'maccms-feifan',
         title: '星际穿越（原声版）',
         year: '2014',
         category: '剧情片',
@@ -305,7 +305,7 @@ void main() {
       final other = _title('other', source: 'fast', name: '另一部电影');
       final preferred = _title(
         'preferred',
-        source: 'maccms-modu',
+        source: 'maccms-feifan',
         doubanId: '1889243',
       );
       final language = _title(

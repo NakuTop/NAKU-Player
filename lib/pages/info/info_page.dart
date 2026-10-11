@@ -47,8 +47,9 @@ class _InfoPageState extends State<InfoPage>
     '关联',
     '制作人员',
   ];
-  static const Duration _minimumBangumiInfoLoadingDuration =
-      Duration(milliseconds: 600);
+  static const Duration _minimumBangumiInfoLoadingDuration = Duration(
+    milliseconds: 600,
+  );
 
   InfoController get infoController => widget.infoController;
   late final TabController infoTabController;
@@ -83,8 +84,9 @@ class _InfoPageState extends State<InfoPage>
       charactersIsEmpty = false;
     });
     try {
-      await infoController
-          .queryBangumiCharactersByID(infoController.bangumiItem.id);
+      await infoController.queryBangumiCharactersByID(
+        infoController.bangumiItem.id,
+      );
       if (mounted) {
         setState(() {
           charactersIsLoading = false;
@@ -112,8 +114,9 @@ class _InfoPageState extends State<InfoPage>
       staffIsEmpty = false;
     });
     try {
-      await infoController
-          .queryBangumiStaffsByID(infoController.bangumiItem.id);
+      await infoController.queryBangumiStaffsByID(
+        infoController.bangumiItem.id,
+      );
       if (mounted) {
         setState(() {
           staffIsLoading = false;
@@ -135,8 +138,9 @@ class _InfoPageState extends State<InfoPage>
 
   Future<void> loadRelations() async {
     try {
-      await infoController
-          .queryBangumiRelationsByID(infoController.bangumiItem.id);
+      await infoController.queryBangumiRelationsByID(
+        infoController.bangumiItem.id,
+      );
     } catch (e) {
       KazumiLogger().e('InfoPage: failed to load relations', error: e);
     }
@@ -150,8 +154,9 @@ class _InfoPageState extends State<InfoPage>
     });
     try {
       await infoController.queryBangumiCommentsByID(
-          infoController.bangumiItem.id,
-          refresh: !loadMore);
+        infoController.bangumiItem.id,
+        refresh: !loadMore,
+      );
       if (mounted) {
         setState(() {
           commentsIsLoading = false;
@@ -170,14 +175,16 @@ class _InfoPageState extends State<InfoPage>
   }
 
   Future<void> _openReviewEditor() async {
-    final token =
-        GStorage.getSetting(SettingsKeys.bangumiAccessToken).toString().trim();
+    final token = GStorage.getSetting(
+      SettingsKeys.bangumiAccessToken,
+    ).toString().trim();
     if (token.isEmpty) {
       KazumiDialog.showToast(message: '请先在同步设置中绑定 Bangumi');
       return;
     }
-    final localType = infoController.collectController
-        .getCollectType(infoController.bangumiItem);
+    final localType = infoController.collectController.getCollectType(
+      infoController.bangumiItem,
+    );
     if (localType == 0) {
       KazumiDialog.showToast(message: '请先追番');
       return;
@@ -245,8 +252,9 @@ class _InfoPageState extends State<InfoPage>
 
   Future<void> onCommentsTabSelected() async {
     final interest = infoController.bangumiItem.interest;
-    final token =
-        GStorage.getSetting(SettingsKeys.bangumiAccessToken).toString().trim();
+    final token = GStorage.getSetting(
+      SettingsKeys.bangumiAccessToken,
+    ).toString().trim();
     if (interest != null && token.isNotEmpty) {
       final updated = await infoController.fillInterestUserProfileIfNeeded();
       if (!mounted) return;
@@ -283,8 +291,10 @@ class _InfoPageState extends State<InfoPage>
         type: 'attach',
       );
     } catch (e) {
-      KazumiLogger()
-          .e('InfoPage: failed to query bangumi info by ID', error: e);
+      KazumiLogger().e(
+        'InfoPage: failed to query bangumi info by ID',
+        error: e,
+      );
     } finally {
       if (mounted) {
         await _waitForMinimumBangumiInfoLoadingDuration(loadingStartedAt);
@@ -298,7 +308,8 @@ class _InfoPageState extends State<InfoPage>
   }
 
   Future<void> _waitForMinimumBangumiInfoLoadingDuration(
-      DateTime loadingStartedAt) async {
+    DateTime loadingStartedAt,
+  ) async {
     final elapsed = DateTime.now().difference(loadingStartedAt);
     final remaining = _minimumBangumiInfoLoadingDuration - elapsed;
     if (remaining > Duration.zero) {
@@ -362,48 +373,57 @@ class _InfoPageState extends State<InfoPage>
                 centerTitle: false,
                 expandedHeight:
                     308 + kTextTabBarHeight + kToolbarHeight + topOffset,
-                collapsedHeight: kTextTabBarHeight +
+                collapsedHeight:
+                    kTextTabBarHeight +
                     kToolbarHeight +
                     MediaQuery.paddingOf(context).top +
                     topOffset,
                 flexibleSpace: FlexibleSpaceBar(
                   collapseMode: CollapseMode.pin,
-                  background: Observer(builder: (context) {
-                    final showBangumiInfoSkeleton =
-                        _isShowingBangumiInfoSkeleton;
-                    return Stack(
-                      children: [
-                        if (!showBangumiInfoSkeleton)
-                          Positioned.fill(
-                            bottom: kTextTabBarHeight,
-                            child: IgnorePointer(
-                              child: _InfoHeaderBackground(
-                                imageUrl: infoController
-                                        .bangumiItem.images['large'] ??
-                                    '',
+                  background: Observer(
+                    builder: (context) {
+                      final showBangumiInfoSkeleton =
+                          _isShowingBangumiInfoSkeleton;
+                      return Stack(
+                        children: [
+                          if (!showBangumiInfoSkeleton)
+                            Positioned.fill(
+                              bottom: kTextTabBarHeight,
+                              child: IgnorePointer(
+                                child: _InfoHeaderBackground(
+                                  imageUrl:
+                                      infoController
+                                          .bangumiItem
+                                          .images['large'] ??
+                                      '',
+                                ),
                               ),
                             ),
-                          ),
-                        SafeArea(
-                          bottom: false,
-                          child: EmbeddedNativeControlArea(
-                            child: Align(
-                              alignment: Alignment.topCenter,
-                              child: Padding(
-                                padding: const EdgeInsets.fromLTRB(
-                                    16, kToolbarHeight, 16, 0),
-                                child: BangumiInfoCardV(
-                                  bangumiItem: infoController.bangumiItem,
-                                  isLoading: showBangumiInfoSkeleton,
-                                  showRating: showRating,
+                          SafeArea(
+                            bottom: false,
+                            child: EmbeddedNativeControlArea(
+                              child: Align(
+                                alignment: Alignment.topCenter,
+                                child: Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    16,
+                                    kToolbarHeight,
+                                    16,
+                                    0,
+                                  ),
+                                  child: BangumiInfoCardV(
+                                    bangumiItem: infoController.bangumiItem,
+                                    isLoading: showBangumiInfoSkeleton,
+                                    showRating: showRating,
+                                  ),
                                 ),
                               ),
                             ),
                           ),
-                        ),
-                      ],
-                    );
-                  }),
+                        ],
+                      );
+                    },
+                  ),
                 ),
                 forceElevated: innerBoxIsScrolled,
                 bottom: TabBar(
@@ -417,56 +437,73 @@ class _InfoPageState extends State<InfoPage>
             ),
           ];
         },
-        body: Observer(builder: (context) {
-          final showBangumiInfoSkeleton = _isShowingBangumiInfoSkeleton;
-          return InfoTabView(
-            tabController: infoTabController,
-            bangumiItem: infoController.bangumiItem,
-            commentsQueryTimeout: commentsQueryTimeout,
-            commentsHasLoaded: commentsHasLoaded,
-            charactersQueryTimeout: charactersQueryTimeout,
-            charactersIsEmpty: charactersIsEmpty,
-            staffQueryTimeout: staffQueryTimeout,
-            staffIsEmpty: staffIsEmpty,
-            loadMoreComments: loadMoreComments,
-            loadCharacters: loadCharacters,
-            loadStaff: loadStaff,
-            commentsList: infoController.commentsList.toList(growable: false),
-            commentsIsLoading: commentsIsLoading,
-            onWriteReview: _openReviewEditor,
-            characterList: infoController.characterList,
-            staffList: infoController.staffList,
-            relationList: infoController.relationList,
-            relationsIsLoading: infoController.relationsIsLoading,
-            relationsQueryTimeout: infoController.relationsQueryTimeout,
-            relationsHasLoaded: infoController.relationsHasLoaded,
-            loadRelations: loadRelations,
-            isLoading: showBangumiInfoSkeleton,
-          );
-        }),
+        body: Observer(
+          builder: (context) {
+            final showBangumiInfoSkeleton = _isShowingBangumiInfoSkeleton;
+            return InfoTabView(
+              tabController: infoTabController,
+              bangumiItem: infoController.bangumiItem,
+              commentsQueryTimeout: commentsQueryTimeout,
+              commentsHasLoaded: commentsHasLoaded,
+              charactersQueryTimeout: charactersQueryTimeout,
+              charactersIsEmpty: charactersIsEmpty,
+              staffQueryTimeout: staffQueryTimeout,
+              staffIsEmpty: staffIsEmpty,
+              loadMoreComments: loadMoreComments,
+              loadCharacters: loadCharacters,
+              loadStaff: loadStaff,
+              commentsList: infoController.commentsList.toList(growable: false),
+              commentsIsLoading: commentsIsLoading,
+              onWriteReview: _openReviewEditor,
+              characterList: infoController.characterList,
+              staffList: infoController.staffList,
+              relationList: infoController.relationList,
+              relationsIsLoading: infoController.relationsIsLoading,
+              relationsQueryTimeout: infoController.relationsQueryTimeout,
+              relationsHasLoaded: infoController.relationsHasLoaded,
+              loadRelations: loadRelations,
+              isLoading: showBangumiInfoSkeleton,
+            );
+          },
+        ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        tooltip: '开始观看',
-        onPressed: () {
-          showAdaptiveBottomSheet<void>(
-            context: context,
-            maxHeightFactor: 0.88,
-            builder: (context) {
-              return SourceSheet(infoController: infoController);
-            },
-          );
-        },
-        label: const Text('开始观看'),
-        icon: const Icon(Icons.play_arrow_rounded),
+      floatingActionButton: Wrap(
+        spacing: 12,
+        runSpacing: 8,
+        children: [
+          FloatingActionButton.extended(
+            heroTag: 'anime-detail-download',
+            tooltip: '下载选集',
+            onPressed: () => showAdaptiveBottomSheet<void>(
+              context: context,
+              maxHeightFactor: 0.88,
+              builder: (_) => SourceSheet(
+                infoController: infoController,
+                downloadMode: true,
+              ),
+            ),
+            label: const Text('下载'),
+            icon: const Icon(Icons.download_rounded),
+          ),
+          FloatingActionButton.extended(
+            heroTag: 'anime-detail-watch',
+            tooltip: '开始观看',
+            onPressed: () => showAdaptiveBottomSheet<void>(
+              context: context,
+              maxHeightFactor: 0.88,
+              builder: (_) => SourceSheet(infoController: infoController),
+            ),
+            label: const Text('开始观看'),
+            icon: const Icon(Icons.play_arrow_rounded),
+          ),
+        ],
       ),
     );
   }
 }
 
 class _InfoHeaderBackground extends StatelessWidget {
-  const _InfoHeaderBackground({
-    required this.imageUrl,
-  });
+  const _InfoHeaderBackground({required this.imageUrl});
 
   static const double _downsample = 0.5;
   static const double _blurSigma = 15.0;
@@ -504,10 +541,7 @@ class _InfoHeaderBackground extends StatelessWidget {
                   return const LinearGradient(
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.white,
-                      Colors.transparent,
-                    ],
+                    colors: [Colors.white, Colors.transparent],
                     stops: [0.8, 1],
                   ).createShader(bounds);
                 },

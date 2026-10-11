@@ -68,16 +68,16 @@ void main() {
     return encoded;
   }
 
-  test('0.3.0 adds only the three researched sources before anime presets', () {
+  test('1.10 presets add Feifan and Juliang and remove Modu and 360', () {
     final sources = bundledCinemaSources;
     expect(sources.take(7).map((source) => source.id), [
+      'maccms-feifan',
+      'maccms-juliang',
       'maccms-guangsu',
-      'maccms-modu',
       'maccms-haohua',
       'maccms-wujin',
       'maccms-jisu',
       'maccms-ruyi',
-      'maccms-360',
     ]);
     expect(
       sources.skip(7).every((s) => s.kind == CinemaSourceKind.kazumi),
@@ -99,11 +99,72 @@ void main() {
   });
 
   test(
+    'current upgrade preserves library, persists removal and source order',
+    () async {
+      final old = [
+        customSource.copyWith(id: 'maccms-modu'),
+        customSource,
+        cinema030SourcePack.sources.last,
+      ];
+      final raw = legacyLibrary(old);
+      raw['appliedSourcePacks'] = [cinema030SourcePack.id];
+      (raw['favorites'] as List).first['sourceId'] = 'maccms-modu';
+      (raw['history'] as List).first['title']['sourceId'] = 'maccms-modu';
+      (raw['sources'] as List)[1]['customNote'] = 'keep';
+      final before = await writeLegacy(raw);
+      final store = CinemaStore(file: file);
+      addTearDown(store.dispose);
+      await store.load();
+      expect(await File('${file.path}.pre-1.10.0.bak').readAsString(), before);
+      expect(store.sources.map((s) => s.id), [
+        'my-source',
+        'maccms-feifan',
+        'maccms-juliang',
+      ]);
+      expect(store.enabledSources.map((s) => s.id), [
+        'maccms-feifan',
+        'maccms-juliang',
+      ]);
+      await store.reorderMovieSources([
+        'maccms-juliang',
+        'my-source',
+        'maccms-feifan',
+      ]);
+      await expectLater(
+        store.reorderMovieSources(['maccms-juliang']),
+        throwsFormatException,
+      );
+      final saved = jsonDecode(await file.readAsString()) as Map;
+      expect(saved['favorites'], raw['favorites']);
+      expect(saved['history'], raw['history']);
+      expect((saved['sources'] as List)[1]['customNote'], 'keep');
+      final restart = CinemaStore(file: file);
+      addTearDown(restart.dispose);
+      await restart.load();
+      expect(restart.sources.map((s) => s.id), [
+        'maccms-juliang',
+        'my-source',
+        'maccms-feifan',
+      ]);
+      await restart.removeSource('maccms-feifan');
+      final third = CinemaStore(file: file);
+      addTearDown(third.dispose);
+      await third.load();
+      expect(third.sources.map((s) => s.id), ['maccms-juliang', 'my-source']);
+      expect(third.favorites.single.sourceId, 'maccms-modu');
+      expect(third.history.single.positionSeconds, 123);
+    },
+  );
+
+  test(
     'legacy upgrade backs up exact bytes and preserves all old data',
     () async {
-      final oldSources = bundledCinemaSources
-          .where((source) => !cinema030SourcePack.sources.contains(source))
-          .toList();
+      final oldSources = [
+        for (final id in ['maccms-guangsu', 'maccms-haohua', 'maccms-wujin'])
+          bundledCinemaSources.firstWhere((s) => s.id == id),
+        customSource,
+        ...bundledCinemaSources.where((s) => s.kind == CinemaSourceKind.kazumi),
+      ];
       oldSources[0] = oldSources[0].copyWith(
         name: '我改过的光速',
         url: 'https://custom.example/my-api',
@@ -113,7 +174,7 @@ void main() {
       final raw = legacyLibrary(oldSources);
       (raw['sources'] as List).first['userNote'] = '原样保留';
       final before = await writeLegacy(raw);
-      final store = CinemaStore(file: file);
+      final store = CinemaStore(file: file, sourcePacks: [cinema030SourcePack]);
       addTearDown(store.dispose);
 
       await Future.wait([store.load(), store.load()]);
@@ -164,7 +225,7 @@ void main() {
       );
       final raw = legacyLibrary([sameId, sameUrl]);
       await writeLegacy(raw);
-      final store = CinemaStore(file: file);
+      final store = CinemaStore(file: file, sourcePacks: [cinema030SourcePack]);
       addTearDown(store.dispose);
       await store.load();
 
@@ -178,7 +239,10 @@ void main() {
       expect(store.sourceById('maccms-360'), isNull);
       await store.removeSource(sameId.id);
       await store.removeSource(sameUrl.id);
-      final restarted = CinemaStore(file: file);
+      final restarted = CinemaStore(
+        file: file,
+        sourcePacks: [cinema030SourcePack],
+      );
       addTearDown(restarted.dispose);
       await restarted.load();
       expect(restarted.sources.map((source) => source.id), ['maccms-ruyi']);
@@ -227,14 +291,17 @@ void main() {
     'repeated loads do not rewrite or replace the original backup',
     () async {
       final original = await writeLegacy(legacyLibrary([customSource]));
-      final first = CinemaStore(file: file);
+      final first = CinemaStore(file: file, sourcePacks: [cinema030SourcePack]);
       addTearDown(first.dispose);
       await first.load();
       final migrated = await file.readAsString();
       final fileModified = await file.lastModified();
       final backupModified = await backup.lastModified();
 
-      final second = CinemaStore(file: file);
+      final second = CinemaStore(
+        file: file,
+        sourcePacks: [cinema030SourcePack],
+      );
       addTearDown(second.dispose);
       await second.load();
       await second.load();
@@ -250,7 +317,7 @@ void main() {
     'removed new sources never return and the pack marker survives edits',
     () async {
       final before = await writeLegacy(legacyLibrary([customSource]));
-      final store = CinemaStore(file: file);
+      final store = CinemaStore(file: file, sourcePacks: [cinema030SourcePack]);
       addTearDown(store.dispose);
       await store.load();
       for (final source in cinema030SourcePack.sources) {
@@ -259,7 +326,10 @@ void main() {
       await store.saveSource(customSource.copyWith(name: '再次编辑'));
       await store.toggleFavorite(favorite);
       await store.flush();
-      final restarted = CinemaStore(file: file);
+      final restarted = CinemaStore(
+        file: file,
+        sourcePacks: [cinema030SourcePack],
+      );
       addTearDown(restarted.dispose);
       await restarted.load();
       expect(restarted.sources.single.name, '再次编辑');
@@ -281,7 +351,10 @@ void main() {
       await store.load();
       expect(store.sources.single.id, customSource.id);
       await store.toggleFavorite(favorite);
-      final restarted = CinemaStore(file: file);
+      final restarted = CinemaStore(
+        file: file,
+        sourcePacks: [cinema030SourcePack],
+      );
       addTearDown(restarted.dispose);
       await restarted.load();
       expect(restarted.sources.single.id, customSource.id);
@@ -307,7 +380,7 @@ void main() {
     () async {
       await writeLegacy(legacyLibrary([customSource]));
       await backup.writeAsString('first upgrade backup');
-      final store = CinemaStore(file: file);
+      final store = CinemaStore(file: file, sourcePacks: [cinema030SourcePack]);
       addTearDown(store.dispose);
       await store.load();
       expect(await backup.readAsString(), 'first upgrade backup');
@@ -321,7 +394,7 @@ void main() {
       final before = await writeLegacy(legacyLibrary([customSource]));
       final blockedTemporary = Directory('${file.path}.tmp');
       await blockedTemporary.create();
-      final store = CinemaStore(file: file);
+      final store = CinemaStore(file: file, sourcePacks: [cinema030SourcePack]);
       addTearDown(store.dispose);
       await expectLater(store.load(), throwsA(isA<FileSystemException>()));
       expect(store.loaded, isFalse);
@@ -415,7 +488,10 @@ void main() {
       for (final raw in invalidDocuments) {
         final before = raw is String ? raw : jsonEncode(raw);
         await file.writeAsString(before);
-        final store = CinemaStore(file: file);
+        final store = CinemaStore(
+          file: file,
+          sourcePacks: [cinema030SourcePack],
+        );
         await expectLater(store.load(), throwsFormatException);
         await expectLater(
           store.saveSource(customSource),

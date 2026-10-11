@@ -1,11 +1,16 @@
+import 'package:kazumi/services/video_source/video_source_format.dart';
 import 'package:kazumi/services/player/playback_quality.dart';
 import 'cinema_quality_sheet.dart';
 import 'package:kazumi/services/player/playback_lifecycle.dart';
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter_modular/flutter_modular.dart';
-import 'package:kazumi/pages/download/download_controller.dart';
-import 'cinema_downloads.dart';
+import 'cinema_download_sheet.dart';
+import 'cinema_media_source.dart';
+export 'cinema_media_source.dart' show cinemaUsesDirectMedia;
+import 'package:kazumi/services/player/native_playback_setup.dart';
+import 'package:kazumi/request/core/network_config.dart';
+import 'package:kazumi/request/core/dio_factory.dart';
+import 'package:kazumi/services/storage/storage.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -14,7 +19,6 @@ import 'package:kazumi/pages/player/player_keyboard_shortcuts.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:kazumi/services/logging/logger.dart';
-import 'package:kazumi/services/network/macos_system_proxy.dart';
 import 'package:kazumi/services/platform/desktop_window_close.dart';
 import 'package:kazumi/services/player/player_error_mapper.dart';
 import 'package:kazumi/services/video_source/video_source_service.dart';
@@ -165,19 +169,6 @@ class CinemaPlaybackWatchdog {
         now.difference(_lastProgressAt!) >= timeout;
   }
 }
-
-bool cinemaUsesDirectMedia(
-  CinemaSource source,
-  CinemaRoute route,
-  CinemaEpisode episode,
-) =>
-    source.kind == CinemaSourceKind.direct ||
-    episode.isDirect ||
-    (source.kind == CinemaSourceKind.maccms &&
-        RegExp(
-          r'm3u8|\bmp4\b|\bhls\b|\bdirect\b',
-          caseSensitive: false,
-        ).hasMatch(route.name));
 
 /// A separate player identity and history namespace from upstream Bangumi.
 class CinemaPlayerPage extends StatefulWidget {
@@ -655,27 +646,29 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         throw const FormatException('本地视频不存在，请重新下载');
       }
       var mediaUrl = localFile == null
-          ? requireHttpUrl(episode.url).toString()
+          ? episode.url
           : File(localFile).uri.toString();
-      if (localFile == null &&
-          !cinemaUsesDirectMedia(selectedSource, route, episode)) {
-        setState(() => _phase = '正在解析播放页面');
-        final resolved = await _resolver
-            .resolve(
-              mediaUrl,
-              useLegacyParser: selectedSource.rule?['useLegacyParser'] == true,
-              offset: offset,
-              timeout: const Duration(seconds: 25),
-            )
-            .timeout(
-              const Duration(seconds: 35),
-              onTimeout: () {
-                if (_isCurrent(generation)) _resolver.cancel();
-                throw const VideoSourceTimeoutException(Duration(seconds: 35));
-              },
-            );
+      var mediaFormat = VideoSourceFormat.auto;
+      Map<String, String> mediaHeaders = const {};
+      if (localFile == null) {
+        if (!cinemaUsesDirectMedia(selectedSource, route, episode)) {
+          setState(() => _phase = '正在解析播放页面');
+        }
+        final resolved = await resolveCinemaMedia(
+          source: selectedSource,
+          route: route,
+          episode: episode,
+          resolve: (url, legacy) => _resolver.resolve(
+            url,
+            useLegacyParser: legacy,
+            offset: offset,
+            timeout: const Duration(seconds: 25),
+          ),
+        );
         if (!_isCurrent(generation)) return;
-        mediaUrl = requireHttpUrl(resolved.url).toString();
+        mediaUrl = resolved.url;
+        mediaFormat = resolved.format;
+        mediaHeaders = resolved.headers;
       }
       if (!_isCurrent(generation)) return;
       // Each selection owns a player. A late response from an old selection
@@ -709,17 +702,19 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       await candidate.player.setRate(_rate);
       if (!_isCurrent(generation)) return;
       candidate.logStage('rate-ready');
-      if (Platform.isMacOS && candidate.player.platform is NativePlayer) {
+      if (candidate.player.platform is NativePlayer) {
         final native = candidate.player.platform as NativePlayer;
-        await native.setProperty('tls-verify', 'yes');
-        if (!_isCurrent(generation)) return;
-        await native.setProperty('tls-ca-file', '/etc/ssl/cert.pem');
-        if (!_isCurrent(generation)) return;
-        await native.setProperty(
-          'http-proxy',
-          MacOSSystemProxy.proxyFor(Uri.parse(mediaUrl))?.toString() ?? '',
+        await configureNativePlayback(
+          native,
+          Uri.parse(mediaUrl),
+          isCurrent: () => _isCurrent(generation),
+          diskCache: false,
         );
         if (!_isCurrent(generation)) return;
+        if (mediaFormat == VideoSourceFormat.hls) {
+          await native.setProperty('demuxer-lavf-format', 'hls');
+          if (!_isCurrent(generation)) return;
+        }
         try {
           await PlaybackQualityPreferences.read().apply(native);
         } catch (_) {
@@ -733,7 +728,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         Media(
           mediaUrl,
           start: Duration(seconds: offset),
-          httpHeaders: localFile == null ? selectedSource.headers : const {},
+          httpHeaders: mediaHeaders,
         ),
         play: _preferences.autoPlay && !_backgroundPaused,
       );
@@ -754,7 +749,34 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   void _listenTo(_CinemaPlayback playback, int generation) {
     bool current() => _isCurrent(generation) && identical(_playback, playback);
+    void observeFailure(String message) {
+      if (!current() || playback.completed) return;
+      final kind = playbackFailureKind(message);
+      if (kind == null) return;
+      if (playback.ready && !playback.player.state.buffering) return;
+      final at = playback.position;
+      playback.fatalErrorTimer ??= Timer(
+        Duration(seconds: kind == PlaybackFailureKind.network ? 6 : 3),
+        () {
+          playback.fatalErrorTimer = null;
+          if (current() &&
+              !playback.completed &&
+              playback.position <= at &&
+              (!playback.ready || playback.player.state.buffering)) {
+            playback.logStage('failed(kind=${kind.name})');
+            _fail(
+              generation,
+              kind == PlaybackFailureKind.network
+                  ? '视频网络连接失败，请重试、更换线路或在网络设置调整视频连接。'
+                  : '当前视频无法打开，正在尝试其他线路。',
+            );
+          }
+        },
+      );
+    }
+
     playback.subscriptions.addAll([
+      playback.player.stream.log.listen((event) => observeFailure(event.text)),
       playback.player.stream.position.listen((position) {
         if (!current()) return;
         if (position > playback.position &&
@@ -810,26 +832,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }),
       playback.player.stream.error.listen((message) {
         if (!current()) return;
-        final fatal = RegExp(
-          r'Failed to recognize file format|Failed to open|Nothing to play|No video or audio streams selected',
-          caseSensitive: false,
-        ).hasMatch(message);
-        if (fatal && !playback.completed) {
-          final at = playback.position;
-          playback.fatalErrorTimer?.cancel();
-          playback.fatalErrorTimer = Timer(const Duration(seconds: 3), () {
-            if (current() && !playback.completed && playback.position <= at) {
-              _fail(generation, '当前视频无法打开，正在尝试其他线路。');
-            }
-          });
-        }
+        observeFailure(message);
         // libmpv emits decoder fallback and transient TCP errors here too.
         // Keep playback running; a log line alone does not prove termination.
         final explanation = PlayerErrorMapper.toActionableMessage(
           message,
           isBuffering: playback.player.state.buffering,
         );
-        debugPrint('Cinema playback notice: $message');
+        // Native messages can contain signed URLs; persist categories only.
         if (_preferences.showPlayerError) {
           setState(
             () => _playbackNotice = explanation ?? '播放器报告异常；若无法继续，可重试或更换线路。',
@@ -843,7 +853,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     if (!_isCurrent(generation) ||
         playback.ready ||
         !playback.opened ||
-        (playback.duration == Duration.zero && playback.width == 0)) {
+        (playback.width <= 0 || playback.height <= 0)) {
       return;
     }
     playback.ready = true;
@@ -1033,37 +1043,29 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   Future<void> _downloadCurrent() async {
     if (_queueingDownload || widget.offlinePaths != null) return;
-    final playback = _playback;
-    final mediaUrl = playback?.mediaUrl;
-    if (playback?.ready != true || mediaUrl == null || _episode == null) {
-      KazumiDialog.showToast(context: context, message: '请等待视频开始播放后下载');
-      return;
-    }
-    final title = _title, source = _source, episode = _episode!;
-    final road = _routeIndex, index = _episodeIndex;
     setState(() => _queueingDownload = true);
     try {
-      await inject<DownloadController>().startDirectDownload(
-        media: cinemaDownloadRecord(title, source, road),
-        episodeNumber: index + 1,
-        episodeName: episode.name,
-        road: road,
-        episodePageUrl: episode.url,
-        mediaUrl: mediaUrl,
-        headers: source.headers,
+      await showCinemaDownloadSheet(
+        context,
+        title: _title,
+        source: _source,
+        routeIndex: _routeIndex,
+        episodeIndex: _episodeIndex,
       );
-      if (mounted) {
-        KazumiDialog.showToast(context: context, message: '已加入下载，可在下载管理查看进度');
-      }
-    } catch (_) {
-      if (mounted) {
-        KazumiDialog.showToast(
-          context: context,
-          message: '无法添加下载，请在下载管理检查任务后重试',
-        );
-      }
     } finally {
       if (mounted) setState(() => _queueingDownload = false);
+    }
+  }
+
+  Future<void> _retryDirect() async {
+    await GStorage.putSetting(SettingsKeys.mediaDirectConnection, true);
+    DioFactory.resetDownloadClient();
+    if (mounted && !_closing) {
+      await _playEpisode(
+        _routeIndex,
+        _episodeIndex,
+        resumeAt: _positionForEpisode(_routeIndex, _episodeIndex),
+      );
     }
   }
 
@@ -1446,13 +1448,6 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               ],
             ),
           ),
-          const SizedBox(width: 12),
-          if (_hasNext)
-            FilledButton.tonalIcon(
-              onPressed: () => _playEpisode(_routeIndex, _episodeIndex + 1),
-              icon: const Icon(Icons.skip_next_rounded, size: 20),
-              label: const Text('下一集'),
-            ),
         ],
       ),
       const SizedBox(height: 16),
@@ -1461,6 +1456,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         runSpacing: 8,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
+          if (widget.offlinePaths != null) _tag('离线播放'),
           if (_title.year.isNotEmpty) _tag(_title.year),
           if (_title.category.isNotEmpty) _tag(_title.category),
           if (_title.remarks.isNotEmpty) _tag('片源标注 · ${_title.remarks}'),
@@ -1469,77 +1465,6 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               '媒体尺寸 · ${_playback!.width} × ${_playback!.height}',
               accent: true,
             ),
-          OutlinedButton.icon(
-            onPressed: _togglePip,
-            icon: const Icon(Icons.picture_in_picture_alt, size: 17),
-            label: const Text('画中画'),
-          ),
-          PopupMenuButton<SuperResolutionMode>(
-            tooltip: '超分辨率',
-            enabled: _playback?.ready == true,
-            onSelected: _applyShader,
-            itemBuilder: (_) => [
-              for (final mode in SuperResolutionMode.values)
-                CheckedPopupMenuItem(
-                  value: mode,
-                  checked: _superResolution == mode,
-                  child: Text(
-                    mode == SuperResolutionMode.off
-                        ? '关闭超分辨率'
-                        : 'Anime4K · ${mode.label}',
-                  ),
-                ),
-            ],
-            child: _tag('超分辨率 · ${_superResolution.label} ▾'),
-          ),
-          OutlinedButton.icon(
-            onPressed: () =>
-                showCinemaSyncSheet(context, coordinator: _together),
-            icon: const Icon(Icons.group_outlined, size: 17),
-            label: const Text('一起看'),
-          ),
-          OutlinedButton.icon(
-            onPressed: _toggleFavorite,
-            icon: Icon(
-              widget.store.isFavorite(_title)
-                  ? Icons.bookmark
-                  : Icons.bookmark_border,
-              size: 17,
-            ),
-            label: Text(widget.store.isFavorite(_title) ? '已收藏' : '收藏'),
-          ),
-          OutlinedButton.icon(
-            onPressed: _showEpisodes,
-            icon: const Icon(Icons.playlist_play, size: 18),
-            label: const Text('线路 / 选集'),
-          ),
-          OutlinedButton.icon(
-            onPressed: _hasNext && !_loading ? () => _changeEpisode(1) : null,
-            icon: const Icon(Icons.skip_next_rounded, size: 20),
-            label: const Text('下一集'),
-          ),
-          OutlinedButton.icon(
-            onPressed: widget.offlinePaths != null || _queueingDownload
-                ? null
-                : _downloadCurrent,
-            icon: const Icon(Icons.download_rounded, size: 18),
-            label: Text(widget.offlinePaths != null ? '离线播放' : '下载本集'),
-          ),
-          PopupMenuButton<double>(
-            tooltip: '播放倍速',
-            onSelected: _setRate,
-            enabled: _playback != null && !_loading,
-            itemBuilder: (_) => defaultPlaySpeedList
-                .map(
-                  (rate) => CheckedPopupMenuItem<double>(
-                    value: rate,
-                    checked: rate == _rate,
-                    child: Text('$rate×'),
-                  ),
-                )
-                .toList(),
-            child: _tag('倍速 $_rate×  ▾'),
-          ),
         ],
       ),
       if (_playback?.completed == true) ...[
@@ -1616,314 +1541,388 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     ],
   );
 
-  Widget _videoSurface() {
-    final playback = _playback;
-    if (widget.videoSurfaceBuilder == null) {
-      playback?.observeControllerInitialization();
-    }
-    final controlsTheme = MaterialDesktopVideoControlsThemeData(
-      visibleOnMount: true,
-      toggleFullscreenOnDoublePress: false,
-      playAndPauseOnTap: false,
-      keyboardShortcuts: const {},
-      controlsHoverDuration: _preferences.controlsHoverDuration,
-      controlsTransitionDuration: _preferences.disableAnimations
-          ? Duration.zero
-          : const Duration(milliseconds: 150),
-      seekBarTransitionDuration: _preferences.disableAnimations
-          ? Duration.zero
-          : const Duration(milliseconds: 300),
-      seekBarThumbTransitionDuration: _preferences.disableAnimations
-          ? Duration.zero
-          : const Duration(milliseconds: 150),
-      volumeBarTransitionDuration: _preferences.disableAnimations
-          ? Duration.zero
-          : const Duration(milliseconds: 150),
-      buttonBarHeight: _pip ? 48 : 72,
-      automaticallyImplySkipNextButton: false,
-      automaticallyImplySkipPreviousButton: false,
-      seekBarPositionColor: _copper,
-      seekBarThumbColor: _copper,
-      volumeBarActiveColor: _copper,
-      topButtonBar: _pip
-          ? const []
-          : [
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: CinemaGlass(
-                    radius: 16,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 6,
+  Widget _videoSurface() => LayoutBuilder(
+    builder: (context, constraints) {
+      final wide = constraints.maxWidth >= 850;
+      final narrow = constraints.maxWidth < 560;
+      final playback = _playback;
+      if (widget.videoSurfaceBuilder == null) {
+        playback?.observeControllerInitialization();
+      }
+      final controlsTheme = MaterialDesktopVideoControlsThemeData(
+        visibleOnMount: true,
+        toggleFullscreenOnDoublePress: false,
+        playAndPauseOnTap: false,
+        keyboardShortcuts: const {},
+        controlsHoverDuration: _preferences.controlsHoverDuration,
+        controlsTransitionDuration: _preferences.disableAnimations
+            ? Duration.zero
+            : const Duration(milliseconds: 150),
+        seekBarTransitionDuration: _preferences.disableAnimations
+            ? Duration.zero
+            : const Duration(milliseconds: 300),
+        seekBarThumbTransitionDuration: _preferences.disableAnimations
+            ? Duration.zero
+            : const Duration(milliseconds: 150),
+        volumeBarTransitionDuration: _preferences.disableAnimations
+            ? Duration.zero
+            : const Duration(milliseconds: 150),
+        buttonBarHeight: _pip ? 48 : 72,
+        automaticallyImplySkipNextButton: false,
+        automaticallyImplySkipPreviousButton: false,
+        seekBarPositionColor: _copper,
+        seekBarThumbColor: _copper,
+        volumeBarActiveColor: _copper,
+        topButtonBar: _pip
+            ? const []
+            : [
+                IconButton(
+                  tooltip: '返回',
+                  onPressed: _leave,
+                  icon: const Icon(Icons.arrow_back_rounded),
+                ),
+                Expanded(
+                  child: Text(
+                    '${_title.title} · ${_episode?.name ?? ''}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 14, color: Colors.white),
+                  ),
+                ),
+                if (!narrow)
+                  IconButton(
+                    tooltip: '画中画',
+                    onPressed: _togglePip,
+                    icon: const Icon(Icons.picture_in_picture_alt),
+                  ),
+                IconButton(
+                  tooltip: widget.store.isFavorite(_title) ? '已收藏' : '收藏',
+                  onPressed: _toggleFavorite,
+                  icon: Icon(
+                    widget.store.isFavorite(_title)
+                        ? Icons.bookmark
+                        : Icons.bookmark_border,
+                  ),
+                ),
+                PopupMenuButton<String>(
+                  tooltip: '更多选项',
+                  icon: const Icon(Icons.more_vert),
+                  onSelected: (action) {
+                    switch (action) {
+                      case 'download':
+                        _downloadCurrent();
+                      case 'pip':
+                        _togglePip();
+                      case 'together':
+                        showCinemaSyncSheet(context, coordinator: _together);
+                      case 'quality':
+                        if (playback != null) {
+                          showCinemaQualitySheet(context, playback.player);
+                        }
+                      case 'skip':
+                        _seekBy(_preferences.buttonSkipSeconds);
+                      case 'speed':
+                        _showSpeedOptions();
+                      case 'super':
+                        _showSuperResolutionOptions();
+                      case 'direct':
+                        _retryDirect();
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    if (widget.offlinePaths == null)
+                      const PopupMenuItem(
+                        value: 'download',
+                        child: Text('下载选集'),
+                      ),
+                    const PopupMenuItem(value: 'pip', child: Text('画中画')),
+                    if (!wide)
+                      const PopupMenuItem(value: 'super', child: Text('超分辨率')),
+                    if (narrow)
+                      const PopupMenuItem(value: 'speed', child: Text('倍速')),
+                    const PopupMenuItem(value: 'together', child: Text('一起看')),
+                    const PopupMenuItem(
+                      value: 'quality',
+                      child: Text('画质信息与处理'),
                     ),
-                    child: Row(
+                    PopupMenuItem(
+                      value: 'skip',
+                      child: Text('跳过 ${_preferences.buttonSkipSeconds} 秒'),
+                    ),
+                    if (_canRetryDirect)
+                      const PopupMenuItem(
+                        value: 'direct',
+                        child: Text('启用视频直连并重试'),
+                      ),
+                  ],
+                ),
+              ],
+        bottomButtonBar: [
+          const MaterialDesktopPlayOrPauseButton(),
+          if (!_pip)
+            IconButton(
+              tooltip: '下一集',
+              icon: const Icon(Icons.skip_next_rounded),
+              onPressed: _hasNext && !_loading ? () => _changeEpisode(1) : null,
+            ),
+          if (!_pip && !narrow && widget.offlinePaths == null)
+            IconButton(
+              tooltip: '下载选集',
+              onPressed: _downloadCurrent,
+              icon: const Icon(Icons.download_rounded),
+            ),
+          if (wide) const MaterialDesktopVolumeButton(),
+          if (!narrow) const MaterialDesktopPositionIndicator(),
+          const Spacer(),
+          if (!_pip) ...[
+            if (wide) _superResolutionControl(),
+            if (!narrow) _speedControl(),
+            IconButton(
+              tooltip: '线路 / 选集',
+              onPressed: _showEpisodes,
+              icon: const Icon(Icons.menu_open_rounded),
+            ),
+          ],
+          IconButton(
+            tooltip: _fullscreen ? '退出全屏' : '全屏',
+            onPressed: _toggleFullscreen,
+            icon: Icon(
+              _fullscreen
+                  ? Icons.fullscreen_exit_rounded
+                  : Icons.fullscreen_rounded,
+            ),
+          ),
+        ],
+      );
+      return ColoredBox(
+        color: Colors.black,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (playback != null)
+              CinemaVideoGestures(
+                controlsInsets: EdgeInsets.only(
+                  top: _pip ? 0 : 52,
+                  bottom: _pip ? 48 : 108,
+                ),
+                onTogglePlayback: () {
+                  if (!_loading && !_closing) {
+                    unawaited(playback.player.playOrPause());
+                  }
+                },
+                onToggleFullscreen: () => unawaited(_toggleFullscreen()),
+                child: MaterialDesktopVideoControlsTheme(
+                  normal: controlsTheme,
+                  fullscreen: controlsTheme,
+                  child:
+                      widget.videoSurfaceBuilder?.call(
+                        context,
+                        playback.player,
+                      ) ??
+                      Video(
+                        key: ValueKey(playback),
+                        controller: playback.controller,
+                        fit: _preferences.aspectRatio.fit,
+                        aspectRatio: _preferences.aspectRatio.frameAspectRatio,
+                        controls: MaterialDesktopVideoControls,
+                        pauseUponEnteringBackgroundMode: false,
+                      ),
+                ),
+              ),
+            if (_loading || _error != null)
+              ColoredBox(
+                color: const Color(0xEE0B0C0D),
+                child: Center(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (_fullscreen) ...[
-                          Expanded(
-                            child: Text(
-                              '${_title.title} · ${_episode?.name ?? ''}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                              ),
+                        if (_loading)
+                          const SizedBox(
+                            width: 28,
+                            height: 28,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: _copper,
                             ),
+                          )
+                        else
+                          const Icon(
+                            Icons.error_outline_rounded,
+                            color: _copper,
+                            size: 30,
                           ),
-                          const SizedBox(width: 12),
-                        ] else
-                          const Spacer(),
-                        _videoAction(
-                          '画中画',
-                          Icons.picture_in_picture_alt,
-                          _togglePip,
+                        const SizedBox(height: 16),
+                        Text(
+                          _error ?? _phase,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: _text, fontSize: 14),
                         ),
-                        PopupMenuButton<SuperResolutionMode>(
-                          tooltip: '超分辨率',
-                          enabled: playback?.ready == true,
-                          onSelected: _applyShader,
-                          itemBuilder: (_) => [
-                            for (final mode in SuperResolutionMode.values)
-                              CheckedPopupMenuItem(
-                                value: mode,
-                                checked: mode == _superResolution,
-                                child: Text(
-                                  mode == SuperResolutionMode.off
-                                      ? '关闭超分辨率'
-                                      : 'Anime4K · ${mode.label}',
-                                ),
+                        const SizedBox(height: 16),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          alignment: WrapAlignment.center,
+                          children: [
+                            OutlinedButton.icon(
+                              onPressed: _showEpisodes,
+                              icon: const Icon(Icons.playlist_play),
+                              label: const Text('线路 / 选集'),
+                            ),
+                            if (_canRetryDirect)
+                              OutlinedButton.icon(
+                                onPressed: _retryDirect,
+                                icon: const Icon(Icons.network_check_rounded),
+                                label: const Text('启用视频直连并重试'),
+                              ),
+                            if (_fullscreen)
+                              OutlinedButton.icon(
+                                onPressed: _toggleFullscreen,
+                                icon: const Icon(Icons.fullscreen_exit),
+                                label: const Text('退出全屏'),
                               ),
                           ],
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 12,
-                            ),
-                            child: Text(
-                              '超分 · ${_superResolution.label}',
-                              style: const TextStyle(fontSize: 12),
-                            ),
+                        ),
+                        const SizedBox(height: 12),
+                        if (_loading)
+                          TextButton(
+                            onPressed: () {
+                              ++_generation;
+                              _resolver.cancel();
+                              _loadTimer?.cancel();
+                              final current = _playback;
+                              _playback = null;
+                              if (current != null) unawaited(current.dispose());
+                              setState(() {
+                                _loading = false;
+                                _error = '已取消加载';
+                              });
+                            },
+                            child: const Text('取消'),
+                          )
+                        else if (_episode != null)
+                          Wrap(
+                            spacing: 12,
+                            runSpacing: 8,
+                            alignment: WrapAlignment.center,
+                            children: [
+                              FilledButton.tonalIcon(
+                                onPressed: () => _playEpisode(
+                                  _routeIndex,
+                                  _episodeIndex,
+                                  resumeAt: playback?.ready == true
+                                      ? playback!.position.inSeconds
+                                      : null,
+                                ),
+                                icon: const Icon(
+                                  Icons.refresh_rounded,
+                                  size: 18,
+                                ),
+                                label: const Text('重试'),
+                              ),
+                              if (_title.routes.length > 1)
+                                OutlinedButton(
+                                  onPressed: _tryNextRoute,
+                                  child: const Text('更换线路'),
+                                ),
+                            ],
                           ),
-                        ),
-                        _videoAction(
-                          '一起看',
-                          Icons.group_outlined,
-                          () => showCinemaSyncSheet(
-                            context,
-                            coordinator: _together,
-                          ),
-                        ),
-                        _videoAction(
-                          widget.store.isFavorite(_title) ? '已收藏' : '收藏',
-                          widget.store.isFavorite(_title)
-                              ? Icons.bookmark
-                              : Icons.bookmark_border,
-                          _toggleFavorite,
-                        ),
-                        _videoAction(
-                          '线路 / 选集',
-                          Icons.playlist_play,
-                          _showEpisodes,
-                        ),
-                        IconButton(
-                          tooltip: '下一集',
-                          icon: const Icon(Icons.skip_next_rounded, size: 22),
-                          onPressed: _hasNext && !_loading
-                              ? () => _changeEpisode(1)
-                              : null,
-                        ),
-                        if (widget.offlinePaths == null)
-                          _videoAction(
-                            '下载本集',
-                            Icons.download_rounded,
-                            _downloadCurrent,
-                          ),
-                        IconButton(
-                          tooltip: '跳过 ${_preferences.buttonSkipSeconds} 秒',
-                          icon: const Icon(
-                            Icons.fast_forward_rounded,
-                            size: 19,
-                          ),
-                          onPressed: () =>
-                              _seekBy(_preferences.buttonSkipSeconds),
-                        ),
                       ],
                     ),
                   ),
                 ),
               ),
-            ],
-      bottomButtonBar: [
-        const MaterialDesktopPlayOrPauseButton(),
-        const MaterialDesktopVolumeButton(),
-        const MaterialDesktopPositionIndicator(),
-        const Spacer(),
-        IconButton(
-          tooltip: '画质信息',
-          icon: const Icon(Icons.high_quality_outlined),
-          onPressed: playback == null
-              ? null
-              : () => showCinemaQualitySheet(context, playback.player),
+          ],
         ),
-        IconButton(
-          tooltip: _fullscreen ? '退出全屏' : '全屏',
-          onPressed: _toggleFullscreen,
-          icon: Icon(_fullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
-        ),
-      ],
-    );
-    return ColoredBox(
-      color: Colors.black,
-      child: Stack(
-        fit: StackFit.expand,
+      );
+    },
+  );
+
+  bool get _canRetryDirect {
+    final url = Uri.tryParse(_playback?.mediaUrl ?? _episode?.url ?? '');
+    return widget.offlinePaths == null &&
+        url != null &&
+        NetworkConfig.forMedia().proxyForUri(url) != null;
+  }
+
+  Future<void> _showSpeedOptions() async {
+    final selected = await showDialog<double>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('倍速'),
         children: [
-          if (playback != null)
-            CinemaVideoGestures(
-              onTogglePlayback: () {
-                if (!_loading && !_closing) {
-                  unawaited(playback.player.playOrPause());
-                }
-              },
-              onToggleFullscreen: () => unawaited(_toggleFullscreen()),
-              child: MaterialDesktopVideoControlsTheme(
-                normal: controlsTheme,
-                fullscreen: controlsTheme,
-                child:
-                    widget.videoSurfaceBuilder?.call(
-                      context,
-                      playback.player,
-                    ) ??
-                    Video(
-                      key: ValueKey(playback),
-                      controller: playback.controller,
-                      fit: _preferences.aspectRatio.fit,
-                      aspectRatio: _preferences.aspectRatio.frameAspectRatio,
-                      controls: MaterialDesktopVideoControls,
-                      pauseUponEnteringBackgroundMode: false,
-                    ),
-              ),
+          for (final rate in defaultPlaySpeedList)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, rate),
+              child: Text('$rate×'),
             ),
-          if (_loading || _error != null)
-            ColoredBox(
-              color: const Color(0xEE0B0C0D),
-              child: Center(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (_loading)
-                        const SizedBox(
-                          width: 28,
-                          height: 28,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: _copper,
-                          ),
-                        )
-                      else
-                        const Icon(
-                          Icons.error_outline_rounded,
-                          color: _copper,
-                          size: 30,
-                        ),
-                      const SizedBox(height: 16),
-                      Text(
-                        _error ?? _phase,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: _text, fontSize: 14),
-                      ),
-                      const SizedBox(height: 16),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        alignment: WrapAlignment.center,
-                        children: [
-                          OutlinedButton.icon(
-                            onPressed: _showEpisodes,
-                            icon: const Icon(Icons.playlist_play),
-                            label: const Text('线路 / 选集'),
-                          ),
-                          if (_fullscreen)
-                            OutlinedButton.icon(
-                              onPressed: _toggleFullscreen,
-                              icon: const Icon(Icons.fullscreen_exit),
-                              label: const Text('退出全屏'),
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      if (_loading)
-                        TextButton(
-                          onPressed: () {
-                            ++_generation;
-                            _resolver.cancel();
-                            _loadTimer?.cancel();
-                            final current = _playback;
-                            _playback = null;
-                            if (current != null) unawaited(current.dispose());
-                            setState(() {
-                              _loading = false;
-                              _error = '已取消加载';
-                            });
-                          },
-                          child: const Text('取消'),
-                        )
-                      else if (_episode != null)
-                        Wrap(
-                          spacing: 12,
-                          runSpacing: 8,
-                          alignment: WrapAlignment.center,
-                          children: [
-                            FilledButton.tonalIcon(
-                              onPressed: () => _playEpisode(
-                                _routeIndex,
-                                _episodeIndex,
-                                resumeAt: playback?.ready == true
-                                    ? playback!.position.inSeconds
-                                    : null,
-                              ),
-                              icon: const Icon(Icons.refresh_rounded, size: 18),
-                              label: const Text('重试'),
-                            ),
-                            if (_title.routes.length > 1)
-                              OutlinedButton(
-                                onPressed: _tryNextRoute,
-                                child: const Text('更换线路'),
-                              ),
-                          ],
-                        ),
-                    ],
-                  ),
-                ),
+        ],
+      ),
+    );
+    if (mounted && selected != null) await _setRate(selected);
+  }
+
+  Future<void> _showSuperResolutionOptions() async {
+    final selected = await showDialog<SuperResolutionMode>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('超分辨率'),
+        children: [
+          for (final mode in SuperResolutionMode.values)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, mode),
+              child: Text(
+                mode == SuperResolutionMode.off
+                    ? '关闭超分辨率'
+                    : 'Anime4K · ${mode.label}',
               ),
             ),
         ],
       ),
     );
+    if (mounted && selected != null) await _applyShader(selected);
   }
 
-  Widget _videoAction(String label, IconData icon, VoidCallback action) =>
-      !_fullscreen
-      ? IconButton(
-          tooltip: label,
-          onPressed: action,
-          icon: Icon(icon, size: 19),
-        )
-      : Tooltip(
-          message: label,
-          child: TextButton.icon(
-            onPressed: action,
-            style: TextButton.styleFrom(
-              foregroundColor: Colors.white,
-              minimumSize: const Size(40, 40),
-              padding: const EdgeInsets.symmetric(horizontal: 9),
-            ),
-            icon: Icon(icon, size: 18),
-            label: Text(label, style: const TextStyle(fontSize: 12)),
+  Widget _speedControl() => PopupMenuButton<double>(
+    tooltip: '倍速',
+    onSelected: _setRate,
+    enabled: _playback != null && !_loading,
+    itemBuilder: (_) => [
+      for (final rate in defaultPlaySpeedList)
+        CheckedPopupMenuItem(
+          value: rate,
+          checked: _rate == rate,
+          child: Text('$rate×'),
+        ),
+    ],
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+      child: Text(_rate == 1 ? '倍速' : '$_rate×'),
+    ),
+  );
+
+  Widget _superResolutionControl() => PopupMenuButton<SuperResolutionMode>(
+    tooltip: '超分辨率',
+    enabled: _playback?.ready == true,
+    onSelected: _applyShader,
+    itemBuilder: (_) => [
+      for (final mode in SuperResolutionMode.values)
+        CheckedPopupMenuItem(
+          value: mode,
+          checked: mode == _superResolution,
+          child: Text(
+            mode == SuperResolutionMode.off
+                ? '关闭超分辨率'
+                : 'Anime4K · ${mode.label}',
           ),
-        );
+        ),
+    ],
+    child: const Padding(
+      padding: EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+      child: Text('超分辨率'),
+    ),
+  );
 
   void _seekBy(int seconds) {
     final playback = _playback;

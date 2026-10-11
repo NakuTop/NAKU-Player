@@ -10,6 +10,7 @@ class VideoWebviewAppleImpl
     extends VideoWebviewController<PlatformInAppWebViewController> {
   PlatformHeadlessInAppWebView? headlessWebView;
   bool hasInjectedScripts = false;
+  bool _disposed = false;
 
   @override
   Future<void> init() async {
@@ -42,94 +43,107 @@ class VideoWebviewAppleImpl
           contentBlockers: [
             ContentBlocker(
               trigger: ContentBlockerTrigger(
-                  urlFilter: r"^https?://.+?devtools-detector\.js",
-                  resourceType: [
-                    ContentBlockerTriggerResourceType.SCRIPT,
-                  ]),
-              action:
-                  ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
-            ),
-            ContentBlocker(
-              trigger: ContentBlockerTrigger(urlFilter: '.*', resourceType: [
-                ContentBlockerTriggerResourceType.IMAGE,
-              ]),
-              action:
-                  ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
+                urlFilter: r"^https?://.+?devtools-detector\.js",
+                resourceType: [ContentBlockerTriggerResourceType.SCRIPT],
+              ),
+              action: ContentBlockerAction(
+                type: ContentBlockerActionType.BLOCK,
+              ),
             ),
             ContentBlocker(
               trigger: ContentBlockerTrigger(
-                  urlFilter: r"^https?://.+?googleads",
-                  resourceType: [
-                    ContentBlockerTriggerResourceType.DOCUMENT,
-                  ]),
-              action:
-                  ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
+                urlFilter: '.*',
+                resourceType: [ContentBlockerTriggerResourceType.IMAGE],
+              ),
+              action: ContentBlockerAction(
+                type: ContentBlockerActionType.BLOCK,
+              ),
             ),
             ContentBlocker(
               trigger: ContentBlockerTrigger(
-                  urlFilter: r"^https?://.+?googlesyndication\.com",
-                  resourceType: [
-                    ContentBlockerTriggerResourceType.DOCUMENT,
-                  ]),
-              action:
-                  ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
+                urlFilter: r"^https?://.+?googleads",
+                resourceType: [ContentBlockerTriggerResourceType.DOCUMENT],
+              ),
+              action: ContentBlockerAction(
+                type: ContentBlockerActionType.BLOCK,
+              ),
             ),
             ContentBlocker(
               trigger: ContentBlockerTrigger(
-                  urlFilter: r"^https?://.+?prestrain\.html",
-                  resourceType: [
-                    ContentBlockerTriggerResourceType.DOCUMENT,
-                  ]),
-              action:
-                  ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
+                urlFilter: r"^https?://.+?googlesyndication\.com",
+                resourceType: [ContentBlockerTriggerResourceType.DOCUMENT],
+              ),
+              action: ContentBlockerAction(
+                type: ContentBlockerActionType.BLOCK,
+              ),
             ),
             ContentBlocker(
               trigger: ContentBlockerTrigger(
-                  urlFilter: r"^https?://.+?prestrain%2Ehtml",
-                  resourceType: [
-                    ContentBlockerTriggerResourceType.DOCUMENT,
-                  ]),
-              action:
-                  ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
+                urlFilter: r"^https?://.+?prestrain\.html",
+                resourceType: [ContentBlockerTriggerResourceType.DOCUMENT],
+              ),
+              action: ContentBlockerAction(
+                type: ContentBlockerActionType.BLOCK,
+              ),
             ),
             ContentBlocker(
               trigger: ContentBlockerTrigger(
-                  urlFilter: r"^https?://.+?adtrafficquality",
-                  resourceType: [
-                    ContentBlockerTriggerResourceType.DOCUMENT,
-                  ]),
-              action:
-                  ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
+                urlFilter: r"^https?://.+?prestrain%2Ehtml",
+                resourceType: [ContentBlockerTriggerResourceType.DOCUMENT],
+              ),
+              action: ContentBlockerAction(
+                type: ContentBlockerActionType.BLOCK,
+              ),
+            ),
+            ContentBlocker(
+              trigger: ContentBlockerTrigger(
+                urlFilter: r"^https?://.+?adtrafficquality",
+                resourceType: [ContentBlockerTriggerResourceType.DOCUMENT],
+              ),
+              action: ContentBlockerAction(
+                type: ContentBlockerActionType.BLOCK,
+              ),
             ),
           ],
         ),
         onWebViewCreated: (controller) {
+          if (_disposed) return;
           KazumiLogger().i('WebView: created');
           webviewController = controller;
           initEventController.add(true);
         },
         onLoadStart: (controller, url) {
-          logEventController.add('started loading: $url');
+          if (!_disposed) logEventController.add('started loading: $url');
         },
         onLoadStop: (controller, url) {
-          logEventController.add('loading completed: $url');
+          if (!_disposed) logEventController.add('loading completed: $url');
         },
         onReceivedError: (controller, request, error) {
           KazumiLogger().e(
-              'WebView: error: ${error.toString()} - Request: ${request.url}');
+            'WebView: error: ${error.toString()} - Request: ${request.url}',
+          );
         },
       ),
     );
-    await headlessWebView?.run();
+    final view = headlessWebView;
+    await view?.run();
+    // A native creation callback may finish after the resolver deadline.
+    if (_disposed) await view?.dispose();
   }
 
   @override
-  Future<void> loadUrl(String url, bool useLegacyParser,
-      {int offset = 0}) async {
+  Future<void> loadUrl(
+    String url,
+    bool useLegacyParser, {
+    int offset = 0,
+  }) async {
+    if (_disposed) return;
     await unloadPage();
+    if (_disposed) return;
     if (!hasInjectedScripts) {
       addJavaScriptHandlers(useLegacyParser);
       await addUserScripts(useLegacyParser);
+      if (_disposed) return;
       hasInjectedScripts = true;
     }
     count = 0;
@@ -144,60 +158,68 @@ class VideoWebviewAppleImpl
   void addJavaScriptHandlers(bool useLegacyParser) {
     logEventController.add('Adding LogBridge handler');
     webviewController?.addJavaScriptHandler(
-        handlerName: 'LogBridge',
-        callback: (args) {
-          String message = args[0].toString();
-          if (message.contains('about:blank')) {
-            return;
-          }
-          logEventController.add(message);
-        });
+      handlerName: 'LogBridge',
+      callback: (args) {
+        if (_disposed || args.isEmpty) return;
+        String message = args[0].toString();
+        if (message.contains('about:blank')) {
+          return;
+        }
+        logEventController.add(message);
+      },
+    );
 
     if (useLegacyParser) {
       logEventController.add('Adding JSBridgeDebug handler');
       webviewController?.addJavaScriptHandler(
-          handlerName: 'JSBridgeDebug',
-          callback: (args) {
-            String message = args[0].toString();
-            logEventController.add('Callback received: $message');
-            logEventController.add(
-                'If there is audio but no video, please report it to the rule developer.');
-            if ((message.contains('http') || message.startsWith('//')) &&
-                !message.contains('googleads') &&
-                !message.contains('googlesyndication.com') &&
-                !message.contains('prestrain.html') &&
-                !message.contains('prestrain%2Ehtml') &&
-                !message.contains('adtrafficquality')) {
-              logEventController.add('Parsing video source $message');
-              String encodedUrl = Uri.encodeFull(message);
-              if (decodeVideoSource(encodedUrl) != encodedUrl) {
-                isIframeLoaded = true;
-                isVideoSourceLoaded = true;
-                videoLoadingEventController.add(false);
-                logEventController.add(
-                    'Loading video source ${decodeVideoSource(encodedUrl)}');
-                unloadPage();
-                final videoUrl = decodeVideoSource(encodedUrl);
-                notifyVideoSourceResolved(videoUrl);
-              }
-            }
-          });
-    } else {
-      logEventController.add('Adding VideoBridgeDebug handler');
-      webviewController?.addJavaScriptHandler(
-          handlerName: 'VideoBridgeDebug',
-          callback: (args) {
-            String message = args[0].toString();
-            logEventController.add('Callback received: $message');
-            if (message.contains('http') && !isVideoSourceLoaded) {
-              logEventController.add('Loading video source: $message');
+        handlerName: 'JSBridgeDebug',
+        callback: (args) {
+          if (_disposed || args.isEmpty) return;
+          String message = args[0].toString();
+          logEventController.add('Callback received: $message');
+          logEventController.add(
+            'If there is audio but no video, please report it to the rule developer.',
+          );
+          if ((message.contains('http') || message.startsWith('//')) &&
+              !message.contains('googleads') &&
+              !message.contains('googlesyndication.com') &&
+              !message.contains('prestrain.html') &&
+              !message.contains('prestrain%2Ehtml') &&
+              !message.contains('adtrafficquality')) {
+            logEventController.add('Parsing video source $message');
+            String encodedUrl = Uri.encodeFull(message);
+            if (decodeVideoSource(encodedUrl) != encodedUrl) {
               isIframeLoaded = true;
               isVideoSourceLoaded = true;
               videoLoadingEventController.add(false);
+              logEventController.add(
+                'Loading video source ${decodeVideoSource(encodedUrl)}',
+              );
               unloadPage();
-              notifyVideoSourceResolved(message);
+              final videoUrl = decodeVideoSource(encodedUrl);
+              notifyVideoSourceResolved(videoUrl);
             }
-          });
+          }
+        },
+      );
+    } else {
+      logEventController.add('Adding VideoBridgeDebug handler');
+      webviewController?.addJavaScriptHandler(
+        handlerName: 'VideoBridgeDebug',
+        callback: (args) {
+          if (_disposed || args.isEmpty) return;
+          String message = args[0].toString();
+          logEventController.add('Callback received: $message');
+          if (message.contains('http') && !isVideoSourceLoaded) {
+            logEventController.add('Loading video source: $message');
+            isIframeLoaded = true;
+            isVideoSourceLoaded = true;
+            videoLoadingEventController.add(false);
+            unloadPage();
+            notifyVideoSourceResolved(message);
+          }
+        },
+      );
     }
   }
 
@@ -218,11 +240,13 @@ class VideoWebviewAppleImpl
             }
         }
       """;
-      scripts.add(UserScript(
-        source: jsBridgeDebugScript,
-        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_END,
-        forMainFrameOnly: false,
-      ));
+      scripts.add(
+        UserScript(
+          source: jsBridgeDebugScript,
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_END,
+          forMainFrameOnly: false,
+        ),
+      );
     } else {
       logEventController.add('Adding VideoBridgeDebug UserScripts');
       const String blobParserScript = """
@@ -300,31 +324,35 @@ class VideoWebviewAppleImpl
           attributeFilter: ['src']
         });
     """;
-      scripts.add(UserScript(
-        source: blobParserScript,
-        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-        forMainFrameOnly: false,
-      ));
-      scripts.add(UserScript(
-        source: videoTagParserScript,
-        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_END,
-        forMainFrameOnly: false,
-      ));
+      scripts.add(
+        UserScript(
+          source: blobParserScript,
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+          forMainFrameOnly: false,
+        ),
+      );
+      scripts.add(
+        UserScript(
+          source: videoTagParserScript,
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_END,
+          forMainFrameOnly: false,
+        ),
+      );
     }
 
-    await webviewController?.addUserScripts(
-      userScripts: scripts,
-    );
+    await webviewController?.addUserScripts(userScripts: scripts);
   }
 
   @override
   Future<void> unloadPage() async {
-    await webviewController!
-        .loadUrl(urlRequest: URLRequest(url: WebUri("about:blank")));
+    await webviewController!.loadUrl(
+      urlRequest: URLRequest(url: WebUri("about:blank")),
+    );
   }
 
   @override
   Future<void> dispose() async {
+    _disposed = true;
     await headlessWebView?.dispose();
     headlessWebView = null;
     webviewController = null;

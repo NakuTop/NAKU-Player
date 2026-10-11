@@ -7,6 +7,7 @@ import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_ratings.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
+import 'package:kazumi/features/cinema/cinema_settings_host_binding.dart';
 
 const sourceA = CinemaSource(
   id: 'source-a',
@@ -15,8 +16,8 @@ const sourceA = CinemaSource(
   url: 'https://a.example/api',
 );
 const modu = CinemaSource(
-  id: 'maccms-modu',
-  name: '魔都影视',
+  id: 'maccms-feifan',
+  name: '非凡影视',
   kind: CinemaSourceKind.maccms,
   url: 'https://b.example/api',
 );
@@ -103,15 +104,29 @@ class CatalogueStub extends CinemaRepository {
   );
 }
 
+class _Store extends CinemaStore {
+  _Store({required super.file, required super.defaults});
+  bool captureReorder = false;
+  List<String>? requestedOrder;
+  @override
+  Future<void> reorderMovieSources(List<String> ids) async {
+    if (captureReorder) {
+      requestedOrder = List.of(ids);
+    } else {
+      await super.reorderMovieSources(ids);
+    }
+  }
+}
+
 void main() {
   late Directory directory;
-  late CinemaStore store;
+  late _Store store;
   late CatalogueStub repository;
   setUp(() async {
     directory = await Directory.systemTemp.createTemp('cinema-group-ui-');
-    store = CinemaStore(
+    store = _Store(
       file: File('${directory.path}/library.json'),
-      defaults: [sourceA, modu],
+      defaults: [modu, sourceA],
     );
     await store.load();
     repository = CatalogueStub();
@@ -144,10 +159,41 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  Finder card() => find.byKey(const ValueKey('title-card:maccms-modu::m1'));
+  Finder card() => find.byKey(const ValueKey('title-card:maccms-feifan::m1'));
+
+  testWidgets('drag handle submits the chosen playback priority', (
+    tester,
+  ) async {
+    store.captureReorder = true;
+    await mount(tester);
+    expect(CinemaSettingsHostBinding.instance.openSources(), isTrue);
+    await tester.pumpAndSettle();
+    final first = find.byKey(const ValueKey('source-order:maccms-feifan'));
+    final handle = find.descendant(
+      of: first,
+      matching: find.byType(ReorderableDragStartListener),
+    );
+    expect(handle, findsOneWidget);
+    final next = find.byKey(ValueKey('source-order:${sourceA.id}'));
+    final origin = tester.getCenter(handle);
+    final destination = Offset(origin.dx, tester.getBottomLeft(next).dy + 12);
+    final gesture = await tester.startGesture(origin);
+    await tester.pump(const Duration(milliseconds: 100));
+    for (var step = 1; step <= 20; step++) {
+      await gesture.moveTo(Offset.lerp(origin, destination, step / 20)!);
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    await tester.pump(const Duration(milliseconds: 350));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(store.requestedOrder, [sourceA.id, modu.id]);
+    // Atomic persistence and restart ordering are covered with real files in
+    // cinema_source_upgrade_test, outside the widget fake-async clock.
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
-    'all sources are browsed while Modu remains the preferred representative',
+    'all sources are browsed while Feifan remains the preferred representative',
     (tester) async {
       await mount(tester);
       expect(repository.browsed.toSet(), {sourceA.id, modu.id});
@@ -169,7 +215,7 @@ void main() {
       );
       await tester.tap(card());
       await tester.pumpAndSettle();
-      expect(find.text('魔都影视的详情'), findsOneWidget);
+      expect(find.text('非凡影视的详情'), findsOneWidget);
       final sheetScroll = find
           .descendant(
             of: find.byType(BottomSheet),
@@ -177,11 +223,11 @@ void main() {
           )
           .first;
       await tester.scrollUntilVisible(
-        find.text('魔都影视专属线路'),
+        find.text('非凡影视专属线路'),
         200,
         scrollable: sheetScroll,
       );
-      expect(find.text('魔都影视专属线路'), findsOneWidget);
+      expect(find.text('非凡影视专属线路'), findsOneWidget);
       await tester.drag(sheetScroll, const Offset(0, 800));
       await tester.pumpAndSettle();
       await tester.tap(
@@ -195,7 +241,7 @@ void main() {
         scrollable: sheetScroll,
       );
       expect(find.text('备用源专属线路'), findsOneWidget);
-      expect(find.text('魔都影视专属线路'), findsNothing);
+      expect(find.text('非凡影视专属线路'), findsNothing);
       expect(repository.details, [modu.id, sourceA.id]);
       expect(tester.takeException(), isNull);
     },
@@ -211,14 +257,14 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('source-variant:source-a::a1')));
     await tester.pump();
     await tester.tap(
-      find.byKey(const ValueKey('source-variant:maccms-modu::m1')),
+      find.byKey(const ValueKey('source-variant:maccms-feifan::m1')),
     );
     await tester.pumpAndSettle();
     repository.pendingA!.complete(
       repository.resolved(sourceA, sample(sourceA)),
     );
     await tester.pumpAndSettle();
-    expect(find.text('魔都影视的详情'), findsOneWidget);
+    expect(find.text('非凡影视的详情'), findsOneWidget);
     expect(find.text('备用源的详情'), findsNothing);
     expect(tester.takeException(), isNull);
   });

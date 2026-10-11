@@ -16,6 +16,7 @@ class NetworkConfig {
     this.proxyPort,
     this.allowBadCertificates = false,
     this.enableLog = true,
+    this.followSystemProxy = true,
   });
 
   final Duration connectTimeout;
@@ -25,11 +26,13 @@ class NetworkConfig {
   final int? proxyPort;
   final bool allowBadCertificates;
   final bool enableLog;
+  final bool followSystemProxy;
 
   bool get hasProxy => proxyHost != null && proxyPort != null;
 
   Uri? proxyForUri(Uri uri) {
     if (hasProxy) return Uri(scheme: 'http', host: proxyHost, port: proxyPort);
+    if (!followSystemProxy) return null;
     if (Platform.isMacOS) return MacOSSystemProxy.proxyFor(uri);
     if (Platform.isWindows) {
       final proxy = SystemProxyService.findProxy(uri);
@@ -46,6 +49,8 @@ class NetworkConfig {
         final client = HttpClient();
         if (hasProxy) {
           client.findProxy = (_) => 'PROXY $proxyHost:$proxyPort';
+        } else if (!followSystemProxy) {
+          client.findProxy = (_) => 'DIRECT';
         } else if (Platform.isWindows) {
           client.findProxy = SystemProxyService.findProxy;
         } else if (Platform.isMacOS) {
@@ -68,6 +73,7 @@ class NetworkConfig {
     bool? clearProxy,
     bool? allowBadCertificates,
     bool? enableLog,
+    bool? followSystemProxy,
   }) {
     final shouldClearProxy = clearProxy ?? false;
     return NetworkConfig(
@@ -78,6 +84,32 @@ class NetworkConfig {
       proxyPort: shouldClearProxy ? null : proxyPort ?? this.proxyPort,
       allowBadCertificates: allowBadCertificates ?? this.allowBadCertificates,
       enableLog: enableLog ?? this.enableLog,
+      followSystemProxy: followSystemProxy ?? this.followSystemProxy,
+    );
+  }
+
+  static NetworkConfig forMedia({
+    Duration connectTimeout = const Duration(seconds: 12),
+    Duration receiveTimeout = const Duration(seconds: 30),
+  }) {
+    NetworkConfig config;
+    var direct = false;
+    try {
+      config = fromSettings(
+        connectTimeout: connectTimeout,
+        receiveTimeout: receiveTimeout,
+      );
+      direct = GStorage.getSetting(SettingsKeys.mediaDirectConnection);
+    } catch (_) {
+      config = NetworkConfig(
+        connectTimeout: connectTimeout,
+        receiveTimeout: receiveTimeout,
+      );
+    }
+    return config.copyWith(
+      clearProxy: direct,
+      followSystemProxy: !direct,
+      allowBadCertificates: false,
     );
   }
 

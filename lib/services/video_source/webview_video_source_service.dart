@@ -9,7 +9,13 @@ import 'package:kazumi/services/video_source/video_source_service.dart';
 /// WebView 实例在服务生命周期内复用，切换集数时调用 unloadPage 释放页面资源，
 /// 仅在 [dispose] 时才真正销毁 WebView。
 class WebViewVideoSourceService implements IVideoSourceService {
+  WebViewVideoSourceService({VideoWebviewController Function()? createWebview})
+    : _createWebview =
+          createWebview ?? VideoWebviewControllerFactory.getController;
+
+  final VideoWebviewController Function() _createWebview;
   VideoWebviewController? _webview;
+  bool? _legacyParser;
   StreamSubscription? _logSubscription;
 
   // 单个服务实例持有一个 WebView，因此解析任务按实例串行执行。
@@ -60,43 +66,63 @@ class WebViewVideoSourceService implements IVideoSourceService {
   }) async {
     request.throwIfNotCurrent(_activeRequest);
 
-    if (_webview == null) {
-      _webview = VideoWebviewControllerFactory.getController();
-      await _webview!.init();
-
-      _logSubscription = _webview!.onLog.listen((log) {
+    if (_webview != null && _legacyParser != useLegacyParser) {
+      final previous = _webview!;
+      _webview = null;
+      await _logSubscription?.cancel();
+      _logSubscription = null;
+      unawaited(
+        previous
+            .dispose()
+            .timeout(const Duration(seconds: 2))
+            .catchError((Object _) {}),
+      );
+    }
+    final needsInit = _webview == null;
+    _legacyParser = useLegacyParser;
+    final webview = _webview ??= _createWebview();
+    if (needsInit) {
+      _logSubscription = webview.onLog.listen((log) {
         if (!_logController.isClosed) {
           _logController.add(log);
         }
       });
     }
 
-    var didStartLoad = false;
+    // Subscribe before init/load: a cached page may report a URL before
+    // loadUrl's platform-channel future completes.
+    final parsed = Completer<VideoParserEvent>();
+    parsed.future.ignore(); // A native stream error can arrive during init.
+    final parserSubscription = webview.onVideoURLParser.listen(
+      (event) {
+        if (!parsed.isCompleted) parsed.complete(event);
+      },
+      onError: (Object error, StackTrace stack) {
+        if (!parsed.isCompleted) parsed.completeError(error, stack);
+      },
+    );
+    var reusable = false;
     try {
-      request.throwIfNotCurrent(_activeRequest);
-      didStartLoad = true;
-      await _webview!.loadUrl(
-        episodeUrl,
-        useLegacyParser,
-        offset: offset,
-      );
-
-      request.throwIfNotCurrent(_activeRequest);
-
-      final parserFuture = _webview!.onVideoURLParser.first.timeout(
+      final operation = () async {
+        if (needsInit) await webview.init();
+        request.throwIfNotCurrent(_activeRequest);
+        await webview.loadUrl(episodeUrl, useLegacyParser, offset: offset);
+        request.throwIfNotCurrent(_activeRequest);
+        return parsed.future;
+      }();
+      final cancelFuture = request.cancelled.then<VideoParserEvent>((_) {
+        throw const VideoSourceCancelledException();
+      });
+      // The deadline covers initialization and navigation, not just parsing.
+      final event = await Future.any([operation, cancelFuture]).timeout(
         timeout,
         onTimeout: () {
           request.throwIfNotCurrent(_activeRequest);
           throw VideoSourceTimeoutException(timeout);
         },
       );
-      final cancelFuture = request.cancelled.then<VideoParserEvent>((_) {
-        throw const VideoSourceCancelledException();
-      });
-      final event = await Future.any([parserFuture, cancelFuture]);
-
       request.throwIfNotCurrent(_activeRequest);
-
+      reusable = true;
       return VideoSource(
         url: event.url,
         offset: event.offset,
@@ -110,8 +136,27 @@ class WebViewVideoSourceService implements IVideoSourceService {
       request.throwIfNotCurrent(_activeRequest);
       rethrow;
     } finally {
-      if (didStartLoad) {
-        await _webview?.unloadPage();
+      request.cancel();
+      await parserSubscription.cancel();
+      if (reusable) {
+        try {
+          await webview.unloadPage().timeout(const Duration(seconds: 2));
+        } catch (_) {
+          reusable = false;
+        }
+      }
+      if (!reusable) {
+        // Retire a timed-out controller. Its late callbacks must never resolve
+        // a subsequent episode, and a stuck native dispose must not block it.
+        if (identical(_webview, webview)) _webview = null;
+        await _logSubscription?.cancel();
+        _logSubscription = null;
+        unawaited(
+          webview
+              .dispose()
+              .timeout(const Duration(seconds: 2))
+              .catchError((Object _) {}),
+        );
       }
       if (identical(_activeRequest, request)) {
         _activeRequest = null;

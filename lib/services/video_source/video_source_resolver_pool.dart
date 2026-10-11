@@ -4,6 +4,9 @@ import 'package:kazumi/services/video_source/video_source_service.dart';
 import 'package:kazumi/services/video_source/webview_video_source_service.dart';
 
 class VideoSourceResolverPool {
+  VideoSourceResolverPool({IVideoSourceService Function()? createService})
+    : _createService = createService ?? WebViewVideoSourceService.new;
+  final IVideoSourceService Function() _createService;
   final List<_VideoSourceResolverWorker> _workers = [];
   final Map<String, VideoSourceResolverLease> _activeLeases = {};
   int _maxWorkers = 1;
@@ -20,7 +23,7 @@ class VideoSourceResolverPool {
 
     var worker = _findIdleWorker();
     if (worker == null && _workers.length < _maxWorkers) {
-      worker = _VideoSourceResolverWorker();
+      worker = _VideoSourceResolverWorker(_createService());
       _workers.add(worker);
     }
     if (worker == null) return null;
@@ -136,11 +139,11 @@ class VideoSourceResolverLease {
 }
 
 class _VideoSourceResolverWorker {
-  final WebViewVideoSourceService _service = WebViewVideoSourceService();
+  final IVideoSourceService _service;
   bool isBusy = false;
   bool isRetired = false;
 
-  _VideoSourceResolverWorker();
+  _VideoSourceResolverWorker(this._service);
 
   Future<VideoSource> resolve(
     String episodeUrl, {

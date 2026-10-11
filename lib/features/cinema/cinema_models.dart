@@ -229,6 +229,7 @@ class CinemaTitle {
   String get key => '$sourceId::$id';
   bool get isDirectMedia => sourceId == cinemaDirectSource.id;
   CinemaTitle copyWith({
+    String? year,
     List<CinemaRoute>? routes,
     String? doubanId,
     String? imdbId,
@@ -242,7 +243,7 @@ class CinemaTitle {
     description: description,
     category: category,
     categoryId: categoryId,
-    year: year,
+    year: year ?? this.year,
     remarks: remarks,
     actors: actors,
     director: director,

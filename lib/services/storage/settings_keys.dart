@@ -440,6 +440,11 @@ class SettingsKeys {
     false,
     group: SettingGroup.player,
   );
+  static const mediaDirectConnection = SettingKey<bool>(
+    'mediaDirectConnection',
+    false,
+    group: SettingGroup.proxy,
+  );
   static const proxyEnable = SettingKey<bool>(
     _SettingBoxKey.proxyEnable,
     false,
@@ -482,6 +487,11 @@ class SettingsKeys {
   );
   static const downloadDanmaku = SettingKey<bool>(
     _SettingBoxKey.downloadDanmaku,
+    true,
+    group: SettingGroup.download,
+  );
+  static const downloadPreventSleep = SettingKey<bool>(
+    'downloadPreventSleep',
     true,
     group: SettingGroup.download,
   );
@@ -663,6 +673,7 @@ class SettingsKeys {
     useSystemFont,
     forceAdBlocker,
     backgroundPlayback,
+    mediaDirectConnection,
     proxyEnable,
     proxyConfigured,
     proxyUrl,
@@ -672,6 +683,7 @@ class SettingsKeys {
     downloadParallelEpisodes,
     downloadParallelSegments,
     downloadDanmaku,
+    downloadPreventSleep,
     downloadDirectory,
     downloadDirectoryBookmark,
     shortcutDialogShown,

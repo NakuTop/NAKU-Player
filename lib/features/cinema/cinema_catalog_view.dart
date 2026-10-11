@@ -6,7 +6,7 @@ import 'cinema_models.dart';
 /// its contents change. Score updates only re-sort; they never re-group works.
 class CinemaCatalogViewCache {
   List<CinemaTitle>? _items;
-  (String, String, String, bool)? _filterKey;
+  (String, String, String, bool, String)? _filterKey;
   (CinemaCatalogSort?, String, int)? _sortKey;
   List<CinemaTitle> _representatives = const [];
   List<CinemaTitleGroup> _groups = const [];
@@ -19,15 +19,24 @@ class CinemaCatalogViewCache {
     required bool grouped,
     CinemaCatalogSort? sort,
     String provider = '',
+    List<String> sourcePriority = const [],
     int ratingRevision = 0,
     double? Function(CinemaTitle)? scoreOf,
   }) {
-    final filterKey = (filters.year, filters.region, filters.genre, grouped);
+    final filterKey = (
+      filters.year,
+      filters.region,
+      filters.genre,
+      grouped,
+      sourcePriority.join('|'),
+    );
     if (!identical(_items, items) || _filterKey != filterKey) {
       _items = items;
       _filterKey = filterKey;
       final filtered = items.where(filters.matches).toList();
-      _groups = grouped ? groupCinemaTitles(filtered) : const [];
+      _groups = grouped
+          ? groupCinemaTitles(filtered, sourcePriority: sourcePriority)
+          : const [];
       _representatives = grouped
           ? _groups.map((group) => group.catalogTitle).toList()
           : filtered;

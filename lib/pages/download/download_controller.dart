@@ -1,12 +1,16 @@
+import 'package:kazumi/utils/async_serial_queue.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:kazumi/features/cinema/cinema_models.dart';
+import 'package:kazumi/features/cinema/cinema_media_source.dart';
 import 'package:kazumi/modules/download/download_module.dart';
 import 'package:kazumi/modules/danmaku/danmaku_module.dart';
 import 'package:kazumi/plugins/plugins.dart';
 import 'package:kazumi/plugins/plugins_controller.dart';
 import 'package:kazumi/repositories/download_repository.dart';
 import 'package:kazumi/services/download/background_download_service.dart';
+import 'package:kazumi/services/download/download_sleep_guard.dart';
 import 'package:kazumi/services/download/download_manager.dart';
 import 'package:kazumi/utils/format.dart';
 import 'package:kazumi/services/logging/logger.dart';
@@ -17,20 +21,38 @@ import 'package:mobx/mobx.dart';
 
 part 'download_controller.g.dart';
 
+class DownloadSelection {
+  const DownloadSelection({
+    required this.number,
+    required this.name,
+    required this.road,
+    required this.url,
+  });
+  final int number;
+  final String name;
+  final int road;
+  final String url;
+}
+
 class DownloadController = _DownloadController with _$DownloadController;
 
 abstract class _DownloadController with Store {
   _DownloadController(
     this._repository,
     this._downloadManager,
-    this._pluginsController,
-  );
+    this._pluginsController, {
+    VideoSourceResolverPool? resolverPool,
+    DownloadSleepGuard? sleepGuard,
+  }) : _resolverPool = resolverPool ?? VideoSourceResolverPool(),
+       _sleepGuard = sleepGuard ?? DownloadSleepGuard.instance;
 
   final IDownloadRepository _repository;
   final IDownloadManager _downloadManager;
   final PluginsController _pluginsController;
   final _backgroundService = BackgroundDownloadService();
-  final _resolverPool = VideoSourceResolverPool();
+  final DownloadSleepGuard _sleepGuard;
+  final VideoSourceResolverPool _resolverPool;
+  final _batchWrites = AsyncSerialQueue();
 
   @observable
   ObservableList<DownloadRecord> records = ObservableList<DownloadRecord>();
@@ -43,6 +65,9 @@ abstract class _DownloadController with Store {
   bool _isBackgroundServiceInitialized = false;
 
   Future<void> init() async {
+    await _sleepGuard.update(
+      enabled: GStorage.getSetting(SettingsKeys.downloadPreventSleep),
+    );
     _replaceRecords(_repository.getAllRecords());
 
     // Reset any incomplete states to 'paused' on startup
@@ -257,6 +282,22 @@ abstract class _DownloadController with Store {
     _replaceRecords(_repository.getAllRecords());
   }
 
+  void _updateDownloadPower() {
+    unawaited(
+      _sleepGuard.update(
+        hasWork: records.any(
+          (record) => record.episodes.values.any(
+            (episode) => {
+              DownloadStatus.pending,
+              DownloadStatus.resolving,
+              DownloadStatus.downloading,
+            }.contains(episode.status),
+          ),
+        ),
+      ),
+    );
+  }
+
   void _replaceRecords(List<DownloadRecord> nextRecords) {
     runInAction(() {
       records
@@ -275,6 +316,7 @@ abstract class _DownloadController with Store {
           ),
         );
     });
+    _updateDownloadPower();
   }
 
   void _refreshRecord(String recordKey) {
@@ -301,6 +343,7 @@ abstract class _DownloadController with Store {
         records[recordIndex] = _cloneRecord(record);
       }
     });
+    _updateDownloadPower();
   }
 
   DownloadRecord? getRecordSnapshot(String recordKey) => recordByKey[recordKey];
@@ -499,6 +542,91 @@ abstract class _DownloadController with Store {
     }
   }
 
+  /// Persist the complete selection before starting workers. This avoids
+  /// competing per-episode writes losing episodes in a newly created season.
+  Future<int> startEpisodeDownloads({
+    required DownloadRecord media,
+    required List<DownloadSelection> selections,
+  }) => _batchWrites.run(
+    () => _startEpisodeDownloads(media: media, selections: selections),
+  );
+
+  Future<int> _startEpisodeDownloads({
+    required DownloadRecord media,
+    required List<DownloadSelection> selections,
+  }) async {
+    final record = _repository.getRecord(media.key) ?? media;
+    final added = <DownloadEpisode>[];
+    final seen = <String>{};
+    final numbers = <int, String>{};
+    // Validate all identities before modifying the durable record.
+    for (final selection in selections) {
+      if (selection.number < 1 || selection.url.isEmpty) {
+        throw const FormatException('无效的下载集数');
+      }
+      if (numbers.containsKey(selection.number) &&
+          numbers[selection.number] != selection.url) {
+        throw const FormatException('重复的集数编号');
+      }
+      numbers[selection.number] = selection.url;
+      final previous = record.episodes[selection.number];
+      if (previous != null && previous.episodePageUrl != selection.url) {
+        throw StateError('该集已有其他线路的下载任务');
+      }
+    }
+    for (final selection in selections) {
+      if (!seen.add(selection.url)) continue;
+      final previous = record.episodes[selection.number];
+      if (previous != null &&
+          {
+            DownloadStatus.completed,
+            DownloadStatus.pending,
+            DownloadStatus.downloading,
+            DownloadStatus.resolving,
+          }.contains(previous.status)) {
+        continue;
+      }
+      final episode =
+          previous ??
+          DownloadEpisode(
+            selection.number,
+            selection.name,
+            selection.road,
+            DownloadStatus.resolving,
+            0,
+            0,
+            0,
+            '',
+            '',
+            '',
+            null,
+            '',
+            0,
+            selection.url,
+          );
+      episode.status = DownloadStatus.resolving;
+      episode.errorMessage = '';
+      record.episodes[selection.number] = episode;
+      added.add(episode);
+    }
+    if (added.isEmpty) return 0;
+    await _repository.putRecord(record);
+    _refreshRecord(record.key);
+    for (final episode in added) {
+      _resolveQueue.add(
+        _ResolveRequest(
+          recordKey: record.key,
+          bangumiId: record.bangumiId,
+          pluginName: record.pluginName,
+          episodeNumber: episode.episodeNumber,
+          episodePageUrl: episode.episodePageUrl,
+        ),
+      );
+    }
+    _processResolveQueue();
+    return added.length;
+  }
+
   Future<void> startDownload({
     required int bangumiId,
     required String bangumiName,
@@ -509,61 +637,24 @@ abstract class _DownloadController with Store {
     required int road,
     required String episodePageUrl,
   }) async {
-    final recordKey = '${pluginName}_$bangumiId';
-
-    final record =
-        _repository.getRecord(recordKey) ??
-        DownloadRecord(
-          bangumiId,
-          bangumiName,
-          bangumiCover,
-          pluginName,
-          {},
-          DateTime.now(),
-        );
-
-    if (episodePageUrl.isNotEmpty) {
-      for (final entry in record.episodes.entries) {
-        if (entry.value.episodePageUrl == episodePageUrl) {
-          KazumiLogger().i(
-            'DownloadController: episode URL already exists at position ${entry.key}, skipping',
-          );
-          return;
-        }
-      }
-    }
-
-    final episode = DownloadEpisode(
-      episodeNumber,
-      episodeName,
-      road,
-      DownloadStatus.resolving,
-      0.0,
-      0,
-      0,
-      '',
-      '',
-      '',
-      null,
-      '',
-      0,
-      episodePageUrl,
-    );
-
-    record.episodes[episodeNumber] = episode;
-    await _repository.putRecord(record);
-    refreshRecords();
-
-    _resolveQueue.add(
-      _ResolveRequest(
-        recordKey: recordKey,
-        bangumiId: bangumiId,
-        pluginName: pluginName,
-        episodeNumber: episodeNumber,
-        episodePageUrl: episodePageUrl,
+    await startEpisodeDownloads(
+      media: DownloadRecord(
+        bangumiId,
+        bangumiName,
+        bangumiCover,
+        pluginName,
+        {},
+        DateTime.now(),
       ),
+      selections: [
+        DownloadSelection(
+          number: episodeNumber,
+          name: episodeName,
+          road: road,
+          url: episodePageUrl,
+        ),
+      ],
     );
-    _processResolveQueue();
   }
 
   /// Queue already-resolved film, series or direct media in the same durable
@@ -630,7 +721,9 @@ abstract class _DownloadController with Store {
     DownloadRecord record,
     DownloadEpisode episode, {
     bool priority = false,
+    bool Function()? isCurrent,
   }) async {
+    if (isCurrent?.call() == false) return;
     final headers = episode.requestHeadersJson.isEmpty
         ? <String, String>{}
         : Map<String, String>.from(jsonDecode(episode.requestHeadersJson));
@@ -639,6 +732,15 @@ abstract class _DownloadController with Store {
     await _repository.updateEpisode(record.key, episode.episodeNumber, episode);
     _refreshRecord(record.key);
     await _startBackgroundServiceIfNeeded();
+    final current = _repository
+        .getRecord(record.key)
+        ?.episodes[episode.episodeNumber];
+    if (isCurrent?.call() == false ||
+        current == null ||
+        current.status != DownloadStatus.pending ||
+        current.episodePageUrl != episode.episodePageUrl) {
+      return;
+    }
     final request = DownloadRequest(
       recordKey: record.key,
       bangumiId: record.bangumiId,
@@ -690,6 +792,11 @@ abstract class _DownloadController with Store {
     var wasCancelled = false;
 
     try {
+      final cinemaRecord = _repository.getRecord(request.recordKey);
+      if (cinemaRecord?.isCinema == true) {
+        await _resolveCinemaAndEnqueue(cinemaRecord!, request, lease);
+        return;
+      }
       final plugin = _findPlugin(request.pluginName);
       if (plugin == null) {
         _failEpisode(
@@ -806,6 +913,91 @@ abstract class _DownloadController with Store {
     } finally {
       _releaseResolveLease(key, lease);
     }
+  }
+
+  Future<void> _resolveCinemaAndEnqueue(
+    DownloadRecord record,
+    _ResolveRequest request,
+    VideoSourceResolverLease lease,
+  ) async {
+    final episode = record.episodes[request.episodeNumber];
+    if (episode == null ||
+        episode.status != DownloadStatus.resolving ||
+        lease.isCancelled) {
+      return;
+    }
+    try {
+      final metadata = jsonDecode(record.mediaMetadata) as Map<String, dynamic>;
+      final title = CinemaTitle.fromJson(
+        Map<String, dynamic>.from(metadata['title']),
+      );
+      final source = CinemaSource.fromJson(
+        Map<String, dynamic>.from(metadata['source']),
+      );
+      final route = title.routes[metadata['routeIndex'] as int];
+      final resolved = await resolveCinemaMedia(
+        source: source,
+        route: route,
+        episode: CinemaEpisode(
+          name: episode.episodeName,
+          url: episode.episodePageUrl,
+        ),
+        resolve: (url, legacy) => lease.resolve(
+          url,
+          useLegacyParser: legacy,
+          timeout: const Duration(seconds: 25),
+        ),
+      );
+      if (lease.isCancelled) return;
+      final fresh = _repository.getRecord(record.key);
+      final current = fresh?.episodes[request.episodeNumber];
+      if (fresh == null ||
+          current == null ||
+          current.status != DownloadStatus.resolving ||
+          current.episodePageUrl != request.episodePageUrl) {
+        return;
+      }
+      current.networkM3u8Url = resolved.url;
+      current.requestHeadersJson = jsonEncode(resolved.headers);
+      await _enqueueDirect(fresh, current, isCurrent: () => !lease.isCancelled);
+    } on VideoSourceCancelledException {
+      // Pause/delete owns the durable status; a late resolver must not revive it.
+    } catch (_) {
+      if (!lease.isCancelled) {
+        _failEpisode(record.key, request.episodeNumber, '无法解析视频，请重试或更换下载线路');
+      }
+    }
+  }
+
+  Future<void> _retryCinema(
+    DownloadRecord record,
+    DownloadEpisode episode, {
+    bool priority = false,
+  }) async {
+    _cancelResolve(record.key, episode.episodeNumber);
+    // A paused resolved task can resume, but a failed URL may have expired.
+    if (episode.status != DownloadStatus.failed &&
+        episode.networkM3u8Url.isNotEmpty) {
+      await _enqueueDirect(record, episode, priority: priority);
+      return;
+    }
+    episode.status = DownloadStatus.resolving;
+    episode.errorMessage = '';
+    await _repository.updateEpisode(record.key, episode.episodeNumber, episode);
+    _refreshRecord(record.key);
+    final request = _ResolveRequest(
+      recordKey: record.key,
+      bangumiId: record.bangumiId,
+      pluginName: record.pluginName,
+      episodeNumber: episode.episodeNumber,
+      episodePageUrl: episode.episodePageUrl,
+    );
+    if (priority) {
+      _resolveQueue.insert(0, request);
+    } else {
+      _resolveQueue.add(request);
+    }
+    _processResolveQueue();
   }
 
   void _releaseResolveLease(String key, VideoSourceResolverLease lease) {
@@ -994,7 +1186,7 @@ abstract class _DownloadController with Store {
     if (episode == null) return;
 
     if (record.isCinema) {
-      await _enqueueDirect(record, episode);
+      await _retryCinema(record, episode);
       return;
     }
 
@@ -1133,7 +1325,7 @@ abstract class _DownloadController with Store {
     if (episode == null) return;
 
     if (record.isCinema) {
-      await _enqueueDirect(record, episode, priority: true);
+      await _retryCinema(record, episode, priority: true);
       return;
     }
 

@@ -18,13 +18,13 @@ class _SourceSearchGroup {
       status == PluginSearchStatus.success && results.isNotEmpty;
 
   String get statusLabel => switch (status) {
-        PluginSearchStatus.pending => '检索中…',
-        PluginSearchStatus.success =>
-          results.isEmpty ? '无结果' : '${results.length} 个结果',
-        PluginSearchStatus.noResult => '无结果',
-        PluginSearchStatus.error => '检索失败',
-        PluginSearchStatus.captcha => '需要验证',
-      };
+    PluginSearchStatus.pending => '检索中…',
+    PluginSearchStatus.success =>
+      results.isEmpty ? '无结果' : '${results.length} 个结果',
+    PluginSearchStatus.noResult => '无结果',
+    PluginSearchStatus.error => '检索失败',
+    PluginSearchStatus.captcha => '需要验证',
+  };
 }
 
 enum _SourceDisplay { preview, expanded, collapsed }
@@ -32,6 +32,7 @@ enum _SourceDisplay { preview, expanded, collapsed }
 class _SourceSheetView extends StatefulWidget {
   const _SourceSheetView({
     required this.keyword,
+    this.downloadMode = false,
     required this.groups,
     required this.firstResultSource,
     required this.onSourceSearch,
@@ -44,6 +45,7 @@ class _SourceSheetView extends StatefulWidget {
   });
 
   final String keyword;
+  final bool downloadMode;
   final List<_SourceSearchGroup> groups;
   final String? firstResultSource;
   final ValueChanged<String> onSourceSearch;
@@ -129,7 +131,7 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
       body: Column(
         children: [
           MaterialBottomSheetHeader(
-            title: '播放来源',
+            title: widget.downloadMode ? '下载来源' : '播放来源',
             description: pending > 0
                 ? '检索中 ${widget.groups.length - pending}/${widget.groups.length} · $resultCount 个结果'
                 : '${widget.groups.length} 个来源 · $resultCount 个结果',
@@ -156,7 +158,8 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
                         itemCount: widget.groups.length,
                         findChildIndexCallback: (key) {
                           final index = widget.groups.indexWhere(
-                              (group) => ValueKey(group.name) == key);
+                            (group) => ValueKey(group.name) == key,
+                          );
                           return index < 0 ? null : index;
                         },
                         itemBuilder: (context, index) {
@@ -190,8 +193,10 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
         ? Duration.zero
         : splitListMotionDuration;
 
-    void toggle() => _setDisplay(group.name,
-        collapsed ? _SourceDisplay.preview : _SourceDisplay.collapsed);
+    void toggle() => _setDisplay(
+      group.name,
+      collapsed ? _SourceDisplay.preview : _SourceDisplay.collapsed,
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -220,12 +225,13 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
                           child: Row(
                             children: [
                               Expanded(
-                                  child: Text(
-                                group.name,
-                                style: theme.textTheme.labelLarge?.copyWith(
-                                  color: colors.onSurfaceVariant,
+                                child: Text(
+                                  group.name,
+                                  style: theme.textTheme.labelLarge?.copyWith(
+                                    color: colors.onSurfaceVariant,
+                                  ),
                                 ),
-                              )),
+                              ),
                               const SizedBox(width: 8),
                               Text(
                                 group.statusLabel,
@@ -238,8 +244,11 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
                                 turns: collapsed ? 0 : 0.5,
                                 duration: duration,
                                 curve: splitListMotionCurve,
-                                child: Icon(Icons.expand_more_rounded,
-                                    size: 20, color: colors.onSurfaceVariant),
+                                child: Icon(
+                                  Icons.expand_more_rounded,
+                                  size: 20,
+                                  color: colors.onSurfaceVariant,
+                                ),
                               ),
                             ],
                           ),
@@ -258,15 +267,18 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
             child: Text(
               '检索词：${group.keyword}',
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: colors.onSurfaceVariant),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colors.onSurfaceVariant,
+              ),
             ),
           ),
         _animateSize(
           collapsed
               ? const SizedBox.shrink()
-              : _buildSourceBody(group,
-                  showAll: display == _SourceDisplay.expanded),
+              : _buildSourceBody(
+                  group,
+                  showAll: display == _SourceDisplay.expanded,
+                ),
         ),
       ],
     );
@@ -280,26 +292,29 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
         child: switch (group.status) {
           PluginSearchStatus.pending => _buildSearching(),
           PluginSearchStatus.success ||
-          PluginSearchStatus.noResult =>
-            GeneralEmptyState(
-              icon: Icons.search_off_rounded,
-              title: '没有找到匹配结果',
-              compact: true,
-              actions: [
-                StateActionButton.tonal(
-                  onPressed: () => widget.onSourceSearch(group.name),
-                  text: '修改检索词',
-                ),
-                TextButton(
-                  onPressed: () => widget.onSourceAliasSearch(group.name),
-                  child: const Text('使用别名'),
-                ),
-              ],
-            ),
-          PluginSearchStatus.captcha =>
-            _buildSourceIssue(group.name, requiresVerification: true),
-          PluginSearchStatus.error =>
-            _buildSourceIssue(group.name, requiresVerification: false),
+          PluginSearchStatus.noResult => GeneralEmptyState(
+            icon: Icons.search_off_rounded,
+            title: '没有找到匹配结果',
+            compact: true,
+            actions: [
+              StateActionButton.tonal(
+                onPressed: () => widget.onSourceSearch(group.name),
+                text: '修改检索词',
+              ),
+              TextButton(
+                onPressed: () => widget.onSourceAliasSearch(group.name),
+                child: const Text('使用别名'),
+              ),
+            ],
+          ),
+          PluginSearchStatus.captcha => _buildSourceIssue(
+            group.name,
+            requiresVerification: true,
+          ),
+          PluginSearchStatus.error => _buildSourceIssue(
+            group.name,
+            requiresVerification: false,
+          ),
         },
       );
     }
@@ -324,8 +339,10 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
             child: ConstrainedBox(
               constraints: const BoxConstraints(minHeight: 48),
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -333,8 +350,9 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
                       child: Text(
                         showAll ? '收起全部条目' : '展开全部 ${group.results.length} 个结果',
                         textAlign: TextAlign.center,
-                        style: theme.textTheme.labelLarge
-                            ?.copyWith(color: primary),
+                        style: theme.textTheme.labelLarge?.copyWith(
+                          color: primary,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -356,34 +374,34 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
   }
 
   Widget _buildSourceMenu(_SourceSearchGroup group) => TooltipVisibility(
-        visible: false,
-        child: KazumiMenuButton(
-          animated: true,
-          builder: (context, toggle) => IconButton(
-            tooltip: '${group.name} 的更多操作',
-            icon: const Icon(Icons.more_horiz_rounded, size: 20),
-            onPressed: toggle,
-          ),
-          menuChildren: [
-            KazumiMenuItem(
-              label: '修改此来源的检索词',
-              onPressed: () => widget.onSourceSearch(group.name),
-            ),
-            KazumiMenuItem(
-              label: '使用别名检索此来源',
-              onPressed: () => widget.onSourceAliasSearch(group.name),
-            ),
-            KazumiMenuItem(
-              label: '重新检索此来源',
-              onPressed: () => widget.onRetry(group.name),
-            ),
-            KazumiMenuItem(
-              label: '在浏览器中打开',
-              onPressed: () => widget.onOpenBrowser(group.name),
-            ),
-          ],
+    visible: false,
+    child: KazumiMenuButton(
+      animated: true,
+      builder: (context, toggle) => IconButton(
+        tooltip: '${group.name} 的更多操作',
+        icon: const Icon(Icons.more_horiz_rounded, size: 20),
+        onPressed: toggle,
+      ),
+      menuChildren: [
+        KazumiMenuItem(
+          label: '修改此来源的检索词',
+          onPressed: () => widget.onSourceSearch(group.name),
         ),
-      );
+        KazumiMenuItem(
+          label: '使用别名检索此来源',
+          onPressed: () => widget.onSourceAliasSearch(group.name),
+        ),
+        KazumiMenuItem(
+          label: '重新检索此来源',
+          onPressed: () => widget.onRetry(group.name),
+        ),
+        KazumiMenuItem(
+          label: '在浏览器中打开',
+          onPressed: () => widget.onOpenBrowser(group.name),
+        ),
+      ],
+    ),
+  );
 
   Widget _buildResult(_SourceSearchGroup group, int index) {
     final theme = Theme.of(context);
@@ -396,7 +414,8 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
       onTap: () => widget.onPlay(group.name, result),
       child: Semantics(
         button: true,
-        label: '播放 ${result.name}，来源 ${group.name}',
+        label:
+            '${widget.downloadMode ? '下载' : '播放'} ${result.name}，来源 ${group.name}',
         excludeSemantics: true,
         child: ConstrainedBox(
           constraints: const BoxConstraints(minHeight: 64),
@@ -405,14 +424,18 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
             child: Row(
               children: [
                 Expanded(
-                  child: Text(result.name,
-                      style: theme.textTheme.bodyLarge?.copyWith(
-                        color: theme.colorScheme.onSurface,
-                      )),
+                  child: Text(
+                    result.name,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: theme.colorScheme.onSurface,
+                    ),
+                  ),
                 ),
                 const SizedBox(width: 16),
-                Icon(Icons.play_arrow_rounded,
-                    color: theme.colorScheme.primary),
+                Icon(
+                  Icons.play_arrow_rounded,
+                  color: theme.colorScheme.primary,
+                ),
               ],
             ),
           ),
@@ -422,23 +445,25 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
   }
 
   Widget _buildSearching() => ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 64),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          child: Row(
-            children: [
-              const LoadingIndicator(size: 20, semanticsLabel: '正在检索'),
-              const SizedBox(width: 12),
-              Expanded(
-                  child: Text('正在检索…',
-                      style: Theme.of(context).textTheme.bodyMedium)),
-            ],
+    constraints: const BoxConstraints(minHeight: 64),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        children: [
+          const LoadingIndicator(size: 20, semanticsLabel: '正在检索'),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text('正在检索…', style: Theme.of(context).textTheme.bodyMedium),
           ),
-        ),
-      );
+        ],
+      ),
+    ),
+  );
 
-  Widget _buildSourceIssue(String sourceName,
-      {required bool requiresVerification}) {
+  Widget _buildSourceIssue(
+    String sourceName, {
+    required bool requiresVerification,
+  }) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     final (icon, title, hint, action, onAction) = requiresVerification
@@ -479,15 +504,19 @@ class _SourceSheetViewState extends State<_SourceSheetView> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(title,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w500,
-                        )),
+                    Text(
+                      title,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                     const SizedBox(height: 2),
-                    Text(hint,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: colors.onSurfaceVariant,
-                        )),
+                    Text(
+                      hint,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
                   ],
                 ),
               ),

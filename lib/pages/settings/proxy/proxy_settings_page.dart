@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:kazumi/request/core/dio_factory.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/bean/settings/network_mirror_settings.dart';
@@ -37,6 +38,29 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
       body: SettingsList(
         sections: [
           const NetworkMirrorSettings(),
+          SettingsSection(
+            title: const Text('视频连接'),
+            tiles: [
+              SettingsTile.switchTile(
+                leading: Icons.video_settings_rounded,
+                title: const Text('视频直连'),
+                description: const Text(
+                  '视频和下载不经过系统或应用代理；关闭则跟随代理设置。更改在重新播放及新下载请求时生效。',
+                ),
+                initialValue: GStorage.getSetting(
+                  SettingsKeys.mediaDirectConnection,
+                ),
+                onToggle: (value) async {
+                  await GStorage.putSetting(
+                    SettingsKeys.mediaDirectConnection,
+                    value ?? false,
+                  );
+                  DioFactory.resetDownloadClient();
+                  if (mounted) setState(() {});
+                },
+              ),
+            ],
+          ),
           SettingsSection(
             title: const Text('代理'),
             tiles: [

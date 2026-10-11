@@ -1,237 +1,365 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter_modular/flutter_modular.dart';
 import 'package:scrollview_observer/scrollview_observer.dart';
-
+import 'package:flutter_modular/flutter_modular.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/bean/dialog/material_bottom_sheet.dart';
+import 'package:kazumi/modules/bangumi/bangumi_item.dart';
 import 'package:kazumi/modules/download/download_module.dart';
 import 'package:kazumi/modules/roads/road_module.dart';
 import 'package:kazumi/pages/download/download_controller.dart';
 import 'package:kazumi/pages/video/video_controller.dart';
+import 'package:kazumi/plugins/plugins.dart';
 
-class DownloadEpisodeSheet extends StatefulWidget {
-  final int road;
-  final VideoPageController videoPageController;
+/// Kazumi's download grid, shared by anime, films, series and detail pages.
+class DownloadEpisodeGroup {
+  const DownloadEpisodeGroup({
+    required this.name,
+    required this.labels,
+    required this.urls,
+    this.queuedUrls = const {},
+  });
+  final String name;
+  final List<String> labels;
+  final List<String> urls;
+  final Set<String> queuedUrls;
+}
 
+Set<String> queuedDownloadUrls(DownloadRecord? record) => {
+  for (final episode in record?.episodes.values ?? <DownloadEpisode>[])
+    if ({
+      DownloadStatus.completed,
+      DownloadStatus.downloading,
+      DownloadStatus.pending,
+      DownloadStatus.resolving,
+    }.contains(episode.status))
+      episode.episodePageUrl,
+};
+
+class DownloadEpisodeSheet extends StatelessWidget {
   const DownloadEpisodeSheet({
     super.key,
     required this.road,
     required this.videoPageController,
   });
+  final int road;
+  final VideoPageController videoPageController;
 
   @override
-  State<DownloadEpisodeSheet> createState() => _DownloadEpisodeSheetState();
+  Widget build(BuildContext context) => animeDownloadPicker(
+    item: videoPageController.bangumiItem,
+    plugin: videoPageController.currentPlugin,
+    roads: videoPageController.roadList,
+    initialRoad: road,
+    initialEpisode: videoPageController.playbackEpisode.episode - 1,
+  );
 }
 
-class _DownloadEpisodeSheetState extends State<DownloadEpisodeSheet> {
-  VideoPageController get videoPageController => widget.videoPageController;
-  final DownloadController downloadController = inject<DownloadController>();
-  final GridObserverController _observerController = GridObserverController();
+Widget animeDownloadPicker({
+  required BangumiItem item,
+  required Plugin plugin,
+  required List<Road> roads,
+  int initialRoad = 0,
+  int? initialEpisode,
+}) {
+  final downloads = inject<DownloadController>();
+  final queued = queuedDownloadUrls(downloads.getRecord(item.id, plugin.name));
+  final name = item.nameCn.isNotEmpty ? item.nameCn : item.name;
+  return EpisodeDownloadPicker(
+    title: name,
+    groups: [
+      for (final road in roads)
+        DownloadEpisodeGroup(
+          name: road.name,
+          labels: road.identifier,
+          urls: road.data,
+          queuedUrls: queued,
+        ),
+    ],
+    initialGroup: initialRoad,
+    initialEpisode: initialEpisode,
+    onDownload: (road, indexes) => downloads.startEpisodeDownloads(
+      media: DownloadRecord(
+        item.id,
+        name,
+        item.images['large'] ?? '',
+        plugin.name,
+        {},
+        DateTime.now(),
+      ),
+      selections: [
+        for (final index in indexes)
+          DownloadSelection(
+            number: index + 1,
+            name: roads[road].identifier[index],
+            road: road,
+            url: roads[road].data[index],
+          ),
+      ],
+    ),
+  );
+}
 
-  final Set<int> _selectedEpisodes = {};
-  bool _didJumpToPlayingEpisode = false;
+class EpisodeDownloadPicker extends StatefulWidget {
+  const EpisodeDownloadPicker({
+    super.key,
+    required this.title,
+    required this.groups,
+    required this.onDownload,
+    this.initialGroup = 0,
+    this.initialEpisode,
+  });
+  final String title;
+  final List<DownloadEpisodeGroup> groups;
+  final int initialGroup;
+  final int? initialEpisode;
+  final Future<int> Function(int group, List<int> episodeIndexes) onDownload;
 
-  Road get currentRoadData => videoPageController.roadList[widget.road];
-  int get episodeCount => currentRoadData.data.length;
+  @override
+  State<EpisodeDownloadPicker> createState() => _EpisodeDownloadPickerState();
+}
 
-  Set<String> _collectDownloadedUrls() {
-    final record = downloadController.getRecord(
-      videoPageController.bangumiItem.id,
-      videoPageController.currentPlugin.name,
-    );
-    final downloadedUrls = <String>{};
-    if (record != null) {
-      for (final entry in record.episodes.entries) {
-        if (entry.value.status == DownloadStatus.completed ||
-            entry.value.status == DownloadStatus.downloading ||
-            entry.value.status == DownloadStatus.pending) {
-          if (entry.value.episodePageUrl.isNotEmpty) {
-            downloadedUrls.add(entry.value.episodePageUrl);
-          }
-        }
-      }
+class _EpisodeDownloadPickerState extends State<EpisodeDownloadPicker> {
+  late int _group = widget.initialGroup.clamp(
+    0,
+    math.max(0, widget.groups.length - 1),
+  );
+  final Set<int> _selected = {};
+  bool _submitting = false;
+  bool _didJump = false;
+  final _observer = GridObserverController();
+  String? _error;
+  DownloadEpisodeGroup get group => widget.groups[_group];
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.groups.isEmpty) return;
+    if (group.urls.isEmpty) {
+      final first = widget.groups.indexWhere((g) => g.urls.isNotEmpty);
+      if (first >= 0) _group = first;
     }
-    return downloadedUrls;
+    final initial =
+        widget.initialEpisode ?? (group.urls.length == 1 ? 0 : null);
+    if (initial != null &&
+        initial >= 0 &&
+        initial < group.urls.length &&
+        !group.queuedUrls.contains(group.urls[initial])) {
+      _selected.add(initial);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final downloadedUrls = _collectDownloadedUrls();
-    final selectableEpisodes = <int>[
-      for (int i = 1; i <= episodeCount; i++)
-        if (!downloadedUrls.contains(currentRoadData.data[i - 1])) i,
+    if (widget.groups.isEmpty) return const Center(child: Text('暂无可下载的集数'));
+    final selectable = [
+      for (var i = 0; i < group.urls.length; i++)
+        if (!group.queuedUrls.contains(group.urls[i])) i,
     ];
-    final downloadedCount = episodeCount - selectableEpisodes.length;
-    final allSelected = selectableEpisodes.isNotEmpty &&
-        _selectedEpisodes.length == selectableEpisodes.length;
-
-    return LayoutBuilder(builder: (context, constraints) {
-      // Reserve header, actions and one episode row even on short windows.
-      final textScale = MediaQuery.textScalerOf(context).scale(14) / 14;
-      final minSize = (240 * math.max(1.0, textScale) / constraints.maxHeight)
-          .clamp(0.3, 1.0);
-      return DraggableScrollableSheet(
-        initialChildSize: math.max(0.6, minSize),
-        minChildSize: minSize,
-        maxChildSize: math.max(0.9, minSize),
-        expand: false,
-        builder: (context, scrollController) {
-          _observerController.controller = scrollController;
-          if (!_didJumpToPlayingEpisode) {
-            _didJumpToPlayingEpisode = true;
-            WidgetsBinding.instance.addPostFrameCallback((_) async {
-              await Future<void>.delayed(Duration.zero);
-              final playbackEpisode = videoPageController.playbackEpisode;
-              if (!mounted ||
-                  playbackEpisode.road != widget.road ||
-                  episodeCount == 0 ||
-                  !scrollController.hasClients) {
-                return;
-              }
-              final index =
-                  (playbackEpisode.episode - 1).clamp(0, episodeCount - 1);
-              await _observerController.jumpTo(
-                index: index,
-                isFixedHeight: true,
-              );
-            });
-          }
-          return Column(
-            children: [
-              MaterialBottomSheetHeader(
-                title: '下载选集',
-                description: downloadedCount > 0
-                    ? '$episodeCount 集 · 已下载 $downloadedCount 集'
-                    : '共 $episodeCount 集',
-                onClose: () => Navigator.of(context).pop(),
-              ),
-              Expanded(
-                child: GridViewObserver(
-                  controller: _observerController,
-                  child: GridView.builder(
-                    controller: scrollController,
-                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
-                    gridDelegate:
-                        const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 160,
-                      crossAxisSpacing: 8,
-                      mainAxisSpacing: 8,
-                      mainAxisExtent: 56,
-                    ),
-                    itemCount: episodeCount,
-                    itemBuilder: (context, index) {
-                      final episodeNumber = index + 1;
-                      final episodeUrl = currentRoadData.data[index];
-                      final isDownloaded = downloadedUrls.contains(episodeUrl);
-                      final isSelected =
-                          _selectedEpisodes.contains(episodeNumber);
-                      return _EpisodeTile(
-                        identifier: currentRoadData.identifier[index],
-                        isDownloaded: isDownloaded,
-                        isSelected: isSelected,
-                        onTap: isDownloaded
-                            ? null
-                            : () {
-                                setState(() {
-                                  if (isSelected) {
-                                    _selectedEpisodes.remove(episodeNumber);
-                                  } else {
-                                    _selectedEpisodes.add(episodeNumber);
-                                  }
-                                });
-                              },
-                      );
-                    },
-                  ),
+    final queuedCount = group.urls.length - selectable.length;
+    final allSelected =
+        selectable.isNotEmpty && _selected.length == selectable.length;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
+        final minHeight = widget.groups.length > 1 ? 344 : 280;
+        final minSize = (minHeight * math.max(1, scale) / constraints.maxHeight)
+            .clamp(0.3, 1.0);
+        return DraggableScrollableSheet(
+          initialChildSize: math.max(0.65, minSize),
+          minChildSize: minSize,
+          maxChildSize: math.max(0.92, minSize),
+          expand: false,
+          builder: (context, scrollController) {
+            _observer.controller = scrollController;
+            if (!_didJump) {
+              _didJump = true;
+              WidgetsBinding.instance.addPostFrameCallback((_) async {
+                final index = widget.initialEpisode;
+                if (!mounted ||
+                    index == null ||
+                    index < 0 ||
+                    index >= group.urls.length ||
+                    !scrollController.hasClients ||
+                    _group != widget.initialGroup) {
+                  return;
+                }
+                await _observer.jumpTo(index: index, isFixedHeight: true);
+              });
+            }
+            return Column(
+              children: [
+                MaterialBottomSheetHeader(
+                  title: '下载选集',
+                  description:
+                      '${widget.title} · 共 ${group.urls.length} 集'
+                      '${queuedCount > 0 ? ' · 已添加 $queuedCount 集' : ''}',
+                  onClose: _submitting
+                      ? null
+                      : () => Navigator.of(context).pop(),
                 ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-                child: SafeArea(
-                  top: false,
-                  child: Row(
-                    children: [
-                      TextButton(
-                        style: TextButton.styleFrom(
-                          minimumSize: const Size(0, 48),
-                        ),
-                        onPressed: selectableEpisodes.isEmpty
-                            ? null
-                            : () {
-                                setState(() {
-                                  _selectedEpisodes.clear();
-                                  if (!allSelected) {
-                                    _selectedEpisodes
-                                        .addAll(selectableEpisodes);
-                                  }
-                                });
-                              },
-                        // Reserve the widest label to keep the action width stable.
-                        child: Stack(
-                          alignment: Alignment.center,
-                          children: [
-                            const Opacity(opacity: 0, child: Text('取消全选')),
-                            Text(allSelected ? '取消全选' : '全选'),
-                          ],
-                        ),
+                if (widget.groups.length > 1)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+                    child: DropdownButtonFormField<int>(
+                      initialValue: _group,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: '下载线路',
+                        isDense: true,
                       ),
-                      const SizedBox(width: 24),
-                      Expanded(
-                        child: FilledButton.icon(
-                          style: FilledButton.styleFrom(
-                            minimumSize: const Size.fromHeight(48),
+                      items: [
+                        for (var i = 0; i < widget.groups.length; i++)
+                          DropdownMenuItem(
+                            value: i,
+                            enabled: widget.groups[i].urls.isNotEmpty,
+                            child: Text(
+                              widget.groups[i].name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                          onPressed: _selectedEpisodes.isEmpty
+                      ],
+                      onChanged: _submitting
+                          ? null
+                          : (value) {
+                              if (value == null) return;
+                              setState(() {
+                                _group = value;
+                                _selected.clear();
+                                _error = null;
+                              });
+                              if (scrollController.hasClients) {
+                                scrollController.jumpTo(0);
+                              }
+                            },
+                    ),
+                  ),
+                Expanded(
+                  child: GridViewObserver(
+                    controller: _observer,
+                    child: GridView.builder(
+                      controller: scrollController,
+                      padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                      gridDelegate:
+                          const SliverGridDelegateWithMaxCrossAxisExtent(
+                            maxCrossAxisExtent: 160,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                            mainAxisExtent: 56,
+                          ),
+                      itemCount: group.urls.length,
+                      itemBuilder: (context, index) {
+                        final queued = group.queuedUrls.contains(
+                          group.urls[index],
+                        );
+                        return _EpisodeTile(
+                          identifier: group.labels[index],
+                          isDownloaded: queued,
+                          isSelected: _selected.contains(index),
+                          onTap: queued || _submitting
                               ? null
-                              : () => _startBatchDownload(context),
-                          icon: const Icon(Icons.download_rounded),
-                          label: Text(_selectedEpisodes.isEmpty
-                              ? '选择集数'
-                              : '下载 ${_selectedEpisodes.length} 集'),
-                        ),
-                      ),
-                    ],
+                              : () => setState(() {
+                                  if (!_selected.remove(index)) {
+                                    _selected.add(index);
+                                  }
+                                }),
+                        );
+                      },
+                    ),
                   ),
                 ),
-              ),
-            ],
-          );
-        },
-      );
-    });
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Text(
+                      _error!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                  child: SafeArea(
+                    top: false,
+                    child: Row(
+                      children: [
+                        TextButton(
+                          style: TextButton.styleFrom(
+                            minimumSize: const Size(0, 48),
+                          ),
+                          onPressed: selectable.isEmpty || _submitting
+                              ? null
+                              : () => setState(() {
+                                  _selected.clear();
+                                  if (!allSelected) {
+                                    _selected.addAll(selectable);
+                                  }
+                                }),
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              const Opacity(opacity: 0, child: Text('取消全选')),
+                              Text(allSelected ? '取消全选' : '全选'),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 24),
+                        Expanded(
+                          child: FilledButton.icon(
+                            style: FilledButton.styleFrom(
+                              minimumSize: const Size.fromHeight(48),
+                            ),
+                            onPressed: _selected.isEmpty || _submitting
+                                ? null
+                                : _submit,
+                            icon: const Icon(Icons.download_rounded),
+                            label: Text(
+                              _submitting
+                                  ? '正在添加'
+                                  : _selected.isEmpty
+                                  ? '选择集数'
+                                  : '下载 ${_selected.length} 集',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
-  void _startBatchDownload(BuildContext context) {
-    Navigator.pop(context);
-
-    final plugin = videoPageController.currentPlugin;
-    final bangumiItem = videoPageController.bangumiItem;
-
-    final sortedEpisodes = _selectedEpisodes.toList()..sort();
-
-    for (final episodeNumber in sortedEpisodes) {
-      final episodePageUrl = currentRoadData.data[episodeNumber - 1];
-      final identifier = currentRoadData.identifier[episodeNumber - 1];
-
-      downloadController.startDownload(
-        bangumiId: bangumiItem.id,
-        bangumiName: bangumiItem.nameCn.isNotEmpty
-            ? bangumiItem.nameCn
-            : bangumiItem.name,
-        bangumiCover: bangumiItem.images['large'] ?? '',
-        pluginName: plugin.name,
-        episodeNumber: episodeNumber,
-        episodeName: identifier,
-        road: widget.road,
-        episodePageUrl: episodePageUrl,
+  Future<void> _submit() async {
+    setState(() {
+      _submitting = true;
+      _error = null;
+    });
+    try {
+      final indexes = _selected.toList()..sort();
+      final count = await widget.onDownload(_group, indexes);
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      Navigator.of(context).pop();
+      KazumiDialog.showToast(
+        messenger: messenger,
+        message: count == 0 ? '所选集数已在下载队列中' : '已添加 $count 集到下载队列',
       );
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _submitting = false;
+          _error = '未能添加下载，请检查已有任务后重试';
+        });
+      }
     }
-
-    KazumiDialog.showToast(
-      message: '已添加 ${sortedEpisodes.length} 集到下载队列，可在下载管理中查看',
-    );
   }
 }
 
@@ -254,13 +382,13 @@ class _EpisodeTile extends StatelessWidget {
     final backgroundColor = isDownloaded
         ? colorScheme.surfaceContainerLow
         : isSelected
-            ? colorScheme.secondaryContainer
-            : colorScheme.surfaceContainerLow;
+        ? colorScheme.secondaryContainer
+        : colorScheme.surfaceContainerLow;
     final foregroundColor = isDownloaded
         ? colorScheme.outline
         : isSelected
-            ? colorScheme.onSecondaryContainer
-            : colorScheme.onSurface;
+        ? colorScheme.onSecondaryContainer
+        : colorScheme.onSurface;
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
@@ -285,10 +413,9 @@ class _EpisodeTile extends StatelessWidget {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     textAlign: TextAlign.center,
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodyMedium
-                        ?.copyWith(color: foregroundColor),
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodyMedium?.copyWith(color: foregroundColor),
                   ),
                 ),
               ),

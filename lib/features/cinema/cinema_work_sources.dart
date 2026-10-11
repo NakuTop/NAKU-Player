@@ -1,6 +1,7 @@
 import 'cinema_grouping.dart';
 import 'cinema_models.dart';
 import 'cinema_repository.dart';
+import 'cinema_seasons.dart';
 
 /// Discover additional compatible variants without blocking the initial detail.
 /// Three source requests at a time; errors leave other sources usable.
@@ -25,17 +26,31 @@ Stream<List<CinemaTitle>> discoverCinemaWorkSources({
             !searched.contains(s.id),
       )
       .toList();
-  final keyword = anchor.title
-      .replaceFirst(RegExp(r'\s*[（(]?(?:原声版|普通话版|国语版|英语版)[）)]?\s*$'), '')
-      .trim();
   for (var offset = 0; offset < choices.length && isCurrent(); offset += 3) {
     final results = await Future.wait(
       choices.skip(offset).take(3).map((source) async {
         try {
-          return (await repository
-                  .search(source, keyword)
-                  .timeout(const Duration(seconds: 18)))
-              .items;
+          final result = <CinemaTitle>[];
+          final deadline = DateTime.now().add(const Duration(seconds: 18));
+          bool matches() => groupCinemaTitles([
+            anchor,
+            ...result,
+          ]).first.variants.any((t) => t.sourceId == source.id);
+          for (final query in cinemaWorkQueries(anchor)) {
+            for (var page = 1; page <= 3 && isCurrent(); page++) {
+              final remaining = deadline.difference(DateTime.now());
+              if (remaining <= Duration.zero) return result;
+              final found = await repository
+                  .search(source, query, page: page)
+                  .timeout(remaining);
+              if (!isCurrent()) return <CinemaTitle>[];
+              result.addAll(found.items.where((t) => t.sourceId == source.id));
+              if (matches()) return result;
+              if (found.page >= found.pageCount) break;
+            }
+            if (!isCurrent()) break;
+          }
+          return result;
         } catch (_) {
           return <CinemaTitle>[];
         }

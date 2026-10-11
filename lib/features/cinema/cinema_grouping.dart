@@ -1,11 +1,13 @@
 import 'cinema_models.dart';
+import 'cinema_seasons.dart';
 
 /// One search card, retaining each source's own identity and playback data.
 class CinemaTitleGroup {
   CinemaTitleGroup({
     required this.key,
     required Iterable<CinemaTitle> variants,
-    String preferredSourceId = 'maccms-modu',
+    String preferredSourceId = 'maccms-feifan',
+    this.sourcePriority = const [],
   }) : variants = List.unmodifiable(variants),
        _preferredSourceId = preferredSourceId {
     if (this.variants.isEmpty) {
@@ -20,8 +22,13 @@ class CinemaTitleGroup {
   final String key;
   final List<CinemaTitle> variants;
   final String _preferredSourceId;
+  final List<String> sourcePriority;
 
   CinemaTitle get representative =>
+      sourcePriority
+          .map((id) => variants.where((v) => v.sourceId == id).firstOrNull)
+          .whereType<CinemaTitle>()
+          .firstOrNull ??
       variants
           .where((title) => title.sourceId == _preferredSourceId)
           .firstOrNull ??
@@ -58,13 +65,19 @@ class CinemaTitleGroup {
     }
     final imdbId = imdb.firstOrNull ?? '';
     final rottenId = rotten.firstOrNull ?? '';
-    if (base.doubanId == doubanId &&
+    final years = identities((title) => title.year);
+    final year = base.year.isEmpty && years.length == 1
+        ? years.single
+        : base.year;
+    if (base.year == year &&
+        base.doubanId == doubanId &&
         base.imdbId == imdbId &&
         base.rottenTomatoesId == rottenId &&
         base.sourceDoubanScore == score) {
       return base;
     }
     return base.copyWith(
+      year: year,
       doubanId: doubanId,
       imdbId: imdbId,
       rottenTomatoesId: rottenId,
@@ -93,7 +106,8 @@ CinemaTitle inheritCinemaRatingMetadata(
 /// choose the representative; they never reorder groups or discard variants.
 List<CinemaTitleGroup> groupCinemaTitles(
   Iterable<CinemaTitle> items, {
-  String preferredSourceId = 'maccms-modu',
+  String preferredSourceId = 'maccms-feifan',
+  List<String> sourcePriority = const [],
 }) {
   final groups = <_Group>[];
   final byName = <String, List<_Group>>{};
@@ -125,6 +139,7 @@ List<CinemaTitleGroup> groupCinemaTitles(
         key: group.variants.first.key,
         variants: group.variants,
         preferredSourceId: preferredSourceId,
+        sourcePriority: sourcePriority,
       ),
   ];
 }
@@ -178,6 +193,13 @@ class _Group {
       return false;
     }
     if (doubanId.isNotEmpty && doubanId == candidate.doubanId) return true;
+    if (kind == _Kind.series &&
+        candidate.kind == _Kind.series &&
+        (cinemaIsSeasonProjection(candidate.title) ||
+            variants.any(cinemaIsSeasonProjection)) &&
+        RegExp(r'第[0-9]+季$').hasMatch(name)) {
+      return true;
+    }
     return year != null &&
         year == candidate.year &&
         kind != _Kind.unknown &&
@@ -271,4 +293,20 @@ int? _year(String text, _Kind kind) {
   final first = int.parse(range[1]!);
   final last = int.tryParse(range[2] ?? '');
   return last == null || last >= first ? first : null;
+}
+
+/// Stable source priority; keeps the provider's route and episode order intact.
+List<CinemaTitle> orderCinemaVariants(
+  Iterable<CinemaTitle> values,
+  Iterable<String> ids,
+) {
+  final priority = {for (final entry in ids.indexed) entry.$2: entry.$1};
+  final entries = values.toList().indexed.toList()
+    ..sort((a, b) {
+      final compared = (priority[a.$2.sourceId] ?? priority.length).compareTo(
+        priority[b.$2.sourceId] ?? priority.length,
+      );
+      return compared == 0 ? a.$1.compareTo(b.$1) : compared;
+    });
+  return entries.map((e) => e.$2).toList();
 }

@@ -96,6 +96,11 @@ class MainFlutterWindow: NSWindow {
   // container, while all plugin registrars still belong to this Flutter child.
   private(set) var flutterViewController: FlutterViewController?
   private var updaterController: SPUStandardUpdaterController?
+  private var downloadActivity: NSObjectProtocol?
+
+  deinit {
+    if let activity = downloadActivity { ProcessInfo.processInfo.endActivity(activity) }
+  }
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
@@ -196,6 +201,26 @@ class MainFlutterWindow: NSWindow {
       var snapshot: [String: Any] = [:]
       for key in keys { if let value = settings[key] { snapshot[key] = value } }
       result(snapshot)
+    }
+
+    let downloadPowerChannel = FlutterMethodChannel(
+      name: "naku/download-power", binaryMessenger: flutterViewController.engine.binaryMessenger)
+    downloadPowerChannel.setMethodCallHandler { [weak self] call, result in
+      guard call.method == "setActive", let active = call.arguments as? Bool else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      guard let self = self else { result(nil); return }
+      if active && self.downloadActivity == nil {
+        // userInitiated prevents App Nap and idle system sleep, not display
+        // sleep. macOS still honours lid close, explicit sleep and low battery.
+        self.downloadActivity = ProcessInfo.processInfo.beginActivity(
+          options: [.userInitiated], reason: "NAKU video downloads")
+      } else if !active, let activity = self.downloadActivity {
+        ProcessInfo.processInfo.endActivity(activity)
+        self.downloadActivity = nil
+      }
+      result(nil)
     }
 
     // Keep one native controller alive for the window lifetime. Sparkle owns its

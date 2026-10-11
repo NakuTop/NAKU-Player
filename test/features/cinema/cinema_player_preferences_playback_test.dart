@@ -8,6 +8,7 @@ import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_player_page.dart';
 import 'package:kazumi/features/cinema/cinema_player_preferences.dart';
 import 'package:kazumi/features/cinema/cinema_ratings.dart';
+import 'package:kazumi/features/cinema/cinema_ratings_panel.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
 import 'package:kazumi/features/cinema/cinema_watch_together.dart';
@@ -50,9 +51,13 @@ const _title = CinemaTitle(
 );
 
 class _Backend extends PlatformPlayer {
-  _Backend(PlayerConfiguration configuration, {this.failOpen = false})
-    : super(configuration: configuration);
+  _Backend(
+    PlayerConfiguration configuration, {
+    this.failOpen = false,
+    this.emitVideo = true,
+  }) : super(configuration: configuration);
   final bool failOpen;
+  final bool emitVideo;
   Media? opened;
   int pauses = 0;
   bool disposed = false;
@@ -66,6 +71,10 @@ class _Backend extends PlatformPlayer {
       position: opened!.start ?? Duration.zero,
     );
     durationController.add(state.duration);
+    if (emitVideo) {
+      widthController.add(1280);
+      heightController.add(720);
+    }
     positionController.add(state.position);
     playingController.add(play);
   }
@@ -103,6 +112,8 @@ class _Backend extends PlatformPlayer {
 
   @override
   Future<void> playOrPause() => state.playing ? pause() : play();
+  void reportLog(PlayerLog event) => logController.add(event);
+
   void complete() {
     state = state.copyWith(completed: true, playing: false);
     completedController.add(true);
@@ -208,10 +219,12 @@ void main() {
     WidgetTester tester,
     Map<String, Object?> values, {
     bool failFirst = false,
+    bool stallFirst = false,
+    Size viewport = const Size(1200, 900),
     Map<String, String>? offlinePaths,
     bool renderToolbar = false,
   }) async {
-    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.physicalSize = viewport;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -242,6 +255,7 @@ void main() {
             final backend = _Backend(
               config,
               failOpen: failFirst && backends.isEmpty,
+              emitVideo: !(stallFirst && backends.isEmpty),
             );
             backends.add(backend);
             return _Player(backend);
@@ -250,10 +264,24 @@ void main() {
               ? Builder(
                   builder: (context) => Column(
                     children: [
-                      ...MaterialDesktopVideoControlsTheme.of(
-                        context,
-                      ).normal.topButtonBar,
+                      Row(
+                        children: MaterialDesktopVideoControlsTheme.of(
+                          context,
+                        ).normal.topButtonBar,
+                      ),
                       const Expanded(child: Text('fake video')),
+                      Row(
+                        children: MaterialDesktopVideoControlsTheme.of(context)
+                            .normal
+                            .bottomButtonBar
+                            .where(
+                              (w) =>
+                                  w is IconButton ||
+                                  w is Spacer ||
+                                  w is PopupMenuButton,
+                            )
+                            .toList(),
+                      ),
                     ],
                   ),
                 )
@@ -266,7 +294,11 @@ void main() {
         () => Future<void>.delayed(const Duration(milliseconds: 50)),
       );
     }
-    await tester.pumpAndSettle();
+    if (stallFirst) {
+      await tester.pump();
+    } else {
+      await tester.pumpAndSettle();
+    }
     expect(tester.takeException(), isNull);
   }
 
@@ -278,11 +310,104 @@ void main() {
     expect(tester.takeException(), isNull);
   }
 
+  testWidgets('in-player PiP preserves playback and restores details', (
+    tester,
+  ) async {
+    final calls = <String>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      if (call.method == 'isFullScreen' || call.method == 'isAlwaysOnTop') {
+        return false;
+      }
+      if (call.method == 'getBounds') {
+        return {'x': 80.0, 'y': 50.0, 'width': 1200.0, 'height': 900.0};
+      }
+      return null;
+    });
+    await mount(tester, {'autoPlay': true}, renderToolbar: true);
+    expect(find.byType(CinemaRatingsPanel), findsOneWidget);
+    await tester.tap(find.byTooltip('画中画'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byType(CinemaRatingsPanel),
+      findsNothing,
+      reason: calls.join(','),
+    );
+    expect(
+      calls,
+      containsAll([
+        'getBounds',
+        'setAlwaysOnTop',
+        'setAspectRatio',
+        'setBounds',
+      ]),
+    );
+    expect(backends.single.state.playing, isTrue);
+    await tester.tap(find.byTooltip('退出画中画'));
+    await tester.pumpAndSettle();
+    expect(find.byType(CinemaRatingsPanel), findsOneWidget);
+    expect(backends.single.state.playing, isTrue);
+    await unmount(tester);
+  });
+
+  testWidgets(
+    'duration alone is not ready; repeated TLS failure advances before the startup deadline',
+    (tester) async {
+      await mount(tester, {'autoPlay': true}, stallFirst: true);
+      expect(find.text('正在加载视频'), findsOneWidget);
+      final first = backends.single;
+      const failure = PlayerLog(
+        prefix: 'tls',
+        level: 'error',
+        text: 'mbedtls_ssl_handshake returned -0x4e',
+      );
+      first.reportLog(failure);
+      first.reportLog(failure);
+      await tester.pump();
+      final started = tester.binding.clock.now();
+      await tester.pump(const Duration(seconds: 7));
+      await tester.pumpAndSettle();
+      expect(
+        tester.binding.clock.now().difference(started).inSeconds,
+        lessThan(15),
+      );
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      expect(backends.length, 2);
+      expect(backends.last.opened!.uri, endsWith('/backup.mp4'));
+      expect(first.disposed, isTrue);
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'narrow player keeps episodes and extra controls reachable without overflow',
+    (tester) async {
+      await mount(
+        tester,
+        {'autoPlay': true},
+        renderToolbar: true,
+        viewport: const Size(440, 820),
+      );
+      expect(find.byTooltip('下一集'), findsOneWidget);
+      expect(find.byTooltip('线路 / 选集'), findsOneWidget);
+      await tester.tap(find.byTooltip('更多选项'));
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.pumpAndSettle();
+      for (final label in ['下载选集', '画中画', '一起看', '超分辨率', '倍速']) {
+        expect(find.text(label), findsOneWidget);
+      }
+      expect(tester.takeException(), isNull);
+      await tester.tapAt(const Offset(8, 8));
+      await tester.pumpAndSettle();
+      await unmount(tester);
+    },
+  );
+
   for (final fullscreen in [false, true]) {
     testWidgets(
       'next episode is available in fullscreen=$fullscreen and disabled at end',
       (tester) async {
-        await mount(tester, {'autoPlay': true}, renderToolbar: fullscreen);
+        await mount(tester, {'autoPlay': true}, renderToolbar: true);
         if (fullscreen) {
           final done = Completer<void>();
           messenger.handlePlatformMessage(
@@ -295,9 +420,7 @@ void main() {
           await done.future;
           await tester.pumpAndSettle();
         }
-        final next = fullscreen
-            ? find.widgetWithIcon(IconButton, Icons.skip_next_rounded)
-            : find.widgetWithText(OutlinedButton, '下一集');
+        final next = find.widgetWithIcon(IconButton, Icons.skip_next_rounded);
         expect(next, findsOneWidget);
         await tester.ensureVisible(next);
         await tester.tap(next);
@@ -305,11 +428,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(backends.last.opened!.uri, 'https://fixture.invalid/2.mp4');
         expect(backends.last.state.playing, isTrue);
-        if (fullscreen) {
-          expect(tester.widget<IconButton>(next).onPressed, isNull);
-        } else {
-          expect(tester.widget<OutlinedButton>(next).onPressed, isNull);
-        }
+        expect(tester.widget<IconButton>(next).onPressed, isNull);
         await unmount(tester);
       },
     );

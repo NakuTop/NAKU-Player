@@ -28,7 +28,7 @@ void main() {
   test(
     'same work shares rating IDs without changing playback source or variants',
     () {
-      final primary = title('p', source: 'maccms-modu');
+      final primary = title('p', source: 'maccms-feifan');
       final extra = title(
         'e',
         douban: '1234567',
@@ -47,7 +47,7 @@ void main() {
     },
   );
   test('conflicting provider IDs prevent shared metadata', () {
-    final primary = title('p', source: 'maccms-modu', imdb: 'tt1111111');
+    final primary = title('p', source: 'maccms-feifan', imdb: 'tt1111111');
     final extra = title('e', douban: '1234567', imdb: 'tt2222222', score: 8.2);
     final group = groupCinemaTitles([primary, extra]).single;
     expect(group.catalogTitle, same(primary));
@@ -55,7 +55,7 @@ void main() {
   test(
     'unknown identity or conflicting transcription does not supply a score',
     () {
-      final primary = title('p', source: 'maccms-modu');
+      final primary = title('p', source: 'maccms-feifan');
       expect(
         groupCinemaTitles([
           primary,

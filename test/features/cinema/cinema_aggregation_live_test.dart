@@ -53,10 +53,10 @@ void main() {
         final items = <CinemaTitle>[];
         final failures = <String>[];
         for (final id in [
-          'maccms-modu',
+          'maccms-feifan',
           'maccms-jisu',
           'maccms-ruyi',
-          'maccms-360',
+          'maccms-juliang',
         ]) {
           final source = bundledCinemaSources.firstWhere((s) => s.id == id);
           try {
@@ -112,7 +112,7 @@ void main() {
         ).writeAsString(const JsonEncoder.withIndent('  ').convert(evidence));
         expect(work, hasLength(1), reason: keyword);
         expect(work.single.variants.length, greaterThanOrEqualTo(3));
-        expect(work.single.representative.sourceId, 'maccms-modu');
+        expect(work.single.representative.sourceId, 'maccms-feifan');
       }
       await File('../aggregation-live-verification.json').writeAsString(
         const JsonEncoder.withIndent('  ').convert({

@@ -23,10 +23,10 @@ void main() {
       final sources = bundledCinemaSources
           .where(
             (source) => const {
-              'maccms-modu',
+              'maccms-feifan',
               'maccms-haohua',
               'maccms-jisu',
-              'maccms-360',
+              'maccms-juliang',
             }.contains(source.id),
           )
           .toList();

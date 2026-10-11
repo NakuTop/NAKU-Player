@@ -126,12 +126,15 @@ class CinemaPlaybackCatalogue {
          source.id: source,
        } {
     this.variants = List.unmodifiable(
-      groupCinemaTitles([title, ...variants])
-          .firstWhere(
-            (group) => group.variants.any((item) => item.key == title.key),
-          )
-          .variants
-          .where((item) => _sources.containsKey(item.sourceId)),
+      orderCinemaVariants(
+        groupCinemaTitles([title, ...variants])
+            .firstWhere(
+              (group) => group.variants.any((item) => item.key == title.key),
+            )
+            .variants
+            .where((item) => _sources.containsKey(item.sourceId)),
+        _sources.keys,
+      ),
     );
     _loaded[title.key] = title;
     for (final item in this.variants) {
@@ -146,11 +149,14 @@ class CinemaPlaybackCatalogue {
   late List<CinemaTitle> variants;
   void addVariants(Iterable<CinemaTitle> values) {
     variants = List.unmodifiable(
-      groupCinemaTitles([
-        _anchor,
-        ...variants,
-        ...values,
-      ]).first.variants.where((v) => _sources.containsKey(v.sourceId)),
+      orderCinemaVariants(
+        groupCinemaTitles([
+          _anchor,
+          ...variants,
+          ...values,
+        ]).first.variants.where((v) => _sources.containsKey(v.sourceId)),
+        _sources.keys,
+      ),
     );
     for (final item in variants) {
       if (item.routes.isNotEmpty) _loaded.putIfAbsent(item.key, () => item);

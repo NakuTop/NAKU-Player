@@ -1,3 +1,4 @@
+import 'cinema_download_sheet.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'cinema_downloads.dart';
@@ -857,7 +858,6 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     }
     final source =
         choices.where((s) => s.id == state.source?.id).firstOrNull ??
-        choices.where((s) => s.id == 'maccms-modu').firstOrNull ??
         choices.first;
     if (refresh) _repository.invalidateBrowseCache(source: source);
     final sourceKey = _sourceKey(source);
@@ -1473,7 +1473,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       );
       return;
     }
-    if (title.sourceId == 'douban-discovery') {
+    if (title.sourceId == 'douban-discovery' ||
+        _findSource(title.sourceId) == null) {
       final found = await resolveCinemaDiscoverySources(
         context,
         anchor: title,
@@ -1485,10 +1486,10 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           .where((t) => _findSource(t.sourceId)?.enabled == true)
           .toList();
       if (available.isEmpty) return;
-      final representative = groupCinemaTitles([
-        ...available,
-        title,
-      ]).first.catalogTitle;
+      final representative = groupCinemaTitles(
+        [...available, title],
+        sourcePriority: _store.enabledSources.map((s) => s.id).toList(),
+      ).first.catalogTitle;
       await _openTitle(
         representative,
         variants: available,
@@ -2054,6 +2055,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     items: _items,
     filters: _catalog.filters,
     grouped: _searching || _aggregates(_section),
+    sourcePriority: _store.enabledSources.map((s) => s.id).toList(),
     sort: _showsCatalogSort ? _currentCatalogSort : null,
     provider: _scoreProvider,
     ratingRevision: _ratingRevision,
@@ -2657,172 +2659,209 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     ),
   );
 
-  Widget _sourceManager(bool wide) => ListView(
-    padding: EdgeInsets.fromLTRB(wide ? 36 : 18, 8, wide ? 36 : 18, 36),
-    children: [
-      Row(
+  Widget _sourceManager(bool wide) {
+    final sources = _store.sources
+        .where((s) => s.kind == CinemaSourceKind.maccms)
+        .toList();
+    return ReorderableListView(
+      buildDefaultDragHandles: false,
+      onReorderItem: (oldIndex, newIndex) async {
+        final ids = sources.map((s) => s.id).toList();
+        ids.insert(newIndex, ids.removeAt(oldIndex));
+        try {
+          await _store.reorderMovieSources(ids);
+        } catch (error) {
+          if (mounted) _toast('保存顺序失败：$error');
+        }
+      },
+      padding: EdgeInsets.fromLTRB(wide ? 36 : 18, 8, wide ? 36 : 18, 36),
+      header: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Expanded(child: Text('片源管理', style: TextStyle(fontSize: 21))),
-          FilledButton.icon(
-            onPressed: () => _editSource(),
-            icon: const Icon(Icons.add_rounded, size: 18),
-            label: const Text('添加接口'),
+          Row(
+            children: [
+              const Expanded(
+                child: Text('片源管理', style: TextStyle(fontSize: 21)),
+              ),
+              FilledButton.icon(
+                onPressed: () => _editSource(),
+                icon: const Icon(Icons.add_rounded, size: 18),
+                label: const Text('添加接口'),
+              ),
+            ],
           ),
+          const SizedBox(height: 12),
+          const Text(
+            '拖动左侧手柄调整优先级，越靠前越优先播放，失效时依次换源。动漫规则在动漫 → 更多 → 规则管理中维护。',
+            style: TextStyle(
+              fontSize: 12,
+              height: 1.8,
+              color: CinemaTheme.muted,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            MacOSSystemProxy.description,
+            style: const TextStyle(fontSize: 11, color: CinemaTheme.muted),
+          ),
+          const SizedBox(height: 22),
         ],
       ),
-      const SizedBox(height: 12),
-      const Text(
-        '影视接口用于电影和剧集。动漫播放规则请在动漫 → 更多 → 规则管理中维护。',
-        style: TextStyle(fontSize: 12, height: 1.8, color: CinemaTheme.muted),
-      ),
-      const SizedBox(height: 8),
-      Text(
-        MacOSSystemProxy.description,
-        style: const TextStyle(fontSize: 11, color: CinemaTheme.muted),
-      ),
-      const SizedBox(height: 22),
-      for (final source in _store.sources.where(
-        (source) => source.kind == CinemaSourceKind.maccms,
-      ))
-        Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          decoration: BoxDecoration(
-            color: CinemaTheme.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: CinemaTheme.border),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [
-                Icon(
-                  source.kind == CinemaSourceKind.maccms
-                      ? Icons.movie_filter_outlined
-                      : Icons.animation,
-                  color: CinemaTheme.copper,
+      footer: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 12,
+            runSpacing: 10,
+            children: [
+              OutlinedButton.icon(
+                onPressed: () => context.pushNamed('/settings/plugin/'),
+                icon: const Icon(Icons.data_object, size: 18),
+                label: const Text('动漫规则管理'),
+              ),
+              TextButton(
+                onPressed: () => launchUrl(
+                  Uri.parse('https://www.xn--kivn76b41nnhi.com/'),
+                  mode: LaunchMode.externalApplication,
                 ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        source.name,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 5),
-                      Text(
-                        source.kind == CinemaSourceKind.maccms
-                            ? '影视接口 · ${source.url}'
-                            : 'Kazumi 动漫规则 · ${source.url}',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: CinemaTheme.muted,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
+                child: const Text('打开你提供的影视网站 ↗'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 30),
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: CinemaTheme.surface,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Netflix 官方观看', style: TextStyle(fontSize: 16)),
+                const SizedBox(height: 8),
+                const Text(
+                  'Netflix 官方内容仍需在受支持的浏览器中使用你的订阅观看。NAKU播放器的第三方片源不等同于 Netflix 官方接口。',
+                  style: TextStyle(
+                    color: CinemaTheme.muted,
+                    fontSize: 12,
+                    height: 1.8,
                   ),
                 ),
-                Switch(
-                  value: source.enabled,
-                  onChanged: (enabled) async {
-                    try {
-                      await _store.saveSource(
-                        source.copyWith(enabled: enabled),
-                      );
-                    } catch (e) {
-                      _toast('$e');
-                    }
-                  },
-                ),
-                IconButton(
-                  tooltip: '编辑',
-                  onPressed: () => _editSource(source),
-                  icon: const Icon(Icons.edit_outlined, size: 19),
-                ),
-                IconButton(
-                  tooltip: '移除此片源',
-                  onPressed: () async {
-                    try {
-                      await _store.removeSource(source.id);
-                      if (!mounted) return;
-                      KazumiDialog.showToast(
-                        context: context,
-                        message: '已移除 ${source.name}',
-                        showActionButton: true,
-                        actionLabel: '撤销',
-                        onActionPressed: () async {
-                          try {
-                            await _store.saveSource(source);
-                          } catch (error) {
-                            if (mounted) _toast('恢复片源失败：$error');
-                          }
-                        },
-                      );
-                    } catch (e) {
-                      _toast('$e');
-                    }
-                  },
-                  icon: const Icon(Icons.remove_circle_outline, size: 19),
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: () => launchUrl(
+                    Uri.parse('https://www.netflix.com/'),
+                    mode: LaunchMode.externalApplication,
+                  ),
+                  child: const Text('前往 Netflix ↗'),
                 ),
               ],
             ),
           ),
-        ),
-      const SizedBox(height: 10),
-      Wrap(
-        spacing: 12,
-        runSpacing: 10,
-        children: [
-          OutlinedButton.icon(
-            onPressed: () => context.pushNamed('/settings/plugin/'),
-            icon: const Icon(Icons.data_object, size: 18),
-            label: const Text('动漫规则管理'),
-          ),
-          TextButton(
-            onPressed: () => launchUrl(
-              Uri.parse('https://www.xn--kivn76b41nnhi.com/'),
-              mode: LaunchMode.externalApplication,
-            ),
-            child: const Text('打开你提供的影视网站 ↗'),
-          ),
         ],
       ),
-      const SizedBox(height: 30),
-      Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: CinemaTheme.surface,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Netflix 官方观看', style: TextStyle(fontSize: 16)),
-            const SizedBox(height: 8),
-            const Text(
-              'Netflix 官方内容仍需在受支持的浏览器中使用你的订阅观看。NAKU播放器的第三方片源不等同于 Netflix 官方接口。',
-              style: TextStyle(
-                color: CinemaTheme.muted,
-                fontSize: 12,
-                height: 1.8,
+      children: [
+        for (final (index, source) in sources.indexed)
+          Container(
+            key: ValueKey('source-order:${source.id}'),
+            margin: const EdgeInsets.only(bottom: 12),
+            decoration: BoxDecoration(
+              color: CinemaTheme.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: CinemaTheme.border),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  ReorderableDragStartListener(
+                    index: index,
+                    child: Tooltip(
+                      message: '拖动调整播放优先级',
+                      child: Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Icon(
+                          Icons.drag_handle_rounded,
+                          color: CinemaTheme.copper,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          source.name,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          source.kind == CinemaSourceKind.maccms
+                              ? '影视接口 · ${source.url}'
+                              : 'Kazumi 动漫规则 · ${source.url}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: CinemaTheme.muted,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: source.enabled,
+                    onChanged: (enabled) async {
+                      try {
+                        await _store.saveSource(
+                          source.copyWith(enabled: enabled),
+                        );
+                      } catch (e) {
+                        _toast('$e');
+                      }
+                    },
+                  ),
+                  IconButton(
+                    tooltip: '编辑',
+                    onPressed: () => _editSource(source),
+                    icon: const Icon(Icons.edit_outlined, size: 19),
+                  ),
+                  IconButton(
+                    tooltip: '移除此片源',
+                    onPressed: () async {
+                      try {
+                        await _store.removeSource(source.id);
+                        if (!mounted) return;
+                        KazumiDialog.showToast(
+                          context: context,
+                          message: '已移除 ${source.name}',
+                          showActionButton: true,
+                          actionLabel: '撤销',
+                          onActionPressed: () async {
+                            try {
+                              await _store.saveSource(source);
+                            } catch (error) {
+                              if (mounted) _toast('恢复片源失败：$error');
+                            }
+                          },
+                        );
+                      } catch (e) {
+                        _toast('$e');
+                      }
+                    },
+                    icon: const Icon(Icons.remove_circle_outline, size: 19),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 8),
-            TextButton(
-              onPressed: () => launchUrl(
-                Uri.parse('https://www.netflix.com/'),
-                mode: LaunchMode.externalApplication,
-              ),
-              child: const Text('前往 Netflix ↗'),
-            ),
-          ],
-        ),
-      ),
-    ],
-  );
+          ),
+      ],
+    );
+  }
 
   Future<void> _editSource([CinemaSource? source]) async {
     if (source?.kind == CinemaSourceKind.kazumi) {
@@ -3041,6 +3080,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
     ...widget.variants.where((v) => v.key != widget.title.key),
   ];
   bool _discovering = true;
+  bool _variantChosen = false;
   @override
   void initState() {
     super.initState();
@@ -3056,12 +3096,23 @@ class _TitleDetailsState extends State<_TitleDetails> {
       isCurrent: () => mounted,
     )) {
       if (!mounted) return;
-      setState(() => _variants = variants);
+      final priority = widget.store.enabledSources.map((s) => s.id).toList();
+      setState(() => _variants = orderCinemaVariants(variants, priority));
+      if (!_variantChosen && widget.resume == null && _variants.isNotEmpty) {
+        final preferred = _variants.first;
+        final preferredRank = priority.indexOf(preferred.sourceId);
+        final currentRank = priority.indexOf(_selectedTitle.sourceId);
+        if (preferredRank >= 0 &&
+            (currentRank < 0 || preferredRank < currentRank)) {
+          _selectVariant(preferred, automatic: true);
+        }
+      }
     }
     if (mounted) setState(() => _discovering = false);
   }
 
-  void _selectVariant(CinemaTitle variant) {
+  void _selectVariant(CinemaTitle variant, {bool automatic = false}) {
+    if (!automatic) _variantChosen = true;
     if (variant.key == _selectedTitle.key) return;
     final source = widget.store.sources
         .where((s) => s.id == variant.sourceId)
@@ -3071,7 +3122,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
       _selectedTitle = variant;
       _selectedSource = source;
       _road = 0;
-      _detail = widget.repository.detail(source, variant);
+      _detail = automatic && variant.routes.isNotEmpty
+          ? Future.value(variant)
+          : widget.repository.detail(source, variant);
     });
   }
 
@@ -3169,6 +3222,23 @@ class _TitleDetailsState extends State<_TitleDetails> {
                                   },
                                   icon: const Icon(Icons.play_arrow),
                                   label: const Text('开始观看'),
+                                ),
+                              if (snapshot.hasData &&
+                                  title.routes.any(
+                                    (r) => r.episodes.isNotEmpty,
+                                  ))
+                                OutlinedButton.icon(
+                                  onPressed: () => showCinemaDownloadSheet(
+                                    context,
+                                    title: title,
+                                    source: _selectedSource,
+                                    routeIndex: _road,
+                                  ),
+                                  icon: const Icon(
+                                    Icons.download_rounded,
+                                    size: 18,
+                                  ),
+                                  label: const Text('下载'),
                                 ),
                               OutlinedButton.icon(
                                 onPressed: () async {

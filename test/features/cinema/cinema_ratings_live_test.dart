@@ -54,7 +54,8 @@ void main() {
       final entries = <Map<String, dynamic>>[];
       CinemaTitle? selected;
       for (final id in ['maccms-jisu', 'maccms-ruyi', 'maccms-360']) {
-        final source = bundledCinemaSources.firstWhere((s) => s.id == id);
+        final source = [...bundledCinemaSources, cinema030SourcePack.sources.last]
+            .firstWhere((s) => s.id == id);
         final result = await repository.search(source, '星际穿越');
         final item = result.items.firstWhere(
           (s) =>

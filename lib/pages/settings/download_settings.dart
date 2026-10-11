@@ -9,6 +9,7 @@ import 'package:kazumi/bean/settings/settings_list.dart';
 import 'package:kazumi/bean/widget/loading_indicator.dart';
 import 'package:kazumi/services/platform/secure_bookmark_service.dart';
 import 'package:kazumi/services/storage/storage.dart';
+import 'package:kazumi/services/download/download_sleep_guard.dart';
 import 'package:kazumi/utils/file_system.dart';
 
 class DownloadSettingsPage extends StatefulWidget {
@@ -22,6 +23,7 @@ class _DownloadSettingsPageState extends State<DownloadSettingsPage> {
   late int parallelEpisodes;
   late int parallelSegments;
   late bool downloadDanmaku;
+  late bool preventSleep;
   String downloadDirectory = '';
   String defaultDownloadDirectory = '';
   bool isSelectingDirectory = false;
@@ -29,13 +31,17 @@ class _DownloadSettingsPageState extends State<DownloadSettingsPage> {
   @override
   void initState() {
     super.initState();
-    parallelEpisodes =
-        GStorage.getSetting(SettingsKeys.downloadParallelEpisodes);
-    parallelSegments =
-        GStorage.getSetting(SettingsKeys.downloadParallelSegments);
+    parallelEpisodes = GStorage.getSetting(
+      SettingsKeys.downloadParallelEpisodes,
+    );
+    parallelSegments = GStorage.getSetting(
+      SettingsKeys.downloadParallelSegments,
+    );
     downloadDanmaku = GStorage.getSetting(SettingsKeys.downloadDanmaku);
-    downloadDirectory =
-        GStorage.getSetting(SettingsKeys.downloadDirectory).trim();
+    preventSleep = GStorage.getSetting(SettingsKeys.downloadPreventSleep);
+    downloadDirectory = GStorage.getSetting(
+      SettingsKeys.downloadDirectory,
+    ).trim();
     _loadDefaultDownloadDirectory();
   }
 
@@ -65,7 +71,8 @@ class _DownloadSettingsPageState extends State<DownloadSettingsPage> {
     setState(() => isSelectingDirectory = true);
     try {
       final effectiveDirectory = _effectiveDownloadDirectory;
-      final initialDirectory = effectiveDirectory.isNotEmpty &&
+      final initialDirectory =
+          effectiveDirectory.isNotEmpty &&
               await Directory(effectiveDirectory).exists()
           ? effectiveDirectory
           : null;
@@ -80,10 +87,7 @@ class _DownloadSettingsPageState extends State<DownloadSettingsPage> {
         KazumiDialog.showToast(message: '无法获得该目录的持久访问权限，请更换目录');
         return;
       }
-      await GStorage.putSetting(
-        SettingsKeys.downloadDirectory,
-        selectedPath,
-      );
+      await GStorage.putSetting(SettingsKeys.downloadDirectory, selectedPath);
       if (mounted) {
         setState(() => downloadDirectory = selectedPath);
       }
@@ -114,6 +118,29 @@ class _DownloadSettingsPageState extends State<DownloadSettingsPage> {
       title: const Text('下载设置'),
       body: SettingsList(
         sections: [
+          if (Platform.isMacOS)
+            SettingsSection(
+              title: const Text('后台下载'),
+              tiles: [
+                SettingsTile.switchTile(
+                  leading: Icons.bedtime_outlined,
+                  title: const Text('下载时防止自动休眠'),
+                  description: const Text(
+                    '下载期间允许熄屏、锁屏和隐藏窗口；完成或暂停后恢复休眠。合盖或手动进入系统睡眠仍会中断下载。',
+                  ),
+                  initialValue: preventSleep,
+                  onToggle: (value) async {
+                    final enabled = value ?? !preventSleep;
+                    setState(() => preventSleep = enabled);
+                    await GStorage.putSetting(
+                      SettingsKeys.downloadPreventSleep,
+                      enabled,
+                    );
+                    await DownloadSleepGuard.instance.update(enabled: enabled);
+                  },
+                ),
+              ],
+            ),
           SettingsSection(
             title: Text('并发设置'),
             tiles: [
@@ -185,12 +212,12 @@ class _DownloadSettingsPageState extends State<DownloadSettingsPage> {
                         child: LoadingIndicator(),
                       )
                     : _hasCustomDirectory
-                        ? IconButton(
-                            tooltip: '恢复默认',
-                            icon: const Icon(Icons.restore_rounded),
-                            onPressed: _resetDownloadDirectory,
-                          )
-                        : null,
+                    ? IconButton(
+                        tooltip: '恢复默认',
+                        icon: const Icon(Icons.restore_rounded),
+                        onPressed: _resetDownloadDirectory,
+                      )
+                    : null,
                 onPressed: (_) => _selectDownloadDirectory(),
               ),
               SettingsTile.switchTile(
@@ -198,12 +225,12 @@ class _DownloadSettingsPageState extends State<DownloadSettingsPage> {
                 onToggle: (value) {
                   setState(() => downloadDanmaku = value ?? !downloadDanmaku);
                   GStorage.putSetting(
-                      SettingsKeys.downloadDanmaku, downloadDanmaku);
+                    SettingsKeys.downloadDanmaku,
+                    downloadDanmaku,
+                  );
                 },
                 title: Text('缓存弹幕'),
-                description: Text(
-                  '下载视频时同时缓存弹幕数据',
-                ),
+                description: Text('下载视频时同时缓存弹幕数据'),
                 initialValue: downloadDanmaku,
               ),
             ],

@@ -391,35 +391,6 @@ void main() {
   );
 
   testWidgets(
-    'picture-in-picture uses video-only content and restores details on exit',
-    (tester) async {
-      await mount(tester);
-      final enter = find.widgetWithText(OutlinedButton, '画中画');
-      await tester.ensureVisible(enter);
-      await tester.tap(enter);
-      await tester.pumpAndSettle();
-      expect(find.byType(CinemaRatingsPanel), findsNothing);
-      expect(find.text('影片资料'), findsNothing);
-      expect(find.byTooltip('退出画中画'), findsOneWidget);
-      expect(
-        nativeCalls,
-        containsAll([
-          'getBounds',
-          'setAlwaysOnTop',
-          'setAspectRatio',
-          'setBounds',
-        ]),
-      );
-      await tester.tap(find.byTooltip('退出画中画'));
-      await tester.pumpAndSettle();
-      expect(find.byType(CinemaRatingsPanel), findsOneWidget);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-      await tester.pumpAndSettle();
-    },
-  );
-
-  testWidgets(
     'recommendation waits for playback ownership cleanup before returning to catalogue',
     (tester) async {
       final selected = <DoubanRecommendation>[];
