@@ -6,17 +6,17 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <link>https://github.com/NakuTop/NAKU-Player</link>
     <description>NAKU播放器 macOS 更新</description>
     <item>
-      <title>NAKU播放器 2.0.0</title>
-      <pubDate>Tue, 13 Oct 2026 04:00:32 +0000</pubDate>
-      <sparkle:version>22</sparkle:version>
-      <sparkle:shortVersionString>2.0.0</sparkle:shortVersionString>
+      <title>NAKU播放器 2.0.1</title>
+      <pubDate>Tue, 13 Oct 2026 07:18:14 +0000</pubDate>
+      <sparkle:version>23</sparkle:version>
+      <sparkle:shortVersionString>2.0.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/NakuTop/NAKU-Player/releases/tag/v2.0.0</sparkle:releaseNotesLink>
-      <description><![CDATA[<p>NAKU 2.0：片源探活和健康记录、真实播放线路测速、HLS 后台预缓存与下一集预热。</p><p>设置新增影视订阅、批量 JSON 导入和完整片库备份迁移，保留收藏、历史、片源顺序、动漫规则、弹幕匹配及评分关联；下载记录按当前目录重新关联，视频文件需单独复制。</p><p>影视播放器新增截图、选集倒序与定位、字幕和音轨管理、双字幕及延迟。一起看增加双方缓冲协调、独立时间偏移、作品邀请链接和二维码；动漫与影视共用配对房间。</p><p>双方升级 2.0 后使用邀请。保留已有资料；实际画质取决于片源，缓存不等于离线下载。</p>]]></description>
-      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v2.0.0/NAKUPlayer-2.0.0-macOS-universal.zip" length="57506626" type="application/octet-stream" sparkle:edSignature="aDgI3zaYTRLAr9V4J40S0sGStxPTLiAFk+70ww6jmNI05Yll4ye7R06UA0hbxHAGynkjllroYQSGPko4eplbAQ=="></enclosure>
+      <sparkle:releaseNotesLink>https://github.com/NakuTop/NAKU-Player/releases/tag/v2.0.1</sparkle:releaseNotesLink>
+      <description><![CDATA[<p>打开电影或剧集后默认后台测速，自动选择本次最佳线路，保留进度和暂停状态；每次进入仅自动选择一次，手动换线或选集取消自动切换。</p><p>播放器下方及线路面板新增橙色推荐卡片、大号 Mbps 数字、最佳徽章和完成数量。可关闭自动选线，或重新测速后点击使用推荐线路。</p><p>只比较同一作品与集数，失败样本不参与推荐。重复地址复用测速，限制流量、并发和时限，测速期间暂停额外预读；支持无后缀 HLS 和当前已解析网页线路，离线播放不测速。</p><p>保留 2.0 片源健康、缓存、备份迁移、字幕音轨及一起看。推荐是本次已测线路中的结果，不保证整部影片持续带宽。</p>]]></description>
+      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v2.0.1/NAKUPlayer-2.0.1-macOS-universal.zip" length="57541393" type="application/octet-stream" sparkle:edSignature="M5ekr5pRb3DUGnjoX5nzceaOuaLH4KtvEBqtTz9OtgM5iDXTwzW02sKBpuTbbmKDZMZqLy/xK9TeKe6SRurnBw=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: EZVFF6xFbsUX3hG54e5yOhN29LIWTp8NlTmlj0TM26fo+3X0jhYr4WpjtLq9nxrWuwem4KP1LrXhYThoGo0oCQ==
-length: 2035
+edSignature: oHsdL3UHdRmwdxbk1IbXAul5eSrXtk07x9YqWJJV6jZuouPV1hH9CawrnLmbfolLV15ctKIwRQ4Rx4LcbzNGBg==
+length: 2106
 -->
