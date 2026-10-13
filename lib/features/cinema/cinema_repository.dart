@@ -8,6 +8,7 @@ import 'package:kazumi/plugins/plugins.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 
 import 'cinema_models.dart';
+import 'cinema_source_health.dart';
 import 'cinema_seasons.dart';
 
 class CinemaSourceException implements Exception {
@@ -19,7 +20,7 @@ class CinemaSourceException implements Exception {
 
 /// MacCMS is a catalogue of its own. No Bangumi title matching is involved.
 class CinemaRepository {
-  CinemaRepository({Dio? dio, DateTime Function()? now})
+  CinemaRepository({Dio? dio, DateTime Function()? now, this.health})
     : _dio = dio ?? _createDefaultDio(),
       _categories = _CatalogueCache(
         lifetime: const Duration(minutes: 30),
@@ -65,6 +66,7 @@ class CinemaRepository {
   }
 
   final Dio _dio;
+  final CinemaSourceHealth? health;
   final _CatalogueCache<(String, String), List<CinemaCategory>> _categories;
   final _CatalogueCache<(String, String, String, int), CinemaPage> _pages;
   final _CatalogueCache<(String, String, String, int), CinemaPage> _searches;
@@ -315,6 +317,7 @@ class CinemaRepository {
       queryParameters: {...uri.queryParameters, ...query},
     );
     final token = CancelToken();
+    final watch = Stopwatch()..start();
     try {
       final response = await _dio
           .get<Object?>(
@@ -348,16 +351,26 @@ class CinemaRepository {
       if (data['list'] is! List) {
         throw const FormatException('缺少 MacCMS list 数组');
       }
+      health?.observe(source, ok: true, latencyMs: watch.elapsedMilliseconds);
       return data;
     } on DioException catch (error) {
       final status = error.response?.statusCode;
+      health?.observe(
+        source,
+        ok: false,
+        reason: status == null ? '连接失败' : 'HTTP $status',
+      );
       throw CinemaSourceException(
         status == null
             ? '${source.name}连接失败：${error.type.name}'
             : '${source.name}返回 HTTP $status',
       );
     } on FormatException catch (error) {
+      health?.observe(source, ok: false, reason: '接口格式不兼容');
       throw CinemaSourceException('${source.name}接口格式不兼容：${error.message}');
+    } on CinemaSourceException {
+      health?.observe(source, ok: false, reason: '接口请求失败');
+      rethrow;
     }
   }
 

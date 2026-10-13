@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -73,6 +74,7 @@ class CinemaStore extends ChangeNotifier {
   final List<CinemaHistory> _history = [];
   Future<void>? _loading;
   Future<void> _writeTail = Future.value();
+  Completer<void>? _restoring;
   bool _loaded = false;
   bool _disposed = false;
   String? lastError;
@@ -279,9 +281,200 @@ class CinemaStore extends ChangeNotifier {
   Set<String> _historyMatches(CinemaTitle title) =>
       _matches(title, history: true);
 
+  Map<String, dynamic> get extras => Map.unmodifiable(_libraryExtras);
+
+  Future<void> setExtra(String key, Object? value) async {
+    if (const {
+      'version',
+      'sources',
+      'favorites',
+      'history',
+      'appliedSourcePacks',
+    }.contains(key)) {
+      throw const FormatException('保留的片库字段');
+    }
+    await _ready();
+    _libraryExtras[key] = jsonDecode(jsonEncode(value));
+    await _persist();
+    _notify();
+  }
+
+  Future<void> _ready() async {
+    await load();
+    while (_restoring != null) {
+      await _restoring!.future;
+    }
+  }
+
+  Future<Map<String, dynamic>> exportLibrary() async {
+    await _ready();
+    await flush();
+    return _snapshotLoaded();
+  }
+
+  Map<String, dynamic> _snapshotLoaded() =>
+      jsonDecode(
+            jsonEncode({
+              ..._libraryExtras,
+              'version': 1,
+              'sources': _sources
+                  .map(
+                    (s) =>
+                        _mergeKnownDocument(_sourceDocuments[s.id], s.toJson()),
+                  )
+                  .toList(),
+              'favorites': _favorites
+                  .map((s) => _favoriteDocuments[s.key])
+                  .toList(),
+              'history': _history
+                  .map((s) => _historyDocuments[s.title.key])
+                  .toList(),
+              'appliedSourcePacks': _appliedSourcePacks.toList(),
+            }),
+          )
+          as Map<String, dynamic>;
+
+  static void validateBackup(Object? raw) {
+    _validatedLibrary(raw);
+  }
+
+  /// Validate before mutation. Merge preserves local source order and chooses
+  /// the latest whole history snapshot, never mixing episode and position.
+  Future<void> restoreLibrary(
+    Map<String, dynamic> backup, {
+    bool merge = true,
+  }) async {
+    final imported = _validatedLibrary(jsonDecode(jsonEncode(backup)));
+    await _ready();
+    final barrier = _restoring = Completer<void>();
+    try {
+      await flush();
+      var next = imported;
+      if (merge) {
+        final current = _snapshotLoaded();
+        final sources = _strictMaps(current['sources']);
+        final ids = sources.map((s) => s['id']).toSet();
+        final remap = <String, String>{};
+        for (final source in _strictMaps(imported['sources'])) {
+          final existing = sources
+              .where((s) => s['url'] == source['url'])
+              .firstOrNull;
+          final oldId = source['id'] as String;
+          if (existing != null) {
+            remap[oldId] = existing['id'] as String;
+            continue;
+          }
+          var id = oldId;
+          while (!ids.add(id)) {
+            id = '$id-import';
+          }
+          remap[oldId] = id;
+          sources.add({...source, 'id': id});
+        }
+        Object? mapped(Object? value) {
+          if (value is List) return value.map(mapped).toList();
+          if (value is Map) {
+            return {
+              for (final e in value.entries)
+                e.key.toString(): e.key == 'sourceId'
+                    ? remap[e.value] ?? e.value
+                    : mapped(e.value),
+            };
+          }
+          return value;
+        }
+
+        final favorites = [
+          ..._strictMaps(current['favorites']),
+          ..._strictMaps(mapped(imported['favorites'])),
+        ];
+        final history =
+            [
+              ..._strictMaps(current['history']),
+              ..._strictMaps(mapped(imported['history'])),
+            ]..sort(
+              (a, b) => CinemaHistory.fromJson(
+                b,
+              ).updatedAt.compareTo(CinemaHistory.fromJson(a).updatedAt),
+            );
+        final context = [
+          ...favorites.expand((m) => _recordTitles(m, history: false)),
+          ...history.expand((m) => _recordTitles(m, history: true)),
+        ];
+        next = {
+          ...imported,
+          ...current,
+          'sources': sources,
+          'favorites': _consolidateRecords(
+            favorites,
+            history: false,
+            context: context,
+          ),
+          'history': _consolidateRecords(
+            history,
+            history: true,
+            context: context,
+          ).take(200).toList(),
+          'appliedSourcePacks': {
+            ..._readAppliedPacks(current),
+            ..._readAppliedPacks(imported),
+          }.toList(),
+          'subscriptions': {
+            for (final sub in jsonMaps(current['subscriptions']))
+              '${sub['url']}': sub,
+            for (final sub in jsonMaps(imported['subscriptions']))
+              '${sub['url']}': sub,
+          }.values.toList(),
+        };
+      }
+      _validatedLibrary(next);
+      final original = await _file!.exists()
+          ? await _file!.readAsBytes()
+          : null;
+      if (original != null) {
+        await File(
+          '${_file!.path}.pre-restore-${DateTime.now().microsecondsSinceEpoch}.bak',
+        ).writeAsBytes(original, flush: true);
+      }
+      await _writeEncoded(const JsonEncoder.withIndent('  ').convert(next));
+      _sources.clear();
+      _favorites.clear();
+      _history.clear();
+      _sourceDocuments.clear();
+      _favoriteDocuments.clear();
+      _historyDocuments.clear();
+      _appliedSourcePacks.clear();
+      _loaded = false;
+      await _read();
+    } finally {
+      _restoring = null;
+      barrier.complete();
+    }
+  }
+
+  Future<void> addSources(List<CinemaSource> sources) async {
+    for (final source in sources) {
+      source.validate();
+    }
+    await _ready();
+    final ids = _sources.map((s) => s.id).toSet();
+    final urls = _sources.map((s) => _canonicalUrl(s.url)).toSet();
+    for (final source in sources) {
+      if (ids.contains(source.id) || urls.contains(_canonicalUrl(source.url))) {
+        continue;
+      }
+      ids.add(source.id);
+      urls.add(_canonicalUrl(source.url));
+      _sources.add(source);
+      _sourceDocuments[source.id] = source.toJson();
+    }
+    await _persist();
+    _notify();
+  }
+
   Future<void> saveSource(CinemaSource source) async {
     source.validate();
-    await load();
+    await _ready();
     final document = Map<String, dynamic>.of(_sourceDocuments[source.id] ?? {})
       ..remove('headers')
       ..remove('rule');
@@ -297,7 +490,7 @@ class CinemaStore extends ChangeNotifier {
   }
 
   Future<void> reorderMovieSources(List<String> ids) async {
-    await load();
+    await _ready();
     final movieSources = {
       for (final s in _sources)
         if (s.kind == CinemaSourceKind.maccms) s.id: s,
@@ -318,7 +511,7 @@ class CinemaStore extends ChangeNotifier {
   }
 
   Future<void> removeSource(String id) async {
-    await load();
+    await _ready();
     _sources.removeWhere((source) => source.id == id);
     _sourceDocuments.remove(id);
     _notify();
@@ -326,7 +519,7 @@ class CinemaStore extends ChangeNotifier {
   }
 
   Future<void> toggleFavorite(CinemaTitle title) async {
-    await load();
+    await _ready();
     final matches = _favoriteMatches(title);
     if (matches.isNotEmpty) {
       _favorites.removeWhere((item) => matches.contains(item.key));
@@ -347,7 +540,7 @@ class CinemaStore extends ChangeNotifier {
     required int positionSeconds,
     int durationSeconds = 0,
   }) async {
-    await load();
+    await _ready();
     if (routeIndex < 0 ||
         episodeIndex < 0 ||
         positionSeconds < 0 ||
@@ -412,7 +605,7 @@ class CinemaStore extends ChangeNotifier {
     CinemaTitle title, {
     required bool history,
   }) async {
-    await load();
+    await _ready();
     final matches = _matches(title, history: history);
     if (matches.isEmpty) return null;
     final documents = history ? _historyDocuments : _favoriteDocuments;
@@ -450,6 +643,7 @@ class CinemaStore extends ChangeNotifier {
       rethrow;
     }
     return CinemaLibraryUndo._(() async {
+      await _ready();
       if (!_restoreLibraryEntries(removed, history: history)) return false;
       await _persist();
       return true;
@@ -506,7 +700,7 @@ class CinemaStore extends ChangeNotifier {
   }
 
   Future<void> clearHistory() async {
-    await load();
+    await _ready();
     _history.clear();
     _historyDocuments.clear();
     _invalidateIdentityCache();

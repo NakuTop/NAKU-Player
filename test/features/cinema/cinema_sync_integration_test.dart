@@ -321,6 +321,185 @@ CinemaTitle _concreteTitle({
 
 void main() {
   test(
+    'manual pause during a pending remote apply is published after completion',
+    () async {
+      final server = await _Server.start();
+      final a = _Player(), b = _Player();
+      final applied = Completer<void>(), finish = Completer<void>();
+      final sa = a.session();
+      final sb = CinemaSyncSession(
+        position: () => b.position,
+        playing: () => b.playing,
+        duration: () => const Duration(hours: 2),
+        tickInterval: const Duration(milliseconds: 30),
+        applyRemote: (at, playing) async {
+          await b.apply(at, playing);
+          if (playing && !applied.isCompleted) {
+            applied.complete();
+            await finish.future;
+          }
+        },
+      );
+      addTearDown(() async {
+        if (!finish.isCompleted) finish.complete();
+        await sa.disconnect();
+        await sb.disconnect();
+        sa.dispose();
+        sb.dispose();
+        await server.close();
+      });
+      await sa.updateMedia(_title(), _episode);
+      await sb.updateMedia(_title(), _episode);
+      await _join(sa, server, 'Alice');
+      await _join(sb, server, 'Bob');
+      await _eventually(() => sb.status.contains('同步播放'));
+      server.stateTo('Bob', setter: 'Alice', position: 30, paused: false);
+      await applied.future.timeout(const Duration(seconds: 2));
+      final before = server.changes.where((s) => s == 'Bob').length;
+      b.playing = false;
+      finish.complete();
+      await _eventually(
+        () => server.changes.where((s) => s == 'Bob').length > before,
+      );
+      expect(b.playing, false);
+    },
+  );
+
+  test(
+    'NAKU 2.0 holds both viewers for buffering then resumes the original playing intent',
+    () async {
+      final server = await _Server.start(), a = _Player(), b = _Player();
+      a.playing = true;
+      b.playing = true;
+      var bufferingB = false;
+      CinemaSyncSession make(_Player player, bool Function() buffering) =>
+          CinemaSyncSession(
+            position: () => player.position,
+            duration: () => const Duration(hours: 2),
+            playing: () => player.playing,
+            buffering: buffering,
+            ready: () => true,
+            applyRemote: player.apply,
+            coordinatePlayback: (run) => player.apply(player.position, run),
+            tickInterval: const Duration(milliseconds: 30),
+          );
+      final sa = make(a, () => false), sb = make(b, () => bufferingB);
+      try {
+        await sa.updateMedia(_title(), _episode);
+        await sb.updateMedia(_title(), _episode);
+        await _join(sa, server, 'Alice');
+        await _join(sb, server, 'Bob');
+        await _eventually(
+          () =>
+              sa.peerBufferReady('Bob') == true &&
+              sb.peerBufferReady('Alice') == true,
+        );
+        bufferingB = true;
+        await _eventually(
+          () =>
+              sa.waitingForBuffer &&
+              sb.waitingForBuffer &&
+              !a.playing &&
+              !b.playing,
+        );
+        bufferingB = false;
+        await _eventually(
+          () =>
+              !sa.waitingForBuffer &&
+              !sb.waitingForBuffer &&
+              a.playing &&
+              b.playing,
+        );
+        b.playing = false;
+        await _eventually(() => !a.playing);
+        bufferingB = true;
+        await _eventually(() => sa.waitingForBuffer && sb.waitingForBuffer);
+        bufferingB = false;
+        await _eventually(() => !sa.waitingForBuffer && !sb.waitingForBuffer);
+        expect(a.playing, false);
+        expect(b.playing, false);
+      } finally {
+        await sa.disconnect();
+        await sb.disconnect();
+        sa.dispose();
+        sb.dispose();
+        await server.close();
+      }
+    },
+  );
+  test(
+    'partner changing works during a buffer hold releases the old barrier',
+    () async {
+      final server = await _Server.start(), a = _Player(), b = _Player();
+      a.playing = true;
+      b.playing = true;
+      var bufferingB = false;
+      final sa = CinemaSyncSession(
+        position: () => a.position,
+        playing: () => a.playing,
+        duration: () => const Duration(hours: 2),
+        applyRemote: a.apply,
+        coordinatePlayback: (run) => a.apply(a.position, run),
+        tickInterval: const Duration(milliseconds: 30),
+      );
+      final sb = CinemaSyncSession(
+        position: () => b.position,
+        playing: () => b.playing,
+        duration: () => const Duration(hours: 2),
+        applyRemote: b.apply,
+        buffering: () => bufferingB,
+        coordinatePlayback: (run) => b.apply(b.position, run),
+        tickInterval: const Duration(milliseconds: 30),
+      );
+      try {
+        await sa.updateMedia(_title(), _episode);
+        await sb.updateMedia(_title(), _episode);
+        await _join(sa, server, 'Alice');
+        await _join(sb, server, 'Bob');
+        await _eventually(() => sa.peerBufferReady('Bob') == true);
+        bufferingB = true;
+        await _eventually(() => sa.waitingForBuffer);
+        await sb.updateMedia(_title(name: '另一部作品'), _episode);
+        await _eventually(() => !sa.waitingForBuffer && a.playing);
+      } finally {
+        await sa.disconnect();
+        await sb.disconnect();
+        sa.dispose();
+        sb.dispose();
+        await server.close();
+      }
+    },
+  );
+  test(
+    'independent local version offset is applied on receive and removed on publish',
+    () async {
+      final server = await _Server.start(), a = _Player(), b = _Player();
+      final sa = a.session(), sb = b.session();
+      sb.localOffsetSeconds = 12;
+      try {
+        await sa.updateMedia(_title(), _episode);
+        await sb.updateMedia(_title(), _episode);
+        await _join(sa, server, 'Alice');
+        await _join(sb, server, 'Bob');
+        await _eventually(() => sa.peers.isNotEmpty && sb.peers.isNotEmpty);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        server.stateTo('Bob', setter: 'Alice', position: 30, paused: true);
+        await _eventually(() => b.position.inSeconds == 42);
+        b.position = const Duration(seconds: 62);
+        await _eventually(
+          () => server.roomStates['private-test']?['position'] == 50,
+        );
+      } finally {
+        await sa.disconnect();
+        await sb.disconnect();
+        sa.dispose();
+        sb.dispose();
+        await server.close();
+      }
+    },
+  );
+
+  test(
     'failed initial peer seek never acknowledges and timeout cannot freeze a new room',
     () async {
       final server = await _Server.start();
@@ -1146,13 +1325,13 @@ void main() {
         await sa.connect(
           endpoint: 'syncplay.pl:8996',
           roomName: room,
-          username: 'NAKU-test-A-$stamp',
+          username: 'NAKU-A-${stamp % 100000000}',
         );
         expect(sa.connected, isTrue, reason: sa.status);
         await sb.connect(
           endpoint: 'syncplay.pl:8996',
           roomName: room,
-          username: 'NAKU-test-B-$stamp',
+          username: 'NAKU-B-${stamp % 100000000}',
         );
         expect(sb.connected, isTrue, reason: sb.status);
         await _eventually(
@@ -1160,14 +1339,17 @@ void main() {
           timeout: const Duration(seconds: 8),
           reason: '${sa.status}; ${sb.status}',
         );
+        evidence['stage'] = 'seek';
         a.position = const Duration(seconds: 42);
         await _eventually(
           () => b.position == const Duration(seconds: 42),
           timeout: const Duration(seconds: 8),
           reason: '${sa.status}; ${sb.status}',
         );
+        evidence['stage'] = 'play';
         a.playing = true;
         await _eventually(() => b.playing, timeout: const Duration(seconds: 8));
+        evidence['stage'] = 'pause';
         b.playing = false;
         await _eventually(
           () => !a.playing,
@@ -1182,6 +1364,12 @@ void main() {
         });
       } catch (error) {
         evidence.addAll({
+          'aPlaying': a.playing,
+          'bPlaying': b.playing,
+          'aPosition': a.position.inMilliseconds,
+          'bPosition': b.position.inMilliseconds,
+          'aHeld': sa.waitingForBuffer,
+          'bHeld': sb.waitingForBuffer,
           'result': 'failed',
           'error': '$error',
           'firstStatus': sa.status,

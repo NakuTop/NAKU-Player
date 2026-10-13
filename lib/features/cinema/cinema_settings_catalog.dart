@@ -66,7 +66,7 @@ const cinemaSettingsGroups = <CinemaSettingsGroup>[
     CinemaSettingsDestination(
       id: 'keyboard',
       title: '快捷键',
-      description: '通用播放操作；弹幕与截图快捷键仅用于动漫',
+      description: '播放、选集与截图；弹幕快捷键用于动漫',
       icon: Icons.keyboard_rounded,
       route: '/settings/keyboard',
     ),

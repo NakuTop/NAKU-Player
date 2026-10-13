@@ -15,6 +15,8 @@ import 'cinema_settings_host_binding.dart';
 import 'cinema_startup_preferences.dart';
 import 'anime/cinema_anime_page.dart';
 import 'anime/cinema_anime_library.dart';
+import 'anime/cinema_anime_invitation.dart';
+import 'package:kazumi/plugins/plugins_controller.dart';
 import 'cinema_unified_library.dart';
 import 'package:kazumi/modules/history/history_module.dart';
 import 'package:kazumi/services/player/history_playback_service.dart';
@@ -55,6 +57,11 @@ import 'cinema_ratings.dart';
 import 'cinema_rating_title_resolver.dart';
 import 'cinema_rating_identity_search.dart';
 import 'cinema_store.dart';
+import 'cinema_source_health.dart';
+import 'cinema_source_subscriptions.dart';
+import 'cinema_media_cache.dart';
+import 'cinema_tools_settings.dart';
+import 'cinema_invitation.dart';
 import 'cinema_player_page.dart';
 import 'cinema_theme.dart';
 import 'cinema_websites_page.dart';
@@ -119,9 +126,13 @@ class CinemaHomePage extends StatefulWidget {
 class _CinemaHomePageState extends State<CinemaHomePage>
     with KazumiDialogOwner {
   CinemaAnimeLibrary? _animeLibrary;
+  final _health = CinemaSourceHealth.instance;
+  bool _openingInvitation = false;
+  List<CinemaSource> get _activeSources =>
+      _health.available(_store.enabledSources);
   late final CinemaStore _store = widget.store ?? CinemaStore();
   late final CinemaRepository _repository =
-      widget.repository ?? CinemaRepository();
+      widget.repository ?? CinemaRepository(health: _health);
   late final _discoveryRepository =
       widget.searchDiscovery ?? CinemaSearchDiscoveryRepository();
   late final _ratings =
@@ -264,6 +275,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           .length,
     );
     _store.addListener(_onStoreChanged);
+    _health.addListener(_onHealthChanged);
+    CinemaInvitationInbox.instance.addListener(_onInvitationChanged);
     _ratings.changes.addListener(_onRatingsChanged);
     _scrollActivity.addListener(_onScrollActivityChanged);
     if (widget.enableWatchTogether) {
@@ -498,9 +511,23 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               p.media?.identity == media.identity,
         );
     await _store.load();
+    if (media.animeId != null) {
+      final args = await resolveCinemaAnimeInvitation(
+        media: media,
+        plugins: inject<PluginsController>().pluginList,
+        isCurrent: current,
+      );
+      if (!mounted || !current()) return false;
+      if (args == null) {
+        _toast('动漫规则未找到对应作品和集数，请在动漫中检查规则');
+        return false;
+      }
+      context.pushNamed('/video/', arguments: args);
+      return true;
+    }
     final candidate = await resolveCinemaPeerPlayback(
       media: media,
-      sources: _store.enabledSources,
+      sources: _activeSources,
       repository: _repository,
       isCurrent: current,
     );
@@ -556,6 +583,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     List<CinemaTitle> variants, {
     bool keepBrowseRoute = false,
     Map<String, String>? offlinePaths,
+    int? initialPositionSeconds,
   }) {
     unawaited(
       Navigator.of(context)
@@ -567,6 +595,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                   title: detail,
                   source: source,
                   offlinePaths: offlinePaths,
+                  initialPositionSeconds: initialPositionSeconds,
                   watchTogether: widget.enableWatchTogether ? _together : null,
                   store: _store,
                   variants: variants,
@@ -597,6 +626,120 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             if (mounted) setState(() {});
           }),
     );
+  }
+
+  void _onHealthChanged() {
+    if (mounted && _section == _Section.settings && _showSourceManager) {
+      setState(() {});
+    }
+  }
+
+  void _openTools([int tab = 0]) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => Theme(
+          data: CinemaTheme.of(context),
+          child: CinemaToolsSettingsPage(store: _store, initialTab: tab),
+        ),
+      ),
+    );
+  }
+
+  void _onInvitationChanged() {
+    if (!mounted ||
+        _openingInvitation ||
+        CinemaInvitationInbox.instance.value == null) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_openInvitation());
+    });
+  }
+
+  Future<void> _openInvitation() async {
+    final invite = CinemaInvitationInbox.instance.value;
+    if (invite == null || _openingInvitation || !mounted) return;
+    _openingInvitation = true;
+    CinemaInvitationInbox.instance.value = null;
+    try {
+      await _store.load();
+      if (!mounted) return;
+      final accepted =
+          await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('收到观看邀请'),
+              content: Text(
+                '${invite.media?.title ?? '一起看房间'}${invite.media == null ? '' : ' · ${invite.media!.episodeName}'}\n'
+                '${invite.hasRoom ? '加入房间：${invite.room}\n服务器：${invite.endpoint}\n' : ''}'
+                '将使用你的片源打开，起始进度 ${invite.positionSeconds} 秒。',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('接受邀请'),
+                ),
+              ],
+            ),
+          ) ??
+          false;
+      if (!accepted || !mounted) return;
+      await _together.closeCurrentPlayback();
+      if (invite.hasRoom) {
+        await _together.pair(
+          endpoint: invite.endpoint,
+          roomName: invite.room,
+          username: _together.username.isNotEmpty
+              ? _together.username
+              : 'NAKU-${DateTime.now().millisecondsSinceEpoch % 100000}',
+        );
+      }
+      final media = invite.media;
+      if (media == null || !mounted) return;
+      if (media.animeId != null) {
+        final args = await resolveCinemaAnimeInvitation(
+          media: media,
+          plugins: inject<PluginsController>().pluginList,
+          isCurrent: () => mounted,
+          positionSeconds: invite.positionSeconds,
+        );
+        if (!mounted) return;
+        if (args == null) {
+          _toast('动漫规则未找到邀请中的作品和集数');
+          return;
+        }
+        context.pushNamed('/video/', arguments: args);
+        return;
+      }
+      final candidate = await resolveCinemaPeerPlayback(
+        media: media,
+        sources: _activeSources,
+        repository: _repository,
+        isCurrent: () => mounted,
+      );
+      if (!mounted) return;
+      if (candidate == null) {
+        _toast('当前片源未找到邀请中的同一作品和集数，可以添加片源后重新打开邀请');
+        return;
+      }
+      _playTitle(
+        candidate.title,
+        candidate.source,
+        candidate.routeIndex,
+        candidate.episodeIndex,
+        [candidate.title],
+        initialPositionSeconds: invite.positionSeconds,
+      );
+    } catch (_) {
+      if (mounted) _toast('邀请暂时无法打开，请检查房间连接和片源');
+    } finally {
+      _openingInvitation = false;
+      _onInvitationChanged();
+    }
   }
 
   void _onStoreChanged() {
@@ -630,6 +773,17 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   Future<void> _initialize() async {
     try {
       await _store.load();
+      if (widget.store == null) {
+        await _health.load();
+        final prefs = _store.extras['mediaCache'];
+        if (prefs is Map) {
+          await CinemaMediaCache.instance.configure(
+            CinemaCachePreferences.parse(prefs),
+          );
+        }
+        unawaited(CinemaSourceSubscriptions(_store).refresh(automatic: true));
+      }
+      _onInvitationChanged();
       _sourceConfiguration = jsonEncode(
         _store.sources.map((s) => s.toJson()).toList(),
       );
@@ -673,6 +827,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       _together.onFollowRequested = null;
     }
     _store.removeListener(_onStoreChanged);
+    _health.removeListener(_onHealthChanged);
+    CinemaInvitationInbox.instance.removeListener(_onInvitationChanged);
+    unawaited(_health.flush());
     unawaited(_store.flush());
     if (widget.store == null) _store.dispose();
     super.dispose();
@@ -834,7 +991,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         state.categoryId = null;
       });
       await _aggregateFor(section).load(
-        sources: _store.enabledSources,
+        sources: _activeSources,
         kind: section == _Section.movies
             ? CinemaAggregateKind.movies
             : CinemaAggregateKind.series,
@@ -844,7 +1001,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       );
       return;
     }
-    final choices = _store.enabledSources
+    final choices = _activeSources
         .where((s) => s.kind == CinemaSourceKind.maccms)
         .toList();
     if (choices.isEmpty) {
@@ -937,7 +1094,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     final resetFilters =
         !loadMore && (!state.searching || state.activeKeyword != keyword);
     final generation = loadMore ? state.generation : ++state.generation;
-    final sources = _store.enabledSources
+    final sources = _activeSources
         .where(
           (s) =>
               (section == _Section.anime ||
@@ -1478,7 +1635,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       final found = await resolveCinemaDiscoverySources(
         context,
         anchor: title,
-        sources: _store.enabledSources,
+        sources: _activeSources,
         repository: _repository,
       );
       if (!mounted || found == null || found.isEmpty) return;
@@ -2073,6 +2230,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             .where((source) => source.kind == CinemaSourceKind.maccms)
             .length,
         onSources: () => setState(() => _showSourceManager = true),
+        onTools: _openTools,
         onAppearance: () => showCinemaAppearanceSheet(context),
         onUpdates: () => Navigator.of(
           context,
@@ -2196,7 +2354,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         DropdownButtonHideUnderline(
                           child: DropdownButton<String>(
                             value: _source!.id,
-                            items: _store.enabledSources
+                            items: _activeSources
                                 .where((s) => s.kind == CinemaSourceKind.maccms)
                                 .map(
                                   (s) => DropdownMenuItem(
@@ -2691,6 +2849,41 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             ],
           ),
           const SizedBox(height: 12),
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _health.probing
+                    ? _health.cancelProbes
+                    : () {
+                        unawaited(
+                          _health.probeAll(sources, (source) async {
+                            final probe = CinemaRepository();
+                            await probe.categories(source);
+                          }),
+                        );
+                      },
+                icon: Icon(
+                  _health.probing
+                      ? Icons.stop_circle_outlined
+                      : Icons.monitor_heart_outlined,
+                ),
+                label: Text(
+                  _health.probing
+                      ? '停止探活 ${_health.completed}/${_health.total}'
+                      : '检测全部片源',
+                ),
+              ),
+              OutlinedButton.icon(
+                onPressed: _openTools,
+                icon: const Icon(Icons.rss_feed),
+                label: const Text('订阅与批量导入'),
+              ),
+            ],
+          ),
+          if (_health.probing) const LinearProgressIndicator(),
+          const SizedBox(height: 12),
           const Text(
             '拖动左侧手柄调整优先级，越靠前越优先播放，失效时依次换源。动漫规则在动漫 → 更多 → 规则管理中维护。',
             style: TextStyle(
@@ -2800,6 +2993,23 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         ),
                         const SizedBox(height: 5),
                         Text(
+                          '接口：${_health.record(source)?.label ?? '未检测'}${_health.cooling(source) ? ' · 临时冷却' : ''}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: CinemaTheme.muted,
+                          ),
+                        ),
+                        if (_health.record(source, media: true)
+                            case final media?)
+                          Text(
+                            '视频：${media.label}',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: CinemaTheme.muted,
+                            ),
+                          ),
+
+                        Text(
                           source.kind == CinemaSourceKind.maccms
                               ? '影视接口 · ${source.url}'
                               : 'Kazumi 动漫规则 · ${source.url}',
@@ -2813,6 +3023,66 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                       ],
                     ),
                   ),
+                  IconButton(
+                    tooltip: '健康记录',
+                    icon: const Icon(Icons.monitor_heart_outlined, size: 19),
+                    onPressed: () => showDialog<void>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: Text('${source.name} · 健康记录'),
+                        content: SizedBox(
+                          width: 520,
+                          child: SingleChildScrollView(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                for (final media in [false, true]) ...[
+                                  Text(media ? '实际视频' : '目录接口'),
+                                  if (_health
+                                      .history(source, media: media)
+                                      .isEmpty)
+                                    const Text('尚无记录'),
+                                  for (final event in _health.history(
+                                    source,
+                                    media: media,
+                                  ))
+                                    ListTile(
+                                      dense: true,
+                                      leading: Icon(
+                                        event.ok
+                                            ? Icons.check_circle_outline
+                                            : Icons.error_outline,
+                                        color: event.ok
+                                            ? CinemaTheme.copper
+                                            : CinemaTheme.muted,
+                                      ),
+                                      title: Text(event.label),
+                                      subtitle: Text(
+                                        '${event.checkedAt.toLocal()}',
+                                      ),
+                                    ),
+                                  const Divider(),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('关闭'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (_health.cooling(source))
+                    IconButton(
+                      tooltip: '解除临时冷却并重试',
+                      onPressed: () => _health.restore(source),
+                      icon: const Icon(Icons.restart_alt),
+                    ),
                   Switch(
                     value: source.enabled,
                     onChanged: (enabled) async {
@@ -3239,6 +3509,33 @@ class _TitleDetailsState extends State<_TitleDetails> {
                                     size: 18,
                                   ),
                                   label: const Text('下载'),
+                                ),
+                              if (title.routes.isNotEmpty &&
+                                  title.routes[_road].episodes.isNotEmpty)
+                                OutlinedButton.icon(
+                                  icon: const Icon(Icons.ios_share, size: 18),
+                                  label: const Text('邀请'),
+                                  onPressed: () => showCinemaInvitation(
+                                    context,
+                                    CinemaInvitation(
+                                      media: CinemaSyncMedia.fromSelection(
+                                        title,
+                                        title.routes[_road].episodes.first,
+                                      ),
+                                      endpoint:
+                                          CinemaWatchTogether.instance.isPaired
+                                          ? CinemaWatchTogether
+                                                .instance
+                                                .endpoint
+                                          : '',
+                                      room:
+                                          CinemaWatchTogether.instance.isPaired
+                                          ? CinemaWatchTogether
+                                                .instance
+                                                .roomName
+                                          : '',
+                                    ),
+                                  ),
                                 ),
                               OutlinedButton.icon(
                                 onPressed: () async {

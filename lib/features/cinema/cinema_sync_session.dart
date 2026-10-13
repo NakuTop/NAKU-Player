@@ -26,12 +26,16 @@ String cinemaSyncIdentity(CinemaTitle title, CinemaEpisode episode) {
       : number == null
       ? text
       : 'ep${int.parse(number[1]!)}';
-  final identity = jsonEncode([
-    title.doubanId.trim(),
-    normalized(title.title),
-    title.year.trim(),
-    ep,
-  ]);
+  final identity = jsonEncode(
+    title.sourceId == 'bangumi'
+        ? ['bangumi:${title.id}', ep]
+        : [
+            title.doubanId.trim(),
+            normalized(title.title),
+            title.year.trim(),
+            ep,
+          ],
+  );
   return 'NAKU:${sha256.convert(utf8.encode(identity))}';
 }
 
@@ -44,6 +48,7 @@ class CinemaSyncMedia {
     required this.category,
     required this.doubanId,
     required this.episodeName,
+    this.animeId,
   });
   factory CinemaSyncMedia.fromSelection(
     CinemaTitle title,
@@ -55,12 +60,19 @@ class CinemaSyncMedia {
     category: title.category,
     doubanId: title.doubanId,
     episodeName: episode.name,
+    animeId: title.sourceId == 'bangumi' ? int.tryParse(title.id) : null,
   );
   final String identity, title, year, category, doubanId, episodeName;
+  final int? animeId;
   bool matches(CinemaTitle title, CinemaEpisode episode) {
+    if (animeId != null) {
+      return title.sourceId == 'bangumi' &&
+          title.id == '$animeId' &&
+          cinemaSyncIdentity(title, episode) == identity;
+    }
     final anchor = CinemaTitle(
-      id: identity,
-      sourceId: 'sync-peer',
+      id: animeId?.toString() ?? identity,
+      sourceId: animeId == null ? 'sync-peer' : 'bangumi',
       title: this.title,
       year: year,
       category: category,
@@ -104,13 +116,14 @@ class CinemaSyncMedia {
     return cinemaSyncIdentity(title, episode) == identity;
   }
 
-  Map<String, String> toJson() => {
+  Map<String, Object> toJson() => {
     'identity': identity,
     'title': title,
     'year': year,
     'category': category,
     'doubanId': doubanId,
     'episodeName': episodeName,
+    'animeId': ?animeId,
   };
   static CinemaSyncMedia? fromJson(Object? raw) {
     if (raw is! Map) return null;
@@ -139,7 +152,13 @@ class CinemaSyncMedia {
         episode == null) {
       return null;
     }
+    final animeId = raw['animeId'];
+    if (animeId != null &&
+        (animeId is! int || animeId < 1 || animeId > 10000000)) {
+      return null;
+    }
     return CinemaSyncMedia(
+      animeId: animeId as int?,
       identity: identity,
       title: title,
       year: year,
@@ -178,14 +197,39 @@ class CinemaSyncSession extends ChangeNotifier {
     required this.duration,
     required this.applyRemote,
     double Function()? playbackRate,
+    bool Function()? buffering,
+    bool Function()? ready,
+    this.coordinatePlayback,
     SyncplayClient Function(String, int)? clientFactory,
     this.handshakeTimeout = const Duration(seconds: 15),
     this.tickInterval = const Duration(milliseconds: 250),
   }) : playbackRate = playbackRate ?? (() => 1),
+       buffering = buffering ?? (() => false),
+       ready = ready ?? (() => true),
        _factory = clientFactory ?? ((h, p) => SyncplayClient(host: h, port: p));
   final Duration Function() position, duration;
   final bool Function() playing;
   final double Function() playbackRate;
+  final bool Function() buffering, ready;
+  final Future<void> Function(bool playing)? coordinatePlayback;
+  bool coordinateBuffering = true;
+  double localOffsetSeconds = 0;
+  bool _bufferHeld = false,
+      _resumeAfterBuffer = false,
+      _coordinating = false,
+      _ticking = false;
+  bool? _sentReady, _sentIntent;
+  DateTime? _sentBufferAt;
+  final Map<String, ({bool ready, bool intent, DateTime at})> _peerBuffers = {};
+  bool get waitingForBuffer => _bufferHeld;
+  bool get localBufferReady => ready() && !buffering();
+  bool? peerBufferReady(String name) => _peerBuffers[name]?.ready;
+  Duration get _roomPosition => Duration(
+    milliseconds: (position().inMilliseconds - localOffsetSeconds * 1000)
+        .round()
+        .clamp(0, 86400000),
+  );
+
   final Future<void> Function(Duration, bool) applyRemote;
   final SyncplayClient Function(String, int) _factory;
   final Duration handshakeTimeout, tickInterval;
@@ -253,7 +297,9 @@ class CinemaSyncSession extends ChangeNotifier {
 
   void _updateStatus() {
     if (!connected) return;
-    if (!_chatAvailable) {
+    if (_bufferHeld) {
+      status = localBufferReady ? '已暂停等待对方缓冲 · 可选择继续单独播放' : '正在缓冲 · 对方同步等待';
+    } else if (!_chatAvailable) {
       status = '已连接 · 服务器未启用聊天，作品跟随不可用';
     } else if (!_haveSnapshot ||
         _identity.isEmpty ||
@@ -434,6 +480,7 @@ class CinemaSyncSession extends ChangeNotifier {
     _awaitingPeerState = canonical != null;
     _localMedia = canonical ?? CinemaSyncMedia.fromSelection(title, episode);
     _pendingRemote = null;
+    _resetBuffer();
     _sample();
     _updateStatus();
     if (connected) await _announce();
@@ -443,6 +490,7 @@ class CinemaSyncSession extends ChangeNotifier {
   Future<void> clearMedia() async {
     ++_mediaGeneration;
     _identity = '';
+    _resetBuffer();
     _awaitingPeerState = false;
     _localMedia = null;
     _pendingRemote = null;
@@ -571,6 +619,19 @@ class CinemaSyncSession extends ChangeNotifier {
         if (c != null) {
           unawaited(_sendActivity(c).catchError((Object _) => false));
         }
+      } else if (raw['type'] == 'buffer' &&
+          raw['identity'] == _identity &&
+          _identity.isNotEmpty &&
+          _members[sender]?.file == _identity &&
+          raw['ready'] is bool &&
+          raw['intent'] is bool) {
+        _peerBuffers[sender] = (
+          ready: raw['ready'] as bool,
+          intent: raw['intent'] as bool,
+          at: DateTime.now(),
+        );
+        if (_bufferHeld && raw['intent'] == false) _resumeAfterBuffer = false;
+        _notify();
       } else if (raw['type'] == 'media') {
         final media = CinemaSyncMedia.fromJson(raw['media']);
         if (raw['media'] == null) {
@@ -589,7 +650,7 @@ class CinemaSyncSession extends ChangeNotifier {
           !_awaitingPeerState) {
         final c = _client;
         if (c != null && duration() > Duration.zero) {
-          c.setPosition(position().inMilliseconds / 1000);
+          c.setPosition(_roomPosition.inMilliseconds / 1000);
           c.setPaused(!playing());
           _sample();
           unawaited(
@@ -677,9 +738,9 @@ class CinemaSyncSession extends ChangeNotifier {
   bool get _localChange =>
       _lastPlaying != null && (_lastPlaying != playing() || _localSeek());
 
-  void _sample() {
+  void _sample({bool? expectedPlaying}) {
     _lastPosition = position();
-    _lastPlaying = playing();
+    _lastPlaying = expectedPlaying ?? playing();
     _lastSample = DateTime.now();
   }
 
@@ -693,7 +754,7 @@ class CinemaSyncSession extends ChangeNotifier {
     if (duration() == Duration.zero) return;
     // Publish an observed local action before accepting an older heartbeat.
     // Otherwise a remote ping can undo a pause during the sampling interval.
-    if (!_awaitingPeerState && _localChange) {
+    if (!_bufferHeld && !_awaitingPeerState && _localChange) {
       _pendingRemote = null;
       unawaited(_tick());
       return;
@@ -703,9 +764,20 @@ class CinemaSyncSession extends ChangeNotifier {
     if (raw is! num || !raw.isFinite || raw < 0 || message['paused'] is! bool) {
       return;
     }
-    final target = Duration(milliseconds: (raw * 1000).round());
+    final target = Duration(
+      milliseconds: ((raw + localOffsetSeconds) * 1000).round().clamp(
+        0,
+        86400000,
+      ),
+    );
     if (target > duration() + const Duration(seconds: 5)) return;
-    final remotePlaying = message['paused'] != true;
+    var remotePlaying = message['paused'] != true;
+    if (_bufferHeld) {
+      final buffer = _peerBuffers[message['setBy']];
+      if (buffer != null) remotePlaying = buffer.intent;
+      _resumeAfterBuffer = remotePlaying;
+      remotePlaying = false;
+    }
     final drift = (target - position()).inMilliseconds.abs();
     if (drift <= 1500 &&
         playing() == remotePlaying &&
@@ -717,11 +789,13 @@ class CinemaSyncSession extends ChangeNotifier {
     final gen = _generation, media = _mediaGeneration;
     final token = _activeApply = ++_applySerial;
     unawaited(() async {
+      var applied = false;
       try {
         await applyRemote(
           drift > 1500 || message['doSeek'] == true ? target : position(),
           remotePlaying,
         );
+        applied = true;
         if (gen == _generation && media == _mediaGeneration) {
           _awaitingPeerState = false;
           _updateStatus();
@@ -732,7 +806,9 @@ class CinemaSyncSession extends ChangeNotifier {
           _notify();
         }
       } finally {
-        if (gen == _generation && media == _mediaGeneration) _sample();
+        if (gen == _generation && media == _mediaGeneration) {
+          _sample(expectedPlaying: applied ? remotePlaying : null);
+        }
         if (_activeApply == token) {
           _activeApply = null;
           _drainRemote();
@@ -741,11 +817,151 @@ class CinemaSyncSession extends ChangeNotifier {
     }());
   }
 
+  void _resetBuffer() {
+    _peerBuffers.clear();
+    _sentReady = null;
+    _sentIntent = null;
+    _sentBufferAt = null;
+    _bufferHeld = false;
+    _resumeAfterBuffer = false;
+  }
+
+  Future<void> _bufferTick(SyncplayClient client) async {
+    if (_coordinating) return;
+    if (_identity.isEmpty || !_chatAvailable || !_compatible) {
+      if (_bufferHeld) {
+        final resume = _resumeAfterBuffer;
+        _bufferHeld = false;
+        _resumeAfterBuffer = false;
+        if (resume && coordinatePlayback != null) {
+          await coordinatePlayback!(true);
+        }
+        _sample();
+        _updateStatus();
+      }
+      return;
+    }
+    final generation = _generation, mediaGeneration = _mediaGeneration;
+    final now = DateTime.now(), localReady = localBufferReady;
+    final intent = _bufferHeld ? _resumeAfterBuffer : playing();
+    if (localReady != _sentReady ||
+        intent != _sentIntent ||
+        _sentBufferAt == null ||
+        now.difference(_sentBufferAt!).inSeconds >= 5) {
+      _sentReady = localReady;
+      _sentIntent = intent;
+      _sentBufferAt = now;
+      await _sendEnvelope(client, {
+        'type': 'buffer',
+        'identity': _identity,
+        'ready': localReady,
+        'intent': intent,
+      });
+    }
+    if (generation != _generation ||
+        mediaGeneration != _mediaGeneration ||
+        !identical(client, _client)) {
+      return;
+    }
+    final peers = _members.entries
+        .where(
+          (m) =>
+              m.key != username &&
+              m.value.room == room &&
+              m.value.file == _identity,
+        )
+        .toList();
+    final participating = peers
+        .where(
+          (m) =>
+              _peerBuffers[m.key] != null &&
+              now.difference(_peerBuffers[m.key]!.at).inSeconds < 15,
+        )
+        .toList();
+    final shouldHold =
+        coordinateBuffering &&
+        participating.isNotEmpty &&
+        (!localReady || participating.any((m) => !_peerBuffers[m.key]!.ready));
+    if (shouldHold == _bufferHeld) {
+      if (shouldHold && playing()) {
+        _resumeAfterBuffer = true;
+        if (coordinatePlayback != null) {
+          await coordinatePlayback!(false);
+        } else {
+          await applyRemote(position(), false);
+        }
+        _sample();
+      }
+      return;
+    }
+    final gen = _generation, media = _mediaGeneration;
+    _coordinating = true;
+    try {
+      if (shouldHold) {
+        _resumeAfterBuffer =
+            playing() || participating.any((m) => _peerBuffers[m.key]!.intent);
+        _bufferHeld = true;
+        if (coordinatePlayback != null) {
+          await coordinatePlayback!(false);
+        } else {
+          await applyRemote(position(), false);
+        }
+      } else {
+        final resume = _resumeAfterBuffer;
+        _bufferHeld = false;
+        _resumeAfterBuffer = false;
+        if (resume) {
+          if (coordinatePlayback != null) {
+            await coordinatePlayback!(true);
+          } else {
+            await applyRemote(position(), true);
+          }
+        }
+      }
+      if (gen == _generation && media == _mediaGeneration) {
+        _sample();
+        _updateStatus();
+      }
+    } finally {
+      _coordinating = false;
+    }
+  }
+
+  Future<void> continueIndependently() async {
+    coordinateBuffering = false;
+    final client = _client;
+    if (client != null) await _bufferTick(client);
+    _updateStatus();
+  }
+
+  void keepPausedAfterBuffer() {
+    _resumeAfterBuffer = false;
+    _sentIntent = null;
+    _notify();
+  }
+
   Future<void> _tick() async {
+    if (_ticking) return;
+    _ticking = true;
+    try {
+      await _tickOnce();
+    } finally {
+      _ticking = false;
+    }
+  }
+
+  Future<void> _tickOnce() async {
     final c = _client;
     final gen = _generation;
+    if (c != null && c.isConnected) {
+      try {
+        await _bufferTick(c);
+      } catch (_) {}
+    }
     if (c == null ||
         !c.isConnected ||
+        _bufferHeld ||
+        _coordinating ||
         _activeApply != null ||
         _awaitingPeerState ||
         !_compatible) {
@@ -753,7 +969,7 @@ class CinemaSyncSession extends ChangeNotifier {
     }
     final seek = _localSeek();
     final changed = _lastPlaying != null && _lastPlaying != playing();
-    c.setPosition(position().inMilliseconds / 1000);
+    c.setPosition(_roomPosition.inMilliseconds / 1000);
     c.setPaused(!playing());
     _sample();
     if (seek || changed) {
@@ -777,7 +993,7 @@ class CinemaSyncSession extends ChangeNotifier {
       return;
     }
     _seeded = true;
-    c.setPosition(position().inMilliseconds / 1000);
+    c.setPosition(_roomPosition.inMilliseconds / 1000);
     c.setPaused(!playing());
     _sample();
     try {
@@ -805,6 +1021,7 @@ class CinemaSyncSession extends ChangeNotifier {
     _seeded = false;
     _members.clear();
     _peerMedia.clear();
+    _resetBuffer();
     _activityRequests.clear();
     _seenNotices.clear();
     _fragments.clear();

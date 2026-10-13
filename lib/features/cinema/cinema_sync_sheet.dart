@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:kazumi/services/player/syncplay_endpoint.dart';
 import 'cinema_watch_together.dart';
+import 'cinema_invitation.dart';
 
 Future<void> showCinemaSyncSheet(
   BuildContext context, {
@@ -109,6 +110,22 @@ class _SyncDialogState extends State<_SyncDialog> {
                     icon: const Icon(Icons.copy, size: 17),
                     label: const Text('复制房间信息'),
                   ),
+                  TextButton.icon(
+                    onPressed: () => showCinemaInvitation(
+                      context,
+                      CinemaInvitation(
+                        media: s.localMedia,
+                        positionSeconds: together.localPosition.inSeconds.clamp(
+                          0,
+                          86400,
+                        ),
+                        endpoint: together.endpoint,
+                        room: together.roomName,
+                      ),
+                    ),
+                    icon: const Icon(Icons.qr_code),
+                    label: const Text('邀请链接与二维码'),
+                  ),
                   const SizedBox(height: 10),
                   if (together.peers.isEmpty)
                     Text(s.connected ? '等待对方加入此房间' : '正在等待连接恢复'),
@@ -120,7 +137,11 @@ class _SyncDialogState extends State<_SyncDialog> {
                       subtitle: Text(
                         peer.media == null
                             ? '未在播放，或对方版本暂不支持作品信息'
-                            : '${peer.media!.title} · ${peer.media!.episodeName}',
+                            : '${peer.media!.title} · ${peer.media!.episodeName}${s.peerBufferReady(peer.username) == null
+                                  ? ''
+                                  : s.peerBufferReady(peer.username) == true
+                                  ? ' · 缓冲就绪'
+                                  : ' · 正在缓冲'}',
                       ),
                       trailing: TextButton(
                         onPressed:
@@ -136,6 +157,53 @@ class _SyncDialogState extends State<_SyncDialog> {
                       ),
                     ),
                 ],
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: s.coordinateBuffering,
+                  title: const Text('等待双方缓冲就绪'),
+                  subtitle: const Text('对方需使用 NAKU 2.0；旧客户端继续使用进度同步'),
+                  onChanged: (value) => _perform(() async {
+                    await together.configureBufferCoordination(value);
+                    setState(() {});
+                  }),
+                ),
+                if (s.waitingForBuffer)
+                  TextButton(
+                    onPressed: () => _perform(s.continueIndependently),
+                    child: const Text('继续单独播放'),
+                  ),
+                Text(
+                  '本机版本时间偏移：${s.localOffsetSeconds >= 0 ? '+' : ''}${s.localOffsetSeconds.toStringAsFixed(1)} 秒',
+                ),
+                Row(
+                  children: [
+                    IconButton(
+                      tooltip: '本机进度提前 1 秒',
+                      onPressed: () => _perform(
+                        () => together.setLocalOffset(s.localOffsetSeconds - 1),
+                      ),
+                      icon: const Icon(Icons.remove),
+                    ),
+                    TextButton(
+                      onPressed: () =>
+                          _perform(() => together.setLocalOffset(0)),
+                      child: const Text('归零'),
+                    ),
+                    IconButton(
+                      tooltip: '本机进度推后 1 秒',
+                      onPressed: () => _perform(
+                        () => together.setLocalOffset(s.localOffsetSeconds + 1),
+                      ),
+                      icon: const Icon(Icons.add),
+                    ),
+                  ],
+                ),
+                TextButton.icon(
+                  onPressed: () => pasteCinemaInvitation(context),
+                  icon: const Icon(Icons.link),
+                  label: const Text('打开邀请链接'),
+                ),
                 if (s.status.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(top: 14),

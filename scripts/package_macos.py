@@ -48,6 +48,12 @@ def verify_app(app: Path, version: str) -> None:
         raise ValueError(
             f"App version {actual_version!r} does not match --version {version!r}"
         )
+    if int(version.split('.')[0]) >= 2 and not any(
+        'naku' in item.get('CFBundleURLSchemes', [])
+        for item in info.get('CFBundleURLTypes', [])
+        if isinstance(item, dict)
+    ):
+        raise ValueError('NAKU 2.0 invitation URL scheme is missing')
     executable = info.get("CFBundleExecutable")
     if not isinstance(executable, str) or Path(executable).name != executable:
         raise ValueError("Invalid or missing CFBundleExecutable")
@@ -101,7 +107,15 @@ def installation_text(version: str) -> str:
 成功同步后对方会收到提示；双方均需可播放的片源和网络。
 不传输影片、播放地址或屏幕。
 默认服务器为 syncplay.pl:8996，连接使用 TLS。只向同伴分享随机房间名。
-不同版本的片头或剪辑可能有时间差，可手动校准进度。
+不同版本的片头或剪辑可能有时间差，2.0 起可在一起看面板设置独立时间偏移。
+双方使用 2.0 时默认协调缓冲等待；手动暂停不会被缓冲恢复覆盖。
+2.0 邀请：详情页、播放器或一起看面板可复制链接 / 显示二维码；
+对方安装 2.0 后打开链接并确认，或在设置的“打开作品邀请”中粘贴。
+动漫与影视共用房间，动漫由 Bangumi 编号和对方动漫规则解析。
+
+2.0 设置 → 播放缓存与片库迁移：可批量导入 / 订阅片源，调整 HLS 预缓存及下一集预热，
+导出 / 合并完整片库。账号凭据默认排除；视频文件需另外复制下载目录。
+字幕、音轨、双字幕和延迟，以及截图，位于影视播放器更多菜单。
 
 离线：详情页点“下载”或播放器点“下载选集”，可多选或全选一季；
 从主侧栏“下载管理”播放。网络失败可在“网络设置”选择“视频直连”。

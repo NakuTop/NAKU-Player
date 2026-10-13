@@ -1,6 +1,14 @@
 import 'package:kazumi/services/video_source/video_source_format.dart';
 import 'package:kazumi/services/player/playback_quality.dart';
 import 'cinema_quality_sheet.dart';
+import 'cinema_tracks_sheet.dart';
+import 'cinema_media_cache.dart';
+import 'cinema_media_transport.dart';
+import 'cinema_source_health.dart';
+import 'cinema_invitation.dart';
+import 'cinema_sync_session.dart';
+import 'package:dio/dio.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:kazumi/services/player/playback_lifecycle.dart';
 import 'dart:async';
 import 'dart:io';
@@ -189,6 +197,7 @@ class CinemaPlayerPage extends StatefulWidget {
     this.createPlayer,
     this.videoSurfaceBuilder,
     this.offlinePaths,
+    this.initialPositionSeconds,
   });
 
   final CinemaTitle title;
@@ -199,6 +208,7 @@ class CinemaPlayerPage extends StatefulWidget {
   final CinemaStore store;
   final int routeIndex;
   final int episodeIndex;
+  final int? initialPositionSeconds;
   final List<CinemaTitle> variants;
   final CinemaRepository? repository;
   final CinemaWatchTogether? watchTogether;
@@ -227,6 +237,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   static const _copper = CinemaTheme.copper;
 
   final _resolver = WebViewVideoSourceService();
+  final _health = CinemaSourceHealth.instance;
+  final _cache = CinemaMediaCache.instance;
+  final Map<String, CinemaMediaProbeResult> _probeResults = {};
+  final Set<String> _cacheBypass = {};
+  final List<CancelToken> _probeTokens = [];
+  bool _probingRoutes = false, _reverseEpisodes = false;
+  Timer? _warmTimer;
+
   late CinemaTitle _title = widget.title;
   late CinemaSource _source = widget.source;
   late final CinemaPlaybackCatalogue _catalogue = CinemaPlaybackCatalogue(
@@ -366,12 +384,16 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     position: () => _playback?.position ?? Duration.zero,
     duration: () => _playback?.duration ?? Duration.zero,
     playing: () => _playback?.player.state.playing ?? false,
+    buffering: () => _loading || (_playback?.player.state.buffering ?? false),
+    ready: () => _playback?.ready ?? false,
     playbackRate: () => _rate,
     applyRemote: (position, playing) async {
       final playback = _playback;
       if (playback == null || !playback.ready) return;
       playback.watchdog.reset();
-      await playback.player.seek(position);
+      if ((playback.position - position).inMilliseconds.abs() > 1500) {
+        await playback.player.seek(position);
+      }
       if (!identical(playback, _playback)) return;
       if (playing && !_backgroundPaused) {
         await playback.player.play();
@@ -386,7 +408,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     await for (final variants in discoverCinemaWorkSources(
       anchor: widget.title,
       known: widget.variants,
-      sources: widget.store.enabledSources,
+      sources: _health.available(widget.store.enabledSources),
       repository: widget.repository ?? CinemaRepository(),
       isCurrent: () => mounted && !_closing,
     )) {
@@ -514,6 +536,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _volume = _preferences.initialVolume;
     _audibleVolume = _preferences.volume > 0 ? _preferences.volume : 100;
     _superResolution = _preferences.superResolution;
+    _reverseEpisodes = widget.store.extras['reverseEpisodes'] == true;
+    final cachePrefs = widget.store.extras['mediaCache'];
+    if (cachePrefs is Map) {
+      unawaited(_cache.configure(CinemaCachePreferences.parse(cachePrefs)));
+    }
+
     DesktopExitTasks.instance.register(this, _saveBeforeApplicationExit);
     _bindTogether();
     unawaited(_together.initialize());
@@ -539,7 +567,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       unawaited(_persistProgress());
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_playEpisode(_routeIndex, _episodeIndex));
+      if (mounted) {
+        unawaited(
+          _playEpisode(
+            _routeIndex,
+            _episodeIndex,
+            resumeAt: widget.initialPositionSeconds,
+          ),
+        );
+      }
     });
   }
 
@@ -589,6 +625,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final offset =
         resumeAt ??
         _positionForEpisode(routeIndex, episodeIndex, title: selectedTitle);
+    final watch = Stopwatch()..start();
+    _warmTimer?.cancel();
+    for (final token in _probeTokens) {
+      token.cancel('播放选择已变化');
+    }
+    _probeTokens.clear();
     final old = _playback;
     final generation = ++_generation;
     unawaited(_together.clearPlaybackMedia(_syncOwner));
@@ -630,6 +672,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _failoverAnchor = selection;
     }
     _attempts.claim(selection);
+    unawaited(_together.prepareMedia(_syncOwner, selectedTitle, episode));
     // Retain the intended position even if this route fails before becoming
     // ready. A subsequent route change can still continue the same episode.
     _lastPlaybackProgress = (
@@ -683,6 +726,32 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       );
       _playback = candidate;
       candidate.mediaUrl = mediaUrl;
+      candidate.mediaHeaders = mediaHeaders;
+      candidate.firstFrameWatch = watch;
+      if (localFile == null &&
+          !_cacheBypass.contains(selection.key) &&
+          widget.createPlayer == null) {
+        try {
+          final cached = await _cache.open(
+            mediaUrl,
+            mediaHeaders,
+            hls: mediaFormat == VideoSourceFormat.hls,
+          );
+          if (!_isCurrent(generation)) {
+            await cached?.session.close();
+            return;
+          }
+          if (cached != null) {
+            candidate.cacheSession = cached.session;
+            mediaUrl = cached.url;
+            mediaHeaders = const {};
+            mediaFormat = VideoSourceFormat.hls;
+          }
+        } catch (_) {
+          /* Original URL remains usable if cache setup fails. */
+        }
+      }
+
       candidate.logStage('player-created');
       _listenTo(candidate, generation);
       setState(
@@ -721,6 +790,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           _playbackNotice = '部分画质增强无法应用，已保留原始播放';
         }
         if (!_isCurrent(generation)) return;
+        await applyCinemaTrackPreferences(candidate.player, widget.store);
         candidate.logStage('native-config-ready');
       }
       candidate.logStage('open-start');
@@ -785,6 +855,21 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           setState(() => _playbackNotice = null);
         }
         playback.position = position;
+        playback.cacheSession?.update(
+          position,
+          buffering: playback.player.state.buffering,
+        );
+        if (!playback.warmedNext &&
+            playback.ready &&
+            position.inSeconds > 15 &&
+            playback.player.state.buffer.inSeconds - position.inSeconds >= 20) {
+          playback.warmedNext = true;
+          unawaited(_warmNext(playback, generation));
+        }
+      }),
+      playback.player.stream.buffering.listen((value) {
+        if (!current()) return;
+        playback.cacheSession?.update(playback.position, buffering: value);
       }),
       playback.player.stream.playing.listen((_) {
         if (current()) playback.watchdog.reset();
@@ -857,6 +942,21 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return;
     }
     playback.ready = true;
+    _health.observe(
+      _source,
+      ok: true,
+      media: true,
+      firstFrameMs: playback.firstFrameWatch?.elapsedMilliseconds,
+    );
+    _warmTimer = Timer(const Duration(seconds: 12), () {
+      if (_isCurrent(generation) && !playback.player.state.buffering) {
+        unawaited(_probeCurrent(playback, generation));
+        if (!playback.warmedNext) {
+          playback.warmedNext = true;
+          unawaited(_warmNext(playback, generation));
+        }
+      }
+    });
     if (_episode != null) {
       unawaited(_together.updateMedia(_syncOwner, _title, _episode!));
     }
@@ -884,6 +984,21 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   void _fail(int generation, String message) {
     if (!_isCurrent(generation)) return;
+    final selection = _selection;
+    if (_playback?.cacheSession != null &&
+        selection != null &&
+        _cacheBypass.add(selection.key)) {
+      unawaited(
+        _playEpisode(
+          _routeIndex,
+          _episodeIndex,
+          resumeAt: _positionForEpisode(_routeIndex, _episodeIndex),
+          automatic: true,
+        ),
+      );
+      return;
+    }
+    _health.observe(_source, ok: false, media: true, reason: '视频未能继续');
     unawaited(_advanceAfterFailure(message));
   }
 
@@ -922,7 +1037,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     while (_isCurrent(generation) && anchor != null && !_attempts.exhausted) {
       final next = _catalogue
           .matching(anchor)
-          .where((candidate) => !_attempts.contains(candidate))
+          .where(
+            (candidate) =>
+                !_attempts.contains(candidate) &&
+                !_health.cooling(candidate.source),
+          )
           .firstOrNull;
       if (next != null) {
         await _playEpisode(
@@ -1039,6 +1158,133 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           ? '此片源暂无线路，请选择其他片源。'
           : '无法确认这条线路的对应集数，请在播放列表中手动选择。';
     });
+  }
+
+  Future<void> _probeCurrent(_CinemaPlayback playback, int generation) async {
+    if (playback.mediaUrl == null ||
+        !playback.mediaUrl!.startsWith('http') ||
+        widget.offlinePaths != null) {
+      return;
+    }
+    final token = CancelToken();
+    _probeTokens.add(token);
+    final result = await CinemaMediaProbe().measure(
+      playback.mediaUrl!,
+      playback.mediaHeaders,
+      cancel: token,
+    );
+    _probeTokens.remove(token);
+    if (!_isCurrent(generation) || token.isCancelled) return;
+    final key = _selection?.key;
+    if (key != null) setState(() => _probeResults[key] = result);
+    _health.observe(
+      _source,
+      ok: result.ok,
+      media: true,
+      mbps: result.mbps,
+      latencyMs: result.firstByteMs,
+      reason: result.reason,
+    );
+  }
+
+  Future<void> _warmNext(_CinemaPlayback playback, int generation) async {
+    if (!_isCurrent(generation) ||
+        widget.offlinePaths != null ||
+        _route == null ||
+        playback.player.state.buffering ||
+        _episodeIndex + 1 >= _route!.episodes.length) {
+      return;
+    }
+    final episode = _route!.episodes[_episodeIndex + 1];
+    // Only already-resolved direct streams are warmed; a background resolver
+    // must not open webviews or execute the next episode's page during playback.
+    if (!cinemaUsesDirectMedia(_source, _route!, episode)) return;
+    final token = CancelToken();
+    _probeTokens.add(token);
+    await _cache.warmNext(episode.url, _source.headers, cancel: token);
+    _probeTokens.remove(token);
+  }
+
+  Future<void> _probeRoutes() async {
+    if (_probingRoutes || _selection == null) return;
+    setState(() => _probingRoutes = true);
+    final generation = _generation;
+    final candidates = _catalogue.matching(_selection!).take(12).toList();
+    var index = 0;
+    Future<void> worker() async {
+      while (_isCurrent(generation) && index < candidates.length) {
+        final candidate = candidates[index++];
+        if (!cinemaUsesDirectMedia(
+          candidate.source,
+          candidate.route,
+          candidate.episode,
+        )) {
+          continue;
+        }
+        final token = CancelToken();
+        _probeTokens.add(token);
+        final result = await CinemaMediaProbe().measure(
+          candidate.episode.url,
+          candidate.source.headers,
+          cancel: token,
+        );
+        _probeTokens.remove(token);
+        if (!_isCurrent(generation) || token.isCancelled) return;
+        setState(() => _probeResults[candidate.key] = result);
+        _health.observe(
+          candidate.source,
+          ok: result.ok,
+          media: true,
+          mbps: result.mbps,
+          latencyMs: result.firstByteMs,
+          reason: result.reason,
+        );
+      }
+    }
+
+    try {
+      await Future.wait([worker(), worker()]);
+    } finally {
+      if (mounted && !_closing) setState(() => _probingRoutes = false);
+    }
+  }
+
+  Future<void> _screenshot() async {
+    final playback = _playback;
+    if (playback == null || !playback.ready) return;
+    try {
+      final bytes = await playback.player.screenshot(format: 'image/png');
+      if (bytes == null || !mounted) return;
+      final name = _title.title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+      final file = await FilePicker.platform.saveFile(
+        dialogTitle: '保存播放截图',
+        fileName: '$name-${playback.position.inSeconds}s.png',
+        type: FileType.custom,
+        allowedExtensions: const ['png'],
+        bytes: bytes,
+      );
+      if (file != null && mounted) {
+        KazumiDialog.showToast(context: context, message: '截图已保存');
+      }
+    } catch (_) {
+      if (mounted) {
+        KazumiDialog.showToast(context: context, message: '当前视频暂时无法截图');
+      }
+    }
+  }
+
+  Future<void> _invite() async {
+    final episode = _episode;
+    if (episode == null) return;
+    await showCinemaInvitation(
+      context,
+      CinemaInvitation(
+        media: CinemaSyncMedia.fromSelection(_title, episode),
+        positionSeconds: _playback?.position.inSeconds ?? 0,
+        endpoint: _together.isPaired ? _together.endpoint : '',
+        room: _together.isPaired ? _together.roomName : '',
+      ),
+    );
   }
 
   Future<void> _downloadCurrent() async {
@@ -1167,6 +1413,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     'pip': _togglePip,
     'together': () => showCinemaSyncSheet(context, coordinator: _together),
     'favorite': _toggleFavorite,
+    'screenshot': _screenshot,
   };
 
   Future<void>? _leaving;
@@ -1266,6 +1513,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     windowManager.removeListener(this);
     _panelRevision.dispose();
     _playerFocus.dispose();
+    _warmTimer?.cancel();
+    for (final token in _probeTokens) {
+      token.cancel('播放器已关闭');
+    }
+    _probeTokens.clear();
     _volumeSaveTimer?.cancel();
     unawaited(_saveVolume());
     unawaited(_together.detachPlayback(_syncOwner));
@@ -1609,6 +1861,21 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   icon: const Icon(Icons.more_vert),
                   onSelected: (action) {
                     switch (action) {
+                      case 'tracks':
+                        if (playback != null) {
+                          showCinemaTracksSheet(
+                            context,
+                            playback.player,
+                            widget.store,
+                          );
+                        }
+                      case 'screenshot':
+                        _screenshot();
+                      case 'invite':
+                        _invite();
+                      case 'probe':
+                        _showEpisodes();
+                        _probeRoutes();
                       case 'download':
                         _downloadCurrent();
                       case 'pip':
@@ -1634,6 +1901,20 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                       const PopupMenuItem(
                         value: 'download',
                         child: Text('下载选集'),
+                      ),
+                    const PopupMenuItem(value: 'tracks', child: Text('字幕与音轨')),
+                    const PopupMenuItem(
+                      value: 'screenshot',
+                      child: Text('保存截图'),
+                    ),
+                    const PopupMenuItem(
+                      value: 'invite',
+                      child: Text('邀请链接与二维码'),
+                    ),
+                    if (widget.offlinePaths == null)
+                      const PopupMenuItem(
+                        value: 'probe',
+                        child: Text('播放线路测速'),
                       ),
                     const PopupMenuItem(value: 'pip', child: Text('画中画')),
                     if (!wide)
@@ -1672,6 +1953,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               icon: const Icon(Icons.download_rounded),
             ),
           if (wide) const MaterialDesktopVolumeButton(),
+          if (wide && playback != null)
+            IconButton(
+              tooltip: '字幕与音轨',
+              icon: const Icon(Icons.subtitles_outlined),
+              onPressed: () =>
+                  showCinemaTracksSheet(context, playback.player, widget.store),
+            ),
           if (!narrow) const MaterialDesktopPositionIndicator(),
           const Spacer(),
           if (!_pip) ...[
@@ -2003,11 +2291,25 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     );
   }
 
+  String _routeProbeLabel(CinemaTitle title, int route) {
+    final selection = _selection;
+    if (selection == null) return '';
+    final index = cinemaMatchPlaybackEpisode(
+      current: selection,
+      target: title,
+      routeIndex: route,
+    );
+    if (index == null) return '';
+    final result = _probeResults['${title.key}::$route::$index'];
+    return result == null ? '' : '\n${result.label}';
+  }
+
   bool _isSelectedEpisode(int index) =>
       !_requiresEpisodeSelection && index == _episodeIndex;
 
   Widget _episodePanel({bool embedded = false}) {
     final route = _route;
+    final currentEpisodeKey = GlobalKey();
     final content = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
@@ -2019,6 +2321,32 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
             ),
             const Spacer(),
+            IconButton(
+              tooltip: '定位当前集',
+              icon: const Icon(Icons.my_location, size: 19),
+              onPressed: () {
+                final current = currentEpisodeKey.currentContext;
+                if (current != null) {
+                  Scrollable.ensureVisible(
+                    current,
+                    duration: _preferences.disableAnimations
+                        ? Duration.zero
+                        : const Duration(milliseconds: 180),
+                    alignment: .35,
+                  );
+                }
+              },
+            ),
+            IconButton(
+              tooltip: _reverseEpisodes ? '选集正序' : '选集倒序',
+              icon: const Icon(Icons.swap_vert),
+              onPressed: () {
+                setState(() => _reverseEpisodes = !_reverseEpisodes);
+                unawaited(
+                  widget.store.setExtra('reverseEpisodes', _reverseEpisodes),
+                );
+              },
+            ),
             Text(
               '${route?.episodes.length ?? 0} 集',
               style: const TextStyle(color: _muted, fontSize: 12),
@@ -2026,7 +2354,22 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           ],
         ),
         const SizedBox(height: 20),
-        const Text('播放线路', style: TextStyle(color: _muted, fontSize: 12)),
+        Row(
+          children: [
+            const Text('播放线路', style: TextStyle(color: _muted, fontSize: 12)),
+            const Spacer(),
+            if (widget.offlinePaths == null)
+              TextButton.icon(
+                onPressed: _probingRoutes ? null : _probeRoutes,
+                icon: const Icon(Icons.speed, size: 18),
+                label: Text(_probingRoutes ? '测速中…' : '实际视频测速'),
+              ),
+          ],
+        ),
+        const Text(
+          '测速采样真实视频，最多每线 2MB；不会只根据接口响应宣称高清。',
+          style: TextStyle(color: _muted, fontSize: 11),
+        ),
         const SizedBox(height: 10),
         for (final variant in _catalogue.variants) ...[
           if (_catalogue.loaded(variant) case final detail?)
@@ -2038,7 +2381,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   ChoiceChip(
                     key: ValueKey('playback-route:${detail.key}:$i'),
                     label: Text(
-                      '${_catalogue.sourceFor(detail).name} · ${detail.routes[i].name}',
+                      '${_catalogue.sourceFor(detail).name} · ${detail.routes[i].name}${_routeProbeLabel(detail, i)}',
                       style: const TextStyle(fontSize: 11),
                     ),
                     selected: _title.key == detail.key && _routeIndex == i,
@@ -2079,10 +2422,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             spacing: 8,
             runSpacing: 8,
             children: [
-              for (var index = 0; index < route.episodes.length; index++)
+              for (final index in List.generate(
+                route.episodes.length,
+                (i) => _reverseEpisodes ? route.episodes.length - 1 - i : i,
+              ))
                 SizedBox(
                   width: embedded ? 130 : 118,
                   child: OutlinedButton(
+                    key: _isSelectedEpisode(index) ? currentEpisodeKey : null,
                     onPressed: () => _playEpisode(_routeIndex, index),
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
@@ -2204,12 +2551,17 @@ class _CinemaPlayback {
   int height = 0;
   bool opened = false;
   String? mediaUrl;
+  Map<String, String> mediaHeaders = const {};
+  CinemaCacheSession? cacheSession;
+  Stopwatch? firstFrameWatch;
+  bool warmedNext = false;
   bool ready = false;
   bool completed = false;
   Future<void>? _disposal;
 
   Future<void> dispose() => _disposal ??= _dispose();
   Future<void> _dispose() async {
+    await cacheSession?.close();
     watchdogTimer?.cancel();
     fatalErrorTimer?.cancel();
     for (final subscription in subscriptions) {

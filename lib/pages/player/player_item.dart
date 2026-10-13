@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:kazumi/features/cinema/cinema_sync_sheet.dart';
 import 'package:kazumi/pages/download/download_episode_sheet.dart';
 import 'package:kazumi/bean/dialog/adaptive_bottom_sheet.dart';
 import 'package:kazumi/services/player/playback_lifecycle.dart';
@@ -12,7 +13,6 @@ import 'package:kazumi/pages/player/player_gesture_detector.dart';
 import 'package:kazumi/pages/player/player_screenshot_feedback_overlay.dart';
 import 'package:kazumi/pages/player/player_screenshot_sheet.dart';
 import 'package:kazumi/pages/player/controller/player_screenshot_controller.dart';
-import 'package:kazumi/pages/player/syncplay_sheet.dart';
 import 'package:kazumi/utils/constants.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/player/pip_utils.dart';
@@ -1362,11 +1362,7 @@ class _PlayerItemState extends State<PlayerItem>
   }
 
   void showSyncPlayPanel() {
-    showSyncPlaySheet(
-      context,
-      playerController: playerController,
-      changeEpisode: widget.changeEpisode,
-    );
+    showCinemaSyncSheet(context);
   }
 
   @override

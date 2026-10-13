@@ -42,6 +42,16 @@ class SettingKey<T> {
 // Add new settings here. SettingsKeys is the public typed registry used by
 // callers; new keys can use literal string names directly.
 class SettingsKeys {
+  static const syncBufferCoordination = SettingKey<bool>(
+    'nakuSyncBufferCoordination',
+    true,
+    group: SettingGroup.sync,
+  );
+  static const syncLocalOffsetSeconds = SettingKey<double>(
+    'nakuSyncLocalOffsetSeconds',
+    0,
+    group: SettingGroup.sync,
+  );
   static const hAenable = SettingKey<bool>(
     _SettingBoxKey.hAenable,
     true,
@@ -590,6 +600,8 @@ class SettingsKeys {
   );
 
   static final List<SettingKey<Object?>> all = [
+    syncBufferCoordination,
+    syncLocalOffsetSeconds,
     fineVideoScaling,
     smoothVideoMotion,
     highestVideoBitrate,

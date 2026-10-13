@@ -12,7 +12,9 @@ Future<void> configureNativePlayback(
 }) async {
   final config = NetworkConfig.forMedia();
   final properties = <String, String>{
-    'http-proxy': config.proxyForUri(media)?.toString() ?? '',
+    'http-proxy': const ['localhost', '127.0.0.1', '::1'].contains(media.host)
+        ? ''
+        : config.proxyForUri(media)?.toString() ?? '',
     'network-timeout': '10',
     'tls-verify': 'yes',
     if (Platform.isMacOS) 'tls-ca-file': '/etc/ssl/cert.pem',

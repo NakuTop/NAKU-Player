@@ -15,9 +15,11 @@ class CinemaSettingsPage extends StatelessWidget {
     required this.enabledSourceCount,
     required this.sourceCount,
     this.onOpenRoute,
+    this.onTools,
   });
 
   final VoidCallback onSources;
+  final VoidCallback? onTools;
   final VoidCallback onAppearance;
   final VoidCallback onUpdates;
   final int? enabledSourceCount;
@@ -66,6 +68,14 @@ class CinemaSettingsPage extends StatelessWidget {
                               : '已启用 $enabledSourceCount / $sourceCount 个片源',
                           onTap: onSources,
                         ),
+                        if (onTools != null)
+                          _entry(
+                            key: 'settings-tools-v2',
+                            icon: Icons.tune_rounded,
+                            title: '播放缓存与片库迁移',
+                            subtitle: '影视订阅、批量导入、缓存与完整片库备份',
+                            onTap: onTools!,
+                          ),
                         const Divider(height: 1, indent: 68, endIndent: 20),
                         _entry(
                           key: 'settings-appearance',

@@ -156,6 +156,7 @@ class CinemaPlayerPreferences {
     'speed3',
     'speedup',
     'speeddown',
+    'screenshot',
   };
 
   final double rate, volume, longPressRate;

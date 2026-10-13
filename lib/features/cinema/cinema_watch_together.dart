@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:kazumi/services/player/syncplay_client.dart';
 import 'package:kazumi/services/player/syncplay_endpoint.dart';
 import 'cinema_models.dart';
+import 'package:kazumi/services/storage/storage.dart';
 import 'cinema_sync_session.dart';
 
 class _Pairing {
@@ -44,13 +45,15 @@ class _Playback {
     required this.position,
     required this.duration,
     required this.playing,
+    required this.buffering,
+    required this.ready,
     required this.playbackRate,
     required this.applyRemote,
     required this.closePlayback,
   });
   final Object owner;
   final Duration Function() position, duration;
-  final bool Function() playing;
+  final bool Function() playing, buffering, ready;
   final double Function() playbackRate;
   final Future<void> Function(Duration, bool) applyRemote;
   final Future<void> Function() closePlayback;
@@ -86,6 +89,14 @@ class CinemaWatchTogether extends ChangeNotifier {
       duration: () => _playback?.duration() ?? Duration.zero,
       playing: () => _playback?.playing() ?? false,
       playbackRate: () => _playback?.playbackRate() ?? 1,
+      buffering: () => _playback?.buffering() ?? false,
+      ready: () => _playback?.ready() ?? false,
+      coordinatePlayback: (playing) async {
+        final player = _playback;
+        if (player != null) {
+          await player.applyRemote(player.position(), playing);
+        }
+      },
       applyRemote: (position, playing) async {
         final player = _playback;
         if (player != null) await player.applyRemote(position, playing);
@@ -127,6 +138,7 @@ class CinemaWatchTogether extends ChangeNotifier {
   String get endpoint => _pairing?.endpoint ?? session.endpoint;
   String get roomName => _pairing?.room ?? session.lastRoom;
   String get username => _pairing?.username ?? session.username;
+  Duration get localPosition => _playback?.position() ?? Duration.zero;
 
   void _notify() {
     if (!_closed) notifyListeners();
@@ -138,6 +150,14 @@ class CinemaWatchTogether extends ChangeNotifier {
 
   Future<void> initialize() => _initialization ??= _initialize();
   Future<void> _initialize() async {
+    try {
+      session.coordinateBuffering = GStorage.getSetting(
+        SettingsKeys.syncBufferCoordination,
+      );
+      session.localOffsetSeconds = GStorage.getSetting(
+        SettingsKeys.syncLocalOffsetSeconds,
+      ).clamp(-600, 600);
+    } catch (_) {}
     try {
       _file ??= File(
         '${(await getApplicationSupportDirectory()).path}/cinema/watch-together-v1.json',
@@ -291,11 +311,33 @@ class CinemaWatchTogether extends ChangeNotifier {
     await _save(null);
   }
 
+  Future<void> configureBufferCoordination(bool enabled) async {
+    session.coordinateBuffering = enabled;
+    await GStorage.putSetting(SettingsKeys.syncBufferCoordination, enabled);
+    _notify();
+  }
+
+  Future<void> setLocalOffset(double seconds) async {
+    if (!seconds.isFinite) return;
+    session.localOffsetSeconds = seconds.clamp(-600, 600);
+    await GStorage.putSetting(
+      SettingsKeys.syncLocalOffsetSeconds,
+      session.localOffsetSeconds,
+    );
+    _notify();
+  }
+
+  Future<void> closeCurrentPlayback() async {
+    await _playback?.closePlayback();
+  }
+
   void bindPlayback({
     required Object owner,
     required Duration Function() position,
     required Duration Function() duration,
     required bool Function() playing,
+    bool Function()? buffering,
+    bool Function()? ready,
     required double Function() playbackRate,
     required Future<void> Function(Duration, bool) applyRemote,
     required Future<void> Function() closePlayback,
@@ -305,6 +347,8 @@ class CinemaWatchTogether extends ChangeNotifier {
       position: position,
       duration: duration,
       playing: playing,
+      buffering: buffering ?? (() => false),
+      ready: ready ?? (() => true),
       playbackRate: playbackRate,
       applyRemote: applyRemote,
       closePlayback: closePlayback,
@@ -324,6 +368,21 @@ class CinemaWatchTogether extends ChangeNotifier {
     _canonical = null;
     if (_follow?.ready == true) _cancelFollow();
     await session.clearMedia();
+  }
+
+  Future<void> prepareMedia(
+    Object owner,
+    CinemaTitle title,
+    CinemaEpisode episode,
+  ) async {
+    if (_closed || !identical(_playback?.owner, owner)) return;
+    await session.updateMedia(
+      title,
+      episode,
+      canonical: _follow?.peer.media?.matches(title, episode) == true
+          ? _follow!.peer.media
+          : null,
+    );
   }
 
   Future<void> updateMedia(
