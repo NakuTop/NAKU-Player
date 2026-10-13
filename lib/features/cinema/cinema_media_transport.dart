@@ -155,6 +155,7 @@ class CinemaMediaProbe {
     Map<String, String> headers, {
     CancelToken? cancel,
     Duration timeout = const Duration(seconds: 8),
+    bool hls = false,
   }) async {
     final token = CancelToken(), timer = Stopwatch()..start();
     if (cancel?.isCancelled == true) token.cancel();
@@ -168,7 +169,7 @@ class CinemaMediaProbe {
       if (!['http', 'https'].contains(target.scheme)) {
         throw const FormatException('仅支持网络视频');
       }
-      if (target.path.toLowerCase().endsWith('.m3u8')) {
+      if (hls || target.path.toLowerCase().endsWith('.m3u8')) {
         for (var depth = 0; depth < 4; depth++) {
           final document = await transport.document(
             target,

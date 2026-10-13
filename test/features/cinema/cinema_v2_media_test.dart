@@ -19,6 +19,7 @@ void main() {
     '/vod.m3u8':
         '#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXT-X-KEY:METHOD=AES-128,URI="secret.key"\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:10,\nseg.ts\n#EXTINF:10,\nseg2.ts\n#EXT-X-ENDLIST\n',
     '/audio.m3u8': '#EXTM3U\n#EXTINF:10,\naudio.aac\n#EXT-X-ENDLIST\n',
+    '/gateway': '#EXTM3U\n#EXTINF:10,\nseg.ts\n#EXT-X-ENDLIST\n',
     '/live.m3u8': '#EXTM3U\n#EXTINF:10,\nseg.ts\n',
     '/cdn/vod.m3u8': '#EXTM3U\n#EXTINF:10,\nseg.ts\n#EXT-X-ENDLIST\n',
     '/key-url.m3u8':
@@ -156,6 +157,18 @@ void main() {
         )).ok,
         false,
       );
+    },
+  );
+  test(
+    'an HLS format hint measures actual video behind a suffix-free gateway',
+    () async {
+      final result = await CinemaMediaProbe(
+        transport: transport,
+      ).measure(url('/gateway'), headers, hls: true);
+      expect(result.ok, isTrue);
+      expect(result.mbps, greaterThan(0));
+      expect(hits['/gateway'], 1);
+      expect(hits['/seg.ts'], 1);
     },
   );
   test(

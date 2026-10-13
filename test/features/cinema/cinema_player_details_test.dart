@@ -229,6 +229,7 @@ void main() {
   CinemaPlayerPage player({
     ValueChanged<DoubanRecommendation>? onRecommendationSelected,
   }) => CinemaPlayerPage(
+    autoSelectBestRoute: false,
     title: _title,
     source: _source,
     store: store,

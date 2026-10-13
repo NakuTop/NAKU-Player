@@ -4,6 +4,7 @@ import 'cinema_quality_sheet.dart';
 import 'cinema_tracks_sheet.dart';
 import 'cinema_media_cache.dart';
 import 'cinema_media_transport.dart';
+import 'cinema_route_probe.dart';
 import 'cinema_source_health.dart';
 import 'cinema_invitation.dart';
 import 'cinema_sync_session.dart';
@@ -198,6 +199,8 @@ class CinemaPlayerPage extends StatefulWidget {
     this.videoSurfaceBuilder,
     this.offlinePaths,
     this.initialPositionSeconds,
+    this.mediaProbe,
+    this.autoSelectBestRoute,
   });
 
   final CinemaTitle title;
@@ -209,6 +212,10 @@ class CinemaPlayerPage extends StatefulWidget {
   final int routeIndex;
   final int episodeIndex;
   final int? initialPositionSeconds;
+  @visibleForTesting
+  final CinemaMediaProbe? mediaProbe;
+  @visibleForTesting
+  final bool? autoSelectBestRoute;
   final List<CinemaTitle> variants;
   final CinemaRepository? repository;
   final CinemaWatchTogether? watchTogether;
@@ -240,6 +247,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   final _health = CinemaSourceHealth.instance;
   final _cache = CinemaMediaCache.instance;
   final Map<String, CinemaMediaProbeResult> _probeResults = {};
+  late final _mediaProbe = widget.mediaProbe ?? CinemaMediaProbe();
+  CancelToken? _routeProbeToken;
+  CinemaPlaybackCandidate? _routeComparisonAnchor;
+  int _probeCompleted = 0, _probeTotal = 0;
+  bool _automaticProbePending = false, _autoBestRoute = true;
+  bool _probingAutomatic = false;
+  String? _probeStatus;
   final Set<String> _cacheBypass = {};
   final List<CancelToken> _probeTokens = [];
   bool _probingRoutes = false, _reverseEpisodes = false;
@@ -537,6 +551,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _audibleVolume = _preferences.volume > 0 ? _preferences.volume : 100;
     _superResolution = _preferences.superResolution;
     _reverseEpisodes = widget.store.extras['reverseEpisodes'] == true;
+    _autoBestRoute =
+        widget.autoSelectBestRoute ??
+        widget.store.extras['autoBestRoute'] != false;
+    _automaticProbePending = _autoBestRoute && widget.offlinePaths == null;
     final cachePrefs = widget.store.extras['mediaCache'];
     if (cachePrefs is Map) {
       unawaited(_cache.configure(CinemaCachePreferences.parse(cachePrefs)));
@@ -573,6 +591,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             _routeIndex,
             _episodeIndex,
             resumeAt: widget.initialPositionSeconds,
+            initial: true,
           ),
         );
       }
@@ -617,6 +636,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     CinemaTitle? title,
     CinemaSource? source,
     bool automatic = false,
+    bool initial = false,
+    bool? playWhenReady,
+    String? selectionNotice,
   }) async {
     final selectedTitle = title ?? _title;
     final selectedSource = source ?? _source;
@@ -626,6 +648,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         resumeAt ??
         _positionForEpisode(routeIndex, episodeIndex, title: selectedTitle);
     final watch = Stopwatch()..start();
+    if (!automatic && !initial) _automaticProbePending = false;
+    _cancelRouteProbe();
     _warmTimer?.cancel();
     for (final token in _probeTokens) {
       token.cancel('播放选择已变化');
@@ -651,9 +675,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _loading = true;
       _error = null;
       _playbackNotice = null;
-      _phase = automatic
-          ? '自动换源 · ${selectedSource.name} / ${route.name}'
-          : '正在连接片源';
+      _probeStatus = selectionNotice;
+      _phase =
+          selectionNotice ??
+          (automatic
+              ? '自动换源 · ${selectedSource.name} / ${route.name}'
+              : '正在连接片源');
     });
     if (route.episodes.isEmpty) {
       _fail(generation, '这条线路没有集数，请选择另一条线路。');
@@ -727,6 +754,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _playback = candidate;
       candidate.mediaUrl = mediaUrl;
       candidate.mediaHeaders = mediaHeaders;
+      candidate.mediaFormat = mediaFormat;
       candidate.firstFrameWatch = watch;
       if (localFile == null &&
           !_cacheBypass.contains(selection.key) &&
@@ -800,7 +828,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           start: Duration(seconds: offset),
           httpHeaders: mediaHeaders,
         ),
-        play: _preferences.autoPlay && !_backgroundPaused,
+        play: (playWhenReady ?? _preferences.autoPlay) && !_backgroundPaused,
       );
       if (!_isCurrent(generation)) return;
       candidate.logStage('open-return');
@@ -857,7 +885,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         playback.position = position;
         playback.cacheSession?.update(
           position,
-          buffering: playback.player.state.buffering,
+          buffering: playback.player.state.buffering || _probingRoutes,
         );
         if (!playback.warmedNext &&
             playback.ready &&
@@ -869,7 +897,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }),
       playback.player.stream.buffering.listen((value) {
         if (!current()) return;
-        playback.cacheSession?.update(playback.position, buffering: value);
+        playback.cacheSession?.update(
+          playback.position,
+          buffering: value || _probingRoutes,
+        );
       }),
       playback.player.stream.playing.listen((_) {
         if (current()) playback.watchdog.reset();
@@ -980,6 +1011,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }
     });
     setState(() => _loading = false);
+    if (_automaticProbePending) {
+      _automaticProbePending = false;
+      unawaited(_probeRoutes(automatic: true));
+    }
   }
 
   void _fail(int generation, String message) {
@@ -999,6 +1034,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return;
     }
     _health.observe(_source, ok: false, media: true, reason: '视频未能继续');
+    if (selection != null && _probeResults.containsKey(selection.key)) {
+      setState(
+        () => _probeResults[selection.key] = const CinemaMediaProbeResult(
+          ok: false,
+          elapsedMs: 0,
+          reason: '测速后播放失败',
+        ),
+      );
+    }
     unawaited(_advanceAfterFailure(message));
   }
 
@@ -1100,6 +1144,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         );
 
   Future<void> _loadAndSwitchVariant(CinemaTitle variant) async {
+    _automaticProbePending = false;
+    _cancelRouteProbe();
     final current = _selection;
     final position = _positionForEpisode(_routeIndex, _episodeIndex);
     final generation = ++_generation;
@@ -1144,6 +1190,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   void _selectForManual(CinemaTitle title, int routeIndex) {
+    _automaticProbePending = false;
+    _cancelRouteProbe();
     ++_generation;
     _releasePlayback();
     setState(() {
@@ -1161,17 +1209,19 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Future<void> _probeCurrent(_CinemaPlayback playback, int generation) async {
-    if (playback.mediaUrl == null ||
+    if (_probingRoutes ||
+        playback.mediaUrl == null ||
         !playback.mediaUrl!.startsWith('http') ||
         widget.offlinePaths != null) {
       return;
     }
     final token = CancelToken();
     _probeTokens.add(token);
-    final result = await CinemaMediaProbe().measure(
+    final result = await _mediaProbe.measure(
       playback.mediaUrl!,
       playback.mediaHeaders,
       cancel: token,
+      hls: playback.mediaFormat == VideoSourceFormat.hls,
     );
     _probeTokens.remove(token);
     if (!_isCurrent(generation) || token.isCancelled) return;
@@ -1188,7 +1238,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Future<void> _warmNext(_CinemaPlayback playback, int generation) async {
-    if (!_isCurrent(generation) ||
+    if (_probingRoutes ||
+        !_isCurrent(generation) ||
         widget.offlinePaths != null ||
         _route == null ||
         playback.player.state.buffering ||
@@ -1205,47 +1256,168 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _probeTokens.remove(token);
   }
 
-  Future<void> _probeRoutes() async {
+  void _cancelRouteProbe() {
+    _routeProbeToken?.cancel('播放选择已变化');
+    _routeProbeToken = null;
+    _probingRoutes = false;
+  }
+
+  CinemaRouteMeasurement? get _bestMeasuredRoute {
+    final current = _selection;
+    final anchor = _routeComparisonAnchor;
+    if (current == null ||
+        anchor == null ||
+        widget.offlinePaths != null ||
+        cinemaMatchPlaybackEpisode(
+              current: current,
+              target: anchor.title,
+              routeIndex: anchor.routeIndex,
+            ) !=
+            anchor.episodeIndex) {
+      return null;
+    }
+    return cinemaBestMeasuredRoute([
+      for (final candidate in [
+        current,
+        ..._catalogue.matching(current).where((c) => c.key != current.key),
+      ])
+        if (_probeResults[candidate.key] case final result?)
+          CinemaRouteMeasurement(candidate, result),
+    ]);
+  }
+
+  Future<void> _useBestRoute(
+    CinemaRouteMeasurement best, {
+    bool automatic = false,
+  }) async {
+    if (_closing || _selection?.key == best.candidate.key) return;
+    final position = _positionForEpisode(_routeIndex, _episodeIndex);
+    final play = _playback?.opened == true
+        ? (_together.session.waitingForBuffer
+              ? _together.session.intendedPlaying
+              : _playback!.player.state.playing)
+        : _preferences.autoPlay;
+    final candidate = best.candidate;
+    await _playEpisode(
+      candidate.routeIndex,
+      candidate.episodeIndex,
+      title: candidate.title,
+      source: candidate.source,
+      resumeAt: position,
+      playWhenReady: play,
+      selectionNotice: automatic ? '已自动选择本次最佳线路，保留播放进度' : '已使用本次推荐线路',
+    );
+  }
+
+  Future<void> _probeRoutes({bool automatic = false}) async {
     if (_probingRoutes || _selection == null) return;
-    setState(() => _probingRoutes = true);
     final generation = _generation;
-    final candidates = _catalogue.matching(_selection!).take(12).toList();
-    var index = 0;
-    Future<void> worker() async {
-      while (_isCurrent(generation) && index < candidates.length) {
-        final candidate = candidates[index++];
-        if (!cinemaUsesDirectMedia(
-          candidate.source,
-          candidate.route,
-          candidate.episode,
-        )) {
-          continue;
-        }
-        final token = CancelToken();
-        _probeTokens.add(token);
-        final result = await CinemaMediaProbe().measure(
-          candidate.episode.url,
-          candidate.source.headers,
-          cancel: token,
-        );
-        _probeTokens.remove(token);
-        if (!_isCurrent(generation) || token.isCancelled) return;
-        setState(() => _probeResults[candidate.key] = result);
-        _health.observe(
-          candidate.source,
-          ok: result.ok,
-          media: true,
-          mbps: result.mbps,
-          latencyMs: result.firstByteMs,
-          reason: result.reason,
+    for (final background in _probeTokens) {
+      background.cancel('线路测速优先，暂停重复采样和下一集预热');
+    }
+    _probeTokens.clear();
+    final token = _routeProbeToken = CancelToken();
+    _probeTokens.add(token);
+    setState(() {
+      _probingRoutes = true;
+      _probingAutomatic = automatic;
+      _probeCompleted = _probeTotal = 0;
+      _probeStatus = automatic ? '正在自动比较播放线路' : '正在比较播放线路';
+      _routeComparisonAnchor = _selection;
+      _probeResults.clear();
+    });
+    _playback?.cacheSession?.update(_playback!.position, buffering: true);
+    try {
+      // Give in-flight details a brief chance to join without delaying playback
+      // for slow catalogue APIs. Web page resolvers are never navigated here.
+      if (automatic && _discovering != null) {
+        try {
+          await _discovering!.timeout(const Duration(milliseconds: 1200));
+        } catch (_) {}
+      }
+      if (!_isCurrent(generation) || token.isCancelled) return;
+      final current = _selection!;
+      final playback = _playback;
+      final resolved =
+          <String, ({String url, Map<String, String> headers, bool hls})>{};
+      if (playback?.mediaUrl != null) {
+        final path =
+            Uri.tryParse(playback!.mediaUrl!)?.path.toLowerCase() ?? '';
+        resolved[current.key] = (
+          url: playback.mediaUrl!,
+          headers: playback.mediaHeaders,
+          hls:
+              playback.mediaFormat == VideoSourceFormat.hls ||
+              !path.endsWith('.mp4') &&
+                  cinemaUsesDirectMedia(
+                    current.source,
+                    current.route,
+                    current.episode,
+                  ) &&
+                  RegExp(
+                    r'm3u8|\bhls\b',
+                    caseSensitive: false,
+                  ).hasMatch(current.route.name),
         );
       }
-    }
-
-    try {
-      await Future.wait([worker(), worker()]);
+      final targets = CinemaRouteProbeBatch.plan([
+        current,
+        ..._catalogue.matching(current).where((c) => c.key != current.key),
+      ], resolved: resolved);
+      setState(() => _probeTotal = targets.length);
+      final measurements = await CinemaRouteProbeBatch(_mediaProbe).run(
+        targets,
+        cancel: token,
+        budget: Duration(seconds: automatic ? 10 : 30),
+        onResult: (target, result) {
+          if (!_isCurrent(generation) || token.isCancelled) return;
+          setState(() {
+            _probeCompleted++;
+            for (final candidate in target.candidates) {
+              _probeResults[candidate.key] = result;
+            }
+          });
+          final seen = <String>{};
+          for (final candidate in target.candidates) {
+            if (seen.add(candidate.source.id)) {
+              _health.observe(
+                candidate.source,
+                ok: result.ok,
+                media: true,
+                mbps: result.mbps,
+                latencyMs: result.firstByteMs,
+                reason: result.reason,
+              );
+            }
+          }
+        },
+      );
+      if (!_isCurrent(generation) || token.isCancelled) return;
+      final best = cinemaBestMeasuredRoute(measurements);
+      setState(() {
+        _probingRoutes = false;
+        _probeStatus = best == null
+            ? '本次未测得可用线路，保留当前播放'
+            : automatic
+            ? '已使用本次最佳线路'
+            : '本次测速完成，可使用推荐线路';
+      });
+      if (automatic && best != null && _selection?.key != best.candidate.key) {
+        await _useBestRoute(best, automatic: true);
+      }
     } finally {
-      if (mounted && !_closing) setState(() => _probingRoutes = false);
+      _probeTokens.remove(token);
+      if (identical(_routeProbeToken, token)) {
+        _routeProbeToken = null;
+        if (mounted && !_closing) setState(() => _probingRoutes = false);
+      }
+      if (!_probingRoutes && mounted && !_closing) {
+        final playback = _playback;
+        playback?.cacheSession?.update(
+          playback.position,
+          buffering: playback.player.state.buffering,
+        );
+      }
     }
   }
 
@@ -1514,10 +1686,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _panelRevision.dispose();
     _playerFocus.dispose();
     _warmTimer?.cancel();
+    _cancelRouteProbe();
     for (final token in _probeTokens) {
       token.cancel('播放器已关闭');
     }
     _probeTokens.clear();
+    if (widget.mediaProbe == null) _mediaProbe.transport.dio.close(force: true);
     _volumeSaveTimer?.cancel();
     unawaited(_saveVolume());
     unawaited(_together.detachPlayback(_syncOwner));
@@ -1677,6 +1851,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         child: AspectRatio(aspectRatio: 16 / 9, child: _videoSurface()),
       ),
       const SizedBox(height: 20),
+      if (widget.offlinePaths == null &&
+          (_probingRoutes ||
+              _probeStatus != null ||
+              _bestMeasuredRoute != null)) ...[
+        _routeRecommendation(),
+        const SizedBox(height: 16),
+      ],
       Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2232,6 +2413,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   void _switchLoadedRoute(CinemaTitle title, int route) {
+    if (_closing) return;
+    _automaticProbePending = false;
+    if (_probingRoutes) {
+      _cancelRouteProbe();
+      setState(() => _probeStatus = '已手动选择，取消自动切换');
+    }
     if (_closing ||
         (title.key == _title.key &&
             route == _routeIndex &&
@@ -2291,7 +2478,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     );
   }
 
-  String _routeProbeLabel(CinemaTitle title, int route) {
+  String _routeProbeLabel(
+    CinemaTitle title,
+    int route, {
+    bool recommended = false,
+  }) {
     final selection = _selection;
     if (selection == null) return '';
     final index = cinemaMatchPlaybackEpisode(
@@ -2301,7 +2492,107 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     );
     if (index == null) return '';
     final result = _probeResults['${title.key}::$route::$index'];
-    return result == null ? '' : '\n${result.label}';
+    return result == null
+        ? ''
+        : '\n${recommended ? '本次最佳 · ' : ''}${result.label}';
+  }
+
+  Widget _routeRecommendation({bool compact = false}) {
+    final best = _bestMeasuredRoute;
+    return Container(
+      key: ValueKey(
+        compact ? 'route-recommendation-panel' : 'route-recommendation-main',
+      ),
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: _copper.withValues(alpha: .09),
+        border: Border.all(color: _copper.withValues(alpha: .55)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_probingRoutes)
+                const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: _copper,
+                  ),
+                )
+              else
+                Icon(
+                  best == null ? Icons.speed : Icons.workspace_premium,
+                  size: 21,
+                  color: _copper,
+                ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  _probingRoutes
+                      ? '正在寻找最优线路'
+                      : best != null
+                      ? '本次最佳线路'
+                      : '测速结果',
+                  style: const TextStyle(
+                    color: _copper,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              if (_probeTotal > 0)
+                Text(
+                  '$_probeCompleted/$_probeTotal',
+                  style: const TextStyle(color: _text, fontSize: 12),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (!_probingRoutes && best != null) ...[
+            Text(
+              '${best.candidate.source.name} · ${best.candidate.route.name}',
+              style: const TextStyle(color: _text, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '${best.result.mbps!.toStringAsFixed(1)} Mbps',
+              style: TextStyle(
+                color: _copper,
+                fontSize: compact ? 22 : 28,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              best.result.label,
+              style: const TextStyle(color: _text, fontSize: 12),
+            ),
+            const SizedBox(height: 6),
+          ],
+          Text(
+            _probeStatus ?? '按实测速度和码率余量推荐',
+            style: const TextStyle(color: _muted, fontSize: 12, height: 1.5),
+          ),
+          if (!_probingRoutes &&
+              best != null &&
+              _selection?.key != best.candidate.key)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: FilledButton.icon(
+                onPressed: () => _useBestRoute(best),
+                icon: const Icon(Icons.bolt, size: 18),
+                label: const Text('使用推荐线路'),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   bool _isSelectedEpisode(int index) =>
@@ -2309,6 +2600,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   Widget _episodePanel({bool embedded = false}) {
     final route = _route;
+    final best = _probingRoutes ? null : _bestMeasuredRoute;
     final currentEpisodeKey = GlobalKey();
     final content = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2362,12 +2654,43 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               TextButton.icon(
                 onPressed: _probingRoutes ? null : _probeRoutes,
                 icon: const Icon(Icons.speed, size: 18),
-                label: Text(_probingRoutes ? '测速中…' : '实际视频测速'),
+                label: Text(
+                  _probingRoutes ? '测速 $_probeCompleted/$_probeTotal' : '重新测速',
+                ),
               ),
           ],
         ),
+        if (widget.offlinePaths == null) ...[
+          SwitchListTile.adaptive(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('打开影片时自动选线', style: TextStyle(fontSize: 12)),
+            subtitle: const Text(
+              '保留播放进度；手动选择会取消自动切换',
+              style: TextStyle(fontSize: 11),
+            ),
+            value: _autoBestRoute,
+            onChanged: (value) {
+              setState(() {
+                _autoBestRoute = value;
+                _automaticProbePending = false;
+                if (!value && _probingAutomatic) {
+                  _cancelRouteProbe();
+                  _probeStatus = '已关闭自动选线，保留当前线路';
+                }
+              });
+              unawaited(widget.store.setExtra('autoBestRoute', value));
+              if (value && _playback?.ready == true) {
+                unawaited(_probeRoutes(automatic: true));
+              }
+            },
+          ),
+          if (_probingRoutes || _probeStatus != null || best != null) ...[
+            _routeRecommendation(compact: true),
+            const SizedBox(height: 12),
+          ],
+        ],
         const Text(
-          '测速采样真实视频，最多每线 2MB；不会只根据接口响应宣称高清。',
+          '仅比较同一作品和集数；推荐基于本次实际视频读取，未解析的网页线路需先播放。',
           style: TextStyle(color: _muted, fontSize: 11),
         ),
         const SizedBox(height: 10),
@@ -2381,10 +2704,24 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   ChoiceChip(
                     key: ValueKey('playback-route:${detail.key}:$i'),
                     label: Text(
-                      '${_catalogue.sourceFor(detail).name} · ${detail.routes[i].name}${_routeProbeLabel(detail, i)}',
+                      '${_catalogue.sourceFor(detail).name} · ${detail.routes[i].name}${_routeProbeLabel(detail, i, recommended: best?.candidate.title.key == detail.key && best?.candidate.routeIndex == i)}',
                       style: const TextStyle(fontSize: 11),
                     ),
                     selected: _title.key == detail.key && _routeIndex == i,
+                    avatar:
+                        best?.candidate.title.key == detail.key &&
+                            best?.candidate.routeIndex == i
+                        ? const Icon(
+                            Icons.workspace_premium,
+                            color: _copper,
+                            size: 18,
+                          )
+                        : null,
+                    side:
+                        best?.candidate.title.key == detail.key &&
+                            best?.candidate.routeIndex == i
+                        ? const BorderSide(color: _copper, width: 1.5)
+                        : null,
                     onSelected: (_) => _switchLoadedRoute(detail, i),
                     selectedColor: _copper.withValues(alpha: .25),
                   ),
@@ -2552,6 +2889,7 @@ class _CinemaPlayback {
   bool opened = false;
   String? mediaUrl;
   Map<String, String> mediaHeaders = const {};
+  VideoSourceFormat mediaFormat = VideoSourceFormat.auto;
   CinemaCacheSession? cacheSession;
   Stopwatch? firstFrameWatch;
   bool warmedNext = false;

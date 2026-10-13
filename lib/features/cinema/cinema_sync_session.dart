@@ -222,6 +222,7 @@ class CinemaSyncSession extends ChangeNotifier {
   DateTime? _sentBufferAt;
   final Map<String, ({bool ready, bool intent, DateTime at})> _peerBuffers = {};
   bool get waitingForBuffer => _bufferHeld;
+  bool get intendedPlaying => _bufferHeld ? _resumeAfterBuffer : playing();
   bool get localBufferReady => ready() && !buffering();
   bool? peerBufferReady(String name) => _peerBuffers[name]?.ready;
   Duration get _roomPosition => Duration(

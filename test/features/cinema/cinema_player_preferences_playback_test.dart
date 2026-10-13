@@ -1,10 +1,14 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
+import 'package:kazumi/features/cinema/cinema_media_transport.dart';
+import 'package:dio/dio.dart';
 import 'package:kazumi/features/cinema/cinema_player_page.dart';
 import 'package:kazumi/features/cinema/cinema_player_preferences.dart';
 import 'package:kazumi/features/cinema/cinema_ratings.dart';
@@ -178,8 +182,50 @@ class _Ratings extends CinemaRatingsRepository {
   Future<CinemaRatings> loadQuickRatings(CinemaTitle title) async => result;
 }
 
+class _Probe extends CinemaMediaProbe {
+  _Probe() : super(transport: CinemaMediaTransport(dio: Dio()));
+  final requests = <String, Completer<CinemaMediaProbeResult>>{};
+  @override
+  Future<CinemaMediaProbeResult> measure(
+    String url,
+    Map<String, String> headers, {
+    CancelToken? cancel,
+    Duration timeout = const Duration(seconds: 8),
+    bool hls = false,
+  }) => requests.putIfAbsent(url, Completer<CinemaMediaProbeResult>.new).future;
+  void complete() {
+    for (final entry in requests.entries) {
+      if (!entry.value.isCompleted) {
+        entry.value.complete(
+          CinemaMediaProbeResult(
+            ok: true,
+            elapsedMs: 100,
+            firstByteMs: 20,
+            mbps: entry.key.contains('backup') ? 40 : 8,
+          ),
+        );
+      }
+    }
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async {
+    if (Platform.environment['NAKU_QA_SCREENSHOTS'] == null) return;
+    for (final family in ['Roboto', '.AppleSystemUIFont']) {
+      final font = FontLoader(family)
+        ..addFont(
+          File(
+            '/System/Library/Fonts/STHeiti Light.ttc',
+          ).readAsBytes().then(ByteData.sublistView),
+        );
+      await font.load();
+    }
+    final icons = FontLoader('MaterialIcons')
+      ..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'));
+    await icons.load();
+  });
   late Directory directory;
   late CinemaStore store;
   late CinemaWatchTogether together;
@@ -223,6 +269,9 @@ void main() {
     Size viewport = const Size(1200, 900),
     Map<String, String>? offlinePaths,
     bool renderToolbar = false,
+    bool autoBest = false,
+    CinemaMediaProbe? probe,
+    int? initialPosition,
   }) async {
     tester.view.physicalSize = viewport;
     tester.view.devicePixelRatio = 1;
@@ -244,6 +293,9 @@ void main() {
       MaterialApp(
         home: CinemaPlayerPage(
           title: _title,
+          autoSelectBestRoute: autoBest,
+          mediaProbe: probe,
+          initialPositionSeconds: initialPosition,
           offlinePaths: offlinePaths,
           source: _source,
           store: store,
@@ -294,7 +346,7 @@ void main() {
         () => Future<void>.delayed(const Duration(milliseconds: 50)),
       );
     }
-    if (stallFirst) {
+    if (stallFirst || probe != null) {
       await tester.pump();
     } else {
       await tester.pumpAndSettle();
@@ -309,6 +361,135 @@ void main() {
     await tester.pump();
     expect(tester.takeException(), isNull);
   }
+
+  Future<void> waitForProbe(WidgetTester tester, _Probe probe) async {
+    for (var i = 0; i < 30 && probe.requests.length < 2; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    expect(probe.requests.length, 2);
+    expect(
+      probe.requests.keys,
+      isNot(contains('https://fixture.invalid/extra.mp4')),
+    );
+  }
+
+  Future<void> snapshotRecommendation(WidgetTester tester, String name) async {
+    final output = Platform.environment['NAKU_QA_SCREENSHOTS'];
+    if (output == null) return;
+    await tester.runAsync(() async {
+      RenderObject? render = tester
+          .element(find.byKey(const ValueKey('route-recommendation-main')))
+          .findRenderObject();
+      RenderRepaintBoundary? boundary;
+      while (render != null) {
+        if (render is RenderRepaintBoundary) boundary = render;
+        render = render.parent;
+      }
+      final image = await boundary!.toImage();
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      await Directory(output).create(recursive: true);
+      await File('$output/$name.png').writeAsBytes(bytes!.buffer.asUint8List());
+      image.dispose();
+    });
+  }
+
+  testWidgets(
+    'opening a title automatically chooses measured best line once, retaining progress and pause state',
+    (tester) async {
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {},
+        autoBest: true,
+        probe: probe,
+        initialPosition: 77,
+      );
+      await waitForProbe(tester, probe);
+      expect(find.text('正在寻找最优线路'), findsWidgets);
+      await backends.single.seek(const Duration(seconds: 88));
+      await backends.single.pause();
+      await tester.pump();
+      probe.complete();
+      await tester.pumpAndSettle();
+      expect(backends.length, 2);
+      expect(backends.last.opened!.uri, 'https://fixture.invalid/backup.mp4');
+      expect(backends.last.opened!.start, const Duration(seconds: 88));
+      expect(backends.last.state.playing, isFalse);
+      expect(find.text('本次最佳线路'), findsWidgets);
+      expect(find.textContaining('40.0Mbps'), findsWidgets);
+      expect(find.textContaining('已自动选择本次最佳线路'), findsWidgets);
+      await snapshotRecommendation(tester, 'recommended-route-wide');
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'manual episode selection cancels automatic recommendation without reopening old episode',
+    (tester) async {
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(tester, {}, autoBest: true, probe: probe);
+      await waitForProbe(tester, probe);
+      final episode = find.widgetWithText(OutlinedButton, '第2集');
+      await tester.ensureVisible(episode);
+      await tester.tap(episode);
+      await tester.pump();
+      probe.complete();
+      await tester.pumpAndSettle();
+      expect(backends.last.opened!.uri, 'https://fixture.invalid/2.mp4');
+      expect(
+        backends.where((b) => b.opened?.uri.contains('backup') ?? false),
+        isEmpty,
+      );
+      expect(find.text('本次最佳线路'), findsNothing);
+      await unmount(tester);
+    },
+  );
+  testWidgets(
+    'explicitly keeping the current route cancels the pending automatic switch',
+    (tester) async {
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(tester, {}, autoBest: true, probe: probe);
+      await waitForProbe(tester, probe);
+      final route = find.byKey(ValueKey('playback-route:${_title.key}:0'));
+      await tester.ensureVisible(route);
+      await tester.tap(route);
+      await tester.pump();
+      probe.complete();
+      await tester.pumpAndSettle();
+      expect(backends.length, 1);
+      expect(backends.single.opened!.uri, 'https://fixture.invalid/1.mp4');
+      expect(find.text('已手动选择，取消自动切换'), findsWidgets);
+      await unmount(tester);
+    },
+  );
+  testWidgets('recommended route remains readable in a narrow window', (
+    tester,
+  ) async {
+    final probe = _Probe();
+    addTearDown(() => probe.transport.dio.close(force: true));
+    await mount(
+      tester,
+      {},
+      autoBest: true,
+      probe: probe,
+      viewport: const Size(720, 900),
+    );
+    await waitForProbe(tester, probe);
+    probe.complete();
+    await tester.pumpAndSettle();
+    final recommendation = find.byKey(
+      const ValueKey('route-recommendation-main'),
+    );
+    await tester.ensureVisible(recommendation);
+    expect(find.text('本次最佳线路'), findsWidgets);
+    expect(find.text('40.0 Mbps'), findsWidgets);
+    expect(tester.takeException(), isNull);
+    await snapshotRecommendation(tester, 'recommended-route-narrow');
+    await unmount(tester);
+  });
 
   testWidgets('in-player PiP preserves playback and restores details', (
     tester,
