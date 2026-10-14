@@ -6,17 +6,17 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <link>https://github.com/NakuTop/NAKU-Player</link>
     <description>NAKU播放器 macOS 更新</description>
     <item>
-      <title>NAKU播放器 2.0.1</title>
-      <pubDate>Tue, 13 Oct 2026 07:18:14 +0000</pubDate>
-      <sparkle:version>23</sparkle:version>
-      <sparkle:shortVersionString>2.0.1</sparkle:shortVersionString>
+      <title>NAKU播放器 2.0.2</title>
+      <pubDate>Wed, 14 Oct 2026 02:46:54 +0000</pubDate>
+      <sparkle:version>24</sparkle:version>
+      <sparkle:shortVersionString>2.0.2</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/NakuTop/NAKU-Player/releases/tag/v2.0.1</sparkle:releaseNotesLink>
-      <description><![CDATA[<p>打开电影或剧集后默认后台测速，自动选择本次最佳线路，保留进度和暂停状态；每次进入仅自动选择一次，手动换线或选集取消自动切换。</p><p>播放器下方及线路面板新增橙色推荐卡片、大号 Mbps 数字、最佳徽章和完成数量。可关闭自动选线，或重新测速后点击使用推荐线路。</p><p>只比较同一作品与集数，失败样本不参与推荐。重复地址复用测速，限制流量、并发和时限，测速期间暂停额外预读；支持无后缀 HLS 和当前已解析网页线路，离线播放不测速。</p><p>保留 2.0 片源健康、缓存、备份迁移、字幕音轨及一起看。推荐是本次已测线路中的结果，不保证整部影片持续带宽。</p>]]></description>
-      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v2.0.1/NAKUPlayer-2.0.1-macOS-universal.zip" length="57541393" type="application/octet-stream" sparkle:edSignature="M5ekr5pRb3DUGnjoX5nzceaOuaLH4KtvEBqtTz9OtgM5iDXTwzW02sKBpuTbbmKDZMZqLy/xK9TeKe6SRurnBw=="></enclosure>
+      <sparkle:releaseNotesLink>https://github.com/NakuTop/NAKU-Player/releases/tag/v2.0.2</sparkle:releaseNotesLink>
+      <description><![CDATA[<p>新增全局 Command + B（⌘B）隐藏 / 显示原窗口，在其他应用中也可使用；快捷键冲突时提示，可重新注册或选择其他组合。</p><p>设置 → 窗口与快捷隐藏：隐藏时自动暂停默认关闭，电影、剧集和动漫共用；开启后防止隐藏期间迟到的自动播放和远程播放，显示窗口不主动恢复播放。全屏动画与普通失焦不触发。</p><p>整窗半透明默认关闭，开启后可调 30%–100% 不透明度，包含视频和按钮；保留原有磨砂背景设置，尊重 macOS 减少透明度，设置持久保存并纳入备份。</p><p>菜单与托盘补齐隐藏 / 显示，按键长按防重复触发。保留 2.0 线路测速、字幕音轨、下载与一起看功能。</p>]]></description>
+      <enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v2.0.2/NAKUPlayer-2.0.2-macOS-universal.zip" length="57591613" type="application/octet-stream" sparkle:edSignature="3A67fbl6bR7nzBE7kXv4SnqUgFTR0qTU43uWSO1VGl4GbiU5mPVZE9v1Um7EM2HgLrtdbirvA1Ul7kX2ysNQAQ=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: oHsdL3UHdRmwdxbk1IbXAul5eSrXtk07x9YqWJJV6jZuouPV1hH9CawrnLmbfolLV15ctKIwRQ4Rx4LcbzNGBg==
-length: 2106
+edSignature: AGtvk/PN/miM3hpDCeQLjh5AqjNjcDM6iPZiUREJgDwf71awXJx4wdsLqcS8a4E8dzyKgVq2pyAFlQD2F15bDA==
+length: 2093
 -->
