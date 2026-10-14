@@ -105,7 +105,29 @@ abstract class _PlayerDanmakuController with Store {
   final bool Function() isLocalPlayback;
   final DownloadController downloadController;
 
-  late canvas.DanmakuController canvasController;
+  canvas.DanmakuController? _canvasController;
+  bool? _canvasPlaying;
+
+  canvas.DanmakuController get canvasController =>
+      _canvasController ?? (throw StateError('弹幕画布尚未连接'));
+
+  set canvasController(canvas.DanmakuController value) {
+    _canvasController = value;
+    if (_canvasPlaying == false) value.pause();
+    if (_canvasPlaying == true) value.resume();
+  }
+
+  void pauseCanvas() {
+    _canvasPlaying = false;
+    _canvasController?.pause();
+  }
+
+  void resumeCanvas() {
+    _canvasPlaying = true;
+    _canvasController?.resume();
+  }
+
+  void clearCanvas() => _canvasController?.clear();
 
   final Map<int, List<DanmakuEntry>> danDanmakus = {};
   @observable
@@ -145,7 +167,7 @@ abstract class _PlayerDanmakuController with Store {
 
   void clearAndInvalidateScheduledDanmakus() {
     _scheduledDanmakuGeneration++;
-    canvasController.clear();
+    clearCanvas();
   }
 
   // Apply fetched data only after VideoPageController validates the session.
@@ -407,12 +429,12 @@ abstract class _PlayerDanmakuController with Store {
   }
 
   void updateDanmakuSpeed(double playerSpeed) {
+    final controller = _canvasController;
+    if (controller == null) return;
     final baseDuration = GStorage.getSetting(SettingsKeys.danmakuDuration);
     final followSpeed = GStorage.getSetting(SettingsKeys.danmakuFollowSpeed);
 
     final duration = followSpeed ? (baseDuration / playerSpeed) : baseDuration;
-    canvasController.updateOption(
-      canvasController.option.copyWith(duration: duration),
-    );
+    controller.updateOption(controller.option.copyWith(duration: duration));
   }
 }

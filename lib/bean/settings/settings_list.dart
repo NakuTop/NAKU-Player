@@ -281,14 +281,22 @@ class SettingsSliderTile extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          Slider(
-            value: value,
-            min: min,
-            max: max,
-            divisions: divisions,
-            showValueIndicator: ShowValueIndicator.never,
-            padding: EdgeInsets.zero,
-            onChanged: onChanged,
+          // Keep Slider's OverlayPortal in this subtree. In Flutter 3.47,
+          // a route-level portal can serialize orphan accessibility nodes
+          // when a settings sheet opens/closes (flutter/flutter#190357).
+          // This retains the native adjustable semantics and keyboard input.
+          Overlay.wrap(
+            alwaysSizeToContent: true,
+            clipBehavior: Clip.none,
+            child: Slider(
+              value: value,
+              min: min,
+              max: max,
+              divisions: divisions,
+              showValueIndicator: ShowValueIndicator.never,
+              padding: EdgeInsets.zero,
+              onChanged: onChanged,
+            ),
           ),
         ],
       ),

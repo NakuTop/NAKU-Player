@@ -259,6 +259,7 @@ class _AppWidgetState extends State<AppWidget>
         "AppLifecycleState.paused: Application moved to background",
       );
     } else if (state == AppLifecycleState.resumed) {
+      await DesktopWindowControls.instance.refreshVisibility();
       await MacOSSystemProxy.initialize();
       KazumiLogger().i(
         "AppLifecycleState.resumed: Application moved to foreground",

@@ -21,8 +21,20 @@ struct DesktopWindowCheck {
       try controls.configure(hotkeyEnabled: false, shortcut: "command-b", translucent: false, opacity: 0.8)
       print("PASS: default Command+B registered and released")
     } catch { print("NOTE: Command+B is currently occupied by another app: \(error.localizedDescription)") }
+    window.orderOut(nil)
+    precondition(!controls.hidden)
+    var cachedHidden = true
+    controls.onVisibilityChange = { cachedHidden = $0 }
+    controls.show()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.15))
+    precondition(window.isVisible && !cachedHidden)
+    print("PASS: existing visible window clears a stale hidden cache on first Show")
     var events: [Bool] = []
-    controls.onVisibilityChange = { events.append($0) }
+    var clientHidden = controls.hidden
+    controls.onVisibilityChange = {
+      if clientHidden != $0 { events.append($0) }
+      clientHidden = $0
+    }
     try controls.configure(hotkeyEnabled: true, shortcut: "control-option-b", translucent: false, opacity: 0.8)
     precondition(controls.state["registered"] as? Bool == true)
     precondition(window.alphaValue == 1)

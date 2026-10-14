@@ -196,6 +196,7 @@ class CinemaPlayerPage extends StatefulWidget {
     this.reviewsRepository,
     this.onRecommendationSelected,
     this.preferences,
+    this.windowControls,
     this.createPlayer,
     this.videoSurfaceBuilder,
     this.offlinePaths,
@@ -225,6 +226,7 @@ class CinemaPlayerPage extends StatefulWidget {
   final ValueChanged<DoubanRecommendation>? onRecommendationSelected;
   @visibleForTesting
   final CinemaPlayerPreferences? preferences;
+  final DesktopWindowControls? windowControls;
   @visibleForTesting
   final Player Function(PlayerConfiguration configuration)? createPlayer;
   @visibleForTesting
@@ -294,6 +296,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   double? _beforeForwardRate;
   bool _forwardHeld = false;
   bool _backgroundPaused = false;
+  DesktopWindowControls get _windowControls =>
+      widget.windowControls ?? DesktopWindowControls.instance;
+  bool _manualPlaybackChanging = false;
   int _lifecycleRevision = 0;
   late final _preferences =
       widget.preferences ?? CinemaPlayerPreferences.read();
@@ -410,9 +415,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         await playback.player.seek(position);
       }
       if (!identical(playback, _playback)) return;
-      if (playing &&
-          !_backgroundPaused &&
-          !DesktopWindowControls.instance.blocksPlayback) {
+      if (playing && !_backgroundPaused && !_windowControls.blocksPlayback) {
         await playback.player.play();
       } else {
         await playback.player.pause();
@@ -564,7 +567,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
 
     DesktopExitTasks.instance.register(this, _saveBeforeApplicationExit);
-    DesktopWindowControls.instance.register(this, _windowVisibilityChanged);
+    _windowControls.register(this, _windowVisibilityChanged);
     _bindTogether();
     unawaited(_together.initialize());
     WidgetsBinding.instance.addObserver(this);
@@ -835,11 +838,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         play:
             (playWhenReady ?? _preferences.autoPlay) &&
             !_backgroundPaused &&
-            !DesktopWindowControls.instance.blocksPlayback,
+            !_windowControls.blocksPlayback,
       );
       if (!_isCurrent(generation)) return;
       candidate.logStage('open-return');
-      if (DesktopWindowControls.instance.blocksPlayback) {
+      if (_windowControls.blocksPlayback) {
         await candidate.player.pause();
         if (!_isCurrent(generation)) return;
       }
@@ -1569,9 +1572,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Map<String, PlayerShortcutAction> get _keyboardActions => {
-    'playorpause': () async {
-      await _playback?.player.playOrPause();
-    },
+    'playorpause': _togglePlayback,
     'forward': () {
       _beforeForwardRate = _rate;
       _forwardHeld = false;
@@ -1598,6 +1599,53 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     'favorite': _toggleFavorite,
     'screenshot': _screenshot,
   };
+
+  Future<void> _togglePlayback() async {
+    final playback = _playback;
+    if (playback == null || _closing || _loading || _manualPlaybackChanging) {
+      return;
+    }
+    _manualPlaybackChanging = true;
+    try {
+      await _windowControls.refreshVisibility();
+      if (!mounted ||
+          _closing ||
+          !identical(playback, _playback) ||
+          _windowControls.blocksPlayback) {
+        return;
+      }
+      _backgroundPaused = false;
+      await playback.player.playOrPause();
+    } finally {
+      _manualPlaybackChanging = false;
+    }
+  }
+
+  Widget _playPauseButton() {
+    final player = _playback?.player;
+    if (player == null) return const SizedBox.shrink();
+    return StreamBuilder<bool>(
+      key: ValueKey(player),
+      stream: player.stream.playing,
+      initialData: player.state.playing,
+      builder: (_, snapshot) => IconButton(
+        tooltip: snapshot.data == true ? '暂停' : '播放',
+        onPressed: _togglePlayback,
+        color: Colors.white,
+        icon: TweenAnimationBuilder<double>(
+          tween: Tween(end: snapshot.data == true ? 1 : 0),
+          duration: _preferences.disableAnimations
+              ? Duration.zero
+              : const Duration(milliseconds: 200),
+          builder: (_, value, _) => AnimatedIcon(
+            icon: AnimatedIcons.play_pause,
+            progress: AlwaysStoppedAnimation(value),
+            color: Colors.white,
+          ),
+        ),
+      ),
+    );
+  }
 
   Future<void>? _leaving;
   Future<void> _leave() => _leaving ??= _leaveOnce();
@@ -1681,7 +1729,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _backgroundPaused = false;
       return;
     }
-    if (!DesktopWindowControls.instance.blocksPlayback) return;
+    if (!_windowControls.blocksPlayback) return;
     _backgroundPaused = true;
     await _playback?.player.pause();
     await _persistProgress();
@@ -1704,7 +1752,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   @override
   void dispose() {
     DesktopExitTasks.instance.unregister(this);
-    DesktopWindowControls.instance.unregister(this);
+    _windowControls.unregister(this);
     WidgetsBinding.instance.removeObserver(this);
     windowManager.removeListener(this);
     _panelRevision.dispose();
@@ -2144,7 +2192,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                 ),
               ],
         bottomButtonBar: [
-          const MaterialDesktopPlayOrPauseButton(),
+          _playPauseButton(),
           if (!_pip)
             IconButton(
               tooltip: '下一集',
@@ -2200,7 +2248,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                 ),
                 onTogglePlayback: () {
                   if (!_loading && !_closing) {
-                    unawaited(playback.player.playOrPause());
+                    unawaited(_togglePlayback());
                   }
                 },
                 onToggleFullscreen: () => unawaited(_toggleFullscreen()),

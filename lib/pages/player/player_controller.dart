@@ -319,6 +319,7 @@ class PlayerController implements Disposable {
   }
 
   Future<void> playOrPause() async {
+    await DesktopWindowControls.instance.refreshVisibility();
     await playback.playOrPause(pause: pause, play: play);
   }
 
@@ -340,7 +341,7 @@ class PlayerController implements Disposable {
   Future<void> pause({bool enableSync = true}) async {
     final player = playback.mediaPlayer;
     if (player == null) return;
-    danmaku.canvasController.pause();
+    danmaku.pauseCanvas();
     try {
       await player.pause();
     } catch (_) {
@@ -359,7 +360,7 @@ class PlayerController implements Disposable {
     if (DesktopWindowControls.instance.blocksPlayback) return;
     final player = playback.mediaPlayer;
     if (player == null) return;
-    danmaku.canvasController.resume();
+    danmaku.resumeCanvas();
     try {
       await player.play();
     } catch (_) {

@@ -123,13 +123,19 @@ class _DanmakuTimeOffsetSheetState extends State<DanmakuTimeOffsetSheet> {
                     ),
                   ]),
                   const SizedBox(height: 16),
-                  Slider(
-                    value: _offset,
-                    min: _minDanmakuTimeOffset,
-                    max: _maxDanmakuTimeOffset,
-                    divisions: _danmakuTimeOffsetDivisions,
-                    label: formatDanmakuTimeOffset(_offset),
-                    onChanged: _updateOffset,
+                  // Isolate the value-indicator portal from the modal route's
+                  // accessibility tree, as in SettingsSliderTile.
+                  Overlay.wrap(
+                    alwaysSizeToContent: true,
+                    clipBehavior: Clip.none,
+                    child: Slider(
+                      value: _offset,
+                      min: _minDanmakuTimeOffset,
+                      max: _maxDanmakuTimeOffset,
+                      divisions: _danmakuTimeOffsetDivisions,
+                      label: formatDanmakuTimeOffset(_offset),
+                      onChanged: _updateOffset,
+                    ),
                   ),
                   Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,

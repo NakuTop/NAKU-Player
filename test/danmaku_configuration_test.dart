@@ -12,9 +12,49 @@ import 'package:kazumi/pages/settings/danmaku/danmaku_service_status_tile.dart';
 import 'package:kazumi/request/clients/danmaku_client.dart';
 import 'package:kazumi/utils/dandan_credentials.dart';
 import 'package:logger/logger.dart';
+import 'package:canvas_danmaku/canvas_danmaku.dart' as canvas;
 
 void main() {
   setUpAll(() => Logger.level = Level.off);
+
+  test(
+    'early hide/pause and show/play are safe before the danmaku canvas attaches',
+    () {
+      final controller = PlayerDanmakuController(
+        isLocalPlayback: () => false,
+        downloadController: _CachedDownloads(null),
+      );
+      controller.pauseCanvas();
+      controller.clearAndInvalidateScheduledDanmakus();
+      controller.updateDanmakuSpeed(1);
+      var pauses = 0, resumes = 0;
+      final attached = canvas.DanmakuController(
+        addDanmaku: (_) {},
+        updateOption: (_) {},
+        pause: () => pauses++,
+        resume: () => resumes++,
+        clear: () {},
+        getOption: () => const canvas.DanmakuOption(),
+        isRunning: () => false,
+        findDanmaku: (_) => [],
+        findSingleDanmaku: (_) => null,
+        getViewWidth: () => 800,
+        getViewHeight: () => 600,
+        scrollDanmaku: [],
+        staticDanmaku: [],
+        specialDanmaku: [],
+      );
+      controller.canvasController = attached;
+      expect(
+        pauses,
+        1,
+        reason: 'Early pause is applied when the canvas becomes ready.',
+      );
+      controller.resumeCanvas();
+      expect(resumes, 1);
+      expect(controller.scheduledDanmakuGeneration, 1);
+    },
+  );
 
   for (final credentials in [
     const DandanCredentials(id: '', secret: ''),

@@ -45,7 +45,9 @@ final class NakuDesktopWindowController: NSObject {
   var onVisibilityChange: ((Bool) -> Void)?
   var onStateChange: (([String: Any]) -> Void)?
 
-  var hidden: Bool { NSApp.isHidden || window?.isVisible != true }
+  // AppKit may temporarily unorder the window at startup, during fullscreen or
+  // when changing Spaces. That is not the user's Hide action.
+  var hidden: Bool { NSApp.isHidden }
   var state: [String: Any] {
     ["hidden": hidden, "registered": hotKey != nil,
      "reduceTransparency": NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
@@ -57,9 +59,21 @@ final class NakuDesktopWindowController: NSObject {
     super.init()
     let center = NotificationCenter.default
     observers.append(center.addObserver(forName: NSApplication.didHideNotification,
-      object: NSApp, queue: .main) { [weak self] _ in self?.reportVisibility(true) })
+      object: NSApp, queue: .main) { [weak self] _ in self?.reportVisibility(true, force: true) })
     observers.append(center.addObserver(forName: NSApplication.didUnhideNotification,
-      object: NSApp, queue: .main) { [weak self] _ in self?.reportVisibility(false) })
+      object: NSApp, queue: .main) { [weak self] _ in self?.reportVisibility(false, force: true) })
+    for (name, object) in [
+      (NSApplication.didBecomeActiveNotification, NSApp as AnyObject),
+      (NSWindow.didBecomeKeyNotification, window as AnyObject),
+    ] {
+      observers.append(center.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+        // Sample at delivery time so an old activation cannot undo a new hide.
+        DispatchQueue.main.async { [weak self] in
+          guard let self = self else { return }
+          self.reportVisibility(self.hidden, force: true)
+        }
+      })
+    }
     observers.append(NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
       object: nil, queue: .main) { [weak self] _ in
@@ -133,14 +147,14 @@ final class NakuDesktopWindowController: NSObject {
       ? CGFloat(opacity) : 1.0
   }
 
-  private func reportVisibility(_ value: Bool) {
-    guard value != reportedHidden else { return }
+  private func reportVisibility(_ value: Bool, force: Bool = false) {
+    guard force || value != reportedHidden else { return }
     reportedHidden = value
     onVisibilityChange?(value)
   }
 
   func hide() {
-    reportVisibility(true)
+    reportVisibility(true, force: true)
     NSApp.hide(nil)
   }
 
@@ -149,7 +163,9 @@ final class NakuDesktopWindowController: NSObject {
     if window?.isMiniaturized == true { window?.deminiaturize(nil) }
     window?.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
-    reportVisibility(false)
+    // Explicit Show must repair Flutter's cached state even if AppKit was
+    // already unhidden and therefore did not send didUnhideNotification.
+    reportVisibility(false, force: true)
   }
 
   @objc func toggleWindow(_ sender: Any?) {

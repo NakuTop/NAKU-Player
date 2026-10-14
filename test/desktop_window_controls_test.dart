@@ -16,6 +16,7 @@ void main() {
   late String stored;
   bool saveFails = false, conflict = false;
   String rejectedShortcut = 'command-shift-h';
+  Completer<Map<String, dynamic>>? queryResponse;
 
   setUp(() {
     stored = '{}';
@@ -23,8 +24,12 @@ void main() {
     native = {'registered': true, 'hidden': false, 'reduceTransparency': false};
     saveFails = conflict = false;
     rejectedShortcut = 'command-shift-h';
+    queryResponse = null;
     messenger.setMockMethodCallHandler(channel, (call) async {
       calls.add(call);
+      if (call.method == 'state') {
+        return queryResponse?.future ?? Map.of(native);
+      }
       if (call.method == 'configure') {
         final args = call.arguments as Map;
         if (conflict &&
@@ -309,6 +314,56 @@ void main() {
       expect(await check(visible: false, pause: true), isTrue);
       expect(await check(minimized: true), isTrue);
       expect(await check(pause: true), isFalse);
+    },
+  );
+
+  test(
+    'foreground/manual refresh clears a stale hide without starting playback',
+    () async {
+      stored = jsonEncode(
+        const DesktopWindowPreferences(pauseOnHide: true).toJson(),
+      );
+      await controls.initialize();
+      final restored = <bool>[];
+      controls.register(Object(), (hidden) async => restored.add(hidden));
+      await visibility(true);
+      expect(controls.blocksPlayback, isTrue);
+      native['hidden'] = false;
+      await controls.refreshVisibility();
+      expect(controls.blocksPlayback, isFalse);
+      expect(restored, [true, false]);
+      expect(calls.where((call) => call.method == 'play'), isEmpty);
+    },
+  );
+
+  test(
+    'a real hidden app remains blocked after a manual state query',
+    () async {
+      stored = jsonEncode(
+        const DesktopWindowPreferences(pauseOnHide: true).toJson(),
+      );
+      await controls.initialize();
+      await visibility(true);
+      await controls.refreshVisibility();
+      expect(controls.blocksPlayback, isTrue);
+    },
+  );
+
+  test(
+    'late visible query cannot override a newer native Hide, including duplicates',
+    () async {
+      stored = jsonEncode(
+        const DesktopWindowPreferences(pauseOnHide: true).toJson(),
+      );
+      await controls.initialize();
+      await visibility(true);
+      queryResponse = Completer<Map<String, dynamic>>();
+      final refresh = controls.refreshVisibility();
+      await Future<void>.delayed(Duration.zero);
+      await visibility(true);
+      queryResponse!.complete({...native, 'hidden': false});
+      await refresh;
+      expect(controls.blocksPlayback, isTrue);
     },
   );
 }

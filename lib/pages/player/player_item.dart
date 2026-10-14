@@ -190,7 +190,7 @@ class _PlayerItemState extends State<PlayerItem>
     }
     try {
       if (playerController.playback.playerPlaying) {
-        playerController.danmaku.canvasController.resume();
+        playerController.danmaku.resumeCanvas();
       }
     } catch (_) {}
   }
@@ -603,7 +603,7 @@ class _PlayerItemState extends State<PlayerItem>
   }
 
   void handleDanmaku() {
-    playerController.danmaku.canvasController.clear();
+    playerController.danmaku.clearCanvas();
     if (playerController.danmaku.danmakuOn) {
       playerController.danmaku.setDanmakuEnabled(false);
       GStorage.putSetting(SettingsKeys.danmakuEnabledByDefault, false);
@@ -704,7 +704,7 @@ class _PlayerItemState extends State<PlayerItem>
   void _handleFullscreenChange() async {
     playerController.panel.lockPanel = false;
     _releasePlayerPanelHolds();
-    playerController.danmaku.canvasController.clear();
+    playerController.danmaku.clearCanvas();
     _scheduleAndroidPIPSourceRectSync();
 
     await _syncHistoryWithWebDav();
@@ -1379,7 +1379,7 @@ class _PlayerItemState extends State<PlayerItem>
 
   @override
   void onWindowRestore() {
-    playerController.danmaku.canvasController.clear();
+    playerController.danmaku.clearCanvas();
   }
 
   @override

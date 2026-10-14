@@ -112,6 +112,8 @@ class DesktopWindowControls extends ChangeNotifier {
   DesktopWindowPreferences _preferences = const DesktopWindowPreferences();
   DesktopWindowPreferences get preferences => _preferences;
   Future<void>? _initializing;
+  Future<void>? _refreshingVisibility;
+  int _visibilityRevision = 0;
   bool hidden = false, saving = false, registered = false;
   bool reduceTransparency = false;
   bool _disposed = false;
@@ -243,7 +245,36 @@ class DesktopWindowControls extends ChangeNotifier {
     }
   }
 
+  /// A foreground restoration may arrive without a didUnhide notification.
+  /// Query the native application's actual state before a manual Play rather
+  /// than letting a stale cached Hide silently reject the user's action.
+  Future<void> refreshVisibility() {
+    if (!supported || _disposed) return Future<void>.value();
+    return _refreshingVisibility ??= _refreshVisibility();
+  }
+
+  Future<void> _refreshVisibility() async {
+    try {
+      await initialize();
+      final revision = _visibilityRevision;
+      final state = await _channel.invokeMapMethod<String, dynamic>('state');
+      if (!_disposed && state != null && revision == _visibilityRevision) {
+        _nativeState(state);
+      }
+    } catch (e, stack) {
+      KazumiLogger().w(
+        'Window: visibility refresh failed',
+        error: e,
+        stackTrace: stack,
+      );
+    } finally {
+      _refreshingVisibility = null;
+    }
+  }
+
   void _visibility(bool value) {
+    // A duplicate native Hide is still newer evidence than an in-flight query.
+    _visibilityRevision++;
     if (hidden == value) return;
     hidden = value;
     _notifyVisibility();

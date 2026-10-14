@@ -18,6 +18,7 @@ import 'package:kazumi/features/cinema/cinema_store.dart';
 import 'package:kazumi/features/cinema/cinema_watch_together.dart';
 import 'package:kazumi/features/cinema/cinema_video_gestures.dart';
 import 'package:kazumi/services/storage/storage.dart';
+import 'package:kazumi/services/platform/desktop_window_controls.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
@@ -231,6 +232,10 @@ void main() {
   late CinemaWatchTogether together;
   final backends = <_Backend>[];
   const channel = MethodChannel('window_manager');
+  const visibilityChannel = MethodChannel('naku/cinema-player-window-test');
+  late DesktopWindowControls windowControls;
+  late Map<String, dynamic> nativeWindowState;
+  final visibilityCalls = <String>[];
   final messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
 
@@ -249,12 +254,30 @@ void main() {
     );
     await together.initialize();
     backends.clear();
+    visibilityCalls.clear();
+    nativeWindowState = {
+      'registered': true,
+      'hidden': false,
+      'reduceTransparency': false,
+    };
+    messenger.setMockMethodCallHandler(visibilityChannel, (call) async {
+      visibilityCalls.add(call.method);
+      return Map.of(nativeWindowState);
+    });
+    windowControls = DesktopWindowControls(
+      supported: true,
+      channel: visibilityChannel,
+      read: () => '{"pauseOnHide":true}',
+      save: (_) async {},
+    );
     messenger.setMockMethodCallHandler(
       channel,
       (call) async => call.method == 'isFullScreen' ? false : null,
     );
   });
   tearDown(() async {
+    windowControls.dispose();
+    messenger.setMockMethodCallHandler(visibilityChannel, null);
     messenger.setMockMethodCallHandler(channel, null);
     together.dispose();
     store.dispose();
@@ -273,6 +296,7 @@ void main() {
     CinemaMediaProbe? probe,
     int? initialPosition,
   }) async {
+    await windowControls.initialize();
     tester.view.physicalSize = viewport;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -303,6 +327,7 @@ void main() {
           repository: _Repository(),
           ratingsRepository: _Ratings(),
           preferences: prefs,
+          windowControls: windowControls,
           createPlayer: (config) {
             final backend = _Backend(
               config,
@@ -329,6 +354,7 @@ void main() {
                             .where(
                               (w) =>
                                   w is IconButton ||
+                                  w is StreamBuilder<bool> ||
                                   w is Spacer ||
                                   w is PopupMenuButton,
                             )
@@ -490,6 +516,45 @@ void main() {
     await snapshotRecommendation(tester, 'recommended-route-narrow');
     await unmount(tester);
   });
+
+  testWidgets(
+    'first Space and toolbar Play recover after a missed window restore notification',
+    (tester) async {
+      await mount(tester, {
+        'autoPlay': false,
+        'playerDisableAnimations': true,
+      }, renderToolbar: true);
+      final player = backends.single;
+      Future<void> missedRestore() async {
+        // Reproduce the cache left by a missing native restore notification;
+        // native event dispatch/deduplication is covered in the bridge tests.
+        windowControls.hidden = true;
+        await player.pause();
+        await tester.pump();
+        expect(windowControls.blocksPlayback, isTrue);
+        expect(player.state.playing, isFalse);
+        nativeWindowState['hidden'] = false;
+      }
+
+      await missedRestore();
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pumpAndSettle();
+      expect(visibilityCalls, contains('state'));
+      expect(windowControls.blocksPlayback, isFalse);
+      expect(player.state.playing, isTrue);
+      await missedRestore();
+      await tester.tap(find.byTooltip('播放'));
+      await tester.pumpAndSettle();
+      expect(windowControls.blocksPlayback, isFalse);
+      expect(player.state.playing, isTrue);
+      expect(
+        backends.length,
+        1,
+        reason: 'Recovery must keep the existing decoder and episode.',
+      );
+      await unmount(tester);
+    },
+  );
 
   testWidgets('in-player PiP preserves playback and restores details', (
     tester,

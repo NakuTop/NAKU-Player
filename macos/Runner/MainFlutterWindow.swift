@@ -130,6 +130,7 @@ class MainFlutterWindow: NSWindow {
     desktopChannel.setMethodCallHandler { [weak desktopControls] call, result in
       guard let controls = desktopControls else { result(nil); return }
       switch call.method {
+      case "state": result(controls.state)
       case "configure":
         guard let args = call.arguments as? [String: Any],
               let enabled = args["hotkeyEnabled"] as? Bool,
