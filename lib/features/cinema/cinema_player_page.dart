@@ -29,6 +29,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/platform/desktop_window_close.dart';
+import 'package:kazumi/services/platform/desktop_window_controls.dart';
 import 'package:kazumi/services/player/player_error_mapper.dart';
 import 'package:kazumi/services/video_source/video_source_service.dart';
 import 'package:kazumi/services/video_source/webview_video_source_service.dart';
@@ -409,7 +410,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         await playback.player.seek(position);
       }
       if (!identical(playback, _playback)) return;
-      if (playing && !_backgroundPaused) {
+      if (playing &&
+          !_backgroundPaused &&
+          !DesktopWindowControls.instance.blocksPlayback) {
         await playback.player.play();
       } else {
         await playback.player.pause();
@@ -561,6 +564,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
 
     DesktopExitTasks.instance.register(this, _saveBeforeApplicationExit);
+    DesktopWindowControls.instance.register(this, _windowVisibilityChanged);
     _bindTogether();
     unawaited(_together.initialize());
     WidgetsBinding.instance.addObserver(this);
@@ -828,10 +832,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           start: Duration(seconds: offset),
           httpHeaders: mediaHeaders,
         ),
-        play: (playWhenReady ?? _preferences.autoPlay) && !_backgroundPaused,
+        play:
+            (playWhenReady ?? _preferences.autoPlay) &&
+            !_backgroundPaused &&
+            !DesktopWindowControls.instance.blocksPlayback,
       );
       if (!_isCurrent(generation)) return;
       candidate.logStage('open-return');
+      if (DesktopWindowControls.instance.blocksPlayback) {
+        await candidate.player.pause();
+        if (!_isCurrent(generation)) return;
+      }
       candidate.opened = true;
       _updateReady(candidate, generation);
     } on VideoSourceCancelledException {
@@ -1664,6 +1675,18 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
   }
 
+  Future<void> _windowVisibilityChanged(bool hidden) async {
+    if (!mounted || _closing) return;
+    if (!hidden) {
+      _backgroundPaused = false;
+      return;
+    }
+    if (!DesktopWindowControls.instance.blocksPlayback) return;
+    _backgroundPaused = true;
+    await _playback?.player.pause();
+    await _persistProgress();
+  }
+
   Future<void> _pauseInBackground(int revision) async {
     if (!await isPlaybackWindowBackgrounded() ||
         !mounted ||
@@ -1681,6 +1704,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   @override
   void dispose() {
     DesktopExitTasks.instance.unregister(this);
+    DesktopWindowControls.instance.unregister(this);
     WidgetsBinding.instance.removeObserver(this);
     windowManager.removeListener(this);
     _panelRevision.dispose();

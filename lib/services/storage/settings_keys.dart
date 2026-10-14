@@ -42,6 +42,11 @@ class SettingKey<T> {
 // Add new settings here. SettingsKeys is the public typed registry used by
 // callers; new keys can use literal string names directly.
 class SettingsKeys {
+  static const desktopWindowControls = SettingKey<String>(
+    'nakuDesktopWindowControls',
+    '{}',
+    group: SettingGroup.interface,
+  );
   static const syncBufferCoordination = SettingKey<bool>(
     'nakuSyncBufferCoordination',
     true,
@@ -600,6 +605,7 @@ class SettingsKeys {
   );
 
   static final List<SettingKey<Object?>> all = [
+    desktopWindowControls,
     syncBufferCoordination,
     syncLocalOffsetSeconds,
     fineVideoScaling,

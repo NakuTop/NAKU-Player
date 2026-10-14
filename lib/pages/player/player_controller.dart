@@ -22,6 +22,7 @@ import 'package:kazumi/pages/download/download_controller.dart';
 import 'package:kazumi/services/player/audio_controller.dart';
 import 'package:kazumi/utils/async_session.dart';
 import 'package:kazumi/utils/device.dart';
+import 'package:kazumi/services/platform/desktop_window_controls.dart';
 
 export 'package:kazumi/pages/player/controller/player_models.dart';
 
@@ -355,6 +356,7 @@ class PlayerController implements Disposable {
   }
 
   Future<void> play({bool enableSync = true}) async {
+    if (DesktopWindowControls.instance.blocksPlayback) return;
     final player = playback.mediaPlayer;
     if (player == null) return;
     danmaku.canvasController.resume();

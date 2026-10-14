@@ -23,6 +23,7 @@ import 'package:mobx/mobx.dart';
 import 'package:kazumi/utils/device.dart';
 import 'package:kazumi/utils/media.dart';
 import 'package:kazumi/services/platform/platform_environment_service.dart';
+import 'package:kazumi/services/platform/desktop_window_controls.dart';
 
 part 'player_playback_controller.g.dart';
 
@@ -168,7 +169,7 @@ abstract class _PlayerPlaybackController with Store {
       if (!isCurrentPlayer(player)) {
         return;
       }
-      await player.play();
+      if (!DesktopWindowControls.instance.blocksPlayback) await player.play();
       startOffset = 0;
     } catch (e) {
       KazumiLogger().w(
@@ -463,10 +464,17 @@ abstract class _PlayerPlaybackController with Store {
           start: Duration(seconds: offset),
           httpHeaders: httpHeaders,
         ),
-        play: autoPlay,
+        play: autoPlay && !DesktopWindowControls.instance.blocksPlayback,
       );
       if (!isCurrentPlayer(player)) {
         return await _discardIfNotCurrent(candidate);
+      }
+
+      if (DesktopWindowControls.instance.blocksPlayback) {
+        await player.pause();
+        if (!isCurrentPlayer(player)) {
+          return await _discardIfNotCurrent(candidate);
+        }
       }
 
       if (cachePolicy.networkAutomatic) {

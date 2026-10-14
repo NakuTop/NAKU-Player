@@ -3,6 +3,7 @@ import 'package:kazumi/features/cinema/cinema_sync_sheet.dart';
 import 'package:kazumi/pages/download/download_episode_sheet.dart';
 import 'package:kazumi/bean/dialog/adaptive_bottom_sheet.dart';
 import 'package:kazumi/services/player/playback_lifecycle.dart';
+import 'package:kazumi/services/platform/desktop_window_controls.dart';
 import 'dart:io';
 import 'package:kazumi/pages/player/player_item_panel.dart';
 import 'package:kazumi/pages/player/player_keyboard_shortcuts.dart';
@@ -192,6 +193,17 @@ class _PlayerItemState extends State<PlayerItem>
         playerController.danmaku.canvasController.resume();
       }
     } catch (_) {}
+  }
+
+  Future<void> _windowVisibilityChanged(bool hidden) async {
+    if (!mounted) return;
+    if (!hidden) {
+      await playerController.playback.setPrefetchSuspended(false);
+    } else if (DesktopWindowControls.instance.blocksPlayback) {
+      final suspend = playerController.playback.setPrefetchSuspended(true);
+      await playerController.pause(enableSync: false);
+      await suspend;
+    }
   }
 
   Future<void> _syncAndroidAutoEnterPIPSetting() async {
@@ -1375,6 +1387,7 @@ class _PlayerItemState extends State<PlayerItem>
     super.initState();
     DesktopExitTasks.instance.register(this, _saveBeforeApplicationExit);
     playerController = widget.playerController;
+    DesktopWindowControls.instance.register(this, _windowVisibilityChanged);
     _initKeyboardActions();
     _initPlayerMenu();
     _fullscreenListener = mobx.reaction<bool>(
@@ -1462,6 +1475,7 @@ class _PlayerItemState extends State<PlayerItem>
   void dispose() {
     _danmakuSettingsSubscription?.cancel();
     DesktopExitTasks.instance.unregister(this);
+    DesktopWindowControls.instance.unregister(this);
     // The route-scoped PlayerController owns playback disposal.
     _fullscreenListener();
     _playerSizeListener();

@@ -1,7 +1,7 @@
 import 'dart:async';
 
 /// Route-owned players register only their final local progress save. Hiding a
-/// window leaves playback and the existing background-playback policy intact.
+/// window is handled separately by the shared opt-in pause-on-hide policy.
 class DesktopExitTasks {
   static final instance = DesktopExitTasks();
   final _tasks = <Object, Future<void> Function()>{};

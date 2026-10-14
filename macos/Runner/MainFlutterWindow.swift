@@ -97,6 +97,7 @@ class MainFlutterWindow: NSWindow {
   private(set) var flutterViewController: FlutterViewController?
   private var updaterController: SPUStandardUpdaterController?
   private var downloadActivity: NSObjectProtocol?
+  private var desktopControls: NakuDesktopWindowController?
 
   deinit {
     if let activity = downloadActivity { ProcessInfo.processInfo.endActivity(activity) }
@@ -115,6 +116,51 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+
+    let desktopControls = NakuDesktopWindowController(window: self)
+    self.desktopControls = desktopControls
+    let desktopChannel = FlutterMethodChannel(name: "naku/desktop-controls",
+      binaryMessenger: flutterViewController.engine.binaryMessenger)
+    desktopControls.onVisibilityChange = { hidden in
+      desktopChannel.invokeMethod("visibilityChanged", arguments: ["hidden": hidden])
+    }
+    desktopControls.onStateChange = { state in
+      desktopChannel.invokeMethod("stateChanged", arguments: state)
+    }
+    desktopChannel.setMethodCallHandler { [weak desktopControls] call, result in
+      guard let controls = desktopControls else { result(nil); return }
+      switch call.method {
+      case "configure":
+        guard let args = call.arguments as? [String: Any],
+              let enabled = args["hotkeyEnabled"] as? Bool,
+              let shortcut = args["shortcut"] as? String,
+              let translucent = args["translucent"] as? Bool,
+              let opacity = args["opacity"] as? Double else {
+          result(FlutterError(code: "invalid", message: "窗口设置无效。", details: nil)); return
+        }
+        do {
+          try controls.configure(hotkeyEnabled: enabled, shortcut: shortcut,
+            translucent: translucent, opacity: opacity)
+          result(controls.state)
+        } catch {
+          result(FlutterError(code: "window_configuration", message: error.localizedDescription, details: nil))
+        }
+      case "previewOpacity":
+        guard let opacity = call.arguments as? Double else {
+          result(FlutterError(code: "invalid", message: "透明度无效。", details: nil)); return
+        }
+        controls.previewOpacity(opacity)
+        result(nil)
+      case "hide": controls.hide(); result(nil)
+      case "show": controls.show(); result(nil)
+      default: result(FlutterMethodNotImplemented)
+      }
+    }
+    if let appMenu = NSApp.mainMenu?.items.first?.submenu {
+      let toggle = NSMenuItem(title: "隐藏/显示窗口", action: #selector(NakuDesktopWindowController.toggleWindow(_:)), keyEquivalent: "")
+      toggle.target = desktopControls
+      appMenu.insertItem(toggle, at: min(3, appMenu.items.count))
+    }
 
     let danmakuChannel = FlutterMethodChannel(
       name: "naku/danmaku-credentials", binaryMessenger: flutterViewController.engine.binaryMessenger)

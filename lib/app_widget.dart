@@ -11,6 +11,7 @@ import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/network/metered_network_service.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 import 'package:kazumi/services/platform/desktop_window_close.dart';
+import 'package:kazumi/services/platform/desktop_window_controls.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/bean/dialog/exit_confirmation_dialog.dart';
@@ -42,7 +43,7 @@ class _AppWidgetState extends State<AppWidget>
       ),
     ),
     terminate: () => exit(0),
-    hideWindow: windowManager.hide,
+    hideWindow: DesktopWindowControls.instance.hide,
   );
 
   @override
@@ -58,6 +59,7 @@ class _AppWidgetState extends State<AppWidget>
     if (isDesktop()) {
       await windowManager.setPreventClose(true);
       await _handleTray();
+      await DesktopWindowControls.instance.initialize();
     }
     await _configurePreferredDisplayMode();
   }
@@ -183,7 +185,7 @@ class _AppWidgetState extends State<AppWidget>
 
   @override
   void onTrayIconMouseDown() {
-    windowManager.show();
+    DesktopWindowControls.instance.show();
   }
 
   @override
@@ -195,7 +197,9 @@ class _AppWidgetState extends State<AppWidget>
   void onTrayMenuItemClick(MenuItem menuItem) {
     switch (menuItem.key) {
       case 'show_window':
-        windowManager.show();
+        DesktopWindowControls.instance.show();
+      case 'hide_window':
+        _closeActions.hide();
       case 'exit':
         _closeActions.quit();
     }
@@ -293,6 +297,7 @@ class _AppWidgetState extends State<AppWidget>
     Menu trayMenu = Menu(
       items: [
         MenuItem(key: 'show_window', label: '显示窗口'),
+        MenuItem(key: 'hide_window', label: '隐藏窗口'),
         MenuItem.separator(),
         MenuItem(key: 'exit', label: '退出NAKU播放器'),
       ],

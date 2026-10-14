@@ -99,6 +99,7 @@ void main() {
           isMacOS: true,
           isMinimized: () async => false,
           isVisible: () async => false,
+          pauseWhenHidden: true,
         ),
         isTrue,
       );

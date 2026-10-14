@@ -4,6 +4,7 @@ import 'package:flutter_modular/flutter_modular.dart';
 import 'cinema_theme.dart';
 import 'cinema_settings_catalog.dart';
 import 'cinema_window_close_settings.dart';
+import 'cinema_desktop_window_settings.dart';
 
 /// Shared settings entry; source editing remains owned by the home store.
 class CinemaSettingsPage extends StatelessWidget {
@@ -86,6 +87,16 @@ class CinemaSettingsPage extends StatelessWidget {
                         ),
                         const Divider(height: 1, indent: 68, endIndent: 20),
                         const CinemaWindowCloseSettings(),
+                        if (Theme.of(context).platform == TargetPlatform.macOS) ...[
+                          const Divider(height: 1, indent: 68, endIndent: 20),
+                          _entry(
+                            key: 'settings-desktop-window',
+                            icon: Icons.visibility_off_outlined,
+                            title: '窗口与快捷隐藏',
+                            subtitle: '全局隐藏 / 显示快捷键、隐藏时暂停与整窗半透明',
+                            onTap: () => showCinemaDesktopWindowSettings(context),
+                          ),
+                        ],
                         const Divider(height: 1, indent: 68, endIndent: 20),
                         _entry(
                           key: 'settings-updates',
