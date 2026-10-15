@@ -27,6 +27,10 @@ void main() {
       controller.pauseCanvas();
       controller.clearAndInvalidateScheduledDanmakus();
       controller.updateDanmakuSpeed(1);
+      // History can create the player and receive Play before its canvas is
+      // attached. Both actions must stay safe and preserve the last intent.
+      controller.resumeCanvas();
+      controller.pauseCanvas();
       var pauses = 0, resumes = 0;
       final attached = canvas.DanmakuController(
         addDanmaku: (_) {},

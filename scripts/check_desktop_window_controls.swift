@@ -13,22 +13,26 @@ struct DesktopWindowCheck {
     let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 320, height: 120),
       styleMask: [.titled], backing: .buffered, defer: false)
     window.title = "NAKU 窗口功能检查"
-    window.orderFront(nil)
     defer { window.orderOut(nil) }
     let controls = NakuDesktopWindowController(window: window)
-    do {
-      try controls.configure(hotkeyEnabled: true, shortcut: "command-b", translucent: false, opacity: 0.8)
-      try controls.configure(hotkeyEnabled: false, shortcut: "command-b", translucent: false, opacity: 0.8)
-      print("PASS: default Command+B registered and released")
-    } catch { print("NOTE: Command+B is currently occupied by another app: \(error.localizedDescription)") }
-    window.orderOut(nil)
-    precondition(!controls.hidden)
+    guard !controls.hidden, controls.state["hidden"] as? Bool == false else {
+      fputs("FAIL: a never-shown startup window was reported as application Hide\n", stderr)
+      exit(1)
+    }
+    print("PASS: cold-launch window is not hidden before its first presentation")
+    window.orderFront(nil)
     var cachedHidden = true
     controls.onVisibilityChange = { cachedHidden = $0 }
     controls.show()
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.15))
     precondition(window.isVisible && !cachedHidden)
     print("PASS: existing visible window clears a stale hidden cache on first Show")
+    if CommandLine.arguments.contains("--startup-only") { return }
+    do {
+      try controls.configure(hotkeyEnabled: true, shortcut: "command-b", translucent: false, opacity: 0.8)
+      try controls.configure(hotkeyEnabled: false, shortcut: "command-b", translucent: false, opacity: 0.8)
+      print("PASS: default Command+B registered and released")
+    } catch { print("NOTE: Command+B is currently occupied by another app: \(error.localizedDescription)") }
     var events: [Bool] = []
     var clientHidden = controls.hidden
     controls.onVisibilityChange = {

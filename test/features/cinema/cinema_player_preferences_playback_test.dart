@@ -517,6 +517,60 @@ void main() {
     await unmount(tester);
   });
 
+  for (final autoPlay in [true, false]) {
+    testWidgets(
+      'cold-launch history resume keeps first Play and Space usable (autoPlay=$autoPlay)',
+      (tester) async {
+        await tester.runAsync(() async {
+          await store.recordProgress(
+            title: _title,
+            routeIndex: 0,
+            episodeIndex: 0,
+            positionSeconds: 90,
+            durationSeconds: 1200,
+          );
+          store.dispose();
+          store = CinemaStore(
+            file: File('${directory.path}/library.json'),
+            defaults: [_source],
+          );
+          await store.load();
+        });
+        // Recreate the library and window bridge as on a fresh application
+        // launch. A temporarily unordered native window is tested in the
+        // production Swift controller check, before it is first shown.
+        await mount(tester, {
+          'autoPlay': autoPlay,
+          'playResume': true,
+          'playerDisableAnimations': true,
+        }, renderToolbar: true);
+        final player = backends.single;
+        expect(player.opened!.start, const Duration(seconds: 90));
+        expect(windowControls.blocksPlayback, isFalse);
+        expect(player.state.playing, autoPlay);
+        if (autoPlay) {
+          await tester.sendKeyEvent(LogicalKeyboardKey.space);
+          await tester.pumpAndSettle();
+          expect(player.state.playing, isFalse);
+        }
+        await tester.tap(find.byTooltip('播放'));
+        await tester.pumpAndSettle();
+        expect(player.state.playing, isTrue);
+        await tester.sendKeyEvent(LogicalKeyboardKey.space);
+        await tester.pumpAndSettle();
+        expect(player.state.playing, isFalse);
+        await tester.sendKeyEvent(LogicalKeyboardKey.space);
+        await tester.pumpAndSettle();
+        expect(player.state.playing, isTrue);
+        expect(backends.length, 1);
+        expect(visibilityCalls, isNot(contains('hide')));
+        expect(visibilityCalls, isNot(contains('show')));
+        expect(tester.takeException(), isNull);
+        await unmount(tester);
+      },
+    );
+  }
+
   testWidgets(
     'first Space and toolbar Play recover after a missed window restore notification',
     (tester) async {
