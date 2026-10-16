@@ -134,6 +134,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       _health.available(_store.enabledSources);
   late final CinemaStore _store = widget.store ?? CinemaStore();
   CinemaNASSync? _nasSync;
+  final _nasPageCache = CinemaNASPageCache();
   late final CinemaRepository _repository =
       widget.repository ?? CinemaRepository(health: _health);
   late final _discoveryRepository =
@@ -665,6 +666,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         builder: (_) => Theme(
           data: CinemaTheme.of(context),
           child: CinemaNASPage(
+            cache: _nasPageCache,
             store: _store,
             sync: _nasSync,
             onSyncSettings: () => context.pushNamed('/settings/sync'),

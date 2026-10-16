@@ -36,10 +36,18 @@ bool isNASLANAddress(String address) {
   return raw.contains('://') && host.isNotEmpty && !host.contains('.');
 }
 
+// Owned by the cinema home; never persisted and never contains credentials.
+class CinemaNASPageCache {
+  final client = CinemaNASClient();
+  Map<String, dynamic>? _snapshot;
+  void clear() => _snapshot = null;
+}
+
 class CinemaNASPage extends StatefulWidget {
   const CinemaNASPage({
     super.key,
     this.client,
+    this.cache,
     this.store,
     this.sync,
     this.onRecommendationSelected,
@@ -50,12 +58,16 @@ class CinemaNASPage extends StatefulWidget {
   final CinemaStore? store;
   final CinemaNASSync? sync;
   final CinemaNASClient? client;
+  final CinemaNASPageCache? cache;
   @override
   State<CinemaNASPage> createState() => _CinemaNASPageState();
 }
 
 class _CinemaNASPageState extends State<CinemaNASPage> {
-  late final _client = widget.client ?? CinemaNASClient();
+  late final _client =
+      widget.client ?? widget.cache?.client ?? CinemaNASClient();
+  late final ScrollController _scroll;
+  bool _endingSession = false;
   late final _store = widget.store ?? CinemaStore();
   final _address = TextEditingController();
   String _mode = 'remote';
@@ -138,7 +150,85 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   @override
   void initState() {
     super.initState();
-    unawaited(_restore());
+    final cached = widget.cache?._snapshot;
+    if (cached != null &&
+        cached['namespace'] == _client.namespace &&
+        _client.namespace.isNotEmpty) {
+      _loggedIn = true;
+      _hasSaved = true;
+      _name = cached['name'];
+      _address.text = cached['address'];
+      _username.text = cached['username'];
+      _mode = cached['mode'];
+      _lanAddress = cached['lan'];
+      _remoteAddress = cached['remote'];
+      _lanCandidates = List<String>.from(cached['candidates']);
+      _libraries = List<Map<String, dynamic>>.from(cached['libraries']);
+      _items = List<Map<String, dynamic>>.from(cached['items']);
+      _collectionCache.addAll(
+        Map<String, Map<String, dynamic>>.from(cached['collections']),
+      );
+      _library = cached['library'];
+      _page = cached['page'];
+      _total = cached['total'];
+      _last = cached['last'];
+      _search.text = cached['search'];
+      _scroll = ScrollController(initialScrollOffset: cached['offset']);
+      unawaited(_refreshCachedSession());
+    } else {
+      widget.cache?.clear();
+      _scroll = ScrollController();
+      unawaited(_restore());
+    }
+  }
+
+  Future<void> _refreshCachedSession() async {
+    try {
+      final active = await _client.call('currentSession');
+      if (!mounted || _endingSession) return;
+      if (active['namespace'] != _client.namespace) {
+        widget.cache?.clear();
+        setState(() {
+          _loggedIn = false;
+          _items = [];
+          _libraries = [];
+          _collectionCache.clear();
+        });
+        await _restore();
+        return;
+      }
+      // Preserve the loaded pages, filter and scroll position. Refresh the
+      // first page quietly; pagination remains available without a reload.
+      if (_page == 1) await _load(background: true);
+    } catch (_) {
+      // A temporary transport error must not replace the cached library.
+    }
+  }
+
+  void _savePageCache() {
+    if (!_loggedIn || _endingSession) {
+      widget.cache?.clear();
+      return;
+    }
+    widget.cache?._snapshot = {
+      'namespace': _client.namespace,
+      'name': _name,
+      'address': _address.text,
+      'username': _username.text,
+      'mode': _mode,
+      'lan': _lanAddress,
+      'remote': _remoteAddress,
+      'candidates': List<String>.of(_lanCandidates),
+      'libraries': List<Map<String, dynamic>>.of(_libraries),
+      'items': List<Map<String, dynamic>>.of(_items),
+      'collections': Map<String, Map<String, dynamic>>.of(_collectionCache),
+      'library': _library,
+      'page': _page,
+      'total': _total,
+      'last': _last,
+      'search': _search.text,
+      'offset': _scroll.hasClients ? _scroll.offset : 0.0,
+    };
   }
 
   void _rememberAddress() {
@@ -196,6 +286,8 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   }
 
   Future<void> _changeConnection() async {
+    _endingSession = true;
+    widget.cache?.clear();
     widget.sync?.pause();
     _generation++;
     setState(() => _busy = true);
@@ -279,6 +371,8 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
 
   @override
   void dispose() {
+    _savePageCache();
+    _scroll.dispose();
     _generation++;
     for (final c in [_address, _username, _password, _search]) {
       c.dispose();
@@ -332,6 +426,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                   'remember': true,
                 }));
       authenticated = true;
+      _endingSession = false;
       // The native session belongs to the application, not this page.
       if (!mounted) return;
       _password.clear();
@@ -381,18 +476,20 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     }
   }
 
-  Future<void> _load({bool more = false}) async {
+  Future<void> _load({bool more = false, bool background = false}) async {
     if (_busy) return;
     final generation = ++_generation;
-    if (!more) {
+    if (!more && !background) {
       _collectionCache.clear();
       _collectionFailed.clear();
     }
     final page = more ? _page + 1 : 1;
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
+    if (!background) {
+      setState(() {
+        _busy = true;
+        _error = null;
+      });
+    }
     try {
       final data = await _client.call('catalog', {
         'page': page,
@@ -411,11 +508,13 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       });
       _resolveCollectionCounts();
     } catch (error) {
-      if (mounted && generation == _generation) {
+      if (!background && mounted && generation == _generation) {
         setState(() => _error = _message(error));
       }
     } finally {
-      if (mounted && generation == _generation) setState(() => _busy = false);
+      if (!background && mounted && generation == _generation) {
+        setState(() => _busy = false);
+      }
     }
   }
 
@@ -695,6 +794,8 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
             onPressed: _busy
                 ? null
                 : () async {
+                    _endingSession = true;
+                    widget.cache?.clear();
                     widget.sync?.pause();
                     _generation++;
                     _collectionCache.clear();
@@ -842,7 +943,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
               ),
               const SizedBox(height: 16),
               const Text(
-                '勾选后，账号密码仅存于本机 macOS 钥匙串，下次打开自动连接。',
+                '登录信息仅保存在本机 macOS 钥匙串，之后自动连接；退出并忘记账号可清除。',
                 style: TextStyle(fontSize: 12, color: CinemaTheme.muted),
               ),
             ],
@@ -862,6 +963,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   );
 
   Widget _catalog() => CustomScrollView(
+    controller: _scroll,
     slivers: [
       SliverToBoxAdapter(
         child: Padding(

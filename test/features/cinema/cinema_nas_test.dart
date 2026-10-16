@@ -14,7 +14,7 @@ class FakeNAS extends CinemaNASClient {
   Completer<Map<String, dynamic>>? delayedCollection;
   int logouts = 0;
   bool active = false, libraryFails = false;
-  Completer<Map<String, dynamic>>? delayedLogin;
+  Completer<Map<String, dynamic>>? delayedLogin, delayedCatalog;
   Map<String, dynamic>? videoInfo;
   String savedAddress = 'https://nas.test';
   Map<String, dynamic> connectionInfo = {};
@@ -96,6 +96,7 @@ class FakeNAS extends CinemaNASClient {
       };
     }
     if (method == 'catalog') {
+      if (delayedCatalog != null) return delayedCatalog!.future;
       return {
         'video_arr': [
           {
@@ -128,6 +129,76 @@ class FakeNAS extends CinemaNASClient {
 }
 
 void main() {
+  testWidgets(
+    'reentry renders cached NAS library immediately during slow background refresh',
+    (tester) async {
+      final client = FakeNAS()..saved = true;
+      final cache = CinemaNASPageCache();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CinemaNASPage(client: client, cache: cache),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('收藏'));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox());
+      client.delayedCatalog = Completer<Map<String, dynamic>>();
+      final before = client.calls.length;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CinemaNASPage(client: client, cache: cache),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Test NAS · 影视中心'), findsOneWidget);
+      expect(find.text('测试影片 1'), findsOneWidget);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+      expect(find.text('连接影视中心'), findsNothing);
+      expect(
+        client.calls
+            .skip(before)
+            .where(
+              (c) => [
+                'restore',
+                'login',
+                'libraries',
+                'savedLogin',
+              ].contains(c.$1),
+            ),
+        isEmpty,
+      );
+      expect(client.calls.last.$2?['library'], 2);
+      await tester.pumpWidget(const SizedBox());
+      client.delayedCatalog!.complete({'video_arr': [], 'total_num': 0});
+      await tester.pumpAndSettle();
+    },
+  );
+
+  testWidgets('expired process session invalidates cached NAS library', (
+    tester,
+  ) async {
+    final client = FakeNAS()..active = true;
+    final cache = CinemaNASPageCache();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CinemaNASPage(client: client, cache: cache),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(const SizedBox());
+    client.active = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CinemaNASPage(client: client, cache: cache),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('连接影视中心'), findsOneWidget);
+    expect(find.text('测试影片 1'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'reopening NAS page reuses process session without saved credentials',
     (tester) async {
@@ -229,6 +300,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(client.calls.map((e) => e.$1), ['currentSession', 'savedLogin']);
       expect(find.text('记住账号并自动登录'), findsNothing);
+      expect(find.textContaining('勾选后'), findsNothing);
       expect(find.byType(CheckboxListTile), findsNothing);
       final fields = find.byType(TextField);
       expect(tester.widget<TextField>(fields.at(0)).controller!.text, isEmpty);
