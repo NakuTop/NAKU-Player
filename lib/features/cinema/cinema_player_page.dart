@@ -6,6 +6,7 @@ import 'package:kazumi/services/player/playback_quality.dart';
 import 'cinema_quality_sheet.dart';
 import 'cinema_tracks_sheet.dart';
 import 'cinema_subtitle_appearance.dart';
+import 'cinema_online_subtitles.dart';
 import 'cinema_media_cache.dart';
 import 'cinema_media_transport.dart';
 import 'cinema_route_probe.dart';
@@ -297,6 +298,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   ({String titleKey, int routeIndex, int episodeIndex, int positionSeconds})?
   _lastPlaybackProgress;
   bool _loading = true;
+  bool _pendingPlayIntent = true;
   bool _queueingDownload = false;
   bool _closing = false;
   String _phase = '正在准备播放';
@@ -769,6 +771,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }) async {
     final selectedTitle = title ?? _title;
     final selectedSource = source ?? _source;
+    _pendingPlayIntent = playWhenReady ?? _preferences.autoPlay;
     if (_closing || selectedTitle.routes.isEmpty) return;
     final route = selectedTitle.routes[routeIndex];
     final offset =
@@ -854,11 +857,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         if (_nasReference != episode.url || _nasOptions == null) {
           final options = await _nasPlayback.options(episode.url);
           if (!_isCurrent(generation)) return;
-          _nasOptions = options;
-          _nasReference = episode.url;
-          _nasResolution = options.defaultProfile;
-          _nasAudio = null;
-          _nasSubtitle = -1;
+          setState(() {
+            _nasOptions = options;
+            _nasReference = episode.url;
+            _nasResolution = options.defaultProfile;
+            _nasAudio = null;
+            _nasSubtitle = -1;
+          });
         }
         if (_nasResolution != nasOriginalFileProfile) {
           pendingNAS = await _nasPlayback.start(
@@ -1079,16 +1084,79 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     CinemaNASPlaybackSelection choice,
   ) async {
     final playback = _playback;
-    if (playback == null || !_usesNASPlayback || _loading || _closing) return;
+    if (!_usesNASPlayback ||
+        _closing ||
+        _nasOptions == null ||
+        !_nasOptions!.supportsProfile(choice.resolution)) {
+      return;
+    }
+    final position = _positionForEpisode(_routeIndex, _episodeIndex);
+    final play = playback?.ready == true
+        ? playback!.player.state.playing
+        : _pendingPlayIntent;
     _nasResolution = choice.resolution;
     _nasAudio = choice.audio;
     _nasSubtitle = choice.subtitle;
     await _playEpisode(
       _routeIndex,
       _episodeIndex,
-      resumeAt: playback.position.inSeconds,
-      playWhenReady: playback.player.state.playing,
+      resumeAt: position,
+      playWhenReady: play,
     );
+  }
+
+  Future<void> _showTracks() async {
+    final playback = _playback;
+    if (playback == null) return;
+    await showCinemaTracksSheet(
+      context,
+      playback.player,
+      widget.store,
+      title: _title.title,
+      imdbId: _title.imdbId,
+      nasControls:
+          _usesNASPlayback &&
+              _nasOptions != null &&
+              _nasResolution != nasOriginalFileProfile
+          ? CinemaNASInlinePlaybackControls(
+              options: _nasOptions!,
+              resolution: _nasResolution ?? _nasOptions!.defaultProfile,
+              audio: _nasAudio,
+              subtitle: _nasSubtitle,
+              onApply: (choice) {
+                Navigator.pop(context);
+                unawaited(_applyNASPlaybackChoice(choice));
+              },
+            )
+          : null,
+    );
+  }
+
+  Future<void> _showQuality() async {
+    final playback = _playback;
+    if (!_usesNASPlayback || _nasOptions == null) {
+      if (playback == null) return;
+      return showCinemaQualitySheet(context, playback.player);
+    }
+    final reference = _nasReference;
+    final choice = await showCinemaNASPlaybackSheet(
+      context,
+      options: _nasOptions!,
+      resolution: _nasResolution ?? _nasOptions!.defaultProfile,
+      audio: _nasAudio,
+      subtitle: _nasSubtitle,
+      bitrate: playback?.nasSession?.bitrate ?? 0,
+      onPlayerTracks: playback == null ? null : () => unawaited(_showTracks()),
+      onPlayerQuality: playback == null
+          ? null
+          : () => unawaited(showCinemaQualitySheet(context, playback.player)),
+    );
+    if (choice != null &&
+        mounted &&
+        _usesNASPlayback &&
+        reference == _nasReference) {
+      await _applyNASPlaybackChoice(choice);
+    }
   }
 
   Widget _playbackTools({bool overlay = false}) {
@@ -1111,9 +1179,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final tracks = action(
       _usesNASPlayback ? '外挂字幕 / 播放器音轨' : '字幕与音轨',
       Icons.closed_caption_outlined,
-      playback == null
-          ? null
-          : () => showCinemaTracksSheet(context, playback.player, widget.store),
+      playback == null ? null : _showTracks,
     );
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -1130,12 +1196,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   key: ValueKey(
                     'nas-inline:$_nasReference:${overlay ? 'overlay' : 'detail'}',
                   ),
+                  onPlayerTracks: _showTracks,
                   options: _nasOptions!,
                   resolution: _nasResolution ?? _nasOptions!.defaultProfile,
                   audio: _nasAudio,
                   subtitle: _nasSubtitle,
                   bitrate: playback?.nasSession?.bitrate ?? 0,
-                  enabled: playback != null && !_loading && !_closing,
+                  enabled: !_closing,
                   onApply: (choice) =>
                       unawaited(_applyNASPlaybackChoice(choice)),
                 ),
@@ -1153,10 +1220,21 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             ],
           ),
         if (!overlay) ...[
+          if (_usesNASPlayback && _nasOptions != null)
+            CinemaNASInlinePlaybackControls(
+              options: _nasOptions!,
+              resolution: _nasResolution ?? _nasOptions!.defaultProfile,
+              audio: _nasAudio,
+              subtitle: _nasSubtitle,
+              enabled: !_closing,
+              onPlayerTracks: _showTracks,
+              onApply: (choice) => unawaited(_applyNASPlaybackChoice(choice)),
+            ),
           Wrap(
             spacing: 4,
             runSpacing: 2,
             children: [
+              tracks,
               if (Platform.isAndroid && !NakuDevice.isTV)
                 action(
                   '发送到电视',
@@ -1183,11 +1261,21 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                 playback == null ? null : _screenshot,
               ),
               action(
-                '画质信息与处理',
-                Icons.tune,
+                '在线搜索字幕',
+                Icons.search,
                 playback == null
                     ? null
-                    : () => showCinemaQualitySheet(context, playback.player),
+                    : () => showCinemaOnlineSubtitles(
+                        context,
+                        playback.player,
+                        title: _title.title,
+                        imdbId: _title.imdbId,
+                      ),
+              ),
+              action(
+                _usesNASPlayback ? '清晰度与 NAS 播放设置' : '画质信息与处理',
+                Icons.tune,
+                playback == null && !_usesNASPlayback ? null : _showQuality,
               ),
               action('超分辨率', Icons.auto_awesome, _showSuperResolutionOptions),
               action(
@@ -2673,16 +2761,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                         key: ValueKey(
                                           'nas-bottom:$_nasReference',
                                         ),
+                                        onPlayerTracks: _showTracks,
                                         options: _nasOptions!,
                                         resolution:
                                             _nasResolution ??
                                             _nasOptions!.defaultProfile,
                                         audio: _nasAudio,
                                         subtitle: _nasSubtitle,
-                                        enabled:
-                                            playback != null &&
-                                            !_loading &&
-                                            !_closing,
+                                        enabled: !_closing,
                                         bitrate:
                                             playback?.nasSession?.bitrate ?? 0,
                                         onApply: (choice) => unawaited(
@@ -2715,12 +2801,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                             ),
                                         padding: EdgeInsets.zero,
                                         tooltip: '画质信息与处理',
-                                        onPressed: playback == null
+                                        onPressed:
+                                            playback == null &&
+                                                !_usesNASPlayback
                                             ? null
-                                            : () => showCinemaQualitySheet(
-                                                context,
-                                                playback.player,
-                                              ),
+                                            : _showQuality,
                                         icon: const Icon(
                                           Icons.tune_rounded,
                                           size: 22,
@@ -2789,11 +2874,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                       ),
                                       onPressed: playback == null
                                           ? null
-                                          : () => showCinemaTracksSheet(
-                                              context,
-                                              playback.player,
-                                              widget.store,
-                                            ),
+                                          : _showTracks,
                                     ),
                                     IconButton(
                                       constraints:
@@ -2993,6 +3074,20 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                           style: const TextStyle(color: _text, fontSize: 14),
                         ),
                         const SizedBox(height: 16),
+                        if (_usesNASPlayback && _nasOptions != null)
+                          CinemaNASInlinePlaybackControls(
+                            options: _nasOptions!,
+                            resolution:
+                                _nasResolution ?? _nasOptions!.defaultProfile,
+                            audio: _nasAudio,
+                            subtitle: _nasSubtitle,
+                            enabled: !_closing,
+                            onPlayerTracks: playback == null
+                                ? null
+                                : _showTracks,
+                            onApply: (choice) =>
+                                unawaited(_applyNASPlaybackChoice(choice)),
+                          ),
                         Wrap(
                           spacing: 8,
                           runSpacing: 8,

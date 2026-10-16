@@ -74,6 +74,7 @@ final class AutoRouteProtocol: URLProtocol {
         do {_ = try NASMovieSession.pairingCode("invalid");fatalError("invalid pairing code accepted")}catch NASMovieError.configuration {}
         do {_ = try NASMovieSession.playbackProfileData(["transcodeable":[["name":"invalid","resolution":"../escape"]]]);fatalError("bad profile accepted")}catch NASMovieError.response {}
         do {_ = try NASMovieSession.playbackProfileData(["transcodeable":[["name":"480P","resolution":"720x400"],["name":"duplicate","resolution":"720x400"]]]);fatalError("duplicate accepted")}catch NASMovieError.response {}
+        expect(try NASMovieSession.playbackProfileData(["transcodeable":[]]).isEmpty,"no transcode profiles permits original playback")
         let tracks=NASMovieSession.playbackTrackData([["id":"4354","title":"Chinese","isDefault":1],["id":4354]],subtitles:false)
         expect(tracks.count==1 && tracks[0]["id"] as? Int==4354,"stable actual track ID")
         expect(NASMovieSession.isPrivateIPv4("192.168.1.10"),"RFC1918 accepted")

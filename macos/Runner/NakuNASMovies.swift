@@ -711,7 +711,7 @@ actor NASMovieSession {
         if let number=value as? Int {return number};if let text=value as? String {return Int(text)};return nil
     }
     static func playbackProfileData(_ info: [String:Any]) throws -> [[String:Any]] {
-        guard let raw=info["transcodeable"] as? [[String:Any]],!raw.isEmpty,raw.count <= 32 else {throw NASMovieError.response}
+        guard let raw=info["transcodeable"] as? [[String:Any]],raw.count <= 32 else {throw NASMovieError.response}
         let original=(info["resolution"] as? [String:Any])?["name"] as? String
         var seen=Set<String>()
         return try raw.map {item in

@@ -142,6 +142,7 @@ class CinemaNASInlinePlaybackControls extends StatelessWidget {
     this.bitrate = 0,
     this.enabled = true,
     required this.onApply,
+    this.onPlayerTracks,
   });
   final CinemaNASPlaybackOptions options;
   final String resolution;
@@ -149,6 +150,7 @@ class CinemaNASInlinePlaybackControls extends StatelessWidget {
   final int bitrate;
   final bool enabled;
   final ValueChanged<CinemaNASPlaybackSelection> onApply;
+  final VoidCallback? onPlayerTracks;
 
   void _select({String? profile, int? audioId, int? subtitleId}) {
     final selected = profile ?? resolution;
@@ -191,24 +193,32 @@ class CinemaNASInlinePlaybackControls extends StatelessWidget {
               : options.label(resolution),
           onSelected: (v) => _select(profile: v),
         ),
-        CinemaPlaybackMenu<int>(
-          label: 'NAS 音轨',
-          icon: Icons.audiotrack_outlined,
-          value: audio,
-          entries: tracks(options.audios),
-          enabled: enabled && !original,
-          description: original ? '原文件请使用播放器音轨' : null,
-          onSelected: (v) => _select(audioId: v),
-        ),
-        CinemaPlaybackMenu<int>(
-          label: 'NAS 字幕',
-          icon: Icons.subtitles_outlined,
-          value: subtitle,
-          entries: tracks(options.subtitles),
-          enabled: enabled && !original,
-          description: original ? '原文件请使用播放器字幕' : null,
-          onSelected: (v) => _select(subtitleId: v),
-        ),
+        if (original && onPlayerTracks != null)
+          TextButton.icon(
+            onPressed: enabled ? onPlayerTracks : null,
+            icon: const Icon(Icons.audiotrack_outlined),
+            label: const Text('选择音轨 / 字幕'),
+          ),
+        if (!original || onPlayerTracks == null)
+          CinemaPlaybackMenu<int>(
+            label: 'NAS 音轨',
+            icon: Icons.audiotrack_outlined,
+            value: audio,
+            entries: tracks(options.audios),
+            enabled: enabled && !original,
+            description: original ? '原文件请使用播放器音轨' : null,
+            onSelected: (v) => _select(audioId: v),
+          ),
+        if (!original || onPlayerTracks == null)
+          CinemaPlaybackMenu<int>(
+            label: 'NAS 字幕',
+            icon: Icons.subtitles_outlined,
+            value: subtitle,
+            entries: tracks(options.subtitles),
+            enabled: enabled && !original,
+            description: original ? '原文件请使用播放器字幕' : null,
+            onSelected: (v) => _select(subtitleId: v),
+          ),
       ],
     );
   }

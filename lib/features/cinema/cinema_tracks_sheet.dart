@@ -3,6 +3,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'cinema_store.dart';
+import 'cinema_online_subtitles.dart';
 import 'cinema_subtitle_appearance.dart';
 
 Future<void> applyCinemaTrackPreferences(
@@ -28,14 +29,23 @@ Future<void> applyCinemaTrackPreferences(
 Future<void> showCinemaTracksSheet(
   BuildContext context,
   Player player,
-  CinemaStore store,
-) => showModalBottomSheet<void>(
+  CinemaStore store, {
+  String title = '',
+  String imdbId = '',
+  Widget? nasControls,
+}) => showModalBottomSheet<void>(
   context: context,
   isScrollControlled: true,
   constraints: const BoxConstraints(maxWidth: 720),
   builder: (_) => SizedBox(
     height: MediaQuery.sizeOf(context).height * .82,
-    child: CinemaTracksPanel(player: player, store: store),
+    child: CinemaTracksPanel(
+      player: player,
+      store: store,
+      title: title,
+      imdbId: imdbId,
+      nasControls: nasControls,
+    ),
   ),
 );
 
@@ -44,9 +54,14 @@ class CinemaTracksPanel extends StatefulWidget {
     super.key,
     required this.player,
     required this.store,
+    this.title = '',
+    this.imdbId = '',
+    this.nasControls,
   });
   final Player player;
   final CinemaStore store;
+  final String title, imdbId;
+  final Widget? nasControls;
   @override
   State<CinemaTracksPanel> createState() => _CinemaTracksPanelState();
 }
@@ -189,6 +204,10 @@ class _CinemaTracksPanelState extends State<CinemaTracksPanel> {
           padding: const EdgeInsets.all(24),
           children: [
             Text('字幕与音轨', style: Theme.of(context).textTheme.titleLarge),
+            if (widget.nasControls != null) ...[
+              widget.nasControls!,
+              const Divider(),
+            ],
             const SizedBox(height: 12),
             const Text('可以切换片源自带轨道，或加载本地字幕和音轨。更换字幕不会暂停播放。'),
             if (_error != null)
@@ -243,6 +262,18 @@ class _CinemaTracksPanelState extends State<CinemaTracksPanel> {
               spacing: 8,
               runSpacing: 8,
               children: [
+                OutlinedButton.icon(
+                  onPressed: _busy
+                      ? null
+                      : () => showCinemaOnlineSubtitles(
+                          context,
+                          widget.player,
+                          title: widget.title,
+                          imdbId: widget.imdbId,
+                        ),
+                  icon: const Icon(Icons.search),
+                  label: const Text('在线搜索字幕'),
+                ),
                 OutlinedButton.icon(
                   onPressed: _busy ? null : _import,
                   icon: const Icon(Icons.subtitles),

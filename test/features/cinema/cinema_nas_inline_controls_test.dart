@@ -144,6 +144,28 @@ void main() {
     },
   );
 
+  testWidgets(
+    'original playback opens native track chooser instead of disabled NAS menus',
+    (tester) async {
+      var opened = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: CinemaNASInlinePlaybackControls(
+              options: _options,
+              resolution: nasOriginalFileProfile,
+              onApply: (_) {},
+              onPlayerTracks: () => opened = true,
+            ),
+          ),
+        ),
+      );
+      expect(find.text('NAS 音轨'), findsNothing);
+      await tester.tap(find.text('选择音轨 / 字幕'));
+      expect(opened, true);
+    },
+  );
+
   testWidgets('narrow menu triggers wrap without overflow', (tester) async {
     await tester.pumpWidget(_host(width: 180, onApply: (_) {}));
     await tester.pumpAndSettle();

@@ -480,6 +480,53 @@ void main() {
   }
 
   testWidgets(
+    'NAS quality is selectable before the first video frame and keeps resume intent',
+    (tester) async {
+      final nas = _NAS();
+      final reference = nasMediaReference(
+        namespace: 'a' * 64,
+        id: 1,
+        library: 1,
+        path: '/movie.mkv',
+      );
+      final title = CinemaTitle(
+        id: 'nas-stall',
+        sourceId: cinemaNASSource.id,
+        title: 'NAS stalled fixture',
+        routes: [
+          CinemaRoute(
+            name: 'NAS',
+            episodes: [CinemaEpisode(name: '电影', url: reference)],
+          ),
+        ],
+      );
+      await mount(
+        tester,
+        {'autoPlay': false},
+        stallFirst: true,
+        selectedTitle: title,
+        nasPlayback: CinemaNASPlaybackClient(client: nas),
+        initialPosition: 123,
+      );
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(nas.starts, hasLength(1));
+      // The loading mask itself exposes a working quality selector.
+      await tester.tap(find.text('清晰度').first);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.tap(find.text('1080P').last);
+      await tester.pumpAndSettle();
+      expect(nas.starts, hasLength(2));
+      expect(nas.starts.last['resolution'], '1080P');
+      expect(backends.last.state.position.inSeconds, 123);
+      expect(backends.last.state.playing, false);
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
     'NAS streaming retains resume, hide pause, and closes tasks on quality switch and exit',
     (tester) async {
       final nas = _NAS();
@@ -532,9 +579,15 @@ void main() {
         'nas-detail-direct-controls',
         target: find.byType(CinemaPlayerPage),
       );
-      await tester.tap(find.text('清晰度').last);
+      await tester.ensureVisible(find.text('清晰度与 NAS 播放设置'));
+      await tester.tap(find.text('清晰度与 NAS 播放设置'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('1080P').last);
+      expect(find.text('NAS 清晰度、音轨与字幕'), findsOneWidget);
+      await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('1080P · NAS 流式输出').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('应用并保留播放进度'));
       await tester.pumpAndSettle();
       expect(nas.starts.length, 2);
       expect(nas.calls.where((v) => v == 'closePlayback').length, 1);
