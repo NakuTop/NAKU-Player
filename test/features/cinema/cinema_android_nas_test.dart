@@ -62,7 +62,31 @@ class _Request implements HttpClientRequest {
     transport.requests.add(this);
     final responseHeaders = _Headers();
     Map<String, dynamic> result = {'code': 200, 'data': <String, dynamic>{}};
-    if (url.path.endsWith('/verify/check')) {
+    if (url.path.endsWith('/create/qrCode')) {
+      result['data'] = {
+        'qrCode': 'private-poll-id',
+        'url': 'https://example.ugnas.com/scan',
+      };
+    } else if (url.path.endsWith('/oauth/token')) {
+      result['code'] = transport.qrCode;
+      result['data'] = {
+        'user': {
+          'scanType': 'localScan',
+          'linkParams': jsonEncode({
+            'token': 'encrypted-token',
+            'token_safe': true,
+            'public_key': 'test-public-key',
+            if (transport.wrongQRAccount) 'username': 'mallory',
+          }),
+        },
+      };
+    } else if (url.path.endsWith('/current/user')) {
+      result['data'] = {'username': 'alice', 'uid': 1000};
+    } else if (url.path.endsWith('/machine/common')) {
+      result['data'] = {
+        'common': {'serial': 'TEST-NAS'},
+      };
+    } else if (url.path.endsWith('/verify/check')) {
       responseHeaders.set('X-Rsa-Token', 'test-public-key');
     } else if (url.path.endsWith('/verify/login')) {
       result['data'] = {
@@ -150,7 +174,8 @@ class _Client implements HttpClient {
   final requests = <_Request>[];
   final files = <String, String>{};
   String account = "";
-  bool expireOnce = false;
+  bool expireOnce = false, wrongQRAccount = false;
+  int qrCode = 81520;
   @override
   set connectionTimeout(Duration? value) {}
   @override
@@ -178,6 +203,10 @@ void main() {
         ) async {
           final a = call.arguments as Map? ?? {};
           switch (call.method) {
+            case 'qrKey':
+              return 'ephemeral-public-key';
+            case 'qrDecrypt':
+              return 'decrypted-token';
             case 'rsa':
               return 'rsa-${a['text']}';
             case 'seal':
@@ -203,6 +232,74 @@ void main() {
             'password': 'pass',
           })
           as Map;
+  test(
+    'QR waiting scanned authorization persists verified session and restores without password',
+    () async {
+      final qr = await nas.invoke('qrCreate', {
+        'address': 'https://example.ug.link',
+      });
+      expect(qr, {'url': 'https://example.ugnas.com/scan'});
+      final create = http.requests.firstWhere(
+        (r) => r.url.path.endsWith('/create/qrCode'),
+      );
+      expect(jsonDecode(utf8.decode(create.bytes))['clientType'], 'Mac');
+      expect(saved, isNull);
+      expect(await nas.invoke('qrPoll'), {'state': 'waiting'});
+      http.qrCode = 81308;
+      expect(await nas.invoke('qrPoll'), {'state': 'scanned'});
+      http.qrCode = 200;
+      final session = await nas.invoke('qrPoll') as Map;
+      expect(session['state'], 'authorized');
+      expect(session.containsKey('token'), false);
+      expect(jsonDecode(saved!)['token'], 'decrypted-token');
+      expect(jsonDecode(saved!).containsKey('password'), false);
+      await nas.invoke('logout');
+      final restored = await nas.invoke('restore') as Map;
+      expect(restored['namespace'], session['namespace']);
+      expect(
+        http.requests.any((r) => r.url.path.endsWith('/verify/login')),
+        false,
+      );
+      await expectLater(
+        nas.invoke('qrPoll'),
+        throwsA(isA<PlatformException>()),
+      );
+    },
+  );
+  test(
+    'QR rejects mismatched account without persisting and clears temporary key',
+    () async {
+      await nas.invoke('qrCreate', {'address': 'https://example.ug.link'});
+      http.qrCode = 200;
+      http.wrongQRAccount = true;
+      await expectLater(
+        nas.invoke('qrPoll'),
+        throwsA(isA<PlatformException>()),
+      );
+      expect(saved, isNull);
+      expect(await nas.invoke('currentSession'), isEmpty);
+    },
+  );
+  test('cancel invalidates a queued QR poll before adoption', () async {
+    await nas.invoke('qrCreate', {'address': 'https://example.ug.link'});
+    http.qrCode = 200;
+    final pending = nas.invoke('qrPoll');
+    final assertion = expectLater(pending, throwsA(isA<PlatformException>()));
+    await nas.invoke('qrCancel');
+    await assertion;
+    expect(saved, isNull);
+    expect(await nas.invoke('currentSession'), isEmpty);
+  });
+  test('QR expiration and cancellation prevent further polling', () async {
+    await nas.invoke('qrCreate', {'address': 'https://example.ug.link'});
+    http.qrCode = 8058;
+    expect(await nas.invoke('qrPoll'), {'state': 'expired'});
+    await expectLater(nas.invoke('qrPoll'), throwsA(isA<PlatformException>()));
+    await nas.invoke('qrCreate', {'address': 'https://example.ug.link'});
+    await nas.invoke('qrCancel');
+    await expectLater(nas.invoke('qrPoll'), throwsA(isA<PlatformException>()));
+    expect(saved, isNull);
+  });
   test(
     'login persists credentials only via secure store; page reentry makes no request',
     () async {

@@ -6,13 +6,13 @@
 
 - 需要 Android 7.0 或更高版本，安装包包含 armeabi-v7a、arm64-v8a 和 x86_64。安卓手机安装 Mobile 包；电视安装 TV 包。TV 包固定横屏并启用遥控器导航，即使厂商未正确报告电视设备类型也可使用。
 - 电视只播放，不提供下载；手机保留下载管理。
-- 两端在 NAS 影视中心输入同一台 NAS 的地址或 UGlink 别名、同一个 NAS 账号和密码。凭据通过 Android Keystore 加密保存在本机，退出并忘记账号可以清除。
+- 个人构建预填 UGlink。手机可输入账号密码或用绿联云 App 扫码，电视只提供扫码登录。两端授权同一台 NAS、同一个账号。凭据通过 Android Keystore 加密保存在本机，退出并忘记账号可以清除。
 - NAS 连接优先选择经过身份核对的局域网地址，不可达时尝试远程 UGlink。首次提供 UGlink 地址，系统可从 NAS 查询可用局域网地址；也可直接输入局域网地址。
 - 收藏和历史沿用电脑版的 NAS 同步目录和数据格式。首次登录后，在设置中的 NAS 同步检查状态；账号需有个人目录读写权限。
 - 手机和电视连接同一局域网，电视打开 NAKU 并显示接收服务就绪。手机在影片详情或播放页点“发送到电视”，选择发现的电视。电视自行拉取片源，手机可离开页面。
 - 如果电视已打开其他页面，会提示确认再播放，避免覆盖当前观看。路由器的访客隔离、无线客户端隔离可能阻止设备发现。
 - 遥控器方向键移动焦点，确认键选择。播放控制栏 8 秒后自动隐藏，方向键或确认键重新显示；控制栏提供前后 10 秒、选集、倍速、收藏以及 NAS 清晰度/音轨/字幕。
-- 安卓首版使用账号密码登录 NAS；绿联云 App 扫码登录暂仍限电脑版。
+- 扫码登录支持等待、已扫码、失效刷新和取消；授权后验证 NAS 和账号身份，再加密保存会话。电视打开未登录的 NAS 页自动显示二维码。
 
 ## 构建
 
@@ -20,9 +20,9 @@
 
 ```sh
 flutter pub get
-flutter build apk --release --build-name 3.0.0 --build-number 40
+flutter build apk --release --build-name 3.0.2 --build-number 42
 # 复制 build/app/outputs/flutter-apk/app-release.apk 为手机包，再构建电视包。
-flutter build apk --release --build-name 3.0.0 --build-number 40 --dart-define=NAKU_TV=true
+flutter build apk --release --build-name 3.0.2 --build-number 42 --dart-define=NAKU_TV=true
 ```
 
 包名 `com.nakutop.nakuplayer`。两个包使用相同签名和包名，可覆盖切换；勿安装在同一设备上期待出现两个独立应用。
@@ -32,3 +32,7 @@ flutter build apk --release --build-name 3.0.0 --build-number 40 --dart-define=N
 协议和状态测试覆盖本机凭据边界、返回片库不重新登录、跨账号引用拦截、错误 LAN 身份不发送凭据、清晰度/音轨数据、共享同步格式及投屏请求的过期/重放拦截。电视导航测试检查电视下载入口消失、手机仍保留下载。
 
 真实 NAS 登录、电视硬件解码、遥控器映射和双设备发现播放，需要实际手机与电视验收；本机模拟测试不能替代这些检查。Android APK 不使用 macOS Sparkle 更新源。
+
+个人默认地址通过 `--dart-define-from-file=/本机私有路径/personal-defines.json` 传入，JSON 键为 `NAKU_NAS_ADDRESS`，不写入公共源码。个人 APK 内含该地址，请勿当作通用公开安装包。
+
+电视播放时返回键先收起控制栏，再退出全屏到详情；详情页返回片库。

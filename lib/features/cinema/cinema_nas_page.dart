@@ -70,7 +70,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   late final _client =
       widget.client ?? widget.cache?.client ?? CinemaNASClient();
   late final ScrollController _scroll;
-  bool _endingSession = false;
+  bool _endingSession = false, _qrOpening = false;
   late final _store = widget.store ?? CinemaStore();
   final _address = TextEditingController();
   String _mode = 'remote';
@@ -153,6 +153,10 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   @override
   void initState() {
     super.initState();
+    if (Platform.isAndroid || NakuDevice.isTV) {
+      _address.text = NakuDevice.personalNASAddress;
+      _remoteAddress = NakuDevice.personalNASAddress;
+    }
     final cached = widget.cache?._snapshot;
     if (cached != null &&
         cached['namespace'] == _client.namespace &&
@@ -335,7 +339,8 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
               ? prefs['remoteAddress']
               : _remoteAddress;
           _mode = prefs['mode'] == 'lan' ? 'lan' : 'remote';
-          _address.text = _mode == 'lan' ? _lanAddress : _remoteAddress;
+          final preferred = _mode == 'lan' ? _lanAddress : _remoteAddress;
+          if (preferred.isNotEmpty) _address.text = preferred;
         }
       }
       final active = await _client.call('currentSession');
@@ -352,6 +357,11 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       if (!mounted) return;
       if (saved.isEmpty) {
         setState(() => _busy = false);
+        if (NakuDevice.isTV) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && !_loggedIn && !_busy) unawaited(_qrLogin());
+          });
+        }
         return;
       }
       _hasSaved = true;
@@ -716,7 +726,8 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   }
 
   Future<void> _qrLogin() async {
-    if (_busy) return;
+    if (_busy || _qrOpening) return;
+    _qrOpening = true;
     setState(() {
       _busy = false;
       _error = null;
@@ -731,6 +742,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
         ),
       );
       if (!mounted || info == null) return;
+      _endingSession = false;
       final libraries = await _client.call('libraries');
       if (!mounted) return;
       setState(() {
@@ -747,6 +759,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     } catch (error) {
       if (mounted) setState(() => _error = _message(error));
     } finally {
+      _qrOpening = false;
       if (mounted) setState(() => _busy = false);
     }
     if (mounted && _loggedIn) {
@@ -870,7 +883,53 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     ),
   );
 
-  Widget _loginForm() => Center(
+  Widget _loginForm() =>
+      NakuDevice.isTV ? _tvLoginForm() : _passwordLoginForm();
+
+  Widget _tvLoginForm() => Center(
+    child: SingleChildScrollView(
+      padding: const EdgeInsets.all(40),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 620),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.tv_rounded, size: 64, color: CinemaTheme.copper),
+            const SizedBox(height: 24),
+            const Text(
+              '大屏观看你的私人影院',
+              style: TextStyle(fontSize: 30, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              '使用绿联云 App 扫码确认，收藏和观看记录随账号同步。',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 32),
+            FilledButton.icon(
+              autofocus: true,
+              onPressed: _busy ? null : _qrLogin,
+              icon: const Icon(Icons.qr_code_rounded),
+              label: Padding(
+                padding: const EdgeInsets.symmetric(
+                  vertical: 16,
+                  horizontal: 32,
+                ),
+                child: Text(_busy ? '正在连接…' : '扫码登录 NAS'),
+              ),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              '同一网络优先直连 · 外出自动远程连接',
+              style: TextStyle(color: CinemaTheme.muted),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  Widget _passwordLoginForm() => Center(
     child: SingleChildScrollView(
       padding: const EdgeInsets.all(32),
       child: ConstrainedBox(
@@ -902,15 +961,17 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                 subtitle: Text('同一局域网优先直连，在外自动使用 UGlink，无需手动切换。'),
               ),
               const SizedBox(height: 20),
-              TextField(
-                controller: _address,
-                enabled: !_busy,
-                onChanged: (_) => _rememberAddress(),
-                decoration: InputDecoration(
-                  labelText: 'NAS 地址或 UGlink 别名',
-                  hintText: 'UGlink 别名、远程地址或局域网地址',
+              if (!(Platform.isAndroid &&
+                  NakuDevice.personalNASAddress.isNotEmpty))
+                TextField(
+                  controller: _address,
+                  enabled: !_busy,
+                  onChanged: (_) => _rememberAddress(),
+                  decoration: InputDecoration(
+                    labelText: 'NAS 地址或 UGlink 别名',
+                    hintText: 'UGlink 别名、远程地址或局域网地址',
+                  ),
                 ),
-              ),
               if (_mode == 'lan' && _lanCandidates.isNotEmpty)
                 Wrap(
                   spacing: 8,
@@ -966,15 +1027,14 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                 ),
               ),
               const SizedBox(height: 12),
-              if (!Platform.isAndroid)
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _busy ? null : _qrLogin,
-                    icon: const Icon(Icons.qr_code_scanner),
-                    label: const Text('使用绿联云 App 扫码登录'),
-                  ),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _busy ? null : _qrLogin,
+                  icon: const Icon(Icons.qr_code_scanner),
+                  label: const Text('使用绿联云 App 扫码登录'),
                 ),
+              ),
               const SizedBox(height: 16),
               Text(
                 Platform.isAndroid
@@ -1300,27 +1360,29 @@ class _NASQRDialogState extends State<_NASQRDialog> {
   Widget build(BuildContext context) => AlertDialog(
     title: const Text('扫码登录 NAS'),
     content: SizedBox(
-      width: 360,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (_url != null)
-            ColoredBox(
-              color: Colors.white,
-              child: QrImageView(
-                data: _url!,
-                size: 240,
-                padding: const EdgeInsets.all(16),
+      width: NakuDevice.isTV ? 520 : 360,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_url != null)
+              ColoredBox(
+                color: Colors.white,
+                child: QrImageView(
+                  data: _url!,
+                  size: NakuDevice.isTV ? 280 : 240,
+                  padding: const EdgeInsets.all(16),
+                ),
               ),
-            ),
-          if (_creating)
-            const Padding(
-              padding: EdgeInsets.all(48),
-              child: CircularProgressIndicator(),
-            ),
-          const SizedBox(height: 20),
-          Text(_error ?? _status, textAlign: TextAlign.center),
-        ],
+            if (_creating)
+              const Padding(
+                padding: EdgeInsets.all(48),
+                child: CircularProgressIndicator(),
+              ),
+            const SizedBox(height: 20),
+            Text(_error ?? _status, textAlign: TextAlign.center),
+          ],
+        ),
       ),
     ),
     actions: [
@@ -1329,6 +1391,7 @@ class _NASQRDialogState extends State<_NASQRDialog> {
         child: const Text('取消'),
       ),
       TextButton(
+        autofocus: NakuDevice.isTV,
         onPressed: _creating ? null : _create,
         child: const Text('刷新二维码'),
       ),

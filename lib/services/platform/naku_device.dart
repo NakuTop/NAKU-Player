@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 /// Hardware classification, never inferred from the screen width.
 class NakuDevice {
   static bool isTV = false;
+  static const personalNASAddress = String.fromEnvironment('NAKU_NAS_ADDRESS');
   static bool get canDownload => !isTV;
   static bool get hasNAS => Platform.isMacOS || Platform.isAndroid;
   static Future<void> initialize() async {

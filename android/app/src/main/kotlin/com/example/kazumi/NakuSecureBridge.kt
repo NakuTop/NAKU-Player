@@ -6,6 +6,8 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
+import java.security.KeyPair
+import java.security.KeyPairGenerator
 import java.security.KeyFactory
 import java.security.KeyStore
 import java.security.spec.X509EncodedKeySpec
@@ -17,6 +19,7 @@ import javax.crypto.spec.SecretKeySpec
 
 /** Device-bound credentials. Backups are disabled in the manifest. */
 class NakuSecureBridge(private val context: Context) {
+    private var qrKey: KeyPair? = null
     private val alias = "naku.nas.credentials.v1"
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -48,13 +51,15 @@ class NakuSecureBridge(private val context: Context) {
     private fun rsa(text: String, raw: String): String {
         val pem = if (raw.contains("BEGIN")) raw else String(decode(raw), Charsets.UTF_8)
         var der = decode(pem.replace(Regex("-----[^-]+-----|\\s"), ""))
-        if (pem.contains("BEGIN RSA PUBLIC KEY")) {
+        val factory = KeyFactory.getInstance("RSA")
+        val spki = try { factory.generatePublic(X509EncodedKeySpec(der)) } catch (_: Exception) { null }
+        if (spki == null && pem.contains("BEGIN RSA PUBLIC KEY")) {
             val algorithm = byteArrayOf(0x30,0x0d,0x06,0x09,0x2a,0x86.toByte(),0x48,0x86.toByte(),0xf7.toByte(),0x0d,0x01,0x01,0x01,0x05,0x00)
             val bits = byteArrayOf(0x03) + derLength(der.size + 1) + byteArrayOf(0) + der
             val body = algorithm + bits
             der = byteArrayOf(0x30) + derLength(body.size) + body
         }
-        val publicKey = KeyFactory.getInstance("RSA").generatePublic(X509EncodedKeySpec(der))
+        val publicKey = spki ?: factory.generatePublic(X509EncodedKeySpec(der))
         return Cipher.getInstance("RSA/ECB/PKCS1Padding").run {
             init(Cipher.ENCRYPT_MODE, publicKey)
             b64(doFinal(text.toByteArray(Charsets.UTF_8)))
@@ -65,6 +70,15 @@ class NakuSecureBridge(private val context: Context) {
             try {
                 val prefs = context.getSharedPreferences("naku-secure", Context.MODE_PRIVATE)
                 val value: Any? = when (call.method) {
+                    "qrKey" -> {
+                        qrKey = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+                        "-----BEGIN RSA PUBLIC KEY-----\n" + b64(qrKey!!.public.encoded).chunked(64).joinToString("\n") + "\n-----END RSA PUBLIC KEY-----"
+                    }
+                    "qrDecrypt" -> Cipher.getInstance("RSA/ECB/PKCS1Padding").run {
+                        init(Cipher.DECRYPT_MODE, requireNotNull(qrKey).private)
+                        String(doFinal(decode(call.argument<String>("text")!!)), Charsets.UTF_8)
+                    }
+                    "qrClear" -> { qrKey = null; null }
                     "read" -> prefs.getString("credentials", null)?.let { String(decrypt(decode(it), key()), Charsets.UTF_8) }
                     "write" -> { check(prefs.edit().putString("credentials", b64(encrypt(call.argument<String>("value")!!.toByteArray(Charsets.UTF_8), key()))).commit()); null }
                     "delete" -> { check(prefs.edit().remove("credentials").commit()); null }

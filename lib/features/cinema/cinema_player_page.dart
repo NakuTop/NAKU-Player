@@ -2156,36 +2156,48 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   @override
-  Widget build(BuildContext context) => FocusScope(
-    node: _playerFocus,
-    autofocus: true,
-    child: Stack(
-      fit: StackFit.expand,
-      children: [
-        _buildPlayer(context),
-        PlayerKeyboardShortcuts(
-          focusScopeNode: _playerFocus,
-          shortcuts: NakuDevice.isTV
-              ? const {
-                  'playorpause': ['Media Play Pause'],
-                  'forward': ['Media Fast Forward'],
-                  'rewind': ['Media Rewind'],
-                }
-              : _preferences.shortcuts,
-          actions: _keyboardActions,
-          longPressActions: {
-            'forward': PlayerLongPressShortcutActions(
-              onRepeat: _holdForward,
-              onRelease: _releaseForward,
-            ),
-          },
-          isBlocked: () =>
-              _closing ||
-              HardwareKeyboard.instance.isMetaPressed ||
-              HardwareKeyboard.instance.isControlPressed ||
-              HardwareKeyboard.instance.isAltPressed,
-        ),
-      ],
+  Widget build(BuildContext context) => PopScope(
+    canPop: !NakuDevice.isTV || !_fullscreen,
+    onPopInvokedWithResult: (didPop, _) {
+      if (!didPop && NakuDevice.isTV && _fullscreen) {
+        if (_tvControlsVisible) {
+          setState(() => _tvControlsVisible = false);
+        } else {
+          unawaited(_setFullscreen(false));
+        }
+      }
+    },
+    child: FocusScope(
+      node: _playerFocus,
+      autofocus: true,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          _buildPlayer(context),
+          PlayerKeyboardShortcuts(
+            focusScopeNode: _playerFocus,
+            shortcuts: NakuDevice.isTV
+                ? const {
+                    'playorpause': ['Media Play Pause'],
+                    'forward': ['Media Fast Forward'],
+                    'rewind': ['Media Rewind'],
+                  }
+                : _preferences.shortcuts,
+            actions: _keyboardActions,
+            longPressActions: {
+              'forward': PlayerLongPressShortcutActions(
+                onRepeat: _holdForward,
+                onRelease: _releaseForward,
+              ),
+            },
+            isBlocked: () =>
+                _closing ||
+                HardwareKeyboard.instance.isMetaPressed ||
+                HardwareKeyboard.instance.isControlPressed ||
+                HardwareKeyboard.instance.isAltPressed,
+          ),
+        ],
+      ),
     ),
   );
 

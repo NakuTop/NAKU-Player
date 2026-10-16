@@ -22,6 +22,9 @@ class CinemaAndroidNAS {
   WebSocket? _socket;
   Timer? _heartbeat;
   String _task = '';
+  int _qrGeneration = 0;
+  String _qrCode = '', _qrOrigin = '', _qrHint = '';
+
   Uri? _closeURL;
   Map<String, dynamic>? _closeBody;
   Map<String, String>? _closeHeaders;
@@ -29,9 +32,15 @@ class CinemaAndroidNAS {
   // Serialize account changes with requests, so responses cannot adopt another
   // account's data after logout. The socket heartbeat runs independently.
   Future<dynamic> invoke(String method, [Map<String, dynamic>? arguments]) {
+    if (method == 'qrCancel' || method == 'qrCreate') _qrGeneration++;
+    final requestedQRGeneration = _qrGeneration;
     final completed = Completer<dynamic>();
     _tail = _tail.then((_) async {
       try {
+        if ((method == 'qrCreate' || method == 'qrPoll') &&
+            requestedQRGeneration != _qrGeneration) {
+          _fail('扫码登录已取消。');
+        }
         final expected = _namespace;
         dynamic value;
         try {
@@ -40,6 +49,9 @@ class CinemaAndroidNAS {
           if (error.code != 'nas_expired' ||
               expected.isEmpty ||
               {
+                'qrCreate',
+                'qrPoll',
+                'qrCancel',
                 'login',
                 'restore',
                 'logout',
@@ -301,7 +313,9 @@ class CinemaAndroidNAS {
         }
       }
     }
-    final result = await _login({...saved, 'address': address}, save: false);
+    final result = saved['qr'] == true
+        ? await _adoptQR({...saved, 'address': address}, save: false)
+        : await _login({...saved, 'address': address}, save: false);
     if (cache['namespace'] != null && cache['namespace'] != _namespace) {
       await _logout();
       _fail();
@@ -315,6 +329,190 @@ class CinemaAndroidNAS {
     }
     _hint = hint;
     return result;
+  }
+
+  // LOCAL_LOGIN uses the registered desktop wire profile, even on an Android
+  // display. Creating a QR with 'Android' succeeds, but the scanner rejects
+  // that profile as an unknown client type in the LOCAL_LOGIN workflow.
+  Map<String, String> get _qrIdentity => {
+    'platform': 'Mac',
+    'clientType': 'Mac',
+    'model': 'Android',
+    'osVer': Platform.operatingSystemVersion,
+    'bid': _clientID,
+    'alias': 'Naku Player',
+  };
+
+  Future<void> _clearQR() async {
+    _qrCode = '';
+    _qrOrigin = '';
+    _qrHint = '';
+    await _secure.invokeMethod<void>('qrClear');
+  }
+
+  Future<String> _deviceHint(String origin) async {
+    final r = _decode(
+      (await _request(Uri.parse('$origin/ugreen/v1/verify/sn'))).bytes,
+    );
+    _check(r);
+    final hint = '${_map(r['data'])['sn'] ?? ''}';
+    if (hint.isEmpty) _fail('NAS 未返回设备身份，请检查连接。');
+    return hint;
+  }
+
+  Future<Map<String, dynamic>> _createQR(String address) async {
+    final attempt = _qrGeneration;
+    await _clearQR();
+    try {
+      final origin = await _resolve(address);
+      final hint = await _deviceHint(origin);
+      final publicKey = await _secure.invokeMethod<String>('qrKey');
+      final r = _decode(
+        (await _request(
+          Uri.parse('https://api.ugnas.com/api/user/v3/sa/create/qrCode'),
+          method: 'POST',
+          body: {
+            ..._qrIdentity,
+            'qrType': 'LOCAL_LOGIN',
+            'ak': 'UG8FKSDUGREEN001',
+            'public_key': publicKey,
+            'sn': hint,
+          },
+        )).bytes,
+      );
+      if (attempt != _qrGeneration) _fail('扫码登录已取消。');
+      _check(r);
+      final d = _map(r['data']),
+          url = Uri.tryParse('${_map(r['data'])['url']}');
+      if (url == null ||
+          url.scheme != 'https' ||
+          url.host.isEmpty ||
+          '${d['qrCode'] ?? ''}'.isEmpty) {
+        _fail('无法创建二维码，请刷新重试。');
+      }
+      _qrCode = d['qrCode'];
+      _qrOrigin = origin;
+      _qrHint = hint;
+      return {'url': url.toString()};
+    } catch (_) {
+      await _clearQR();
+      rethrow;
+    }
+  }
+
+  Future<Map<String, dynamic>> _pollQR() async {
+    if (_qrCode.isEmpty) _fail('二维码已失效，请刷新。');
+    final attempt = _qrGeneration, origin = _qrOrigin, hint = _qrHint;
+    final boundary = 'NakuQR-${_hex(16)}';
+    final fields = {..._qrIdentity, 'grant_type': 'qrcode', 'qrcode': _qrCode};
+    final body =
+        '${fields.entries.map((e) => '--$boundary\r\nContent-Disposition: form-data; name="${e.key}"\r\n\r\n${e.value}\r\n').join()}--$boundary--\r\n';
+    final r = _decode(
+      (await _request(
+        Uri.parse('https://api.ugnas.com/api/oauth/token'),
+        method: 'POST',
+        body: utf8.encode(body),
+        headers: {'Content-Type': 'multipart/form-data; boundary=$boundary'},
+      )).bytes,
+    );
+    if (attempt != _qrGeneration) _fail('扫码登录已取消。');
+    switch (_int(r['code'])) {
+      case 81520:
+        return {'state': 'waiting'};
+      case 81308:
+        return {'state': 'scanned'};
+      case 8058:
+        await _clearQR();
+        return {'state': 'expired'};
+      case 200:
+        break;
+      default:
+        await _clearQR();
+        _fail('扫码登录未成功（${_int(r['code'])}），请刷新重试。');
+    }
+    try {
+      final user = _map(_map(r['data'])['user']);
+      if (user['scanType'] != 'localScan') _fail('请使用绿联云 App 扫码授权 NAS 登录。');
+      final p = _map(jsonDecode('${user['linkParams']}'));
+      if (p['token_safe'] == true || p['token_safe'] == 1) {
+        p['token'] = await _secure.invokeMethod<String>('qrDecrypt', {
+          'text': p['token'],
+        });
+      }
+      if (await _deviceHint(origin) != hint || attempt != _qrGeneration) {
+        _fail('NAS 设备身份发生变化，请刷新二维码。');
+      }
+      final result = await _adoptQR({
+        ...p,
+        'address': origin,
+      }, attempt: attempt);
+      return {...result, 'state': 'authorized'};
+    } finally {
+      await _clearQR();
+    }
+  }
+
+  Future<Map<String, dynamic>> _adoptQR(
+    Map<String, dynamic> p, {
+    bool save = true,
+    int? attempt,
+  }) async {
+    await _logout();
+    try {
+      _base = _origin('${p['address']}').toString();
+      _token = '${p['token'] ?? ''}';
+      _key = '${p['public_key'] ?? ''}';
+      if (_token.isEmpty || _key.isEmpty) _fail('扫码响应缺少 NAS 登录会话。');
+      _staticToken = '${p['static_token'] ?? _token}';
+      _auth = '${p['auth_type'] ?? 'url'}';
+      _ugk = p['is_ugk'] == true;
+      final current = await _api('v1/user/current/user');
+      final username = '${current['username'] ?? ''}',
+          uid = int.tryParse('${current['uid']}');
+      if (username.isEmpty ||
+          uid == null ||
+          uid < 0 ||
+          ('${p['username'] ?? ''}'.isNotEmpty && p['username'] != username) ||
+          (p['uid'] != null && int.tryParse('${p['uid']}') != uid)) {
+        _fail('扫码账号与 NAS 返回的账号不一致。');
+      }
+      final machine = await _api('v1/sysinfo/machine/common', {'basic': '1'});
+      final serial = '${_map(machine['common'])['serial'] ?? ''}';
+      if (serial.isEmpty ||
+          ('${p['sn'] ?? ''}'.isNotEmpty && p['sn'] != serial)) {
+        _fail('扫码授权的 NAS 与当前地址不一致。');
+      }
+      if (attempt != null && attempt != _qrGeneration) _fail('扫码登录已取消。');
+      _username = username;
+      _name = '${p['nas_name'] ?? '我的 NAS'}';
+      _namespace = _digest('$serial|$username');
+      _capture({});
+      if (save) {
+        await _secure.invokeMethod<void>('write', {
+          'value': jsonEncode({
+            'qr': true,
+            'address': _base,
+            'token': _token,
+            'public_key': _key,
+            'static_token': _staticToken,
+            'auth_type': _auth,
+            'is_ugk': _ugk,
+            'username': username,
+            'uid': uid,
+            'sn': serial,
+            'nas_name': _name,
+          }),
+        });
+      }
+      if (attempt != null && attempt != _qrGeneration) {
+        if (save) await _secure.invokeMethod<void>('delete');
+        _fail('扫码登录已取消。');
+      }
+      return _current();
+    } catch (_) {
+      await _logout();
+      rethrow;
+    }
   }
 
   Future<void> _ensure(String expected) async {
@@ -890,6 +1088,13 @@ class CinemaAndroidNAS {
       } catch (_) {}
     }
     switch (method) {
+      case 'qrCreate':
+        return _createQR('${a['address'] ?? ''}');
+      case 'qrPoll':
+        return _pollQR();
+      case 'qrCancel':
+        await _clearQR();
+        return null;
       case 'login':
         return _login(a);
       case 'currentSession':

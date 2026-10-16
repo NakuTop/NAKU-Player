@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_nas_page.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
 
 class FakeNAS extends CinemaNASClient {
   final calls = <(String, Map<String, dynamic>?)>[];
@@ -129,6 +130,24 @@ class FakeNAS extends CinemaNASClient {
 }
 
 void main() {
+  testWidgets(
+    'TV opens QR automatically and has no account password or address form',
+    (tester) async {
+      NakuDevice.isTV = true;
+      addTearDown(() => NakuDevice.isTV = false);
+      final client = FakeNAS();
+      await tester.pumpWidget(MaterialApp(home: CinemaNASPage(client: client)));
+      await tester.pumpAndSettle();
+      expect(find.text('扫码登录 NAS'), findsWidgets);
+      expect(find.byType(TextField), findsNothing);
+      expect(client.calls.where((c) => c.$1 == 'qrCreate'), hasLength(1));
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(find.text('大屏观看你的私人影院'), findsOneWidget);
+      expect(find.text('NAS 密码'), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
   testWidgets(
     'reentry renders cached NAS library immediately during slow background refresh',
     (tester) async {
