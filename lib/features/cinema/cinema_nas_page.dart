@@ -65,11 +65,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       _password = TextEditingController();
   final _search = TextEditingController();
   List<Map<String, dynamic>> _libraries = [], _items = [];
-  bool _loggedIn = false,
-      _busy = false,
-      _last = true,
-      _remember = true,
-      _hasSaved = false;
+  bool _loggedIn = false, _busy = false, _last = true, _hasSaved = false;
   String? _error;
   String _name = '我的 NAS';
   final _collectionCache = <String, Map<String, dynamic>>{};
@@ -247,6 +243,16 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
           _address.text = _mode == 'lan' ? _lanAddress : _remoteAddress;
         }
       }
+      final active = await _client.call('currentSession');
+      if (!mounted) return;
+      if (active['namespace'] is String &&
+          (active['namespace'] as String).isNotEmpty) {
+        _address.text = active['address']?.toString() ?? _address.text;
+        _username.text = active['username']?.toString() ?? '';
+        setState(() => _busy = false);
+        await _login(activeSession: active);
+        return;
+      }
       final saved = await _client.call('savedLogin');
       if (!mounted) return;
       if (saved.isEmpty) {
@@ -284,7 +290,10 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       ? error.message ?? 'NAS 请求失败，请重试。'
       : 'NAS 请求失败，请检查连接后重试。';
 
-  Future<void> _login({bool restoring = false}) async {
+  Future<void> _login({
+    bool restoring = false,
+    Map<String, dynamic>? activeSession,
+  }) async {
     if (_busy) return;
     if (!Platform.isMacOS && widget.client == null) {
       setState(() => _error = 'NAS 影视中心当前支持 macOS 版。');
@@ -294,6 +303,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       _busy = true;
       _error = null;
     });
+    var authenticated = false;
     try {
       await _saveConnections();
       final expected = _client.namespace.isNotEmpty
@@ -305,25 +315,25 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
           _password.text.isEmpty &&
           expected != null &&
           expected.isNotEmpty;
-      final info = restoring
-          ? await _client.call('restore')
-          : reuse
-          ? await _client.call('restoreAt', {
-              'address': _address.text.trim(),
-              'namespace': expected,
-              'remember': _remember,
-            })
-          : await _client.call('login', {
-              'address': _address.text.trim(),
-              'username': _username.text.trim(),
-              'password': _password.text,
-              'remember': _remember,
-            });
-      if (!mounted) {
-        await CinemaWatchTogether.instance.pauseNASPairing();
-        await _client.logout();
-        return;
-      }
+      final info =
+          activeSession ??
+          (restoring
+              ? await _client.call('restore')
+              : reuse
+              ? await _client.call('restoreAt', {
+                  'address': _address.text.trim(),
+                  'namespace': expected,
+                  'remember': true,
+                })
+              : await _client.call('login', {
+                  'address': _address.text.trim(),
+                  'username': _username.text.trim(),
+                  'password': _password.text,
+                  'remember': true,
+                }));
+      authenticated = true;
+      // The native session belongs to the application, not this page.
+      if (!mounted) return;
       _password.clear();
       if (info['namespace'] is String) {
         _client.namespace = info['namespace'] as String;
@@ -333,10 +343,15 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       } catch (_) {
         // Keep the verified login usable if discovery/probing is unavailable.
       }
+      if (!mounted) return;
+      setState(() {
+        _name = info['name']?.toString() ?? '我的 NAS';
+        _loggedIn = true;
+      });
       final libraries = await _client.call('libraries');
       if (!mounted) return;
       setState(() {
-        _hasSaved = restoring || _remember;
+        _hasSaved = true;
         if (info['namespace'] is String) {
           _client.namespace = info['namespace'] as String;
         }
@@ -348,8 +363,11 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       });
     } catch (error) {
       if (mounted) _password.clear();
-      await CinemaWatchTogether.instance.pauseNASPairing();
-      await _client.logout();
+      if (!authenticated) {
+        await CinemaWatchTogether.instance.pauseNASPairing();
+      }
+      // Library/network failures do not invalidate the native login. Explicit
+      // logout and native authentication expiry remain responsible for that.
       if (mounted) setState(() => _error = _message(error));
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -577,7 +595,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
         builder: (_) => _NASQRDialog(
           client: _client,
           address: _address.text.trim(),
-          remember: _remember,
+          remember: true,
         ),
       );
       if (!mounted || info == null) return;
@@ -591,7 +609,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
           libraries['media_lib_set_arr'],
         ).where((e) => e['can_view'] != false).toList();
         _loggedIn = true;
-        _hasSaved = _remember;
+        _hasSaved = true;
         _password.clear();
       });
     } catch (error) {
@@ -802,15 +820,6 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                 onSubmitted: (_) => _login(),
               ),
               const SizedBox(height: 12),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('记住账号并自动登录'),
-                value: _remember,
-                controlAffinity: ListTileControlAffinity.leading,
-                onChanged: _busy
-                    ? null
-                    : (value) => setState(() => _remember = value ?? false),
-              ),
               const SizedBox(height: 28),
               SizedBox(
                 width: double.infinity,

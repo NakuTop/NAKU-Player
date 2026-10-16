@@ -13,6 +13,8 @@ class FakeNAS extends CinemaNASClient {
   bool collectionFails = false;
   Completer<Map<String, dynamic>>? delayedCollection;
   int logouts = 0;
+  bool active = false, libraryFails = false;
+  Completer<Map<String, dynamic>>? delayedLogin;
   Map<String, dynamic>? videoInfo;
   String savedAddress = 'https://nas.test';
   Map<String, dynamic> connectionInfo = {};
@@ -22,11 +24,22 @@ class FakeNAS extends CinemaNASClient {
     Map<String, dynamic>? args,
   ]) async {
     calls.add((method, args));
+    if (method == 'currentSession') {
+      return active
+          ? {
+              'name': 'Test NAS',
+              'namespace': List.filled(64, 'a').join(),
+              'address': savedAddress,
+              'username': 'viewer',
+            }
+          : {};
+    }
     if (method == 'savedLogin') {
       return saved ? {'address': savedAddress, 'username': 'saved-user'} : {};
     }
     if (method == 'forget') {
       logouts++;
+      active = false;
       saved = false;
       return {};
     }
@@ -35,6 +48,8 @@ class FakeNAS extends CinemaNASClient {
       if (reject) {
         throw PlatformException(code: 'nas', message: '账号或密码不正确，请重新输入。');
       }
+      active = true;
+      if (delayedLogin != null) return delayedLogin!.future;
       return {'name': 'Test NAS', 'namespace': List.filled(64, 'a').join()};
     }
     if (method == 'qrCreate') return {'url': 'https://qr.ugnas.test/fixture'};
@@ -70,6 +85,9 @@ class FakeNAS extends CinemaNASClient {
       };
     }
     if (method == 'libraries') {
+      if (libraryFails) {
+        throw PlatformException(code: 'network', message: '临时连接失败');
+      }
       return {
         'media_lib_set_arr': [
           {'media_lib_set_id': 2, 'media_name': '收藏', 'can_view': true},
@@ -104,11 +122,76 @@ class FakeNAS extends CinemaNASClient {
   }) async => '';
   @override
   Future<void> logout() async {
+    active = false;
     logouts++;
   }
 }
 
 void main() {
+  testWidgets(
+    'reopening NAS page reuses process session without saved credentials',
+    (tester) async {
+      final client = FakeNAS()..active = true;
+      for (var i = 0; i < 3; i++) {
+        await tester.pumpWidget(
+          MaterialApp(home: CinemaNASPage(client: client)),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Test NAS · 影视中心'), findsOneWidget);
+        expect(find.text('连接影视中心'), findsNothing);
+        await tester.pumpWidget(const SizedBox());
+      }
+      expect(client.logouts, 0);
+      expect(
+        client.calls.where(
+          (c) => ['savedLogin', 'restore', 'login'].contains(c.$1),
+        ),
+        isEmpty,
+      );
+    },
+  );
+
+  testWidgets('temporary library failure keeps native login for reentry', (
+    tester,
+  ) async {
+    final client = FakeNAS()
+      ..active = true
+      ..libraryFails = true;
+    await tester.pumpWidget(MaterialApp(home: CinemaNASPage(client: client)));
+    await tester.pumpAndSettle();
+    expect(client.active, isTrue);
+    expect(client.logouts, 0);
+    await tester.pumpWidget(const SizedBox());
+    client.libraryFails = false;
+    await tester.pumpWidget(MaterialApp(home: CinemaNASPage(client: client)));
+    await tester.pumpAndSettle();
+    expect(find.text('Test NAS · 影视中心'), findsOneWidget);
+    expect(
+      client.calls.where((c) => c.$1 == 'login' || c.$1 == 'restore'),
+      isEmpty,
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'leaving during login completion does not log out application session',
+    (tester) async {
+      final client = FakeNAS()
+        ..saved = true
+        ..delayedLogin = Completer<Map<String, dynamic>>();
+      await tester.pumpWidget(MaterialApp(home: CinemaNASPage(client: client)));
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+      client.delayedLogin!.complete({
+        'name': 'Test NAS',
+        'namespace': List.filled(64, 'a').join(),
+      });
+      await tester.pumpAndSettle();
+      expect(client.active, isTrue);
+      expect(client.logouts, 0);
+    },
+  );
+
   test(
     'movie versions and NAS episode files preserve paths and remove duplicates',
     () {
@@ -144,7 +227,9 @@ void main() {
       final client = FakeNAS();
       await tester.pumpWidget(MaterialApp(home: CinemaNASPage(client: client)));
       await tester.pumpAndSettle();
-      expect(client.calls.map((e) => e.$1), ['savedLogin']);
+      expect(client.calls.map((e) => e.$1), ['currentSession', 'savedLogin']);
+      expect(find.text('记住账号并自动登录'), findsNothing);
+      expect(find.byType(CheckboxListTile), findsNothing);
       final fields = find.byType(TextField);
       expect(tester.widget<TextField>(fields.at(0)).controller!.text, isEmpty);
       expect(tester.widget<TextField>(fields.at(1)).controller!.text, isEmpty);
@@ -155,6 +240,10 @@ void main() {
       await tester.ensureVisible(find.text('连接影视中心'));
       await tester.tap(find.text('连接影视中心'));
       await tester.pumpAndSettle();
+      expect(
+        client.calls.firstWhere((c) => c.$1 == 'login').$2?['remember'],
+        isTrue,
+      );
       expect(find.text('Test NAS · 影视中心'), findsOneWidget);
       expect(find.text('无权限'), findsNothing);
       expect(find.text('测试影片 1'), findsOneWidget);
@@ -204,7 +293,11 @@ void main() {
       tester.widget<TextField>(find.byType(TextField).at(2)).controller!.text,
       isEmpty,
     );
-    expect(client.calls.map((e) => e.$1), ['savedLogin', 'login']);
+    expect(client.calls.map((e) => e.$1), [
+      'currentSession',
+      'savedLogin',
+      'login',
+    ]);
     await tester.pumpWidget(const SizedBox());
   });
   testWidgets(
@@ -215,6 +308,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Test NAS · 影视中心'), findsOneWidget);
       expect(client.calls.map((e) => e.$1), [
+        'currentSession',
         'savedLogin',
         'restore',
         'autoConnect',

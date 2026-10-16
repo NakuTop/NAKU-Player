@@ -86,8 +86,13 @@ final class AutoRouteProtocol: URLProtocol {
         let pem="-----BEGIN RSA PUBLIC KEY-----\n"+bytes.base64EncodedString()+"\n-----END RSA PUBLIC KEY-----"
         let cfg=URLSessionConfiguration.ephemeral;cfg.protocolClasses=[PlaybackFixtureProtocol.self]
         let transport=URLSession(configuration:cfg),client=NASMovieSession(transport:transport)
+        let emptySession=await client.currentSession()
+        expect(emptySession.isEmpty,"no active session before login")
         let identity=try await client.adoptQRPayload(["token":"fixture-token","public_key":Data(pem.utf8).base64EncodedString(),"uid":42],target:URL(string:"https://nas.invalid")!,expectedDeviceHint:"0123456789abcdef0123456789abcdef",remember:nil)
         let ns=identity["namespace"] as! String
+        let active=await client.currentSession()
+        expect(active["namespace"] as? String == ns && active["username"] as? String == "fixture-user","memory-only QR session available without saved credentials")
+        expect(active["token"] == nil && active["password"] == nil,"session metadata never exports credentials")
         let connection=try await client.connectionInfo(expected:ns)
         expect(connection["lanCandidates"] as? [String] == ["https://192.168.1.10:9443","http://192.168.1.10:9999"],"authenticated LAN discovery")
         do {_ = try await client.restoreAt(address:"http://8.8.8.8:9999",expected:ns,remember:true);fatalError("public HTTP restore accepted")}catch NASMovieError.configuration {}
@@ -116,6 +121,9 @@ final class AutoRouteProtocol: URLProtocol {
         await client.closePlayback(task:secondID,expected:ns)
         expect(PlaybackFixtureProtocol.closed.last==secondID,"close current task")
         print("PASS HLS selection, actual IDs, stale-close isolation and stop cleanup")
-        await client.logout();transport.invalidateAndCancel()
+        await client.logout()
+        let loggedOut=await client.currentSession()
+        expect(loggedOut.isEmpty,"explicit logout clears process session")
+        transport.invalidateAndCancel()
     }
 }

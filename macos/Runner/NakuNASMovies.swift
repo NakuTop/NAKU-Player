@@ -107,6 +107,7 @@ actor NASMovieSession {
     private var token = "", publicKey = "", staticToken = "", authType = "url"
     private var ugk = false
     private var namespace = ""
+    private var sessionName = "", sessionUsername = ""
     private let qrStore = NASMovieCredentialStore(service:"com.nakutop.naku.nas-movies.qr-session")
     private let qrBroker = NASQRBroker()
     private var qrOrigin: URL?
@@ -137,7 +138,7 @@ actor NASMovieSession {
             Task {_ = try? await transport.data(for:request)}
         }
         activePlayback=nil;lanCandidates=[];remoteAddress="";connectionInfoLoaded=false
-        generation += 1; namespace = ""; base = nil; token = ""; publicKey = ""; staticToken = "" }
+        generation += 1; namespace = ""; sessionName = ""; sessionUsername = ""; base = nil; token = ""; publicKey = ""; staticToken = "" }
     static func origin(_ address: String) throws -> URL {
         guard let u = URL(string: address), u.scheme == "https" || u.scheme == "http",
               u.host != nil, u.user == nil, u.password == nil, u.query == nil, u.fragment == nil,
@@ -201,10 +202,17 @@ actor NASMovieSession {
         }
         namespace = Self.namespace(serial:d["sn"] as? String ?? origin.host ?? "", username:username)
         captureConnectionInfo(d)
-        return ["name":d["nas_name"] as? String ?? "NAS", "namespace":namespace]
+        sessionName=d["nas_name"] as? String ?? "NAS"; sessionUsername=username
+        return currentSession()
     }
     static func namespace(serial: String, username: String) -> String {
         SHA256.hash(data:Data((serial+"|"+username).utf8)).map { String(format:"%02x",$0) }.joined()
+    }
+    // Process-owned session: navigating away from the Flutter page must not
+    // reauthenticate, touch Keychain, or replace a working playback session.
+    func currentSession() -> [String:Any] {
+        guard let base,!token.isEmpty,!namespace.isEmpty else {return [:]}
+        return ["name":sessionName,"namespace":namespace,"address":base.absoluteString,"username":sessionUsername]
     }
     func savedLogin() throws -> [String:Any] {
         if let saved=try credentialStore.load() { return ["address":saved.address,"username":saved.username] }
@@ -399,6 +407,7 @@ actor NASMovieSession {
                 name:saved.name,uid:uid,ugk:saved.ugk)
             namespace=Self.namespace(serial:verified.serial,username:verified.username)
             captureConnectionInfo([:])
+            sessionName=verified.name; sessionUsername=username
             if let remember {
                 if remember { try qrStore.saveValue(verified) } else { try qrStore.forget() }
                 try credentialStore.forget()
@@ -885,21 +894,22 @@ final class NakuNASMovies {
                     await session.prepareAutoConnection()
                 }
                 switch call.method {
-                case "login": value=try await session.login(address:args["address"] as? String ?? "",username:args["username"] as? String ?? "",password:args["password"] as? String ?? "",remember:args["remember"] as? Bool ?? false)
+                case "login": value=try await session.login(address:args["address"] as? String ?? "",username:args["username"] as? String ?? "",password:args["password"] as? String ?? "",remember:args["remember"] as? Bool ?? true)
                 case "qrCreate": value=try await session.createQR(address:args["address"] as? String ?? "")
-                case "qrPoll": value=try await session.pollQR(remember:args["remember"] as? Bool ?? false)
+                case "qrPoll": value=try await session.pollQR(remember:args["remember"] as? Bool ?? true)
                 case "qrCancel": await session.cancelQR(); value=nil
                 case "ensure": value=try await session.ensure(expected:args["namespace"] as? String ?? "")
                 case "autoConnect": value=try await session.autoConnect(expected:args["namespace"] as? String ?? "",force:args["force"] as? Bool ?? false)
                 case "pairingIdentity": value=try await session.pairingIdentity(code:args["code"] as? String ?? "")
                 case "syncPull": value=try await session.syncPull(expected:args["namespace"] as? String ?? "")
                 case "syncPush": value=try await session.syncPush(expected:args["namespace"] as? String ?? "",device:args["device"] as? String ?? "",sequence:args["sequence"] as? Int ?? 0,document:args["document"] as? String ?? "")
-                case "restoreAt": value=try await session.restoreAt(address:args["address"] as? String ?? "",expected:args["namespace"] as? String ?? "",remember:args["remember"] as? Bool ?? false)
+                case "restoreAt": value=try await session.restoreAt(address:args["address"] as? String ?? "",expected:args["namespace"] as? String ?? "",remember:args["remember"] as? Bool ?? true)
                 case "connectionInfo": value=try await session.connectionInfo(expected:args["namespace"] as? String,refresh:args["refresh"] as? Bool ?? false)
                 case "playbackOptions": value=try await session.playbackOptions(expected:args["namespace"] as? String ?? "",id:args["id"] as? Int ?? 0,library:args["library"] as? Int ?? 0,path:args["path"] as? String ?? "")
                 case "startPlayback": value=try await session.startPlayback(expected:args["namespace"] as? String ?? "",id:args["id"] as? Int ?? 0,library:args["library"] as? Int ?? 0,path:args["path"] as? String ?? "",resolution:args["resolution"] as? String,audio:args["audio"] as? Int,subtitle:args["subtitle"] as? Int)
                 case "closePlayback": await session.closePlayback(task:args["taskId"] as? String ?? "",expected:args["namespace"] as? String);value=[:]
                 case "collection": value=try await session.collection(id:args["id"] as? String ?? "",library:args["library"] as? Int ?? 0)
+                case "currentSession": value=await session.currentSession()
                 case "savedLogin": value=try await session.savedLogin()
                 case "restore": value=try await session.restore()
                 case "forget": try await session.forget(); value=nil
