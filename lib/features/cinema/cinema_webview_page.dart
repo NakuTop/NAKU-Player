@@ -1,3 +1,4 @@
+import 'package:kazumi/features/cinema/naku_update_service.dart';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:io';
@@ -96,9 +97,12 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
   // releases its temporary window transport instead of retaining a child view.
   final Map<String, DateTime> _popupVetoes = {};
 
+  final _updatePlaybackLease = NakuPlaybackUpdateLease();
+
   @override
   void initState() {
     super.initState();
+    unawaited(_updatePlaybackLease.start());
     _windowControls.register(this, _visibilityChanged);
     _createWebView();
   }
@@ -571,6 +575,7 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
 
   @override
   void dispose() {
+    unawaited(_updatePlaybackLease.close());
     _disposed = true;
     if (_videoWindowBounds != null && !_videoWindowChanging) {
       unawaited(_restoreVideoWindow());

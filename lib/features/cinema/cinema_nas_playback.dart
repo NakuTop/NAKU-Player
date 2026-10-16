@@ -124,7 +124,7 @@ class CinemaNASPlaybackSelection {
 }
 
 /// Direct controls shared by work details and the fullscreen video overlay.
-class CinemaNASInlinePlaybackControls extends StatefulWidget {
+class CinemaNASInlinePlaybackControls extends StatelessWidget {
   const CinemaNASInlinePlaybackControls({
     super.key,
     required this.options,
@@ -142,175 +142,152 @@ class CinemaNASInlinePlaybackControls extends StatefulWidget {
   final bool enabled;
   final ValueChanged<CinemaNASPlaybackSelection> onApply;
 
-  @override
-  State<CinemaNASInlinePlaybackControls> createState() =>
-      _CinemaNASInlinePlaybackControlsState();
-}
-
-class _CinemaNASInlinePlaybackControlsState
-    extends State<CinemaNASInlinePlaybackControls> {
-  late String _resolution = _profile(widget.resolution);
-  late int? _audio = widget.audio;
-  late int? _subtitle = widget.subtitle;
-
-  String _profile(String value) => widget.options.supportsProfile(value)
-      ? value
-      : widget.options.defaultProfile;
-
-  @override
-  void didUpdateWidget(CinemaNASInlinePlaybackControls oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.resolution != widget.resolution ||
-        oldWidget.audio != widget.audio ||
-        oldWidget.subtitle != widget.subtitle) {
-      _resolution = _profile(widget.resolution);
-      _audio = widget.audio;
-      _subtitle = widget.subtitle;
-    } else if (!widget.options.supportsProfile(_resolution)) {
-      _resolution = widget.options.defaultProfile;
-    }
-  }
-
-  Widget _track(
-    String label,
-    List<Map<String, dynamic>> rows,
-    int? value,
-    ValueChanged<int?> onChanged,
-  ) {
-    final tracks = <int, String>{};
-    for (final row in rows) {
-      final id = int.tryParse('${row['id']}');
-      if (id != null) tracks[id] = row['label']?.toString() ?? '轨道 $id';
-    }
-    return DropdownButtonFormField<int>(
-      // FormField initialValue otherwise retains a previous playback's value.
-      key: ValueKey('$label:$value:${tracks.keys.join(',')}'),
-      isExpanded: true,
-      initialValue: tracks.containsKey(value) ? value : null,
-      decoration: InputDecoration(labelText: label, isDense: true),
-      hint: const Text('NAS 默认'),
-      items: [
-        for (final entry in tracks.entries)
-          DropdownMenuItem(
-            value: entry.key,
-            child: Text(
-              entry.value,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-      ],
-      onChanged:
-          widget.enabled &&
-              _resolution != nasOriginalFileProfile &&
-              tracks.isNotEmpty
-          ? onChanged
-          : null,
+  void _select({String? profile, int? audioId, int? subtitleId}) {
+    final selected = profile ?? resolution;
+    onApply(
+      CinemaNASPlaybackSelection(
+        selected,
+        selected == nasOriginalFileProfile ? null : audioId ?? audio,
+        selected == nasOriginalFileProfile ? null : subtitleId ?? subtitle,
+      ),
     );
   }
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, box) {
-      final width = box.maxWidth.isFinite ? box.maxWidth : 720.0;
-      final fieldWidth = width >= 660
-          ? (width - 24) / 3
-          : width.clamp(0.0, 300.0);
-      final profiles = <String, String>{
-        for (final row in widget.options.profiles)
-          if (row['id'] is String && (row['id'] as String).isNotEmpty)
-            row['id'] as String:
-                row['label']?.toString() ?? row['id'] as String,
-        nasOriginalFileProfile: '原文件直连',
-      };
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Wrap(
-            spacing: 12,
-            runSpacing: 14,
+  Widget build(BuildContext context) {
+    final original = resolution == nasOriginalFileProfile;
+    final profiles = <String, String>{
+      for (final row in options.profiles)
+        if (row['id'] is String && (row['id'] as String).isNotEmpty)
+          row['id'] as String: row['label']?.toString() ?? row['id'] as String,
+      nasOriginalFileProfile: '原文件直连',
+    };
+    Map<int, String> tracks(List<Map<String, dynamic>> rows) => {
+      for (final row in rows)
+        if (int.tryParse('${row['id']}') case final int id)
+          id: row['label']?.toString() ?? '轨道 $id',
+    };
+    return Wrap(
+      spacing: 8,
+      runSpacing: 4,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        CinemaPlaybackMenu<String>(
+          label: '清晰度',
+          icon: Icons.high_quality_outlined,
+          value: resolution,
+          entries: profiles,
+          enabled: enabled,
+          description: bitrate > 0
+              ? '${options.label(resolution)} · ${(bitrate / 1000000).toStringAsFixed(2)} Mbps'
+              : options.label(resolution),
+          onSelected: (v) => _select(profile: v),
+        ),
+        CinemaPlaybackMenu<int>(
+          label: 'NAS 音轨',
+          icon: Icons.audiotrack_outlined,
+          value: audio,
+          entries: tracks(options.audios),
+          enabled: enabled && !original,
+          description: original ? '原文件请使用播放器音轨' : null,
+          onSelected: (v) => _select(audioId: v),
+        ),
+        CinemaPlaybackMenu<int>(
+          label: 'NAS 字幕',
+          icon: Icons.subtitles_outlined,
+          value: subtitle,
+          entries: tracks(options.subtitles),
+          enabled: enabled && !original,
+          description: original ? '原文件请使用播放器字幕' : null,
+          onSelected: (v) => _select(subtitleId: v),
+        ),
+      ],
+    );
+  }
+}
+
+/// Each playback setting has its own anchored menu, with immediate selection.
+/// Compact, equal-height triggers keep tracks and quality visible on narrow
+/// windows without placing a large configuration form over the video.
+class CinemaPlaybackMenu<T> extends StatelessWidget {
+  const CinemaPlaybackMenu({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.entries,
+    required this.value,
+    required this.onSelected,
+    this.enabled = true,
+    this.description,
+  });
+  final String label;
+  final IconData icon;
+  final Map<T, String> entries;
+  final T? value;
+  final ValueChanged<T> onSelected;
+  final bool enabled;
+  final String? description;
+
+  @override
+  Widget build(BuildContext context) => PopupMenuButton<T>(
+    tooltip: description ?? label,
+    enabled: enabled && entries.isNotEmpty,
+    initialValue: value,
+    color: const Color(0xF2222222),
+    surfaceTintColor: Colors.transparent,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    constraints: const BoxConstraints(minWidth: 180, maxWidth: 320),
+    onSelected: (selected) {
+      if (selected != value) onSelected(selected);
+    },
+    itemBuilder: (_) => [
+      for (final entry in entries.entries)
+        PopupMenuItem<T>(
+          value: entry.key,
+          child: Row(
             children: [
               SizedBox(
-                width: fieldWidth,
-                child: DropdownButtonFormField<String>(
-                  key: ValueKey(
-                    'nas-inline-profile:$_resolution:${profiles.keys.join(',')}',
-                  ),
-                  isExpanded: true,
-                  initialValue: profiles.containsKey(_resolution)
-                      ? _resolution
-                      : null,
-                  decoration: const InputDecoration(
-                    labelText: '清晰度',
-                    isDense: true,
-                  ),
-                  items: [
-                    for (final entry in profiles.entries)
-                      DropdownMenuItem(
-                        value: entry.key,
-                        child: Text(
-                          entry.value,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                  ],
-                  onChanged: !widget.enabled
-                      ? null
-                      : (value) {
-                          if (value != null) {
-                            setState(() => _resolution = value);
-                          }
-                        },
-                ),
+                width: 24,
+                child: entry.key == value
+                    ? const Icon(
+                        Icons.check_rounded,
+                        size: 18,
+                        color: Color(0xFF3388FF),
+                      )
+                    : null,
               ),
-              SizedBox(
-                width: fieldWidth,
-                child: _track(
-                  'NAS 音轨',
-                  widget.options.audios,
-                  _audio,
-                  (value) => setState(() => _audio = value),
-                ),
-              ),
-              SizedBox(
-                width: fieldWidth,
-                child: _track(
-                  'NAS 字幕',
-                  widget.options.subtitles,
-                  _subtitle,
-                  (value) => setState(() => _subtitle = value),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  entry.value,
+                  style: TextStyle(
+                    color: entry.key == value
+                        ? const Color(0xFF3388FF)
+                        : Colors.white,
+                    fontSize: 13,
+                  ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 10),
-          if (widget.bitrate > 0)
-            Text(
-              '当前输出约 ${(widget.bitrate / 1000000).toStringAsFixed(2)} Mbps',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          if (_resolution == nasOriginalFileProfile)
-            Text(
-              '原文件使用播放器音轨与字幕。',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          const SizedBox(height: 8),
-          FilledButton(
-            onPressed: !widget.enabled
-                ? null
-                : () => widget.onApply(
-                    CinemaNASPlaybackSelection(
-                      _resolution,
-                      _resolution == nasOriginalFileProfile ? null : _audio,
-                      _resolution == nasOriginalFileProfile ? null : _subtitle,
-                    ),
-                  ),
-            child: const Text('应用并保留播放进度'),
-          ),
-        ],
-      );
-    },
+        ),
+    ],
+    child: Opacity(
+      opacity: enabled && entries.isNotEmpty ? 1 : .38,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 20),
+            const SizedBox(width: 6),
+            Text(label, style: const TextStyle(fontSize: 12)),
+            const SizedBox(width: 2),
+            const Icon(Icons.keyboard_arrow_down_rounded, size: 14),
+          ],
+        ),
+      ),
+    ),
   );
 }
 

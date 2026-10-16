@@ -89,7 +89,7 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
           const SizedBox(height: 24),
           SwitchListTile.adaptive(
             title: const Text('自动检查更新'),
-            subtitle: const Text('每次启动自动检查，运行期间定时检查；无需手动点击检查更新。'),
+            subtitle: const Text('每次启动自动检查，运行期间每小时检查一次；无需手动点击。'),
             value: _state?['automaticChecks'] == true,
             onChanged: _state == null || _busy
                 ? null
@@ -97,7 +97,7 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
           ),
           SwitchListTile.adaptive(
             title: const Text('自动下载和安装'),
-            subtitle: const Text('同时启用自动检查；后台下载并验证后，弹出安装并重启提示。'),
+            subtitle: const Text('后台下载并验证后弹出安装提示；观看视频时不会自动重启。'),
             value: _state?['automaticDownloads'] == true,
             onChanged: _state == null || _busy
                 ? null

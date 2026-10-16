@@ -192,6 +192,16 @@ void main() {
     await tester.tap(subtitle);
     await tester.pumpAndSettle();
     expect(player.state.track.subtitle.id, '3');
+    final appearance = find.byKey(const ValueKey('subtitle-font-size'));
+    await tester.ensureVisible(appearance);
+    final slider = tester.widget<Slider>(appearance);
+    slider.onChanged!(48);
+    await tester.pump();
+    await tester.runAsync(() async {
+      await (tester.widget<Slider>(appearance).onChangeEnd as dynamic)(48.0);
+    });
+    await tester.pumpAndSettle();
+    expect((store.extras['subtitleAppearance'] as Map)['fontSize'], 48);
     expect(backend.pauses, 0);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());

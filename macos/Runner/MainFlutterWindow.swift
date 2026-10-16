@@ -96,6 +96,60 @@ private final class GlassContentViewController: NSViewController {
 private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
   weak var controller: SPUStandardUpdaterController?
   private var installationPromptPending = false
+  private var playbackSessions = Set<String>()
+  private var deferredInstallation: (() -> Void)?
+  private var installationGeneration = 0
+  private var installationDeferred = false
+  var isWatchingVideo: Bool { !playbackSessions.isEmpty }
+
+  func setPlaybackSession(_ id: String, active: Bool) {
+    if active { playbackSessions.insert(id) } else { playbackSessions.remove(id) }
+    guard !isWatchingVideo, let resume = deferredInstallation else { return }
+    deferredInstallation = nil
+    let generation = installationGeneration
+    // The user already confirmed installation. Resume only after every
+    // playback route (including paused/buffering/PiP video) has been closed.
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.installationGeneration == generation else { return }
+      if self.isWatchingVideo { self.deferredInstallation = resume }
+      else {
+        // Keep the deferred marker until Sparkle finishes/aborts: its resume
+        // handler may itself enqueue work before the final relaunch gate.
+        resume()
+      }
+    }
+  }
+
+  func cancelDeferredInstallation() {
+    installationGeneration += 1
+    installationDeferred = false
+    deferredInstallation = nil
+  }
+
+  func updaterShouldRelaunchApplication(_ updater: SPUUpdater) -> Bool {
+    // Sparkle 2.10 checks this before sending any Stage 2/termination command.
+    // Its postponement hook runs only once per driver: a second Install click
+    // while watching must abort that attempt rather than bypass the hook.
+    if isWatchingVideo && installationDeferred {
+      cancelDeferredInstallation()
+      status = "更新已保留；请退出播放页后再次确认安装"
+      return false
+    }
+    return true
+  }
+
+  func updater(_ updater: SPUUpdater, userDidMake choice: SPUUserUpdateChoice,
+      forUpdate item: SUAppcastItem, state: SPUUserUpdateState) {
+    if choice != .install { cancelDeferredInstallation() }
+  }
+  func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,
+      untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
+    guard isWatchingVideo else { return false }
+    status = "更新已就绪；退出播放页后安装并重启"
+    installationDeferred = true
+    deferredInstallation = installHandler
+    return true
+  }
   var latestVersion = "", latestBuild = "", lastError = "", status = "等待检查"
 
   func updater(_ updater: SPUUpdater, didFinishLoading appcast: SUAppcast) {
@@ -130,6 +184,7 @@ private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStanda
   }
   func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck,
       error: Error?) {
+    if error != nil { cancelDeferredInstallation() }
     guard installationPromptPending else { return }
     installationPromptPending = false
     guard error == nil, updater.automaticallyChecksForUpdates,
@@ -138,6 +193,7 @@ private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStanda
   }
 
   func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+    cancelDeferredInstallation()
     let failure = error as NSError
     if failure.domain == SUSparkleErrorDomain && failure.code == 1001 {
       status = "当前没有可安装的新版本"
@@ -161,6 +217,9 @@ class MainFlutterWindow: NSWindow {
   private(set) var flutterViewController: FlutterViewController?
   private var updaterController: SPUStandardUpdaterController?
   private let updaterObserver = NakuUpdaterObserver()
+  func setNativePlaybackSession(_ id: String, active: Bool) {
+    updaterObserver.setPlaybackSession("native-" + id, active: active)
+  }
   private var downloadActivity: NSObjectProtocol?
   private let nasMovies = NakuNASMovies()
   private var desktopControls: NakuDesktopWindowController?
@@ -346,6 +405,9 @@ class MainFlutterWindow: NSWindow {
     // persisted preferences, signature validation, scheduler, and installer UI.
     let updater = SPUStandardUpdaterController(
       startingUpdater: true, updaterDelegate: updaterObserver, userDriverDelegate: updaterObserver)
+    // Set the persisted value as well as Info.plist's fresh-install default:
+    // existing installations must adopt the requested hourly schedule too.
+    updater.updater.updateCheckInterval = 3600
     updaterController = updater
     updaterObserver.controller = updater
     // Sparkle recommends doing an additional launch check immediately after
@@ -357,8 +419,19 @@ class MainFlutterWindow: NSWindow {
       name: "naku/updater", binaryMessenger: flutterViewController.engine.binaryMessenger)
     updateChannel.setMethodCallHandler { call, result in
       switch call.method {
+      case "playbackSession":
+        guard let args = call.arguments as? [String: Any],
+          let id = args["id"] as? String, !id.isEmpty,
+          let active = args["active"] as? Bool else {
+          result(FlutterError(code: "arguments", message: "无效的播放状态", details: nil))
+          return
+        }
+        self.updaterObserver.setPlaybackSession(id, active: active)
+        result(nil)
       case "state":
         result([
+          "checkIntervalSeconds": updater.updater.updateCheckInterval,
+          "playbackProtected": self.updaterObserver.isWatchingVideo,
           "automaticChecks": updater.updater.automaticallyChecksForUpdates,
           "automaticDownloads": updater.updater.automaticallyDownloadsUpdates,
           "canCheck": updater.updater.canCheckForUpdates,

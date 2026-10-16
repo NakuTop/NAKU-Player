@@ -415,17 +415,9 @@ void main() {
                         ),
                       ),
                       Row(
-                        children: MaterialDesktopVideoControlsTheme.of(context)
-                            .normal
-                            .bottomButtonBar
-                            .where(
-                              (w) =>
-                                  w is IconButton ||
-                                  w is StreamBuilder<bool> ||
-                                  w is Spacer ||
-                                  w is PopupMenuButton,
-                            )
-                            .toList(),
+                        children: MaterialDesktopVideoControlsTheme.of(
+                          context,
+                        ).normal.bottomButtonBar.toList(),
                       ),
                     ],
                   ),
@@ -525,16 +517,18 @@ void main() {
       expect(nas.starts.length, 1);
       expect(backends.single.opened!.uri, contains('stream.m3u8'));
       expect(backends.single.state.position.inSeconds, 123);
-      expect(find.byType(CinemaNASInlinePlaybackControls), findsOneWidget);
+      expect(find.byType(CinemaNASInlinePlaybackControls), findsWidgets);
       expect(find.byTooltip('更多选项'), findsNothing);
-      await tester.ensureVisible(find.text('应用并保留播放进度'));
+      await tester.ensureVisible(find.text('清晰度').last);
       await tester.pumpAndSettle();
       await snapshotRecommendation(
         tester,
         'nas-detail-direct-controls',
         target: find.byType(CinemaPlayerPage),
       );
-      await tester.tap(find.text('应用并保留播放进度'));
+      await tester.tap(find.text('清晰度').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('1080P').last);
       await tester.pumpAndSettle();
       expect(nas.starts.length, 2);
       expect(nas.calls.where((v) => v == 'closePlayback').length, 1);
@@ -549,20 +543,29 @@ void main() {
       );
       await fullscreenEntered.future;
       await tester.pumpAndSettle();
-      expect(find.byType(CinemaNASInlinePlaybackControls), findsOneWidget);
+      expect(find.byType(CinemaNASInlinePlaybackControls), findsWidgets);
       await snapshotRecommendation(
         tester,
         'nas-fullscreen-direct-controls',
         target: find.byType(CinemaPlayerPage),
       );
-      expect(find.text('下载选集'), findsOneWidget);
-      expect(find.text('字幕与音轨'), findsOneWidget);
-      expect(find.text('一起看'), findsOneWidget);
+      expect(find.byTooltip('外挂字幕 / 播放器音轨'), findsOneWidget);
+      expect(find.byTooltip('画中画'), findsWidgets);
       expect(find.byTooltip('更多选项'), findsNothing);
       backends.last.reportBuffering(true);
       await tester.pump();
-      expect(find.byType(CinemaNASInlinePlaybackControls), findsOneWidget);
-      expect(find.text('应用并保留播放进度'), findsOneWidget);
+      expect(find.byType(CinemaNASInlinePlaybackControls), findsWidgets);
+      expect(find.text('清晰度'), findsWidgets);
+      await tester.tap(find.text('清晰度').first);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.tap(find.text('480P').last);
+      await tester.pump(const Duration(milliseconds: 350));
+      backends.last.reportBuffering(false);
+      await tester.pumpAndSettle();
+      expect(nas.starts.length, 3);
+      expect(nas.starts.last['resolution'], '480P');
+      expect(backends.last.state.position.inSeconds, 123);
       backends.last.reportBuffering(false);
       await tester.pump();
       nativeWindowState['hidden'] = true;
@@ -570,7 +573,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(backends.last.state.playing, false);
       await unmount(tester);
-      expect(nas.calls.where((v) => v == 'closePlayback').length, 2);
+      expect(nas.calls.where((v) => v == 'closePlayback').length, 3);
     },
   );
 
@@ -857,9 +860,11 @@ void main() {
       expect(find.byTooltip('下一集'), findsOneWidget);
       expect(find.byTooltip('线路 / 选集'), findsOneWidget);
       expect(find.byTooltip('更多选项'), findsNothing);
-      for (final label in ['下载选集', '画中画', '一起看', '超分辨率', '倍速']) {
-        expect(find.text(label), findsOneWidget);
+      for (final label in ['下载选集', '一起看', '超分辨率']) {
+        expect(find.text(label), findsWidgets);
       }
+      expect(find.byTooltip('画中画'), findsWidgets);
+      expect(find.byTooltip('倍速'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await unmount(tester);
     },

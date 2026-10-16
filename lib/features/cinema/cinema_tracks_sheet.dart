@@ -3,6 +3,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'cinema_store.dart';
+import 'cinema_subtitle_appearance.dart';
 
 Future<void> applyCinemaTrackPreferences(
   Player player,
@@ -55,9 +56,13 @@ class _CinemaTracksPanelState extends State<CinemaTracksPanel> {
   String? _error;
   double _delay = 0;
   String _secondary = 'no';
+  late CinemaSubtitleAppearance _appearance;
   @override
   void initState() {
     super.initState();
+    _appearance = CinemaSubtitleAppearance.from(
+      widget.store.extras['subtitleAppearance'],
+    );
     unawaited(_readNative());
   }
 
@@ -254,6 +259,59 @@ class _CinemaTracksPanelState extends State<CinemaTracksPanel> {
                   label: const Text('外部音轨'),
                 ),
               ],
+            ),
+            const SizedBox(height: 20),
+            const Text('字幕显示'),
+            Text('字幕大小 ${_appearance.fontSize.round()}'),
+            Slider(
+              key: const ValueKey('subtitle-font-size'),
+              value: _appearance.fontSize,
+              min: 18,
+              max: 64,
+              divisions: 46,
+              onChanged: (value) => setState(
+                () => _appearance = CinemaSubtitleAppearance(
+                  fontSize: value,
+                  bottom: _appearance.bottom,
+                ),
+              ),
+              onChangeEnd: (_) => widget.store.setExtra(
+                'subtitleAppearance',
+                _appearance.toJson(),
+              ),
+            ),
+            Text('字幕高度 ${_appearance.bottom.round()}'),
+            Slider(
+              key: const ValueKey('subtitle-bottom-position'),
+              value: _appearance.bottom,
+              min: 0,
+              max: 160,
+              divisions: 80,
+              onChanged: (value) => setState(
+                () => _appearance = CinemaSubtitleAppearance(
+                  fontSize: _appearance.fontSize,
+                  bottom: value,
+                ),
+              ),
+              onChangeEnd: (_) => widget.store.setExtra(
+                'subtitleAppearance',
+                _appearance.toJson(),
+              ),
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: () {
+                  setState(
+                    () => _appearance = const CinemaSubtitleAppearance(),
+                  );
+                  widget.store.setExtra(
+                    'subtitleAppearance',
+                    _appearance.toJson(),
+                  );
+                },
+                child: const Text('重置字幕显示'),
+              ),
             ),
             if (widget.player.platform is NativePlayer) ...[
               const SizedBox(height: 16),

@@ -1,3 +1,4 @@
+import 'package:kazumi/features/cinema/naku_update_service.dart';
 import 'dart:async';
 import 'package:kazumi/features/cinema/cinema_watch_together.dart';
 import 'package:kazumi/features/cinema/anime/cinema_anime_invitation.dart';
@@ -85,9 +86,12 @@ class _VideoPageState extends State<VideoPage>
 
   static const Duration _offlinePlayerInitDelay = Duration(milliseconds: 400);
 
+  final _updatePlaybackLease = NakuPlaybackUpdateLease();
+
   @override
   void initState() {
     super.initState();
+    unawaited(_updatePlaybackLease.start());
     videoPageController.applyPlaybackArgs(widget.args);
     _together.bindPlayback(
       owner: this,
@@ -291,6 +295,7 @@ class _VideoPageState extends State<VideoPage>
 
   @override
   void dispose() {
+    unawaited(_updatePlaybackLease.close());
     _togetherMediaReaction();
     if (_togetherBound) unawaited(_together.detachPlayback(this));
     try {
@@ -587,8 +592,9 @@ class _VideoPageState extends State<VideoPage>
                   fillsWindow: layout.fillsWindow,
                   playerController: playerController,
                   videoPageController: videoPageController,
-                  onToggleSidePanel:
-                      layout.hasSidePanel ? _toggleSidePanel : null,
+                  onToggleSidePanel: layout.hasSidePanel
+                      ? _toggleSidePanel
+                      : null,
                   changeEpisode: changeEpisode,
                   onBackPressed: _onBackPressed,
                   keyboardFocus: keyboardFocus,

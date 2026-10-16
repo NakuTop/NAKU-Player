@@ -13,6 +13,9 @@ class AppDelegate: FlutterAppDelegate {
         return true
     }
     
+    // Each native AVPlayer window owns a separate lease, just like Flutter
+    // playback routes. Closing an older window must not clear a newer player.
+    private var nativePlayers: [ObjectIdentifier: (window: NSWindow, player: AVPlayer)] = [:]
     var playerView: AVPlayerView!
     var player: AVPlayer?
     var videoUrl: URL?
@@ -173,6 +176,10 @@ class AppDelegate: FlutterAppDelegate {
         player = AVPlayer(playerItem: playerItem)
         playerView.player = player
         playerView.player?.play()
+        let id = ObjectIdentifier(window)
+        nativePlayers[id] = (window, player!)
+        (mainFlutterWindow as? MainFlutterWindow)?.setNativePlaybackSession(
+            String(describing: id), active: true)
     }
     
     @objc func openWithSelectedApp (_ sender: NSMenuItem) {
@@ -240,7 +247,15 @@ class AppDelegate: FlutterAppDelegate {
 
 extension AppDelegate: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
-        player?.pause()
-        player = nil
+        guard let window = notification.object as? NSWindow else { return }
+        let id = ObjectIdentifier(window)
+        guard let closed = nativePlayers.removeValue(forKey: id) else { return }
+        closed.player.pause()
+        (mainFlutterWindow as? MainFlutterWindow)?.setNativePlaybackSession(
+            String(describing: id), active: false)
+        if player === closed.player {
+            player = nil
+            playerView = nil
+        }
     }
 }
