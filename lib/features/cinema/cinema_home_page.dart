@@ -54,6 +54,7 @@ import 'cinema_card_ratings.dart';
 import 'cinema_nas_page.dart';
 import 'cinema_nas_sync.dart';
 import 'cinema_nas_media.dart';
+import 'cinema_nas_peer.dart';
 import 'cinema_repository.dart';
 import 'cinema_ratings_panel.dart';
 import 'cinema_ratings.dart';
@@ -64,7 +65,6 @@ import 'cinema_source_health.dart';
 import 'cinema_source_subscriptions.dart';
 import 'cinema_media_cache.dart';
 import 'cinema_tools_settings.dart';
-import 'cinema_invitation.dart';
 import 'cinema_player_page.dart';
 import 'cinema_theme.dart';
 import 'cinema_websites_page.dart';
@@ -130,7 +130,6 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     with KazumiDialogOwner {
   CinemaAnimeLibrary? _animeLibrary;
   final _health = CinemaSourceHealth.instance;
-  bool _openingInvitation = false;
   List<CinemaSource> get _activeSources =>
       _health.available(_store.enabledSources);
   late final CinemaStore _store = widget.store ?? CinemaStore();
@@ -165,15 +164,21 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   bool _animeOpened = false;
   String _applicationVersion = '正在读取版本';
   final _catalogs = {
-    for (final section in _Section.values) section: _CatalogState(),
+    for (final section in _Section.values)
+      section: _CatalogState()
+        ..filters = CinemaFilters(
+          year: section == _Section.movies || section == _Section.series
+              ? '${DateTime.now().year}'
+              : '',
+        ),
   };
   final _doubanSession = DoubanBrowseSession();
   final _knownCategories = <String, List<CinemaCategory>>{};
   final _aggregateControllers = <_Section, CinemaAggregateCatalogController>{};
   String _sourceConfiguration = '';
   final Map<_Section, CinemaCatalogSort> _catalogSort = {
-    _Section.movies: CinemaCatalogSort.latest,
-    _Section.series: CinemaCatalogSort.latest,
+    _Section.movies: CinemaCatalogSort.rating,
+    _Section.series: CinemaCatalogSort.rating,
   };
   _CatalogState get _catalog => _catalogs[_section]!;
   TextEditingController get _search => _catalog.search;
@@ -286,7 +291,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     );
     _store.addListener(_onStoreChanged);
     _health.addListener(_onHealthChanged);
-    CinemaInvitationInbox.instance.addListener(_onInvitationChanged);
+
     _ratings.changes.addListener(_onRatingsChanged);
     _scrollActivity.addListener(_onScrollActivityChanged);
     if (widget.enableWatchTogether) {
@@ -500,7 +505,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     try {
       await _together.initialize();
     } catch (_) {
-      if (mounted) _toast('一起看设置暂时无法读取，请稍后重试。');
+      if (mounted) _toast('NAS 配对设置暂时无法读取，请稍后重试。');
     }
   }
 
@@ -535,12 +540,22 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       context.pushNamed('/video/', arguments: args);
       return true;
     }
-    final candidate = await resolveCinemaPeerPlayback(
-      media: media,
-      sources: _activeSources,
-      repository: _repository,
-      isCurrent: current,
-    );
+    final nasCandidate = _together.isNASPaired
+        ? await resolveCinemaNASPeerPlayback(
+            media: media,
+            namespace: _together.nasNamespace,
+            isCurrent: current,
+          )
+        : null;
+    if (!current()) return false;
+    final candidate =
+        nasCandidate ??
+        await resolveCinemaPeerPlayback(
+          media: media,
+          sources: _activeSources,
+          repository: _repository,
+          isCurrent: current,
+        );
     if (!current()) return false;
     if (candidate == null) {
       _toast('当前启用的片源未找到对方正在看的同一作品和集数，可启用其他片源后重试。');
@@ -672,103 +687,6 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     );
   }
 
-  void _onInvitationChanged() {
-    if (!mounted ||
-        _openingInvitation ||
-        CinemaInvitationInbox.instance.value == null) {
-      return;
-    }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_openInvitation());
-    });
-  }
-
-  Future<void> _openInvitation() async {
-    final invite = CinemaInvitationInbox.instance.value;
-    if (invite == null || _openingInvitation || !mounted) return;
-    _openingInvitation = true;
-    CinemaInvitationInbox.instance.value = null;
-    try {
-      await _store.load();
-      if (!mounted) return;
-      final accepted =
-          await showDialog<bool>(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: const Text('收到观看邀请'),
-              content: Text(
-                '${invite.media?.title ?? '一起看房间'}${invite.media == null ? '' : ' · ${invite.media!.episodeName}'}\n'
-                '${invite.hasRoom ? '加入房间：${invite.room}\n服务器：${invite.endpoint}\n' : ''}'
-                '将使用你的片源打开，起始进度 ${invite.positionSeconds} 秒。',
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text('取消'),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: const Text('接受邀请'),
-                ),
-              ],
-            ),
-          ) ??
-          false;
-      if (!accepted || !mounted) return;
-      await _together.closeCurrentPlayback();
-      if (invite.hasRoom) {
-        await _together.pair(
-          endpoint: invite.endpoint,
-          roomName: invite.room,
-          username: _together.username.isNotEmpty
-              ? _together.username
-              : 'NAKU-${DateTime.now().millisecondsSinceEpoch % 100000}',
-        );
-      }
-      final media = invite.media;
-      if (media == null || !mounted) return;
-      if (media.animeId != null) {
-        final args = await resolveCinemaAnimeInvitation(
-          media: media,
-          plugins: inject<PluginsController>().pluginList,
-          isCurrent: () => mounted,
-          positionSeconds: invite.positionSeconds,
-        );
-        if (!mounted) return;
-        if (args == null) {
-          _toast('动漫规则未找到邀请中的作品和集数');
-          return;
-        }
-        context.pushNamed('/video/', arguments: args);
-        return;
-      }
-      final candidate = await resolveCinemaPeerPlayback(
-        media: media,
-        sources: _activeSources,
-        repository: _repository,
-        isCurrent: () => mounted,
-      );
-      if (!mounted) return;
-      if (candidate == null) {
-        _toast('当前片源未找到邀请中的同一作品和集数，可以添加片源后重新打开邀请');
-        return;
-      }
-      _playTitle(
-        candidate.title,
-        candidate.source,
-        candidate.routeIndex,
-        candidate.episodeIndex,
-        [candidate.title],
-        initialPositionSeconds: invite.positionSeconds,
-      );
-    } catch (_) {
-      if (mounted) _toast('邀请暂时无法打开，请检查房间连接和片源');
-    } finally {
-      _openingInvitation = false;
-      _onInvitationChanged();
-    }
-  }
-
   void _onStoreChanged() {
     if (!mounted) return;
     final configuration = jsonEncode(
@@ -814,7 +732,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         }
         unawaited(CinemaSourceSubscriptions(_store).refresh(automatic: true));
       }
-      _onInvitationChanged();
+
       _sourceConfiguration = jsonEncode(
         _store.sources.map((s) => s.toJson()).toList(),
       );
@@ -860,7 +778,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     }
     _store.removeListener(_onStoreChanged);
     _health.removeListener(_onHealthChanged);
-    CinemaInvitationInbox.instance.removeListener(_onInvitationChanged);
+
     unawaited(_health.flush());
     unawaited(_store.flush());
     if (widget.store == null) _store.dispose();
@@ -2085,7 +2003,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                       ? CinemaTheme.copper
                       : CinemaTheme.muted,
                 ),
-                title: const Text('一起看', style: TextStyle(fontSize: 14)),
+                title: const Text('NAS 用户配对', style: TextStyle(fontSize: 14)),
                 subtitle: _together.isPaired
                     ? Text(
                         _together.session.connected
@@ -3544,33 +3462,6 @@ class _TitleDetailsState extends State<_TitleDetails> {
                                     size: 18,
                                   ),
                                   label: const Text('下载'),
-                                ),
-                              if (title.routes.isNotEmpty &&
-                                  title.routes[_road].episodes.isNotEmpty)
-                                OutlinedButton.icon(
-                                  icon: const Icon(Icons.ios_share, size: 18),
-                                  label: const Text('邀请'),
-                                  onPressed: () => showCinemaInvitation(
-                                    context,
-                                    CinemaInvitation(
-                                      media: CinemaSyncMedia.fromSelection(
-                                        title,
-                                        title.routes[_road].episodes.first,
-                                      ),
-                                      endpoint:
-                                          CinemaWatchTogether.instance.isPaired
-                                          ? CinemaWatchTogether
-                                                .instance
-                                                .endpoint
-                                          : '',
-                                      room:
-                                          CinemaWatchTogether.instance.isPaired
-                                          ? CinemaWatchTogether
-                                                .instance
-                                                .roomName
-                                          : '',
-                                    ),
-                                  ),
                                 ),
                               OutlinedButton.icon(
                                 onPressed: () async {

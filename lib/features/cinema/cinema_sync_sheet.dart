@@ -1,9 +1,6 @@
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:kazumi/services/player/syncplay_endpoint.dart';
 import 'cinema_watch_together.dart';
-import 'cinema_invitation.dart';
 
 Future<void> showCinemaSyncSheet(
   BuildContext context, {
@@ -26,36 +23,31 @@ class _SyncDialog extends StatefulWidget {
 }
 
 class _SyncDialogState extends State<_SyncDialog> {
-  late final _server = TextEditingController(
-    text: widget.together.endpoint.isEmpty
-        ? defaultSyncPlayEndPoint
-        : widget.together.endpoint,
-  );
-  late final _room = TextEditingController(
-    text: widget.together.roomName.isEmpty
-        ? 'NAKU-${List.generate(12, (_) => Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0')).join()}'
-        : widget.together.roomName,
-  );
-  late final _name = TextEditingController(
-    text: widget.together.username.isEmpty
-        ? 'NAKU-${1000 + Random.secure().nextInt(9000)}'
-        : widget.together.username,
-  );
+  final _peer = TextEditingController();
+  bool _busy = false;
   String? _error;
   @override
   void dispose() {
-    _server.dispose();
-    _room.dispose();
-    _name.dispose();
+    _peer.dispose();
     super.dispose();
   }
 
   Future<void> _perform(Future<void> Function() action) async {
-    setState(() => _error = null);
+    if (_busy) return;
+    setState(() {
+      _error = null;
+      _busy = true;
+    });
     try {
       await action();
+    } on PlatformException catch (error) {
+      if (mounted) {
+        setState(() => _error = error.message ?? '请先登录 NAS，再检查对方账号。');
+      }
     } catch (_) {
-      if (mounted) setState(() => _error = '配对设置未保存，请检查填写内容及磁盘空间后重试。');
+      if (mounted) setState(() => _error = '配对未完成，请先登录 NAS 并检查对方账号和网络连接。');
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -65,7 +57,7 @@ class _SyncDialogState extends State<_SyncDialog> {
     builder: (context, _) {
       final together = widget.together, s = together.session;
       return AlertDialog(
-        title: const Text('一起看'),
+        title: const Text('NAS 用户配对'),
         content: SizedBox(
           width: 460,
           child: SingleChildScrollView(
@@ -74,66 +66,30 @@ class _SyncDialogState extends State<_SyncDialog> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  '配对后，离开播放器或重启软件仍会保留房间。点击对方的「跟随观看」，使用自己的片源打开同一作品和集数。',
+                  '双方分别登录同一台 NAS 的不同账号，填写对方的 NAS 账号并确认配对。双方确认并在线后，即可同步观看。',
                 ),
                 const SizedBox(height: 16),
-                if (!together.isPaired) ...[
+                if (!together.isNASPaired) ...[
                   TextField(
-                    controller: _server,
+                    controller: _peer,
+                    enabled: !_busy,
+                    maxLength: 128,
                     decoration: const InputDecoration(
-                      labelText: 'Syncplay 服务器',
-                      helperText: '使用 TLS 加密连接',
+                      labelText: '对方的 NAS 账号',
+                      helperText: '填写登录账号，区分大小写；无需链接、二维码或房间名',
                     ),
-                  ),
-                  const SizedBox(height: 14),
-                  TextField(
-                    controller: _room,
-                    maxLength: 35,
-                    decoration: const InputDecoration(labelText: '房间名'),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _name,
-                    maxLength: 16,
-                    decoration: const InputDecoration(labelText: '昵称'),
                   ),
                 ] else ...[
-                  SelectableText('服务器：${together.endpoint}'),
-                  SelectableText('房间：${together.roomName}'),
-                  TextButton.icon(
-                    onPressed: () => Clipboard.setData(
-                      ClipboardData(
-                        text:
-                            'NAKU播放器一起看\n服务器：${together.endpoint}\n房间：${together.roomName}',
-                      ),
-                    ),
-                    icon: const Icon(Icons.copy, size: 17),
-                    label: const Text('复制房间信息'),
-                  ),
-                  TextButton.icon(
-                    onPressed: () => showCinemaInvitation(
-                      context,
-                      CinemaInvitation(
-                        media: s.localMedia,
-                        positionSeconds: together.localPosition.inSeconds.clamp(
-                          0,
-                          86400,
-                        ),
-                        endpoint: together.endpoint,
-                        room: together.roomName,
-                      ),
-                    ),
-                    icon: const Icon(Icons.qr_code),
-                    label: const Text('邀请链接与二维码'),
-                  ),
+                  Text('我的 NAS 账号：${together.nasAccount}'),
+                  Text('配对账号：${together.nasPeerAccount}'),
                   const SizedBox(height: 10),
                   if (together.peers.isEmpty)
-                    Text(s.connected ? '等待对方加入此房间' : '正在等待连接恢复'),
+                    Text(s.connected ? '等待对方填写你的账号并确认配对' : '正在等待连接恢复'),
                   for (final peer in together.peers)
                     ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: const Icon(Icons.person_outline),
-                      title: Text(peer.username),
+                      title: Text(together.peerDisplayName(peer)),
                       subtitle: Text(
                         peer.media == null
                             ? '未在播放，或对方版本暂不支持作品信息'
@@ -199,11 +155,6 @@ class _SyncDialogState extends State<_SyncDialog> {
                     ),
                   ],
                 ),
-                TextButton.icon(
-                  onPressed: () => pasteCinemaInvitation(context),
-                  icon: const Icon(Icons.link),
-                  label: const Text('打开邀请链接'),
-                ),
                 if (s.status.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(top: 14),
@@ -221,7 +172,7 @@ class _SyncDialogState extends State<_SyncDialog> {
                   ),
                 const SizedBox(height: 16),
                 const Text(
-                  '双方各自联网播放；这里同步播放和进度，不传输画面。影片剪辑或片头不同，可手动校准进度。请只把房间信息分享给一起观看的人。',
+                  '双方各自播放片源，同步播放、暂停、进度与缓冲状态；不传输视频画面。配对关系会保存，重启后自动重连。版本或片头不同可在此校准进度。',
                   style: TextStyle(fontSize: 12),
                 ),
               ],
@@ -238,23 +189,19 @@ class _SyncDialogState extends State<_SyncDialog> {
               onPressed: () => _perform(together.unpair),
               child: const Text('解除配对'),
             ),
-          if (together.isPaired && !s.connected)
+          if (together.isNASPaired && !s.connected)
             FilledButton(
               onPressed: s.connecting
                   ? null
                   : () => _perform(together.reconnect),
               child: Text(s.connecting ? '连接中…' : '重新连接'),
             ),
-          if (!together.isPaired)
+          if (!together.isNASPaired)
             FilledButton(
-              onPressed: () => _perform(
-                () => together.pair(
-                  endpoint: _server.text,
-                  roomName: _room.text,
-                  username: _name.text,
-                ),
-              ),
-              child: const Text('创建 / 加入房间'),
+              onPressed: _busy
+                  ? null
+                  : () => _perform(() => together.pairNAS(_peer.text)),
+              child: Text(_busy ? '正在配对…' : '确认配对'),
             ),
         ],
       );

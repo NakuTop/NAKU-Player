@@ -1,6 +1,39 @@
 import 'package:flutter/services.dart';
 import 'cinema_models.dart';
 
+int nasInt(dynamic value) =>
+    value is num ? value.toInt() : int.tryParse('$value') ?? 0;
+List<Map<String, dynamic>> nasRows(dynamic value) => value is List
+    ? value.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList()
+    : [];
+
+/// Only file records returned by the NAS details API are offered for playback.
+List<({String label, String path})> nasFiles(Map<String, dynamic> detail) {
+  final result = <({String label, String path})>[];
+  final seen = <String>{};
+  void add(dynamic path, String label) {
+    if (path is String && path.isNotEmpty && seen.add(path)) {
+      result.add((label: label, path: path));
+    }
+  }
+
+  for (final file in nasRows(detail['file_information'])) {
+    add(
+      file['path'] ?? file['file_path'],
+      file['name']?.toString() ?? '原画版本 ${result.length + 1}',
+    );
+  }
+  for (final episode in nasRows(detail['tv_info'])) {
+    for (final file in nasRows(episode['file_info'])) {
+      add(
+        file['path'],
+        '第 ${episode['episode'] ?? ''} 集 · ${episode['ep_name'] ?? file['name'] ?? '原画'}',
+      );
+    }
+  }
+  return result;
+}
+
 const cinemaNASSource = CinemaSource(
   id: 'nas-movies',
   name: 'NAS 影视中心',

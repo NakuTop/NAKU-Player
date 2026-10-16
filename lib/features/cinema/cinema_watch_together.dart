@@ -5,19 +5,33 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:kazumi/services/player/syncplay_client.dart';
-import 'package:kazumi/services/player/syncplay_endpoint.dart';
 import 'cinema_models.dart';
+import 'cinema_nas_media.dart';
+import 'package:kazumi/services/player/syncplay_endpoint.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'cinema_sync_session.dart';
 
 class _Pairing {
-  const _Pairing(this.endpoint, this.room, this.username);
+  const _Pairing(
+    this.endpoint,
+    this.room,
+    this.username, {
+    this.nasNamespace,
+    this.account,
+    this.peerAccount,
+    this.peerUsername,
+  });
+  final String? nasNamespace, account, peerAccount, peerUsername;
   final String endpoint, room, username;
   Map<String, Object> toJson() => {
     'version': 1,
     'endpoint': endpoint,
     'room': room,
     'username': username,
+    'nasNamespace': ?nasNamespace,
+    'account': ?account,
+    'peerAccount': ?peerAccount,
+    'peerUsername': ?peerUsername,
   };
   static _Pairing parse(Map raw) {
     String read(String key, int limit) {
@@ -35,7 +49,15 @@ class _Pairing {
     if (parseSyncPlayEndPoint(endpoint) == null) {
       throw const FormatException('一起看服务器格式无效');
     }
-    return _Pairing(endpoint, read('room', 35), read('username', 16));
+    return _Pairing(
+      endpoint,
+      read('room', 35),
+      read('username', 16),
+      nasNamespace: raw['nasNamespace'] as String?,
+      account: raw['account'] as String?,
+      peerAccount: raw['peerAccount'] as String?,
+      peerUsername: raw['peerUsername'] as String?,
+    );
   }
 }
 
@@ -125,6 +147,7 @@ class CinemaWatchTogether extends ChangeNotifier {
   Timer? _retry, _followTimer;
   int _generation = 0, _retryCount = 0;
   bool _closed = false, _attempting = false, _followingNavigation = false;
+  bool _nasSuspended = false;
   final _notices = StreamController<String>.broadcast();
   late final StreamSubscription<String> _sessionNotices;
 
@@ -133,7 +156,40 @@ class CinemaWatchTogether extends ChangeNotifier {
   bool get following => _follow != null || _followingNavigation;
   bool isCurrentFollow(CinemaPeerActivity peer) =>
       !_closed && session.connected && identical(_follow?.peer, peer);
-  List<CinemaPeerActivity> get peers => session.peers;
+  bool get isNASPaired => _pairing?.nasNamespace != null;
+  String get nasNamespace => _pairing?.nasNamespace ?? '';
+  String get nasAccount => _pairing?.account ?? '';
+  String get nasPeerAccount => _pairing?.peerAccount ?? '';
+  String peerDisplayName(CinemaPeerActivity peer) =>
+      isNASPaired && peer.username == _pairing?.peerUsername
+      ? nasPeerAccount
+      : peer.username;
+  List<CinemaPeerActivity> get peers => isNASPaired
+      ? session.peers
+            .where((peer) => peer.username == _pairing?.peerUsername)
+            .toList()
+      : session.peers;
+
+  Future<void> pairNAS(String peer, {CinemaNASClient? client}) async {
+    final identity = await (client ?? CinemaNASClient()).call(
+      'pairingIdentity',
+      {'peer': peer.trim()},
+    );
+    final namespace = identity['namespace'] as String? ?? '';
+    if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(namespace)) {
+      throw const FormatException('请先登录 NAS');
+    }
+    await pair(
+      endpoint: defaultSyncPlayEndPoint,
+      roomName: identity['room'] as String,
+      username: identity['username'] as String,
+      nasNamespace: namespace,
+      account: identity['account'] as String,
+      peerAccount: identity['peerAccount'] as String,
+      peerUsername: identity['peerUsername'] as String,
+    );
+  }
+
   Stream<String> get notices => _notices.stream;
   String get endpoint => _pairing?.endpoint ?? session.endpoint;
   String get roomName => _pairing?.room ?? session.lastRoom;
@@ -164,7 +220,10 @@ class CinemaWatchTogether extends ChangeNotifier {
       );
       if (await _file!.exists()) {
         final raw = jsonDecode(await _file!.readAsString());
-        if (raw is Map && raw['version'] == 1 && raw['paired'] != false) {
+        if (raw is Map &&
+            raw['version'] == 1 &&
+            raw['paired'] != false &&
+            raw['nasNamespace'] != null) {
           _pairing = _Pairing.parse(raw);
         }
       }
@@ -201,6 +260,10 @@ class CinemaWatchTogether extends ChangeNotifier {
     required String endpoint,
     required String roomName,
     required String username,
+    String? nasNamespace,
+    account,
+    peerAccount,
+    peerUsername,
   }) async {
     await initialize();
     if (_closed) return;
@@ -208,6 +271,10 @@ class CinemaWatchTogether extends ChangeNotifier {
       'endpoint': endpoint,
       'room': roomName,
       'username': username,
+      'nasNamespace': nasNamespace,
+      'account': account,
+      'peerAccount': peerAccount,
+      'peerUsername': peerUsername,
     });
     final gen = ++_generation;
     _retry?.cancel();
@@ -215,6 +282,7 @@ class CinemaWatchTogether extends ChangeNotifier {
     _cancelFollow();
     _canonical = null;
     _pairing = pairing;
+    _nasSuspended = false;
     _attempting = false;
     await session.disconnect();
     if (gen != _generation || _closed) return;
@@ -234,11 +302,23 @@ class CinemaWatchTogether extends ChangeNotifier {
 
   Future<void> _connect(int gen) async {
     final pairing = _pairing;
-    if (_closed || gen != _generation || pairing == null || _attempting) return;
+    if (_closed ||
+        _nasSuspended ||
+        gen != _generation ||
+        pairing == null ||
+        _attempting) {
+      return;
+    }
     _retry?.cancel();
     _retry = null;
     _attempting = true;
     try {
+      if (pairing.nasNamespace != null) {
+        await CinemaNASClient().call('ensure', {
+          'namespace': pairing.nasNamespace,
+        });
+        if (_closed || gen != _generation) return;
+      }
       await session.connect(
         endpoint: pairing.endpoint,
         roomName: pairing.room,
@@ -263,6 +343,7 @@ class CinemaWatchTogether extends ChangeNotifier {
       _retry?.cancel();
       _retry = null;
     } else if (isPaired &&
+        !_nasSuspended &&
         !_attempting &&
         !session.connecting &&
         _retry == null) {
@@ -284,8 +365,29 @@ class CinemaWatchTogether extends ChangeNotifier {
     _notify();
   }
 
+  Future<void> pauseNASPairing() async {
+    if (!isNASPaired) return;
+    _nasSuspended = true;
+    ++_generation;
+    _retry?.cancel();
+    _retry = null;
+    _cancelFollow();
+    await session.disconnect();
+    _notify();
+  }
+
+  Future<void> resumeNASPairing(String namespace) async {
+    if (!isNASPaired) return;
+    if (_pairing?.nasNamespace != namespace) {
+      await pauseNASPairing();
+      return;
+    }
+    if (_nasSuspended) await reconnect();
+  }
+
   Future<void> reconnect() async {
     await initialize();
+    _nasSuspended = false;
     if (!isPaired || _closed) return;
     final gen = ++_generation;
     _cancelFollow();

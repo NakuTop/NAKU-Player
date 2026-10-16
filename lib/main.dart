@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'package:kazumi/features/cinema/cinema_invitation.dart';
 import 'package:flutter/material.dart';
 import 'package:kazumi/app_module.dart';
 import 'package:kazumi/app_widget.dart';
@@ -27,7 +26,6 @@ import 'package:kazumi/navigation.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await CinemaInvitationInbox.instance.start();
   registerEchHttpLicenses();
   registerBangumiDataLicenses();
   MediaKit.ensureInitialized();

@@ -217,6 +217,7 @@ void main() {
       expect(client.calls.map((e) => e.$1), [
         'savedLogin',
         'restore',
+        'autoConnect',
         'libraries',
         'connectionInfo',
         'catalog',
@@ -379,35 +380,22 @@ void main() {
     },
   );
 
-  testWidgets('LAN and remote forms retain separate addresses', (tester) async {
-    final client = FakeNAS();
-    await tester.pumpWidget(MaterialApp(home: CinemaNASPage(client: client)));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField).first, 'my-remote');
-    await tester.tap(find.text('局域网直连'));
-    await tester.pumpAndSettle();
-    expect(
-      tester.widget<TextField>(find.byType(TextField).first).controller!.text,
-      isEmpty,
-    );
-    await tester.enterText(
-      find.byType(TextField).first,
-      'http://192.168.1.5:9999',
-    );
-    await tester.tap(find.text('远程 UGlink'));
-    await tester.pumpAndSettle();
-    expect(
-      tester.widget<TextField>(find.byType(TextField).first).controller!.text,
-      'my-remote',
-    );
-    await tester.tap(find.text('局域网直连'));
-    await tester.pumpAndSettle();
-    expect(
-      tester.widget<TextField>(find.byType(TextField).first).controller!.text,
-      'http://192.168.1.5:9999',
-    );
-    await tester.pumpWidget(const SizedBox());
-  });
+  testWidgets(
+    'NAS connection form defaults to automatic selection without manual mode buttons',
+    (tester) async {
+      final client = FakeNAS();
+      await tester.pumpWidget(MaterialApp(home: CinemaNASPage(client: client)));
+      await tester.pumpAndSettle();
+      expect(find.text('自动选择连接'), findsOneWidget);
+      expect(find.byType(SegmentedButton<String>), findsNothing);
+      await tester.enterText(find.byType(TextField).first, 'my-remote');
+      expect(
+        tester.widget<TextField>(find.byType(TextField).first).controller!.text,
+        'my-remote',
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets(
     'switching uses saved credentials only through verified restoreAt',
@@ -424,15 +412,13 @@ void main() {
         };
       await tester.pumpWidget(MaterialApp(home: CinemaNASPage(client: client)));
       await tester.pumpAndSettle();
-      expect(find.text('远程 UGlink · https://nas.test'), findsOneWidget);
-      await tester.tap(find.text('切换连接'));
+      expect(find.text('自动连接 · 远程 UGlink · https://nas.test'), findsOneWidget);
+      await tester.tap(find.text('连接设置'));
       await tester.pumpAndSettle();
       expect(client.saved, isTrue);
       expect(client.calls.where((c) => c.$1 == 'forget'), isEmpty);
-      await tester.tap(find.text('局域网直连'));
-      await tester.pumpAndSettle();
-      expect(
-        tester.widget<TextField>(find.byType(TextField).first).controller!.text,
+      await tester.enterText(
+        find.byType(TextField).first,
         'http://192.168.1.5:9999',
       );
       client.connectionInfo = {'currentAddress': 'http://192.168.1.5:9999'};
@@ -442,7 +428,10 @@ void main() {
       expect(restore['address'], 'http://192.168.1.5:9999');
       expect(restore['namespace'], List.filled(64, 'a').join());
       expect(restore.containsKey('password'), isFalse);
-      expect(find.text('局域网直连 · http://192.168.1.5:9999'), findsOneWidget);
+      expect(
+        find.text('自动连接 · 局域网直连 · http://192.168.1.5:9999'),
+        findsOneWidget,
+      );
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -453,7 +442,7 @@ void main() {
       ..savedAddress = 'http://192.168.1.7:9999';
     await tester.pumpWidget(MaterialApp(home: CinemaNASPage(client: client)));
     await tester.pumpAndSettle();
-    expect(find.text('局域网直连 · http://192.168.1.7:9999'), findsOneWidget);
+    expect(find.text('自动连接 · 局域网直连 · http://192.168.1.7:9999'), findsOneWidget);
     expect(client.calls.where((c) => c.$1 == 'restore').length, 1);
     expect(client.calls.where((c) => c.$1 == 'restoreAt'), isEmpty);
     await tester.pumpWidget(const SizedBox());

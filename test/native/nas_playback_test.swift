@@ -39,9 +39,42 @@ final class PlaybackFixtureProtocol: URLProtocol {
     }
     override func stopLoading() {}
 }
+final class AutoRouteProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool {true}
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {request}
+    override func startLoading() {
+        // No authorization material may be sent during endpoint discovery.
+        precondition(request.value(forHTTPHeaderField:"X-Ugreen-Token") == nil)
+        precondition(request.url!.query == nil)
+        let hint=request.url!.host == "192.168.1.99" ? "different-device":"fixture-device"
+        let bytes=try! JSONSerialization.data(withJSONObject:["code":200,"data":["sn":hint]])
+        client!.urlProtocol(self,didReceive:HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:nil)!,cacheStoragePolicy:.notAllowed)
+        client!.urlProtocol(self,didLoad:bytes);client!.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
 @main struct NASPlaybackTests {
     static func expect(_ value: Bool,_ name: String) {if !value {fatalError(name)}}
     static func main() async throws {
+        let routeConfig=URLSessionConfiguration.ephemeral
+        routeConfig.protocolClasses=[AutoRouteProtocol.self]
+        let routeTransport=URLSession(configuration:routeConfig)
+        let local=await NASMovieSession.selectAutoRoute(lan:["http://192.168.1.10:9999"],remote:["https://fixture.cn21.ug.link"],hint:"fixture-device",transport:routeTransport)
+        expect(local == "http://192.168.1.10:9999","LAN preferred while both paths are online")
+        let remote=await NASMovieSession.selectAutoRoute(lan:["http://192.168.1.99:9999"],remote:["https://fixture.cn21.ug.link"],hint:"fixture-device",transport:routeTransport)
+        expect(remote == "https://fixture.cn21.ug.link","mismatched LAN cannot receive credentials, remote fallback works")
+        let invalid=await NASMovieSession.selectAutoRoute(lan:["http://8.8.8.8"],remote:["http://fixture.cn21.ug.link"],hint:"fixture-device",transport:routeTransport)
+        expect(invalid == nil,"reject public IP scans and HTTP remote downgrade")
+        print("PASS auto route LAN preference, relay fallback, device identity and credential-free probes")
+
+        let a = NASMovieSession.namespace(serial:"test-nas",username:"alice")
+        let b = NASMovieSession.namespace(serial:"test-nas",username:"bob")
+        let c = NASMovieSession.namespace(serial:"other-nas",username:"bob")
+        let room = NASMovieSession.pairingRoom(first:a,second:b)
+        expect(room == NASMovieSession.pairingRoom(first:b,second:a),"both NAS users derive the same pairing")
+        expect(room != NASMovieSession.pairingRoom(first:a,second:c),"other NAS cannot collide with pairing")
+        expect(room.count == 35 && !room.contains("alice") && !room.contains("bob"),"bounded relay room without raw NAS identity")
+
         do {_ = try NASMovieSession.playbackProfileData(["transcodeable":[["name":"invalid","resolution":"../escape"]]]);fatalError("bad profile accepted")}catch NASMovieError.response {}
         do {_ = try NASMovieSession.playbackProfileData(["transcodeable":[["name":"480P","resolution":"720x400"],["name":"duplicate","resolution":"720x400"]]]);fatalError("duplicate accepted")}catch NASMovieError.response {}
         let tracks=NASMovieSession.playbackTrackData([["id":"4354","title":"Chinese","isDefault":1],["id":4354]],subtitles:false)

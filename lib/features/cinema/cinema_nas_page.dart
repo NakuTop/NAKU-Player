@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'cinema_nas_media.dart';
 import 'cinema_nas_sync.dart';
+import 'cinema_watch_together.dart';
 import 'cinema_models.dart';
 import 'cinema_douban_details.dart';
 import 'cinema_store.dart';
@@ -14,40 +15,7 @@ import 'cinema_download_sheet.dart';
 
 import 'cinema_theme.dart';
 
-export 'cinema_nas_media.dart' show CinemaNASClient;
-
-int nasInt(dynamic value) =>
-    value is num ? value.toInt() : int.tryParse('$value') ?? 0;
-List<Map<String, dynamic>> nasRows(dynamic value) => value is List
-    ? value.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList()
-    : [];
-
-/// Only file records returned by the NAS details API are offered for playback.
-List<({String label, String path})> nasFiles(Map<String, dynamic> detail) {
-  final result = <({String label, String path})>[];
-  final seen = <String>{};
-  void add(dynamic path, String label) {
-    if (path is String && path.isNotEmpty && seen.add(path)) {
-      result.add((label: label, path: path));
-    }
-  }
-
-  for (final file in nasRows(detail['file_information'])) {
-    add(
-      file['path'] ?? file['file_path'],
-      file['name']?.toString() ?? '原画版本 ${result.length + 1}',
-    );
-  }
-  for (final episode in nasRows(detail['tv_info'])) {
-    for (final file in nasRows(episode['file_info'])) {
-      add(
-        file['path'],
-        '第 ${episode['episode'] ?? ''} 集 · ${episode['ep_name'] ?? file['name'] ?? '原画'}',
-      );
-    }
-  }
-  return result;
-}
+export 'cinema_nas_media.dart' show CinemaNASClient, nasInt, nasRows, nasFiles;
 
 /// Classify explicit private/local hosts; an arbitrary UGlink alias is remote.
 bool isNASLANAddress(String address) {
@@ -178,7 +146,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   }
 
   void _rememberAddress() {
-    if (_mode == 'lan') {
+    if (isNASLANAddress(_address.text.trim())) {
       _lanAddress = _address.text.trim();
     } else {
       _remoteAddress = _address.text.trim();
@@ -197,16 +165,6 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     } catch (_) {
       /* Address preferences must not fail an authenticated session. */
     }
-  }
-
-  void _selectMode(String mode) {
-    _rememberAddress();
-    setState(() {
-      _mode = mode;
-      _address.text = mode == 'lan' ? _lanAddress : _remoteAddress;
-      _error = null;
-    });
-    unawaited(_saveConnections());
   }
 
   Future<void> _readConnectionInfo() async {
@@ -247,6 +205,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     setState(() => _busy = true);
     try {
       await _saveConnections();
+      await CinemaWatchTogether.instance.pauseNASPairing();
       await _client.logout();
     } catch (error) {
       if (mounted) {
@@ -336,12 +295,6 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       _error = null;
     });
     try {
-      if (!restoring && _mode == 'lan' && !isNASLANAddress(_address.text)) {
-        throw PlatformException(
-          code: 'nas',
-          message: '请输入局域网 NAS 地址，如 http://192.168.1.10:9999',
-        );
-      }
       await _saveConnections();
       final expected = _client.namespace.isNotEmpty
           ? _client.namespace
@@ -367,10 +320,19 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
               'remember': _remember,
             });
       if (!mounted) {
+        await CinemaWatchTogether.instance.pauseNASPairing();
         await _client.logout();
         return;
       }
       _password.clear();
+      if (info['namespace'] is String) {
+        _client.namespace = info['namespace'] as String;
+      }
+      try {
+        await _client.call('autoConnect', {'namespace': _client.namespace});
+      } catch (_) {
+        // Keep the verified login usable if discovery/probing is unavailable.
+      }
       final libraries = await _client.call('libraries');
       if (!mounted) return;
       setState(() {
@@ -386,6 +348,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       });
     } catch (error) {
       if (mounted) _password.clear();
+      await CinemaWatchTogether.instance.pauseNASPairing();
       await _client.logout();
       if (mounted) setState(() => _error = _message(error));
     } finally {
@@ -395,6 +358,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       await _readConnectionInfo();
       await _saveConnections();
       await widget.sync?.bind(_client.namespace);
+      await CinemaWatchTogether.instance.resumeNASPairing(_client.namespace);
       await _load();
     }
   }
@@ -639,6 +603,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       await _readConnectionInfo();
       await _saveConnections();
       await widget.sync?.bind(_client.namespace);
+      await CinemaWatchTogether.instance.resumeNASPairing(_client.namespace);
       await _load();
     }
   }
@@ -705,7 +670,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
         if (_loggedIn)
           TextButton(
             onPressed: _busy ? null : _changeConnection,
-            child: const Text('切换连接'),
+            child: const Text('连接设置'),
           ),
         if (_loggedIn || _hasSaved)
           TextButton(
@@ -716,6 +681,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                     _generation++;
                     _collectionCache.clear();
                     _collectionFailed.clear();
+                    await CinemaWatchTogether.instance.pauseNASPairing();
                     await _client.call('forget');
                     if (mounted) {
                       setState(() {
@@ -777,23 +743,11 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                 style: TextStyle(color: CinemaTheme.muted, height: 1.6),
               ),
               const SizedBox(height: 32),
-              SegmentedButton<String>(
-                segments: const [
-                  ButtonSegment(
-                    value: 'lan',
-                    label: Text('局域网直连'),
-                    icon: Icon(Icons.lan_outlined),
-                  ),
-                  ButtonSegment(
-                    value: 'remote',
-                    label: Text('远程 UGlink'),
-                    icon: Icon(Icons.cloud_outlined),
-                  ),
-                ],
-                selected: {_mode},
-                onSelectionChanged: _busy
-                    ? null
-                    : (values) => _selectMode(values.single),
+              const ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.swap_horiz_rounded),
+                title: Text('自动选择连接'),
+                subtitle: Text('同一局域网优先直连，在外自动使用 UGlink，无需手动切换。'),
               ),
               const SizedBox(height: 20),
               TextField(
@@ -801,12 +755,8 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                 enabled: !_busy,
                 onChanged: (_) => _rememberAddress(),
                 decoration: InputDecoration(
-                  labelText: _mode == 'lan'
-                      ? '局域网 NAS 地址'
-                      : 'NAS 地址或 UGlink 别名',
-                  hintText: _mode == 'lan'
-                      ? 'http://192.168.1.10:9999'
-                      : 'https://… 或你的 UGlink 别名',
+                  labelText: 'NAS 地址或 UGlink 别名',
+                  hintText: 'UGlink 别名、远程地址或局域网地址',
                 ),
               ),
               if (_mode == 'lan' && _lanCandidates.isNotEmpty)
@@ -913,7 +863,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
               Text('家中的收藏', style: Theme.of(context).textTheme.headlineLarge),
               const SizedBox(height: 8),
               Text(
-                '${_mode == 'lan' ? '局域网直连' : '远程 UGlink'} · ${_address.text}',
+                '自动连接 · ${_mode == 'lan' ? '局域网直连' : '远程 UGlink'} · ${_address.text}',
                 style: const TextStyle(color: CinemaTheme.muted, fontSize: 12),
               ),
               const SizedBox(height: 8),

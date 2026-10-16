@@ -57,7 +57,8 @@ void main() {
         audio: 4354,
         subtitle: 6145,
       );
-      expect(nas.calls.single.$2, {
+      expect(nas.calls.first.$1, 'autoConnect');
+      expect(nas.calls.where((c) => c.$1 == 'startPlayback').single.$2, {
         'namespace': 'a' * 64,
         'id': 5,
         'library': 2,

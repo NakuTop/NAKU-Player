@@ -117,6 +117,8 @@ actor NASMovieSession {
     private var activePlayback: NASActivePlayback?
     private var lanCandidates=[String](),remoteAddress=""
     private var connectionInfoLoaded=false
+    private var lastAutoProbe = Date.distantPast
+    private var autoSelecting = false
     private let credentialStore = NASMovieCredentialStore()
     private let clientID = UUID().uuidString + "PC-darwin"
     private let session: URLSession
@@ -209,12 +211,99 @@ actor NASMovieSession {
         if let saved=try qrStore.loadValue(NASMovieSavedQR.self) { return ["address":saved.address,"username":saved.username,"qr":true] }
         return [:]
     }
-    func restore() async throws -> [String:Any] {
-        if let saved=try credentialStore.load() { return try await login(address:saved.address,username:saved.username,password:saved.password) }
-        if let saved=try qrStore.loadValue(NASMovieSavedQR.self) {
-            return try await adoptQR(saved, remember:nil)
+    private func loginCacheKey(address: String, username: String) -> String {
+        SHA256.hash(data:Data((address+"|"+username).utf8)).map {String(format:"%02x",$0)}.joined()
+    }
+    static func probeAutoRoute(_ address: String, hint: String, transport: URLSession) async -> String? {
+        guard let target=try? origin(address), let host=target.host,
+              isPrivateIPv4(host) || (target.scheme == "https" && (host == "ug.link" || host.hasSuffix(".ug.link"))) else {return nil}
+        var request=URLRequest(url:target.appendingPathComponent("ugreen/v1/verify/sn"))
+        request.timeoutInterval=isPrivateIPv4(host) ? 1.2:3.0
+        do {
+            let (bytes,response)=try await transport.data(for:request)
+            guard let http=response as? HTTPURLResponse,http.statusCode == 200,http.url?.host == host,bytes.count < 65536,
+                  let object=try JSONSerialization.jsonObject(with:bytes) as? [String:Any],object["code"] as? Int == 200,
+                  let data=object["data"] as? [String:Any],data["sn"] as? String == hint else {return nil}
+            return target.absoluteString
+        } catch {return nil}
+    }
+    static func selectAutoRoute(lan: [String], remote: [String], hint: String, transport: URLSession) async -> String? {
+        guard !hint.isEmpty else {return nil}
+        // Local candidates come only from the authenticated NAS. Probe without
+        // sending tokens/passwords; never follow redirects or ignore TLS errors.
+        for group in [Array(Set(lan)).sorted(),Array(Set(remote)).sorted()] {
+            let selected=await withTaskGroup(of:String?.self,returning:String?.self) { tasks in
+                for address in group.prefix(12) {
+                    tasks.addTask {await probeAutoRoute(address,hint:hint,transport:transport)}
+                }
+                for await result in tasks {if let result {tasks.cancelAll();return result}}
+                return nil
+            }
+            if let selected {return selected}
         }
-        throw NASMovieError.expired
+        return nil
+    }
+    func restore() async throws -> [String:Any] {
+        let metadata=try savedLogin(),address=metadata["address"] as? String ?? "",username=metadata["username"] as? String ?? ""
+        var selected=address
+        let cache=UserDefaults.standard.dictionary(forKey:"NakuNASAutoRouteV1") ?? [:]
+        if cache["loginKey"] as? String == loginCacheKey(address:address,username:username),
+           let hint=cache["hint"] as? String {
+            selected=await Self.selectAutoRoute(lan:cache["lan"] as? [String] ?? [],remote:cache["remote"] as? [String] ?? [],hint:hint,transport:session) ?? address
+        }
+        let result:[String:Any]
+        if let saved=try credentialStore.load() {
+            result=try await login(address:selected,username:saved.username,password:saved.password,remember:nil)
+        } else if let saved=try qrStore.loadValue(NASMovieSavedQR.self) {
+            result=try await adoptQR(NASMovieSavedQR(address:selected,token:saved.token,publicKey:saved.publicKey,staticToken:saved.staticToken,
+                authType:saved.authType,username:saved.username,serial:saved.serial,name:saved.name,uid:saved.uid,ugk:saved.ugk),remember:nil)
+        } else {throw NASMovieError.expired}
+        if selected != address {
+            guard cache["namespace"] as? String == namespace else {logout();throw NASMovieError.configuration}
+            remoteAddress=(cache["remote"] as? [String])?.first ?? ""
+            lanCandidates=cache["lan"] as? [String] ?? []
+        }
+        return result
+    }
+    func prepareAutoConnection() async {
+        guard !namespace.isEmpty else {return}
+        _ = try? await autoConnect(expected:namespace)
+    }
+    func autoConnect(expected: String, force: Bool = false) async throws -> [String:Any] {
+        guard namespace == expected,!namespace.isEmpty,let original=base else {throw NASMovieError.configuration}
+        if autoSelecting || (!force && Date().timeIntervalSince(lastAutoProbe)<15) {
+            return ["namespace":namespace,"changed":false,"currentAddress":original.absoluteString]
+        }
+        autoSelecting=true;defer {autoSelecting=false};lastAutoProbe=Date()
+        let attempt=generation
+        _ = try? await connectionInfo(expected:expected)
+        let cache=UserDefaults.standard.dictionary(forKey:"NakuNASAutoRouteV1") ?? [:]
+        let hint:String
+        if cache["namespace"] as? String == expected,let pinned=cache["hint"] as? String {hint=pinned}
+        else if let live=try? await publicDeviceHint(original) {hint=live}
+        else {throw NASMovieError.response}
+        guard generation == attempt,namespace == expected else {throw NASMovieError.expired}
+        let metadata=try savedLogin(),savedAddress=metadata["address"] as? String ?? "",username=metadata["username"] as? String ?? ""
+        let remote=[remoteAddress,savedAddress,original.absoluteString].filter {
+            guard let u=try? Self.origin($0),let host=u.host else {return false}
+            return u.scheme == "https" && (host == "ug.link" || host.hasSuffix(".ug.link"))
+        }
+        let locals=lanCandidates.filter {guard let u=try? Self.origin($0) else {return false};return Self.isPrivateIPv4(u.host ?? "")}
+        UserDefaults.standard.set(["loginKey":loginCacheKey(address:savedAddress,username:username),"namespace":namespace,
+            "hint":hint,"lan":locals,"remote":remote],forKey:"NakuNASAutoRouteV1")
+        guard let selected=await Self.selectAutoRoute(lan:locals,remote:remote,hint:hint,transport:session),
+              generation == attempt,namespace == expected else {return ["namespace":expected,"changed":false,"currentAddress":original.absoluteString]}
+        if selected == original.absoluteString {return ["namespace":namespace,"changed":false,"currentAddress":selected]}
+        let target=try Self.origin(selected)
+        let current=try await api("v1/user/current/user",at:target)
+        let machine=try await api("v1/sysinfo/machine/common",parameters:["basic":"1"],at:target)
+        guard generation == attempt,namespace == expected,
+              let name=current["username"] as? String,let common=machine["common"] as? [String:Any],let serial=common["serial"] as? String,
+              Self.namespace(serial:serial,username:name) == expected else {throw NASMovieError.configuration}
+        // Commit only after both account and hardware identity are verified.
+        // Concurrent catalogue/download requests keep their existing route.
+        base=target
+        return ["namespace":namespace,"changed":true,"currentAddress":selected]
     }
     func ensure(expected: String) async throws -> [String:Any] {
         if !namespace.isEmpty {
@@ -317,6 +406,34 @@ actor NASMovieSession {
             return ["name":verified.name,"namespace":namespace,"username":username]
         } catch { logout(); throw error }
     }
+    static func pairingRoom(first: String, second: String) -> String {
+        let pair = [first,second].sorted().joined(separator:"|")
+        let hash = SHA256.hash(data:Data(("naku-nas-pair-v1|"+pair).utf8)).map {String(format:"%02x",$0)}.joined()
+        return "NP-"+String(hash.prefix(32))
+    }
+
+    // Resolve account identities only after authenticating to this NAS. Raw
+    // usernames and hardware serials are never sent to the Syncplay relay.
+    func pairingIdentity(peer: String) async throws -> [String:Any] {
+        if namespace.isEmpty { _ = try await restore() }
+        let attempt = generation
+        let current = try await api("v1/user/current/user")
+        let machine = try await api("v1/sysinfo/machine/common", parameters:["basic":"1"])
+        guard generation == attempt,
+              let own = current["username"] as? String, !own.isEmpty,
+              let common = machine["common"] as? [String:Any],
+              let serial = common["serial"] as? String, !serial.isEmpty,
+              Self.namespace(serial:serial,username:own) == namespace else { throw NASMovieError.configuration }
+        let partner = peer.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !partner.isEmpty, partner != own, partner.utf8.count <= 128,
+              !partner.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw NASMovieError.configuration }
+        let other = Self.namespace(serial:serial,username:partner)
+        let room = Self.pairingRoom(first:namespace,second:other)
+        return ["namespace":namespace,"account":own,"peerAccount":partner,
+                "room":room,"username":"N-"+String(namespace.prefix(14)),
+                "peerUsername":"N-"+String(other.prefix(14))]
+    }
+
     func syncDirectory() async throws -> String {
         let attempt=generation
         guard !namespace.isEmpty else { throw NASMovieError.expired }
@@ -528,7 +645,7 @@ actor NASMovieSession {
         let attempt=generation
         if refresh || !connectionInfoLoaded {
             // This is the exact endpoint used by UGOS to advertise LAN ports.
-            // Candidates remain suggestions; never connect or downgrade TLS automatically.
+            // Auto routing verifies the unauthenticated device hint before sending session credentials.
             do {
                 let response=try await fileJSON("v1/user/priority_link")
                 guard attempt == generation else {throw NASMovieError.expired}
@@ -712,8 +829,8 @@ actor NASMovieSession {
         guard page <= 500 else { throw NASMovieError.configuration }
         return ["video_arr":rows,"total_num":total ?? rows.count]
     }
-    func api(_ route: String, parameters: [String:String] = [:]) async throws -> [String:Any] {
-        guard let base, !token.isEmpty else { throw NASMovieError.expired }
+    func api(_ route: String, parameters: [String:String] = [:], at target: URL? = nil) async throws -> [String:Any] {
+        guard let base = target ?? base, !token.isEmpty else { throw NASMovieError.expired }
         let key = UUID().uuidString.replacingOccurrences(of:"-",with:"")
         var params = parameters, h = headers()
         h["X-Ugreen-Security-Key"] = Insecure.MD5.hash(data:Data(token.utf8)).map { String(format:"%02x",$0) }.joined()
@@ -731,7 +848,7 @@ actor NASMovieSession {
             result = try json(AES.GCM.open(AES.GCM.SealedBox(combined:data),using:SymmetricKey(data:Data(key.utf8))))
         }
         let code=result["code"] as? Int ?? http.statusCode
-        if [401,403,9902].contains(code) { logout(); throw NASMovieError.expired }
+        if [401,403,9902].contains(code) { if target == nil {logout()}; throw NASMovieError.expired }
         guard http.statusCode == 200, code == 200 else { throw NASMovieError.login(code) }
         return result["data"] as? [String:Any] ?? [:]
     }
@@ -768,12 +885,17 @@ final class NakuNASMovies {
         Task {
             do {
                 let value: Any?
+                if ["libraries","catalog","details","collection","playbackOptions","syncPull","syncPush","asset"].contains(call.method) {
+                    await session.prepareAutoConnection()
+                }
                 switch call.method {
                 case "login": value=try await session.login(address:args["address"] as? String ?? "",username:args["username"] as? String ?? "",password:args["password"] as? String ?? "",remember:args["remember"] as? Bool ?? false)
                 case "qrCreate": value=try await session.createQR(address:args["address"] as? String ?? "")
                 case "qrPoll": value=try await session.pollQR(remember:args["remember"] as? Bool ?? false)
                 case "qrCancel": await session.cancelQR(); value=nil
                 case "ensure": value=try await session.ensure(expected:args["namespace"] as? String ?? "")
+                case "autoConnect": value=try await session.autoConnect(expected:args["namespace"] as? String ?? "",force:args["force"] as? Bool ?? false)
+                case "pairingIdentity": value=try await session.pairingIdentity(peer:args["peer"] as? String ?? "")
                 case "syncPull": value=try await session.syncPull(expected:args["namespace"] as? String ?? "")
                 case "syncPush": value=try await session.syncPush(expected:args["namespace"] as? String ?? "",device:args["device"] as? String ?? "",sequence:args["sequence"] as? Int ?? 0,document:args["document"] as? String ?? "")
                 case "restoreAt": value=try await session.restoreAt(address:args["address"] as? String ?? "",expected:args["namespace"] as? String ?? "",remember:args["remember"] as? Bool ?? false)

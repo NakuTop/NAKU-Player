@@ -22,7 +22,7 @@ CinemaTitle _title(String id) => CinemaTitle(
   title: '测试电影$id',
   category: '剧情片',
   categoryId: '1',
-  year: '2024',
+  year: '${DateTime.now().year}',
 );
 
 class _Catalogue extends CinemaRepository {
@@ -46,6 +46,14 @@ class _Catalogue extends CinemaRepository {
     if (onBrowse != null) return onBrowse!(page);
     return CinemaPage(items: items, total: items.length);
   }
+
+  @override
+  Future<CinemaPage> browseFiltered(
+    CinemaSource source, {
+    String? categoryId,
+    String year = '',
+    int page = 1,
+  }) => browse(source, categoryId: categoryId, page: page);
 
   @override
   Future<CinemaPage> search(
@@ -212,6 +220,33 @@ void main() {
     });
     return positions.map((item) => item.id).toList();
   }
+
+  testWidgets(
+    'movie and series homes start with this year and rating sorting',
+    (tester) async {
+      await mount(tester);
+      expect(find.text('${DateTime.now().year}'), findsWidgets);
+      expect(
+        tester
+            .widget<ChoiceChip>(
+              find.byKey(const ValueKey('catalog-sort-rating')),
+            )
+            .selected,
+        isTrue,
+      );
+      await tester.tap(find.text('剧集').first);
+      await tester.pumpAndSettle();
+      expect(find.text('${DateTime.now().year}'), findsWidgets);
+      expect(
+        tester
+            .widget<ChoiceChip>(
+              find.byKey(const ValueKey('catalog-sort-rating')),
+            )
+            .selected,
+        isTrue,
+      );
+    },
+  );
 
   testWidgets(
     'rating chip sorts by the chosen provider and leaves missing scores last',
@@ -382,7 +417,11 @@ void main() {
         findsNothing,
         reason: 'The last loaded work has no visible card.',
       );
-      expect(ratings.cardCalls.length, lessThan(60));
+      expect(
+        ratings.cardCalls.length,
+        60,
+        reason: 'Default rating sort preloads all loaded works immediately.',
+      );
       final browses = catalogue.browseCalls;
       await selectRatingSort(tester);
       expect(

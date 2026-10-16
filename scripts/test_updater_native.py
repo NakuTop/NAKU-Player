@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
-framework = root.parent / 'toolchains/sparkle-2.10.0'
+framework = root / 'macos/Pods/Sparkle'
 source = (root / 'macos/Runner/MainFlutterWindow.swift').read_text()
 observer = source[source.index('private final class NakuUpdaterObserver:'):source.index('\nclass MainFlutterWindow:')]
 with tempfile.TemporaryDirectory(prefix='naku-updater-native-') as directory:

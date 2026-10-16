@@ -647,7 +647,7 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
   );
 
   Widget get _syncPlayMenuItem =>
-      KazumiMenuItem(onPressed: widget.showSyncPlayPanel, label: '一起看');
+      KazumiMenuItem(onPressed: widget.showSyncPlayPanel, label: 'NAS 用户配对');
 
   Widget get _danmakuSettingsMenuItem =>
       KazumiMenuItem(onPressed: _showDanmakuSettings, label: '弹幕设置');

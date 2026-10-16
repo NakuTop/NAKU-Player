@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'cinema_nas_media.dart';
 
@@ -93,6 +94,13 @@ class CinemaNASPlaybackClient {
     int? subtitle,
   }) async {
     final args = parameters(reference);
+    try {
+      await client.call('autoConnect', {'namespace': args['namespace']});
+    } on PlatformException {
+      // Unsupported discovery must not block a working media session.
+    } on MissingPluginException {
+      // Older native bridges remain compatible.
+    }
     final data = await client.call('startPlayback', {
       ...args,
       'resolution': ?resolution,

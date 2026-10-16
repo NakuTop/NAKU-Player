@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:kazumi/plugins/plugins_controller.dart';
 import 'package:kazumi/pages/download/download_controller.dart';
-import 'cinema_invitation.dart';
 import 'cinema_library_backup.dart';
 import 'cinema_media_cache.dart';
 import 'cinema_source_subscriptions.dart';
@@ -322,12 +321,6 @@ class _CinemaToolsSettingsPageState extends State<CinemaToolsSettingsPage> {
                         ),
                       ),
                     const Divider(),
-                    ListTile(
-                      title: const Text('打开作品邀请'),
-                      subtitle: const Text('粘贴来自朋友的 NAKU 2.0 链接'),
-                      leading: const Icon(Icons.link),
-                      onTap: () => pasteCinemaInvitation(context),
-                    ),
                   ],
                 ),
                 ListenableBuilder(
@@ -482,7 +475,7 @@ class _CinemaToolsSettingsPageState extends State<CinemaToolsSettingsPage> {
                     ),
                     const SizedBox(height: 18),
                     const Text(
-                      '备份采用版本化 JSON 与 SHA-256 完整性校验，可迁移到另一台安装 NAKU 2.0 的设备。下载媒体和账号凭据不会通过邀请链接分享。',
+                      '备份采用版本化 JSON 与 SHA-256 完整性校验，可迁移到另一台安装 NAKU 2.0 的设备。下载媒体和账号凭据不包含在备份中。',
                     ),
                   ],
                 ),

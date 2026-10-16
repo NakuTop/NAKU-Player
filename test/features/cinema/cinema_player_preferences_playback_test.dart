@@ -214,6 +214,7 @@ class _Probe extends CinemaMediaProbe {
 }
 
 class _NAS extends CinemaNASClient {
+  bool routeChanged = false;
   final calls = <String>[];
   final starts = <Map<String, dynamic>>[];
   @override
@@ -222,6 +223,11 @@ class _NAS extends CinemaNASClient {
     Map<String, dynamic>? args,
   ]) async {
     calls.add(method);
+    if (method == 'autoConnect') {
+      final changed = routeChanged;
+      routeChanged = false;
+      return {'changed': changed};
+    }
     if (method == 'playbackOptions') {
       return {
         'isRelayOrigin': true,
@@ -572,8 +578,15 @@ void main() {
       await windowControls.refreshVisibility();
       await tester.pumpAndSettle();
       expect(backends.last.state.playing, false);
+      nas.routeChanged = true;
+      await tester.pump(const Duration(seconds: 15));
+      await tester.pumpAndSettle();
+      expect(nas.starts.length, 4);
+      expect(backends.last.state.position.inSeconds, 123);
+      expect(backends.last.state.playing, false);
+      expect(nas.starts.last['resolution'], '480P');
       await unmount(tester);
-      expect(nas.calls.where((v) => v == 'closePlayback').length, 3);
+      expect(nas.calls.where((v) => v == 'closePlayback').length, 4);
     },
   );
 
@@ -860,7 +873,7 @@ void main() {
       expect(find.byTooltip('下一集'), findsOneWidget);
       expect(find.byTooltip('线路 / 选集'), findsOneWidget);
       expect(find.byTooltip('更多选项'), findsNothing);
-      for (final label in ['下载选集', '一起看', '超分辨率']) {
+      for (final label in ['下载选集', 'NAS 用户配对', '超分辨率']) {
         expect(find.text(label), findsWidgets);
       }
       expect(find.byTooltip('画中画'), findsWidgets);
