@@ -1,12 +1,6 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
 IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
---><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0"><channel>
-<title>NAKU播放器</title><link>https://github.com/NakuTop/NAKU-Player</link><description>NAKU播放器 macOS 更新</description>
-<item><title>NAKU播放器 2.5.0</title><sparkle:version>32</sparkle:version><sparkle:shortVersionString>2.5.0</sparkle:shortVersionString><sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
-<sparkle:releaseNotesLink>https://github.com/NakuTop/NAKU-Player/releases/tag/v2.5.0</sparkle:releaseNotesLink>
-<description><![CDATA[<p>NAS影视中心支持局域网/远程接入、记住登录、扫码、合集数量、统一历史收藏同步和原画下载。真实流式清晰度、音轨、字幕及常用功能直接显示在详情与全屏控制层。</p><p>新增仅视频的网页浮窗，保留网站自身画中画。补齐缺失豆瓣身份的精确核验。</p><p>修复自动更新开关联动、立即检查、启动检查与更新窗口聚焦，保留签名验证。发布包不预填个人NAS地址，已有保存地址与登录保留。</p><p>远程播放仍受带宽限制，第三方资料可受访问限制；支持Apple Silicon和Intel，macOS12或更新。</p>]]></description>
-<enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v2.5.0/NAKUPlayer-2.5.0-macOS-universal.zip" length="58170637" type="application/octet-stream" sparkle:edSignature="GhBy7MPz0ijyUz5lxD6jlQgqK48Vjnsd/L02ZhxxkRTNXz3ry/f/9gmC75DJRquHMHqq98MU5Mvq+1GNtpnsDg=="></enclosure>
-</item></channel></rss><!-- sparkle-signatures:
-edSignature: 1zNY89cLPX/0UPrrLtcOaC8GYMc1iILOw9TKmQSqXN8GwJ/i20DfOR3WRpawkbzDznO1w7iOwFfghgHsmmMVCg==
-length: 1846
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0"><channel><title>NAKU播放器</title><link>https://github.com/NakuTop/NAKU-Player</link><description>NAKU播放器 macOS 更新</description><item><title>NAKU播放器 2.5.1</title><sparkle:version>33</sparkle:version><sparkle:shortVersionString>2.5.1</sparkle:shortVersionString><sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion><sparkle:releaseNotesLink>https://github.com/NakuTop/NAKU-Player/releases/tag/v2.5.1</sparkle:releaseNotesLink><description><![CDATA[<p>修复自动更新时序：后台自动下载并验证后，主动弹出安装并重启提示；保留启动检查、运行期间定时检查和签名验证，无需手动点击检查更新。</p>]]></description><enclosure url="https://github.com/NakuTop/NAKU-Player/releases/download/v2.5.1/NAKUPlayer-2.5.1-macOS-universal.zip" type="application/octet-stream" sparkle:edSignature="TYMbFad9m/B8pKdcPq6MQ1WpZMSNPR8q095GMlJfnWZQmCY2dISdYCfze65SQ0b40q7i4DcspTfGkO5oNdXiDQ==" length="58171252"></enclosure></item></channel></rss><!-- sparkle-signatures:
+edSignature: FcP5pDHeZR1zFcKt9vZxzENcQNs3FlvtvCFqwRjfD0JkRam0fs43vDXB+qkI7JUlcpBEh4L1QXrNMu9y4lDVDg==
+length: 1388
 -->

@@ -95,6 +95,7 @@ private final class GlassContentViewController: NSViewController {
 // Archive/feed signature validation and installation remain owned by Sparkle.
 private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
   weak var controller: SPUStandardUpdaterController?
+  private var installationPromptPending = false
   var latestVersion = "", latestBuild = "", lastError = "", status = "等待检查"
 
   func updater(_ updater: SPUUpdater, didFinishLoading appcast: SUAppcast) {
@@ -109,12 +110,33 @@ private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStanda
   }
   func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
     status = "发现新版本 \(item.displayVersionString)"
-    if updater.automaticallyChecksForUpdates {
-      // Promote the real update session; this does not bypass validation or
-      // select Install on behalf of the user. Automatic downloads remain enabled.
-      DispatchQueue.main.async { [weak self] in self?.controller?.checkForUpdates(nil) }
-    }
+    // Do not foreground a background check here: Sparkle must finish its
+    // automatic download before we ask it to show the installation prompt.
   }
+  func updater(_ updater: SPUUpdater, willDownloadUpdate item: SUAppcastItem,
+      with request: NSMutableURLRequest) {
+    status = "正在自动下载 \(item.displayVersionString)"
+  }
+  func updater(_ updater: SPUUpdater, didDownloadUpdate item: SUAppcastItem) {
+    status = "下载完成，正在验证更新"
+  }
+  func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
+      immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
+    status = "更新已准备好，请确认安装并重启"
+    // The automatic driver is still active here. Let it finish before
+    // asking Sparkle to resume the staged installation with its normal UI.
+    installationPromptPending = true
+    return false
+  }
+  func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck,
+      error: Error?) {
+    guard installationPromptPending else { return }
+    installationPromptPending = false
+    guard error == nil, updater.automaticallyChecksForUpdates,
+      updater.automaticallyDownloadsUpdates else { return }
+    controller?.checkForUpdates(nil)
+  }
+
   func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
     let failure = error as NSError
     if failure.domain == SUSparkleErrorDomain && failure.code == 1001 {
@@ -370,13 +392,10 @@ class MainFlutterWindow: NSWindow {
         if args["automaticChecks"] == false {
           updater.updater.automaticallyDownloadsUpdates = false
         }
-        // Enabling is an explicit user action: check now and show Sparkle's
-        // normal window instead of waiting for its next scheduled interval.
-        if args["automaticChecks"] == true || args["automaticDownloads"] == true {
-          self.updaterObserver.lastError = ""
-          self.updaterObserver.status = "正在检查更新"
-          updater.checkForUpdates(nil)
-        }
+        // Let Sparkle reset its scheduler after preference changes. A
+        // foreground check here would turn automatic downloads into a manual
+        // update offer. Every subsequent app launch also checks immediately.
+        updater.updater.resetUpdateCycleAfterShortDelay()
         result(nil)
       default:
         result(FlutterMethodNotImplemented)
