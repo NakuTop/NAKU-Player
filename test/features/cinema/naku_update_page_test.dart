@@ -35,6 +35,31 @@ void main() {
         .setMockMethodCallHandler(channel, null);
   });
 
+  testWidgets(
+    'Android software update uses its own enabled check and never calls Sparkle',
+    (tester) async {
+      var checked = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: NakuUpdatePage(
+            android: true,
+            androidCheck: () async {
+              checked++;
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('NAKU Player Android'), findsOneWidget);
+      expect(find.text('自动下载和安装'), findsNothing);
+      await tester.tap(find.text('检查更新'));
+      await tester.pumpAndSettle();
+      expect(checked, 1);
+      expect(calls, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('explains when installed build is newer than published feed', (
     tester,
   ) async {

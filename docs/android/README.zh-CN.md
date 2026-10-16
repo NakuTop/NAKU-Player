@@ -1,6 +1,6 @@
 # NAKU Android 手机与电视版
 
-同一代码库提供手机自适应版和强制电视版，保留电影、剧集、NAS 影视中心、收藏与观看历史。当前手机版为 3.1.0（43），TV 保持既有版本。
+同一代码库提供手机自适应版和强制电视版，保留电影、剧集、NAS 影视中心、收藏与观看历史。当前手机版为 3.1.1（44），TV 保持既有版本。
 
 ## 设备使用
 
@@ -20,7 +20,7 @@
 
 ```sh
 flutter pub get
-flutter build apk --release --build-name 3.1.0 --build-number 43
+flutter build apk --release --build-name 3.1.1 --build-number 44
 # 复制 build/app/outputs/flutter-apk/app-release.apk 为手机包，再构建电视包。
 flutter build apk --release --build-name 3.0.2 --build-number 42 --dart-define=NAKU_TV=true
 ```
@@ -38,7 +38,7 @@ flutter build apk --release --build-name 3.0.2 --build-number 42 --dart-define=N
 电视播放时返回键先收起控制栏，再退出全屏到详情；详情页返回片库。
 
 
-## 手机版 3.1.0
+## 手机版 3.1.1
 
 - 手机工具栏提供 44 像素触摸区域，画质、音轨 / 字幕和全屏保持直接可见；右上方“播放工具”可进入在线字幕、倍速、选集和画中画。
 - NAS 首帧未就绪、缓冲和失败时仍可选择实际返回的档位。空转码列表允许原文件播放；重复或无效音轨编号不会生成失效菜单。
