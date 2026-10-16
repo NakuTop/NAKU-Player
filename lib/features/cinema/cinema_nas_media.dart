@@ -1,3 +1,5 @@
+import 'dart:io';
+import 'cinema_android_nas.dart';
 import 'package:flutter/services.dart';
 import 'cinema_models.dart';
 
@@ -84,12 +86,17 @@ Map<String, String> parseNASMediaReference(String value) {
 class CinemaNASClient {
   static const channel = MethodChannel('naku/nas-movies');
   String namespace = '';
+  Future<dynamic> _invoke(String method, [Map<String, dynamic>? args]) =>
+      Platform.isAndroid
+      ? CinemaAndroidNAS.instance.invoke(method, args)
+      : channel.invokeMethod<dynamic>(method, args);
   Future<Map<String, dynamic>> call(
     String method, [
     Map<String, dynamic>? args,
   ]) async {
-    final value =
-        await channel.invokeMapMethod<String, dynamic>(method, args) ?? {};
+    final value = Map<String, dynamic>.from(
+      await _invoke(method, args) as Map? ?? {},
+    );
     if (value['namespace'] is String) namespace = value['namespace'] as String;
     return value;
   }
@@ -99,7 +106,7 @@ class CinemaNASClient {
     String path, {
     bool poster = false,
   }) async =>
-      await channel.invokeMethod<String>('asset', {
+      await _invoke('asset', {
         'id': row['ug_video_info_id'] is num
             ? (row['ug_video_info_id'] as num).toInt()
             : int.tryParse('${row['ug_video_info_id']}') ?? 0,
@@ -110,7 +117,9 @@ class CinemaNASClient {
         'poster': poster,
       }) ??
       '';
-  Future<void> logout() => channel.invokeMethod<void>('logout');
+  Future<void> logout() async {
+    await _invoke('logout');
+  }
 
   Future<String> resolveReference(String reference) async {
     final ref = parseNASMediaReference(reference);

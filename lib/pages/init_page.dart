@@ -1,3 +1,4 @@
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:kazumi/features/cinema/cinema_startup_preferences.dart';
 import 'dart:async';
 import 'dart:io';
@@ -64,8 +65,10 @@ class _InitPageState extends State<InitPage> {
     _webDavInit();
     _bangumiInit();
     try {
-      await downloadController.init();
-      _setupBackgroundDownloadNavigation();
+      if (NakuDevice.canDownload) {
+        await downloadController.init();
+        _setupBackgroundDownloadNavigation();
+      }
     } catch (e) {
       KazumiLogger().e('InitPage: downloadController.init() failed', error: e);
     }

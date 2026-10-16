@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:flutter/material.dart';
 import 'package:kazumi/app_module.dart';
 import 'package:kazumi/app_widget.dart';
@@ -26,10 +27,11 @@ import 'package:kazumi/navigation.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await NakuDevice.initialize();
   registerEchHttpLicenses();
   registerBangumiDataLicenses();
   MediaKit.ensureInitialized();
-  if (Platform.isAndroid || Platform.isIOS) {
+  if ((Platform.isAndroid || Platform.isIOS) && !NakuDevice.isTV) {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setSystemUIOverlayStyle(
       const SystemUiOverlayStyle(

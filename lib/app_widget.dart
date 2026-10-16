@@ -1,3 +1,4 @@
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:kazumi/features/cinema/cinema_theme.dart';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
@@ -328,8 +329,18 @@ class _AppWidgetState extends State<AppWidget>
       themeMode: ThemeMode.dark,
       scaffoldMessengerKey: rootScaffoldMessengerKey,
       routerConfig: ModularApp.routerConfigOf(context),
-      builder: (context, child) =>
-          CinemaAppearanceScope(child: child ?? const SizedBox.shrink()),
+      builder: (context, child) => CinemaAppearanceScope(
+        child: NakuDevice.isTV
+            ? MediaQuery(
+                data: MediaQuery.of(
+                  context,
+                ).copyWith(textScaler: const TextScaler.linear(1.15)),
+                child: FocusTraversalGroup(
+                  child: child ?? const SizedBox.shrink(),
+                ),
+              )
+            : child ?? const SizedBox.shrink(),
+      ),
     );
   }
 }

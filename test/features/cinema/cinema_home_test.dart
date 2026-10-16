@@ -1,3 +1,4 @@
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:dio/dio.dart';
@@ -323,6 +324,25 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  testWidgets(
+    'TV has a remote navigation rail and no downloads; phone keeps downloads',
+    (tester) async {
+      NakuDevice.isTV = true;
+      addTearDown(() => NakuDevice.isTV = false);
+      await mount(tester, width: 800);
+      expect(find.text('NAS 影视'), findsOneWidget);
+      expect(find.text('下载管理'), findsNothing);
+      expect(find.text('NAKU · TV'), findsOneWidget);
+      expect(find.text('动漫'), findsNothing);
+      expect(find.text('网页影院'), findsNothing);
+      expect(find.byIcon(Icons.menu_rounded), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      NakuDevice.isTV = false;
+      await mount(tester);
+      expect(find.text('下载管理'), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'original-name search resolves Chinese titles without losing raw source results',

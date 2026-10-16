@@ -23,8 +23,9 @@ class PipUtils {
     }
     const pipChannel = MethodChannel('com.predidit.kazumi/pip');
     try {
-      final bool? supported =
-          await pipChannel.invokeMethod('isPictureInPictureSupported');
+      final bool? supported = await pipChannel.invokeMethod(
+        'isPictureInPictureSupported',
+      );
       return supported ?? false;
     } on PlatformException catch (e) {
       KazumiLogger().e("Failed to check Android PIP support: '${e.message}'.");
@@ -32,19 +33,23 @@ class PipUtils {
     }
   }
 
-  static Future<bool> enterAndroidPIPWindow(
-      {int width = 16, int height = 9}) async {
+  static Future<bool> enterAndroidPIPWindow({
+    int width = 16,
+    int height = 9,
+  }) async {
     if (!Platform.isAndroid) {
       return false;
     }
     final Size aspectSize = getPIPAspectSize(width: width, height: height);
     const pipChannel = MethodChannel('com.predidit.kazumi/pip');
     try {
-      final bool? entered =
-          await pipChannel.invokeMethod('enterPictureInPictureMode', {
-        'width': aspectSize.width.toInt(),
-        'height': aspectSize.height.toInt(),
-      });
+      final bool? entered = await pipChannel.invokeMethod(
+        'enterPictureInPictureMode',
+        {
+          'width': aspectSize.width.toInt(),
+          'height': aspectSize.height.toInt(),
+        },
+      );
       return entered ?? false;
     } on PlatformException catch (e) {
       KazumiLogger().e("Failed to enter Android PIP mode: '${e.message}'.");
@@ -93,11 +98,15 @@ class PipUtils {
       });
     } on PlatformException catch (e) {
       KazumiLogger().e(
-          "Failed to set Android auto-enter PIP enabled state: '${e.message}'.");
+        "Failed to set Android auto-enter PIP enabled state: '${e.message}'.",
+      );
     }
   }
 
-  static Future<void> setAndroidPIPInPlayerPage(bool inPlayerPage) async {
+  static Future<void> setAndroidPIPInPlayerPage(
+    bool inPlayerPage, {
+    bool supportsDanmaku = true,
+  }) async {
     if (!Platform.isAndroid) {
       return;
     }
@@ -105,6 +114,7 @@ class PipUtils {
     try {
       await pipChannel.invokeMethod('setAndroidPIPInPlayerPage', {
         'inPlayerPage': inPlayerPage,
+        'supportsDanmaku': supportsDanmaku,
       });
     } on PlatformException catch (e) {
       KazumiLogger().e("Failed to set Android PIP page state: '${e.message}'.");
@@ -112,8 +122,10 @@ class PipUtils {
   }
 
   // 进入桌面设备小窗模式，并用播放源比例固定窗口宽高比
-  static Future<void> enterDesktopPIPWindow(
-      {int width = 16, int height = 9}) async {
+  static Future<void> enterDesktopPIPWindow({
+    int width = 16,
+    int height = 9,
+  }) async {
     final Size aspectSize = getPIPAspectSize(width: width, height: height);
     final double aspectRatio = aspectSize.width / aspectSize.height;
     const double pipWidth = 480;
@@ -127,8 +139,9 @@ class PipUtils {
     final lowResolution = await isLowResolution();
     await windowManager.setAlwaysOnTop(false);
     await windowManager.setAspectRatio(0);
-    await windowManager
-        .setSize(lowResolution ? const Size(800, 600) : const Size(1280, 860));
+    await windowManager.setSize(
+      lowResolution ? const Size(800, 600) : const Size(1280, 860),
+    );
     await windowManager.center();
   }
 

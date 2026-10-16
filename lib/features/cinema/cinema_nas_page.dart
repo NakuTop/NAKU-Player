@@ -1,3 +1,6 @@
+import 'cinema_tv_focus.dart';
+import 'cinema_lan_cast.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -318,7 +321,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   }
 
   Future<void> _restore() async {
-    if (!Platform.isMacOS && widget.client == null) return;
+    if (!NakuDevice.hasNAS && widget.client == null) return;
     setState(() => _busy = true);
     try {
       if (widget.store != null) {
@@ -389,7 +392,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     Map<String, dynamic>? activeSession,
   }) async {
     if (_busy) return;
-    if (!Platform.isMacOS && widget.client == null) {
+    if (!NakuDevice.hasNAS && widget.client == null) {
       setState(() => _error = 'NAS 影视中心当前支持 macOS 版。');
       return;
     }
@@ -578,20 +581,50 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                           ),
                       ],
                     ),
+                  if (Platform.isAndroid &&
+                      !NakuDevice.isTV &&
+                      files.isNotEmpty)
+                    OutlinedButton.icon(
+                      onPressed: () => showCinemaCast(
+                        context,
+                        title: title,
+                        source: cinemaNASSource,
+                      ),
+                      icon: const Icon(Icons.cast),
+                      label: const Text('发送到电视'),
+                    ),
                   if (files.isEmpty) const Text('NAS 尚未返回可播放文件。请在影视中心检查此影片。'),
                   for (final file in files)
                     ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: const Icon(Icons.play_circle_outline),
                       title: Text(file.label),
-                      trailing: IconButton(
-                        tooltip: '下载到 Naku',
-                        icon: const Icon(Icons.download_outlined),
-                        onPressed: () async {
-                          Navigator.pop(dialogContext);
-                          await _download(title, files.indexOf(file));
-                        },
-                      ),
+                      trailing: NakuDevice.canDownload
+                          ? Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (Platform.isAndroid)
+                                  IconButton(
+                                    tooltip: '发送本集到电视',
+                                    icon: const Icon(Icons.cast),
+                                    onPressed: () => showCinemaCast(
+                                      context,
+                                      title: title,
+                                      source: cinemaNASSource,
+                                      episode: files.indexOf(file),
+                                    ),
+                                  ),
+                                IconButton(
+                                  tooltip: '下载到 Naku',
+                                  icon: const Icon(Icons.download_outlined),
+                                  onPressed: () async {
+                                    Navigator.pop(dialogContext);
+                                    await _download(title, files.indexOf(file));
+                                  },
+                                ),
+                              ],
+                            )
+                          : null,
                       subtitle: Text(
                         file.path.split('/').last,
                         maxLines: 2,
@@ -933,17 +966,20 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                 ),
               ),
               const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: _busy ? null : _qrLogin,
-                  icon: const Icon(Icons.qr_code_scanner),
-                  label: const Text('使用绿联云 App 扫码登录'),
+              if (!Platform.isAndroid)
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _busy ? null : _qrLogin,
+                    icon: const Icon(Icons.qr_code_scanner),
+                    label: const Text('使用绿联云 App 扫码登录'),
+                  ),
                 ),
-              ),
               const SizedBox(height: 16),
-              const Text(
-                '登录信息仅保存在本机 macOS 钥匙串，之后自动连接；退出并忘记账号可清除。',
+              Text(
+                Platform.isAndroid
+                    ? '登录信息通过 Android Keystore 加密保存在本机，之后自动连接；退出并忘记账号可清除。'
+                    : '登录信息仅保存在本机 macOS 钥匙串，之后自动连接；退出并忘记账号可清除。',
                 style: TextStyle(fontSize: 12, color: CinemaTheme.muted),
               ),
             ],
@@ -1058,43 +1094,45 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                   _ => '电影',
                 },
               ].join(' · ');
-              return InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: _busy ? null : () => _details(row),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: SizedBox(
-                          width: double.infinity,
-                          child: _NASPoster(
-                            key: ValueKey(
-                              '${row['ug_video_info_id']}-${row['poster_path']}',
+              return CinemaTVFocus(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: _busy ? null : () => _details(row),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: SizedBox(
+                            width: double.infinity,
+                            child: _NASPoster(
+                              key: ValueKey(
+                                '${row['ug_video_info_id']}-${row['poster_path']}',
+                              ),
+                              client: _client,
+                              row: row,
                             ),
-                            client: _client,
-                            row: row,
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      row['name']?.toString() ?? '未命名影片',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                        color: CinemaTheme.muted,
-                        fontSize: 12,
+                      const SizedBox(height: 10),
+                      Text(
+                        row['name']?.toString() ?? '未命名影片',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 4),
+                      Text(
+                        subtitle,
+                        style: const TextStyle(
+                          color: CinemaTheme.muted,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               );
             }, childCount: _items.length),

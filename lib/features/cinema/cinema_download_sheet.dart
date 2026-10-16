@@ -1,3 +1,4 @@
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:kazumi/bean/dialog/adaptive_bottom_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
@@ -13,6 +14,7 @@ Future<void> showCinemaDownloadSheet(
   int routeIndex = 0,
   int? episodeIndex,
 }) async {
+  if (!NakuDevice.canDownload) return;
   final downloads = inject<DownloadController>();
   await showAdaptiveBottomSheet<void>(
     context: context,

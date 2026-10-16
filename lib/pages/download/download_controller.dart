@@ -1,3 +1,4 @@
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:kazumi/utils/async_serial_queue.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -556,6 +557,7 @@ abstract class _DownloadController with Store {
     required DownloadRecord media,
     required List<DownloadSelection> selections,
   }) async {
+    if (!NakuDevice.canDownload) throw StateError('电视版不支持下载，请在手机上下载。');
     final record = _repository.getRecord(media.key) ?? media;
     final added = <DownloadEpisode>[];
     final seen = <String>{};
@@ -669,6 +671,7 @@ abstract class _DownloadController with Store {
     required String mediaUrl,
     required Map<String, String> headers,
   }) async {
+    if (!NakuDevice.canDownload) throw StateError('电视版不支持下载。');
     final uri = Uri.tryParse(mediaUrl);
     if (uri == null ||
         !['http', 'https'].contains(uri.scheme) ||
@@ -1418,6 +1421,7 @@ abstract class _DownloadController with Store {
   }
 
   Future<void> resumeAllDownloads(int bangumiId, String pluginName) async {
+    if (!NakuDevice.canDownload) return;
     final recordKey = '${pluginName}_$bangumiId';
     final record = _repository.getRecord(recordKey);
     if (record == null) return;

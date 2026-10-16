@@ -1,3 +1,4 @@
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'dart:async';
 import 'dart:ui';
 import 'package:flutter/material.dart';
@@ -58,6 +59,10 @@ abstract final class CinemaTheme {
     _cachedFont = fontFamily;
     return _cached = ThemeData(
       useMaterial3: true,
+      focusColor: NakuDevice.isTV ? copper.withValues(alpha: .45) : null,
+      visualDensity: NakuDevice.isTV
+          ? VisualDensity.comfortable
+          : VisualDensity.standard,
       brightness: Brightness.dark,
       fontFamily: fontFamily,
       fontFamilyFallback: const ['MI_Sans_Regular'],

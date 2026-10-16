@@ -1,3 +1,6 @@
+import 'cinema_tv_focus.dart';
+import 'cinema_lan_cast.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'cinema_download_sheet.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -248,11 +251,61 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   @override
   void initState() {
     super.initState();
-    if (Platform.isMacOS && widget.store == null) {
+    if (Platform.isAndroid) {
+      final cast = CinemaLanCast.instance;
+      cast.onPlay = (title, source, road, episode, position) async {
+        if (!mounted) return;
+        final homeRoute = ModalRoute.of(context);
+        final accepted = homeRoute?.isCurrent == true
+            ? true
+            : await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: Text('手机发送了「${title.title}」'),
+                  content: const Text('在电视上开始播放？'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('取消'),
+                    ),
+                    FilledButton(
+                      autofocus: true,
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('播放'),
+                    ),
+                  ],
+                ),
+              );
+        if (!mounted || accepted != true) return;
+        if (homeRoute != null) {
+          Navigator.of(
+            context,
+          ).popUntil((route) => identical(route, homeRoute));
+        }
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => Theme(
+              data: CinemaTheme.of(context),
+              child: CinemaPlayerPage(
+                title: title,
+                source: source,
+                store: _store,
+                routeIndex: road,
+                episodeIndex: episode,
+                initialPositionSeconds: position,
+              ),
+            ),
+          ),
+        );
+      };
+      cast.start();
+    }
+
+    if (NakuDevice.hasNAS && widget.store == null) {
       _nasSync = CinemaNASSync(_store);
     }
     try {
-      _animeLibrary = CinemaAnimeLibrary();
+      if (!Platform.isAndroid) _animeLibrary = CinemaAnimeLibrary();
     } catch (_) {
       // A standalone widget test may have no anime storage initialized.
     }
@@ -721,7 +774,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     try {
       await _store.load();
       if (widget.store == null) {
-        if (Platform.isMacOS) {
+        if (NakuDevice.hasNAS) {
           _nasSync ??= CinemaNASSync(_store);
           unawaited(_nasSync!.start());
         }
@@ -757,6 +810,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   @override
   void dispose() {
+    if (Platform.isAndroid) unawaited(CinemaLanCast.instance.stop());
     _nasSync?.dispose();
     _animeLibrary?.dispose();
     CinemaSettingsHostBinding.instance.unbind(this);
@@ -1708,7 +1762,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       data: CinemaTheme.of(context),
       child: Builder(
         builder: (context) {
-          final wide = MediaQuery.sizeOf(context).width >= 860;
+          final wide =
+              NakuDevice.isTV || MediaQuery.sizeOf(context).width >= 860;
           return Scaffold(
             backgroundColor: CinemaTheme.background,
             drawer: wide
@@ -1727,8 +1782,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         padding: const EdgeInsets.only(left: 96, right: 24),
                         child: Row(
                           children: [
-                            const Text(
-                              'NAKU播放器',
+                            Text(
+                              NakuDevice.isTV ? 'NAKU · TV' : 'NAKU播放器',
                               style: TextStyle(
                                 fontSize: 12,
                                 color: CinemaTheme.muted,
@@ -1916,8 +1971,21 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             ],
           ),
         ),
+        if (NakuDevice.isTV)
+          ListenableBuilder(
+            listenable: CinemaLanCast.instance,
+            builder: (_, _) => Padding(
+              padding: const EdgeInsets.all(18),
+              child: Text(
+                CinemaLanCast.instance.status,
+                style: const TextStyle(fontSize: 12, color: CinemaTheme.muted),
+              ),
+            ),
+          ),
         const SizedBox(height: 28),
-        for (final section in _Section.values) ...[
+        for (final section in _Section.values.where(
+          (s) => !(Platform.isAndroid || NakuDevice.isTV) || s != _Section.anime,
+        )) ...[
           if (section == _Section.favorites)
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 24, vertical: 13),
@@ -1926,6 +1994,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
             child: ListTile(
+              autofocus: NakuDevice.isTV && _section == section,
               selected: _section == section,
               selectedTileColor: CinemaTheme.copper.withValues(alpha: .16),
               selectedColor: CinemaTheme.copper,
@@ -1978,18 +2047,22 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             },
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
-          child: ListTile(
-            dense: true,
-            leading: const Icon(Icons.download_for_offline_outlined, size: 20),
-            title: const Text('下载管理', style: TextStyle(fontSize: 14)),
-            onTap: () {
-              if (closeDrawer) Navigator.pop(context);
-              context.pushNamed(DownloadPage.routePath);
-            },
+        if (NakuDevice.canDownload)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+            child: ListTile(
+              dense: true,
+              leading: const Icon(
+                Icons.download_for_offline_outlined,
+                size: 20,
+              ),
+              title: const Text('下载管理', style: TextStyle(fontSize: 14)),
+              onTap: () {
+                if (closeDrawer) Navigator.pop(context);
+                context.pushNamed(DownloadPage.routePath);
+              },
+            ),
           ),
-        ),
         if (widget.enableWatchTogether)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
@@ -2657,85 +2730,87 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   Widget _titleCard(
     CinemaTitle title, {
     List<CinemaTitle> variants = const [],
-  }) => InkWell(
-    key: ValueKey('title-card:${title.key}'),
-    onTap: () => _openTitle(title, variants: variants),
-    borderRadius: BorderRadius.circular(10),
-    child: CinemaGlass(
-      blur: false,
-      radius: 14,
-      padding: const EdgeInsets.all(7),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                _poster(title, null, null),
-                if (title.remarks.isNotEmpty)
-                  Positioned(
-                    bottom: 8,
-                    left: 8,
-                    right: 8,
-                    child: Align(
-                      alignment: Alignment.bottomRight,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 7,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: .8),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          title.remarks,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: Colors.white,
+  }) => CinemaTVFocus(
+    child: InkWell(
+      key: ValueKey('title-card:${title.key}'),
+      onTap: () => _openTitle(title, variants: variants),
+      borderRadius: BorderRadius.circular(10),
+      child: CinemaGlass(
+        blur: false,
+        radius: 14,
+        padding: const EdgeInsets.all(7),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _poster(title, null, null),
+                  if (title.remarks.isNotEmpty)
+                    Positioned(
+                      bottom: 8,
+                      left: 8,
+                      right: 8,
+                      child: Align(
+                        alignment: Alignment.bottomRight,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: .8),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            title.remarks,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Colors.white,
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            title.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            [
-              title.year,
-              title.sourceId == 'douban-discovery'
-                  ? '查找全部片源'
-                  : variants
-                            .where((v) => v.sourceId != 'douban-discovery')
-                            .length >
-                        1
-                  ? '${variants.where((v) => v.sourceId != 'douban-discovery').length} 个片源版本'
-                  : _findSource(title.sourceId)?.name ?? title.category,
-            ].where((e) => e.isNotEmpty).join(' · '),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 10, color: CinemaTheme.muted),
-          ),
-          const SizedBox(height: 5),
-          if (!title.isDirectMedia)
-            CinemaCardRatings(
-              title: title,
-              repository: _ratings,
-              resolveTitle: _ratingTitles.resolve,
+            const SizedBox(height: 10),
+            Text(
+              title.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
             ),
-        ],
+            const SizedBox(height: 4),
+            Text(
+              [
+                title.year,
+                title.sourceId == 'douban-discovery'
+                    ? '查找全部片源'
+                    : variants
+                              .where((v) => v.sourceId != 'douban-discovery')
+                              .length >
+                          1
+                    ? '${variants.where((v) => v.sourceId != 'douban-discovery').length} 个片源版本'
+                    : _findSource(title.sourceId)?.name ?? title.category,
+              ].where((e) => e.isNotEmpty).join(' · '),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 10, color: CinemaTheme.muted),
+            ),
+            const SizedBox(height: 5),
+            if (!title.isDirectMedia)
+              CinemaCardRatings(
+                title: title,
+                repository: _ratings,
+                resolveTitle: _ratingTitles.resolve,
+              ),
+          ],
+        ),
       ),
     ),
   );
@@ -3448,7 +3523,8 @@ class _TitleDetailsState extends State<_TitleDetails> {
                                   icon: const Icon(Icons.play_arrow),
                                   label: const Text('开始观看'),
                                 ),
-                              if (snapshot.hasData &&
+                              if (NakuDevice.canDownload &&
+                                  snapshot.hasData &&
                                   title.routes.any(
                                     (r) => r.episodes.isNotEmpty,
                                   ))
@@ -3464,6 +3540,22 @@ class _TitleDetailsState extends State<_TitleDetails> {
                                     size: 18,
                                   ),
                                   label: const Text('下载'),
+                                ),
+                              if (Platform.isAndroid &&
+                                  !NakuDevice.isTV &&
+                                  snapshot.hasData &&
+                                  title.routes.any(
+                                    (r) => r.episodes.isNotEmpty,
+                                  ))
+                                OutlinedButton.icon(
+                                  onPressed: () => showCinemaCast(
+                                    context,
+                                    title: title,
+                                    source: _selectedSource,
+                                    road: _road,
+                                  ),
+                                  icon: const Icon(Icons.cast),
+                                  label: const Text('发送到电视'),
                                 ),
                               OutlinedButton.icon(
                                 onPressed: () async {

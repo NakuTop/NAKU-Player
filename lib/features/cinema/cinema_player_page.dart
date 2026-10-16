@@ -1,3 +1,5 @@
+import 'package:kazumi/services/platform/naku_device.dart';
+import 'cinema_lan_cast.dart';
 import 'package:kazumi/features/cinema/naku_update_service.dart';
 import 'package:kazumi/services/video_source/video_source_format.dart';
 import 'package:kazumi/services/player/playback_quality.dart';
@@ -324,6 +326,43 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   bool _pip = false, _pipChanging = false;
   Completer<void>? _pipTransition;
   bool _fullscreen = false, _fullscreenChanging = false;
+  bool _tvControlsVisible = true;
+  bool _androidPip = false;
+  Timer? _tvControlsTimer;
+  void _scheduleTVControlsHide() {
+    _tvControlsTimer?.cancel();
+    _tvControlsTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted &&
+          NakuDevice.isTV &&
+          ModalRoute.of(context)?.isCurrent == true) {
+        setState(() => _tvControlsVisible = false);
+      }
+    });
+  }
+
+  KeyEventResult _tvRemoteKey(KeyEvent event) {
+    if (!NakuDevice.isTV ||
+        event is! KeyDownEvent ||
+        ModalRoute.of(context)?.isCurrent != true) {
+      return KeyEventResult.ignored;
+    }
+    if (!_tvControlsVisible &&
+        {
+          LogicalKeyboardKey.select,
+          LogicalKeyboardKey.enter,
+          LogicalKeyboardKey.arrowLeft,
+          LogicalKeyboardKey.arrowRight,
+          LogicalKeyboardKey.arrowUp,
+          LogicalKeyboardKey.arrowDown,
+        }.contains(event.logicalKey)) {
+      setState(() => _tvControlsVisible = true);
+      _scheduleTVControlsHide();
+      return KeyEventResult.handled;
+    }
+    _scheduleTVControlsHide();
+    return KeyEventResult.ignored;
+  }
+
   Completer<void>? _fullscreenTransition;
   final _panelRevision = ValueNotifier<int>(0);
 
@@ -335,6 +374,23 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Future<void> _setFullscreen(bool next) async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      await SystemChrome.setEnabledSystemUIMode(
+        next ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+      );
+      if (!NakuDevice.isTV) {
+        await SystemChrome.setPreferredOrientations(
+          next
+              ? [
+                  DeviceOrientation.landscapeLeft,
+                  DeviceOrientation.landscapeRight,
+                ]
+              : DeviceOrientation.values,
+        );
+      }
+      if (mounted) setState(() => _fullscreen = next);
+      return;
+    }
     if (await windowManager.isFullScreen() == next) {
       if (mounted && !_closing) setState(() => _fullscreen = next);
       return;
@@ -467,6 +523,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Future<void> _togglePip() async {
+    if (Platform.isAndroid) {
+      setState(() => _androidPip = true);
+      final entered = await PipUtils.enterAndroidPIPWindow(
+        width: _playback?.width ?? 16,
+        height: _playback?.height ?? 9,
+      );
+      if (mounted) setState(() => _androidPip = entered);
+      return;
+    }
     if (_pipChanging) return;
     _pipChanging = true;
     final transition = Completer<void>();
@@ -572,6 +637,32 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   @override
   void initState() {
     super.initState();
+    _fullscreen = NakuDevice.isTV;
+    if (Platform.isAndroid) {
+      unawaited(
+        PipUtils.setAndroidPIPInPlayerPage(true, supportsDanmaku: false),
+      );
+      const MethodChannel('com.predidit.kazumi/pip').setMethodCallHandler((
+        call,
+      ) async {
+        if (!mounted) return;
+        if (call.method == 'onModeChanged') {
+          setState(
+            () =>
+                _androidPip = (call.arguments as Map?)?['isInPipMode'] == true,
+          );
+        }
+        if (call.method == 'onAction') {
+          final action = (call.arguments as Map?)?['action'];
+          if (action == 'play_pause') await _togglePlayback();
+          if (action == 'forward') _seekBy(10);
+        }
+      });
+    }
+    if (NakuDevice.isTV) {
+      FocusManager.instance.addEarlyKeyEventHandler(_tvRemoteKey);
+      _scheduleTVControlsHide();
+    }
     unawaited(_updatePlaybackLease.start());
     _nasConnectionTimer = Timer.periodic(
       const Duration(seconds: 15),
@@ -598,12 +689,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _bindTogether();
     unawaited(_together.initialize());
     WidgetsBinding.instance.addObserver(this);
-    windowManager.addListener(this);
-    unawaited(
-      windowManager.isFullScreen().then((value) {
-        if (mounted && !_closing) setState(() => _fullscreen = value);
-      }),
-    );
+    if (!Platform.isAndroid && !Platform.isIOS) windowManager.addListener(this);
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      unawaited(
+        windowManager.isFullScreen().then((value) {
+          if (mounted && !_closing) setState(() => _fullscreen = value);
+        }),
+      );
+    }
     _discovering = _discoverRoutes();
     if (widget.title.routes.isEmpty) {
       _loading = false;
@@ -1048,7 +1141,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                 ),
               action('倍速', Icons.speed, _showSpeedOptions),
               tracks,
-              action('画中画', Icons.picture_in_picture_alt, _togglePip),
+              if (!NakuDevice.isTV)
+                action('画中画', Icons.picture_in_picture_alt, _togglePip),
               if (!overlay)
                 action(
                   _fullscreen ? '退出全屏' : '全屏',
@@ -1063,12 +1157,25 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             spacing: 4,
             runSpacing: 2,
             children: [
+              if (Platform.isAndroid && !NakuDevice.isTV)
+                action(
+                  '发送到电视',
+                  Icons.cast,
+                  () => showCinemaCast(
+                    context,
+                    title: _title,
+                    source: _source,
+                    road: _routeIndex,
+                    episode: _episodeIndex,
+                    position: _playback?.position.inSeconds ?? 0,
+                  ),
+                ),
               action(
                 widget.store.isFavorite(_title) ? '已收藏' : '收藏',
                 Icons.bookmark_border,
                 _toggleFavorite,
               ),
-              if (widget.offlinePaths == null)
+              if (NakuDevice.canDownload && widget.offlinePaths == null)
                 action('下载选集', Icons.download_rounded, _downloadCurrent),
               action(
                 '保存截图',
@@ -1167,8 +1274,19 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           buffering: value || _probingRoutes,
         );
       }),
-      playback.player.stream.playing.listen((_) {
-        if (current()) playback.watchdog.reset();
+      playback.player.stream.playing.listen((playing) {
+        if (!current()) return;
+        playback.watchdog.reset();
+        if (Platform.isAndroid && !NakuDevice.isTV) {
+          unawaited(
+            PipUtils.updateAndroidPIPActions(
+              playing: playing,
+              danmakuEnabled: false,
+              width: playback.width,
+              height: playback.height,
+            ),
+          );
+        }
       }),
       playback.player.stream.volume.listen((volume) {
         if (!current() || !volume.isFinite || volume == _volume) return;
@@ -1949,7 +2067,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         !_preferences.backgroundPlayback &&
         (state == AppLifecycleState.hidden ||
             state == AppLifecycleState.paused) &&
-        !_pip) {
+        !_pip &&
+        !_androidPip) {
       unawaited(_pauseInBackground(revision));
     } else if (state == AppLifecycleState.resumed) {
       _backgroundPaused = false;
@@ -1989,12 +2108,25 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   @override
   void dispose() {
+    _tvControlsTimer?.cancel();
+    FocusManager.instance.removeEarlyKeyEventHandler(_tvRemoteKey);
+    if (Platform.isAndroid) {
+      const MethodChannel('com.predidit.kazumi/pip').setMethodCallHandler(null);
+      unawaited(PipUtils.setAndroidPIPInPlayerPage(false));
+      if (!NakuDevice.isTV) {
+        unawaited(
+          SystemChrome.setPreferredOrientations(DeviceOrientation.values),
+        );
+      }
+    }
     _nasConnectionTimer?.cancel();
     unawaited(_updatePlaybackLease.close());
     DesktopExitTasks.instance.unregister(this);
     _windowControls.unregister(this);
     WidgetsBinding.instance.removeObserver(this);
-    windowManager.removeListener(this);
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      windowManager.removeListener(this);
+    }
     _panelRevision.dispose();
     _playerFocus.dispose();
     _warmTimer?.cancel();
@@ -2033,7 +2165,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _buildPlayer(context),
         PlayerKeyboardShortcuts(
           focusScopeNode: _playerFocus,
-          shortcuts: _preferences.shortcuts,
+          shortcuts: NakuDevice.isTV
+              ? const {
+                  'playorpause': ['Media Play Pause'],
+                  'forward': ['Media Fast Forward'],
+                  'rewind': ['Media Rewind'],
+                }
+              : _preferences.shortcuts,
           actions: _keyboardActions,
           longPressActions: {
             'forward': PlayerLongPressShortcutActions(
@@ -2052,6 +2190,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   );
 
   Widget _buildPlayer(BuildContext context) {
+    if (_androidPip) {
+      return Scaffold(backgroundColor: Colors.black, body: _videoSurface());
+    }
     if (_fullscreen) {
       return Theme(
         data: CinemaTheme.of(context),
@@ -2604,7 +2745,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                           size: 22,
                                         ),
                                       ),
-                                      if (widget.offlinePaths == null)
+                                      if (NakuDevice.canDownload &&
+                                          widget.offlinePaths == null)
                                         IconButton(
                                           constraints:
                                               const BoxConstraints.tightFor(
@@ -2729,7 +2871,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                           fit: _preferences.aspectRatio.fit,
                           aspectRatio:
                               _preferences.aspectRatio.frameAspectRatio,
-                          controls: MaterialDesktopVideoControls,
+                          controls: NakuDevice.isTV || _androidPip
+                              ? NoVideoControls
+                              : MaterialDesktopVideoControls,
                           subtitleViewConfiguration:
                               CinemaSubtitleAppearance.from(
                                 widget.store.extras['subtitleAppearance'],
@@ -2737,6 +2881,73 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                           pauseUponEnteringBackgroundMode: false,
                         ),
                       ),
+                ),
+              ),
+            if (NakuDevice.isTV &&
+                _tvControlsVisible &&
+                playback != null &&
+                !_loading &&
+                _error == null)
+              Align(
+                alignment: Alignment.bottomCenter,
+                child: Container(
+                  color: const Color(0xD9000000),
+                  padding: const EdgeInsets.fromLTRB(32, 12, 32, 24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      StreamBuilder<Duration>(
+                        stream: playback.player.stream.position,
+                        initialData: playback.position,
+                        builder: (_, snapshot) => Text(
+                          '${_title.title} · ${snapshot.data?.toString().split('.').first ?? '0:00:00'}',
+                          style: const TextStyle(fontSize: 18),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          IconButton(
+                            tooltip: '后退 10 秒',
+                            onPressed: () => _seekBy(-10),
+                            icon: const Icon(Icons.replay_10, size: 32),
+                          ),
+                          FilledButton.icon(
+                            autofocus: true,
+                            onPressed: _togglePlayback,
+                            icon: const Icon(Icons.play_arrow),
+                            label: const Text('播放 / 暂停'),
+                          ),
+                          IconButton(
+                            tooltip: '前进 10 秒',
+                            onPressed: () => _seekBy(10),
+                            icon: const Icon(Icons.forward_10, size: 32),
+                          ),
+                          const Spacer(),
+                          TextButton(
+                            onPressed: _showEpisodes,
+                            child: const Text('选集 / 线路'),
+                          ),
+                          TextButton(
+                            onPressed: _showSpeedOptions,
+                            child: const Text('倍速'),
+                          ),
+                          if (_fullscreen)
+                            TextButton(
+                              onPressed: () => _setFullscreen(false),
+                              child: const Text('影片详情'),
+                            ),
+                          TextButton(
+                            onPressed: _toggleFavorite,
+                            child: Text(
+                              widget.store.isFavorite(_title) ? '已收藏' : '收藏',
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (_usesNASPlayback) _playbackTools(overlay: true),
+                    ],
+                  ),
                 ),
               ),
             if (_loading || _error != null)
@@ -3169,7 +3380,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           children: [
             const Text('播放线路', style: TextStyle(color: _muted, fontSize: 12)),
             const Spacer(),
-            if (widget.offlinePaths == null)
+            if (NakuDevice.canDownload && widget.offlinePaths == null)
               TextButton.icon(
                 onPressed: _probingRoutes ? null : _probeRoutes,
                 icon: const Icon(Icons.speed, size: 18),

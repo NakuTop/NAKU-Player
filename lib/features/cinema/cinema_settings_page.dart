@@ -1,3 +1,5 @@
+import 'dart:io';
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 
@@ -34,7 +36,7 @@ class CinemaSettingsPage extends StatelessWidget {
       final width = (constraints.maxWidth - inset * 2).clamp(0.0, 1080.0);
       final twoColumns = width >= 900;
       final columnWidth = twoColumns ? (width - 20) / 2 : width;
-      final android = Theme.of(context).platform == TargetPlatform.android;
+      final android = Platform.isAndroid;
       void openRoute(String route) {
         final callback = onOpenRoute;
         if (callback != null) {
@@ -86,25 +88,28 @@ class CinemaSettingsPage extends StatelessWidget {
                           onTap: onAppearance,
                         ),
                         const Divider(height: 1, indent: 68, endIndent: 20),
-                        const CinemaWindowCloseSettings(),
-                        if (Theme.of(context).platform == TargetPlatform.macOS) ...[
+                        if (!android) const CinemaWindowCloseSettings(),
+                        if (Theme.of(context).platform ==
+                            TargetPlatform.macOS) ...[
                           const Divider(height: 1, indent: 68, endIndent: 20),
                           _entry(
                             key: 'settings-desktop-window',
                             icon: Icons.visibility_off_outlined,
                             title: '窗口与快捷隐藏',
                             subtitle: '全局隐藏 / 显示快捷键、隐藏时暂停与整窗半透明',
-                            onTap: () => showCinemaDesktopWindowSettings(context),
+                            onTap: () =>
+                                showCinemaDesktopWindowSettings(context),
                           ),
                         ],
                         const Divider(height: 1, indent: 68, endIndent: 20),
-                        _entry(
-                          key: 'settings-updates',
-                          icon: Icons.system_update_alt_rounded,
-                          title: '软件更新',
-                          subtitle: '检查新版本与更新记录',
-                          onTap: onUpdates,
-                        ),
+                        if (!android)
+                          _entry(
+                            key: 'settings-updates',
+                            icon: Icons.system_update_alt_rounded,
+                            title: '软件更新',
+                            subtitle: '检查新版本与更新记录',
+                            onTap: onUpdates,
+                          ),
                       ],
                     ),
                   ),
@@ -122,7 +127,9 @@ class CinemaSettingsPage extends StatelessWidget {
                               Padding(
                                 padding: const EdgeInsets.fromLTRB(4, 0, 4, 12),
                                 child: Text(
-                                  group.title,
+                                  android && group.title == '动漫与同步'
+                                      ? '账号与同步'
+                                      : group.title,
                                   style: const TextStyle(
                                     fontSize: 17,
                                     fontWeight: FontWeight.w600,
@@ -135,7 +142,17 @@ class CinemaSettingsPage extends StatelessWidget {
                                   children: [
                                     for (final destination
                                         in group.destinations)
-                                      if (!destination.androidOnly || android)
+                                      if ((!destination.androidOnly ||
+                                              android) &&
+                                          (NakuDevice.canDownload ||
+                                              destination.id != 'downloads') &&
+                                          (!android ||
+                                              !{
+                                                'rules',
+                                                'danmaku',
+                                                'renderer',
+                                                'keyboard',
+                                              }.contains(destination.id)))
                                         _entry(
                                           key: 'settings-${destination.id}',
                                           icon: destination.icon,

@@ -34,11 +34,13 @@ class MainActivity: AudioServiceActivity() {
     private val CHANNEL = "com.predidit.kazumi/intent"
     private val STORAGE_CHANNEL = "com.predidit.kazumi/storage"
     private val PIP_CHANNEL = "com.predidit.kazumi/pip"
+    private var nakuDiscovery: NakuDiscovery? = null
     private var intentChannel: MethodChannel? = null
     private var pipChannel: MethodChannel? = null
 
     private var pipIsPlaying = false
     private var pipDanmakuEnabled = false
+    private var pipSupportsDanmaku = true
     private var pipActionReceiverRegistered = false
     private var autoEnterPipOnHomeGesture = false
     private var pipInPlayerPage = false
@@ -74,6 +76,8 @@ class MainActivity: AudioServiceActivity() {
     }
 
     override fun onDestroy() {
+        nakuDiscovery?.dispose()
+        nakuDiscovery = null
         unregisterPipActionReceiverIfNeeded()
         // audio_service stays bound for the whole activity lifetime, so its
         // own stopSelf() never destroys a service started for playback.
@@ -101,6 +105,16 @@ class MainActivity: AudioServiceActivity() {
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "naku/device").setMethodCallHandler { call, result ->
+            if (call.method == "info") {
+                val television = (resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK) == Configuration.UI_MODE_TYPE_TELEVISION || packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+                result.success(mapOf("television" to television))
+            } else result.notImplemented()
+        }
+        NakuSecureBridge(applicationContext).register(flutterEngine.dartExecutor.binaryMessenger)
+        nakuDiscovery?.dispose()
+        nakuDiscovery = NakuDiscovery(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
+
         intentChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
         intentChannel?.setMethodCallHandler { call, result ->
             if (call.method == "openWithMime") {
@@ -157,6 +171,7 @@ class MainActivity: AudioServiceActivity() {
                 result.success(true)
             } else if (call.method == "setAndroidPIPInPlayerPage") {
                 pipInPlayerPage = call.argument<Boolean>("inPlayerPage") ?: false
+                pipSupportsDanmaku = call.argument<Boolean>("supportsDanmaku") ?: true
                 if (!pipInPlayerPage) {
                     pipSourceRect = null
                 }
@@ -360,6 +375,7 @@ class MainActivity: AudioServiceActivity() {
             )
         )
 
+        if (!pipSupportsDanmaku) allActions.removeAt(0)
         val maxActions = maxNumPictureInPictureActions
         if (allActions.size > maxActions) {
             allActions.subList(maxActions, allActions.size).clear()
