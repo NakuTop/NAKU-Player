@@ -153,6 +153,22 @@ class GStorage {
     });
   }
 
+  /// Account sync uses the same queue as local collection changes.
+  static Future<bool> applyCollectibleIfUnchanged({
+    required int id,
+    required bool Function(CollectedBangumi?) matches,
+    CollectedBangumi? value,
+  }) => _runCollectChangesWriteExclusive(() async {
+    if (!matches(collectibles.get(id))) return false;
+    if (value == null) {
+      await collectibles.delete(id);
+    } else {
+      await collectibles.put(id, value);
+    }
+    await collectibles.flush();
+    return true;
+  });
+
   static Future init() async {
     _hivePath = '${(await getApplicationSupportDirectory()).path}/hive';
 
@@ -443,7 +459,10 @@ class GStorage {
 
   static Stream<void> watchSettings(Iterable<SettingKey<Object?>> keys) {
     final names = keys.map((key) => key.name).toSet();
-    return _setting.watch().where((event) => names.contains(event.key)).map((_) {});
+    return _setting
+        .watch()
+        .where((event) => names.contains(event.key))
+        .map((_) {});
   }
 
   static List<String> getStringListSettingByName(

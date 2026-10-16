@@ -96,7 +96,7 @@ const cinemaSettingsGroups = <CinemaSettingsGroup>[
     CinemaSettingsDestination(
       id: 'sync',
       title: '同步与备份',
-      description: '动漫专用：Bangumi 追番与 WebDAV 记录、收藏同步',
+      description: 'NAS 账号统一同步电影、剧集、动漫和 NAS 历史与收藏',
       icon: Icons.cloud_sync_rounded,
       route: '/settings/sync',
     ),

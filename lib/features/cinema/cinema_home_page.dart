@@ -1,6 +1,7 @@
 import 'cinema_download_sheet.dart';
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'cinema_downloads.dart';
 import 'package:kazumi/pages/download/download_controller.dart';
 import 'package:kazumi/pages/download/download_page.dart';
@@ -50,7 +51,9 @@ import 'naku_update_page.dart';
 import 'naku_update_service.dart';
 import 'cinema_grouping.dart';
 import 'cinema_card_ratings.dart';
-import 'cinema_direct_media.dart';
+import 'cinema_nas_page.dart';
+import 'cinema_nas_sync.dart';
+import 'cinema_nas_media.dart';
 import 'cinema_repository.dart';
 import 'cinema_ratings_panel.dart';
 import 'cinema_ratings.dart';
@@ -131,6 +134,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   List<CinemaSource> get _activeSources =>
       _health.available(_store.enabledSources);
   late final CinemaStore _store = widget.store ?? CinemaStore();
+  CinemaNASSync? _nasSync;
   late final CinemaRepository _repository =
       widget.repository ?? CinemaRepository(health: _health);
   late final _discoveryRepository =
@@ -238,6 +242,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   @override
   void initState() {
     super.initState();
+    if (Platform.isMacOS && widget.store == null) {
+      _nasSync = CinemaNASSync(_store);
+    }
     try {
       _animeLibrary = CinemaAnimeLibrary();
     } catch (_) {
@@ -266,6 +273,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       onSources: _openSourceSettings,
       onFavorites: () => _openLibrary(false),
       onHistory: () => _openLibrary(true),
+      onNASAccount: _openNAS,
+      onLibraryBackup: () => _openTools(2),
+      accountSync: () => _nasSync,
       onOfflinePlayback: _playOffline,
       enabledSourceCount: () => _store.enabledSources
           .where((source) => source.kind == CinemaSourceKind.maccms)
@@ -634,6 +644,23 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     }
   }
 
+  void _openNAS() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => Theme(
+          data: CinemaTheme.of(context),
+          child: CinemaNASPage(
+            store: _store,
+            sync: _nasSync,
+            onSyncSettings: () => context.pushNamed('/settings/sync'),
+            onRecommendationSelected: (recommendation) =>
+                unawaited(_openDoubanRecommendation(recommendation)),
+          ),
+        ),
+      ),
+    );
+  }
+
   void _openTools([int tab = 0]) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -774,6 +801,10 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     try {
       await _store.load();
       if (widget.store == null) {
+        if (Platform.isMacOS) {
+          _nasSync ??= CinemaNASSync(_store);
+          unawaited(_nasSync!.start());
+        }
         await _health.load();
         final prefs = _store.extras['mediaCache'];
         if (prefs is Map) {
@@ -806,6 +837,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   @override
   void dispose() {
+    _nasSync?.dispose();
     _animeLibrary?.dispose();
     CinemaSettingsHostBinding.instance.unbind(this);
     _ratings.changes.removeListener(_onRatingsChanged);
@@ -932,6 +964,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   }
 
   CinemaSource? _findSource(String id) {
+    if (id == cinemaNASSource.id) return cinemaNASSource;
     if (id == cinemaDirectSource.id) return cinemaDirectSource;
     for (final source in _store.sources) {
       if (source.id == id) return source;
@@ -1619,6 +1652,17 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         /* Invalid or unavailable downloads fall back to online. */
       }
     }
+    if (title.sourceId == cinemaNASSource.id) {
+      final saved = resume ?? _store.historyFor(title);
+      _playTitle(
+        title,
+        cinemaNASSource,
+        saved?.routeIndex ?? 0,
+        saved?.episodeIndex ?? 0,
+        const [],
+      );
+      return;
+    }
     if (title.isDirectMedia) {
       final saved = resume ?? _store.historyFor(title);
       _playTitle(
@@ -2006,20 +2050,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
           child: ListTile(
             dense: true,
-            leading: const Icon(Icons.add_link_rounded, size: 20),
-            title: const Text('高清直链', style: TextStyle(fontSize: 14)),
-            onTap: () async {
+            leading: const Icon(Icons.dns_outlined, size: 20),
+            title: const Text('NAS 影视', style: TextStyle(fontSize: 14)),
+            onTap: () {
               if (closeDrawer) Navigator.pop(context);
-              final result = await showCinemaDirectMediaDialog(context);
-              if (!mounted || result == null) return;
-              try {
-                if (result.favorite && !_store.isFavorite(result.title)) {
-                  await _store.toggleFavorite(result.title);
-                }
-                if (mounted) await _openTitle(result.title);
-              } catch (_) {
-                if (mounted) _toast('直链未能保存或打开，请重试。');
-              }
+              _openNAS();
             },
           ),
         ),

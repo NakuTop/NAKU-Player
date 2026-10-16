@@ -452,6 +452,74 @@ class CinemaStore extends ChangeNotifier {
     }
   }
 
+  /// Applies remote library values only if the local value has not changed
+  /// since it was observed. Playback and UI edits wait behind this barrier.
+  Future<Set<String>> applyAccountSync(
+    Map<String, dynamic> expected,
+    Map<String, dynamic> desired,
+  ) async {
+    await _ready();
+    final barrier = _restoring = Completer<void>();
+    final skipped = <String>{};
+    try {
+      await flush();
+      final current = _snapshotLoaded();
+      final next = Map<String, dynamic>.from(current);
+      for (final (field, prefix) in [
+        ('favorites', 'cf:'),
+        ('history', 'ch:'),
+      ]) {
+        String key(Map<String, dynamic> m) =>
+            prefix +
+            (field == 'history'
+                ? CinemaHistory.fromJson(m).title.key
+                : CinemaTitle.fromJson(m).key);
+        final rows = {for (final m in _strictMaps(current[field])) key(m): m};
+        for (final k in {
+          ...expected.keys,
+          ...desired.keys,
+        }.where((k) => k.startsWith(prefix))) {
+          // Canonical serialization below avoids map insertion-order differences.
+          if (!_syncJSONEqual(rows[k], expected[k])) {
+            skipped.add(k);
+            continue;
+          }
+          if (desired[k] == null) {
+            rows.remove(k);
+          } else {
+            rows[k] = Map<String, dynamic>.from(desired[k]);
+          }
+        }
+        final values = rows.values.toList();
+        if (field == 'history') {
+          values.sort(
+            (a, b) => CinemaHistory.fromJson(
+              b,
+            ).updatedAt.compareTo(CinemaHistory.fromJson(a).updatedAt),
+          );
+        }
+        next[field] = field == 'history' ? values.take(200).toList() : values;
+      }
+      _validatedLibrary(next);
+      if (!_syncJSONEqual(next, current)) {
+        await _writeEncoded(jsonEncode(next));
+        _sources.clear();
+        _favorites.clear();
+        _history.clear();
+        _sourceDocuments.clear();
+        _favoriteDocuments.clear();
+        _historyDocuments.clear();
+        _appliedSourcePacks.clear();
+        _loaded = false;
+        await _read();
+      }
+      return skipped;
+    } finally {
+      _restoring = null;
+      barrier.complete();
+    }
+  }
+
   Future<void> addSources(List<CinemaSource> sources) async {
     for (final source in sources) {
       source.validate();
@@ -1307,3 +1375,18 @@ final List<CinemaSource> bundledCinemaSources = [
             as Map<String, dynamic>,
   ),
 ];
+
+bool _syncJSONEqual(dynamic a, dynamic b) {
+  if (a is Map && b is Map) {
+    return a.length == b.length &&
+        a.keys.every((k) => b.containsKey(k) && _syncJSONEqual(a[k], b[k]));
+  }
+  if (a is List && b is List) {
+    return a.length == b.length &&
+        List.generate(
+          a.length,
+          (i) => i,
+        ).every((i) => _syncJSONEqual(a[i], b[i]));
+  }
+  return a == b;
+}

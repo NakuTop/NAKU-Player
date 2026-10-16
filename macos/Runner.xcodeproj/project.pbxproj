@@ -22,6 +22,8 @@
 
 /* Begin PBXBuildFile section */
         9B1139CA8C054060BA716FE1 /* NakuDesktopWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B1139CA8C054060BA716FE2 /* NakuDesktopWindowController.swift */; };
+        AC13AC13AC13AC13AC13AC11 /* NakuNASMovies.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC13AC13AC13AC13AC13AC12 /* NakuNASMovies.swift */; };
+        AC13AC13AC13AC13AC13AC21 /* NakuNASQR.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC13AC13AC13AC13AC13AC22 /* NakuNASQR.swift */; };
 		331C80D8294CF71000263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C80D7294CF71000263BE5 /* RunnerTests.swift */; };
 		335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335BBD1A22A9A15E00E9071D /* GeneratedPluginRegistrant.swift */; };
 		33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC10F02044A3C60003C045 /* AppDelegate.swift */; };
@@ -64,6 +66,8 @@
 
 /* Begin PBXFileReference section */
         9B1139CA8C054060BA716FE2 /* NakuDesktopWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NakuDesktopWindowController.swift; sourceTree = "<group>"; };
+        AC13AC13AC13AC13AC13AC12 /* NakuNASMovies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NakuNASMovies.swift; sourceTree = "<group>"; };
+        AC13AC13AC13AC13AC13AC22 /* NakuNASQR.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NakuNASQR.swift; sourceTree = "<group>"; };
 		08D6925B2E3A29C100F22E48 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/MainMenu.strings"; sourceTree = "<group>"; };
 		08D6925D2E3A29CC00F22E48 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/MainMenu.strings; sourceTree = "<group>"; };
 		08D6925F2E3A29CE00F22E48 /* en-GB */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "en-GB"; path = "en-GB.lproj/MainMenu.strings"; sourceTree = "<group>"; };
@@ -183,6 +187,8 @@
 				33CC10F02044A3C60003C045 /* AppDelegate.swift */,
 				33CC11122044BFA00003C045 /* MainFlutterWindow.swift */,
                 9B1139CA8C054060BA716FE2 /* NakuDesktopWindowController.swift */,
+                AC13AC13AC13AC13AC13AC12 /* NakuNASMovies.swift */,
+                AC13AC13AC13AC13AC13AC22 /* NakuNASQR.swift */,
 				33E51913231747F40026EE4D /* DebugProfile.entitlements */,
 				33E51914231749380026EE4D /* Release.entitlements */,
 				33CC11242044D66E0003C045 /* Resources */,
@@ -447,6 +453,8 @@
 			files = (
 				33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */,
                 9B1139CA8C054060BA716FE1 /* NakuDesktopWindowController.swift in Sources */,
+                AC13AC13AC13AC13AC13AC11 /* NakuNASMovies.swift in Sources */,
+                AC13AC13AC13AC13AC13AC21 /* NakuNASQR.swift in Sources */,
 				33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */,
 				335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */,
 			);

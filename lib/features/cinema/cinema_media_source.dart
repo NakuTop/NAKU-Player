@@ -1,5 +1,6 @@
 import 'package:kazumi/services/video_source/video_source_format.dart';
 import 'cinema_models.dart';
+import 'cinema_nas_media.dart';
 import 'package:kazumi/services/video_source/video_source_service.dart';
 
 bool cinemaUsesDirectMedia(
@@ -23,6 +24,13 @@ resolveCinemaMedia({
   required CinemaEpisode episode,
   required Future<VideoSource> Function(String url, bool legacy) resolve,
 }) async {
+  if (source.id == cinemaNASSource.id) {
+    return (
+      url: await CinemaNASClient().resolveReference(episode.url),
+      headers: <String, String>{},
+      format: VideoSourceFormat.auto,
+    );
+  }
   final page = requireHttpUrl(episode.url);
   final headers = Map<String, String>.of(source.headers);
   if (cinemaUsesDirectMedia(source, route, episode)) {

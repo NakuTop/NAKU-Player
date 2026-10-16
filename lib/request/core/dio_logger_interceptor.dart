@@ -2,12 +2,17 @@ import 'package:dio/dio.dart';
 import 'package:kazumi/services/logging/logger.dart';
 
 class DioLoggerInterceptor extends Interceptor {
+  static bool _hasSession(Uri uri) => uri.queryParameters.keys.any(
+    (k) => {'token', 'ugk', 'encrypt_query'}.contains(k.toLowerCase()),
+  );
+  static String safeUri(Uri uri) =>
+      _hasSession(uri) ? '${uri.origin}${uri.path}' : uri.toString();
   static const _startedAtExtraKey = '_kazumiStartedAt';
 
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
     options.extra[_startedAtExtraKey] = DateTime.now();
-    KazumiLogger().d('HTTP: --> ${options.method} ${options.uri}');
+    KazumiLogger().d('HTTP: --> ${options.method} ${safeUri(options.uri)}');
     handler.next(options);
   }
 
@@ -16,7 +21,7 @@ class DioLoggerInterceptor extends Interceptor {
     final elapsed = _elapsed(response.requestOptions);
     KazumiLogger().d(
       'HTTP: <-- ${response.statusCode} '
-      '${response.requestOptions.method} ${response.requestOptions.uri}'
+      '${response.requestOptions.method} ${safeUri(response.requestOptions.uri)}'
       '${elapsed == null ? '' : ' ${elapsed}ms'}',
     );
     handler.next(response);
@@ -28,9 +33,9 @@ class DioLoggerInterceptor extends Interceptor {
     final statusCode = err.response?.statusCode;
     final status = statusCode == null ? err.type.name : statusCode.toString();
     KazumiLogger().w(
-      'HTTP: <-- $status ${err.requestOptions.method} ${err.requestOptions.uri}'
+      'HTTP: <-- $status ${err.requestOptions.method} ${safeUri(err.requestOptions.uri)}'
       '${elapsed == null ? '' : ' ${elapsed}ms'}',
-      error: err.message,
+      error: _hasSession(err.requestOptions.uri) ? '认证请求失败' : err.message,
     );
     handler.next(err);
   }

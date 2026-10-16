@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'package:hive_ce/hive.dart';
 import 'package:kazumi/modules/download/download_module.dart';
 import 'package:kazumi/request/core/dio_factory.dart';
@@ -124,6 +125,60 @@ void main() {
       () => !manager.isDownloading('fixture_1', episode.episodeNumber),
     );
   }
+
+  test(
+    'NAS original download resumes as MKV and never persists its session URL',
+    () async {
+      final content = List<int>.generate(128, (i) => i);
+      await File(
+        '${media.path}/video.mkv.tmp',
+      ).writeAsBytes(content.take(17).toList());
+      final ref = nasMediaReference(
+        namespace: List.filled(64, 'a').join(),
+        id: 42,
+        library: 2,
+        path: '/volume1/film.mkv',
+      );
+      final episode = _episode(media.path, ref);
+      final snapshots = <String>[];
+      manager.onProgress = (_, _, ep, _) => snapshots.add(ep.networkM3u8Url);
+      final adapter = _Adapter((options) {
+        expect(options.uri.queryParameters['token'], 'in-memory-only');
+        expect(options.headers['Range'], 'bytes=17-');
+        return _bytes(
+          content.sublist(17),
+          status: 206,
+          type: 'video/x-matroska',
+          headers: {
+            'content-range': ['bytes 17-127/128'],
+          },
+        );
+      });
+      DioFactory.downloadDio.httpClientAdapter = adapter;
+      await manager.enqueue(
+        DownloadRequest(
+          recordKey: 'fixture_1',
+          bangumiId: 1,
+          pluginName: 'fixture',
+          episodeNumber: 1,
+          m3u8Url: 'https://nas.test/ugreen/download?token=in-memory-only',
+          httpHeaders: {},
+          adBlockerEnabled: false,
+          episode: episode,
+        ),
+      );
+      await _until(() => !manager.isDownloading('fixture_1', 1));
+      expect(
+        episode.status,
+        DownloadStatus.completed,
+        reason: episode.errorMessage,
+      );
+      expect(episode.localM3u8Path, endsWith('video.mkv'));
+      expect(await File(episode.localM3u8Path).readAsBytes(), content);
+      expect(adapter.requests.length, 1);
+      expect(snapshots, everyElement(ref));
+    },
+  );
 
   test(
     'server ignoring Range restarts direct download without duplicate bytes',

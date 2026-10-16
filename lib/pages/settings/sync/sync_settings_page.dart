@@ -1,257 +1,158 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
-
 import 'package:kazumi/bean/settings/settings_detail_scaffold.dart';
-import 'package:kazumi/bean/widget/state_presentation.dart';
-import 'package:kazumi/pages/settings/sync/sync_settings_widgets.dart';
-import 'package:kazumi/services/storage/storage.dart';
-import 'package:kazumi/services/sync/bangumi_sync_service.dart';
+import 'package:kazumi/features/cinema/cinema_nas_sync.dart';
+import 'package:kazumi/features/cinema/cinema_settings_host_binding.dart';
+import 'sync_settings_widgets.dart';
 
-enum _SyncStatus {
-  unconnected('未连接', Icons.link_off_rounded),
-  unconfigured('未配置', Icons.settings_outlined),
-  connecting('正在连接', Icons.sync_rounded),
-  connectionError('连接异常', Icons.error_outline_rounded),
-  enabled('已开启', Icons.check_circle_outline_rounded),
-  disabled('已关闭', Icons.pause_circle_outline_rounded),
-  contentRequired('待选择内容', Icons.tune_rounded);
-
-  const _SyncStatus(this.label, this.icon);
-
-  final String label;
-  final IconData icon;
-}
-
-class SyncSettingsPage extends StatefulWidget {
-  const SyncSettingsPage({super.key});
-
-  @override
-  State<SyncSettingsPage> createState() => _SyncSettingsPageState();
-}
-
-class _SyncSettingsPageState extends State<SyncSettingsPage> {
-  Future<void> _open(String route) async {
-    await context.pushNamed(route);
-    if (mounted) setState(() {});
-  }
-
-  @override
-  Widget build(BuildContext context) => SettingsDetailScaffold(
-        title: const Text('同步设置'),
-        body: ListenableBuilder(
-          listenable: BangumiSyncService(),
-          builder: (context, _) {
-            final bangumi = BangumiSyncService();
-            final hasToken =
-                GStorage.getSetting(SettingsKeys.bangumiAccessToken)
-                    .trim()
-                    .isNotEmpty;
-            final bangumiEnabled =
-                GStorage.getSetting(SettingsKeys.bangumiSyncEnable);
-            final hasServer =
-                GStorage.getSetting(SettingsKeys.webDavURL).trim().isNotEmpty;
-            final webDavEnabled =
-                GStorage.getSetting(SettingsKeys.webDavEnable);
-            final hasSyncContent =
-                GStorage.getSetting(SettingsKeys.webDavEnableHistory) ||
-                    GStorage.getSetting(SettingsKeys.webDavEnableCollect) ||
-                    GStorage.getSetting(SettingsKeys.webDavEnableDanmakuShield);
-            final colors = Theme.of(context).colorScheme;
-            final cards = [
-              _SyncServiceCard(
-                title: '追番同步',
-                service: 'Bangumi',
-                description: '与 Bangumi 保持相同的追番状态。',
-                content: '想看 · 在看 · 看过 · 搁置 · 抛弃',
-                icon: Icons.bookmarks_rounded,
-                color: colors.secondaryContainer,
-                onColor: colors.onSecondaryContainer,
-                status: bangumi.isConnecting
-                    ? _SyncStatus.connecting
-                    : bangumi.lastError != null
-                        ? _SyncStatus.connectionError
-                        : !hasToken
-                            ? _SyncStatus.unconnected
-                            : bangumiEnabled
-                                ? _SyncStatus.enabled
-                                : _SyncStatus.disabled,
-                action: hasToken ? '管理追番同步' : '连接 Bangumi',
-                onPressed: () => _open('/settings/bangumi/'),
-              ),
-              _SyncServiceCard(
-                title: '多设备同步',
-                service: 'WebDAV',
-                description: '通过自己的云盘，在其他设备接着看。',
-                content: '观看记录 · 收藏 · 弹幕屏蔽词',
-                icon: Icons.devices_rounded,
-                color: colors.tertiaryContainer,
-                onColor: colors.onTertiaryContainer,
-                status: !hasServer
-                    ? _SyncStatus.unconfigured
-                    : webDavEnabled
-                        ? hasSyncContent
-                            ? _SyncStatus.enabled
-                            : _SyncStatus.contentRequired
-                        : _SyncStatus.disabled,
-                action: hasServer ? '管理多设备同步' : '设置 WebDAV',
-                onPressed: () => _open('/settings/webdav/'),
-              ),
-            ];
-            return SyncPageBody(
-              children: [
-                const SyncPageIntro(
-                  icon: Icons.sync_rounded,
-                  title: '让追番保持同步',
-                  description: '选择需要的服务，也可以同时使用。',
-                ),
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final largeText =
-                        MediaQuery.textScalerOf(context).scale(16) > 22;
-                    if (constraints.maxWidth >= 680 && !largeText) {
-                      return Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(child: cards[0]),
-                          const SizedBox(width: 16),
-                          Expanded(child: cards[1]),
-                        ],
-                      );
-                    }
-                    return Column(spacing: 16, children: cards);
-                  },
-                ),
-              ],
-            );
-          },
-        ),
-      );
-}
-
-class _SyncServiceCard extends StatelessWidget {
-  const _SyncServiceCard({
-    required this.title,
-    required this.service,
-    required this.description,
-    required this.content,
-    required this.icon,
-    required this.color,
-    required this.onColor,
-    required this.status,
-    required this.action,
-    required this.onPressed,
+/// One account service for movie, TV, anime and NAS library records.
+class SyncSettingsPage extends StatelessWidget {
+  const SyncSettingsPage({
+    super.key,
+    this.sync,
+    this.onConnectNAS,
+    this.onBackup,
   });
-
-  final String title;
-  final String service;
-  final String description;
-  final String content;
-  final IconData icon;
-  final Color color;
-  final Color onColor;
-  final _SyncStatus status;
-  final String action;
-  final VoidCallback onPressed;
+  final CinemaNASSync? sync;
+  final VoidCallback? onConnectNAS, onBackup;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(28),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              StateIconBadge(
-                icon: icon,
-                size: 56,
-                iconSize: 26,
-                backgroundColor: color,
-                foregroundColor: onColor,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Align(
-                  alignment: Alignment.centerRight,
-                  child: _SyncStatusChip(status: status),
+    final host = CinemaSettingsHostBinding.instance;
+    final account = sync ?? host.accountSync;
+    void connect() {
+      if (onConnectNAS != null) {
+        onConnectNAS!();
+        return;
+      }
+      if (!host.openNASAccount()) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请先返回主界面，再打开 NAS 账号登录。')));
+      }
+    }
+
+    void backup() {
+      if (onBackup != null) {
+        onBackup!();
+        return;
+      }
+      if (!host.openLibraryBackup()) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请先返回主界面，再打开完整片库备份。')));
+      }
+    }
+
+    Widget content() => SyncPageBody(
+      children: [
+        const SyncPageIntro(
+          icon: Icons.cloud_sync_outlined,
+          title: '统一同步历史与收藏',
+          description: '使用同一个 NAS 账号保存电影、剧集、动漫和 NAS 影片的观看进度与收藏。',
+        ),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text('NAS 账号', style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 12),
+                Text(account?.status ?? '从主界面连接 NAS 账号后启用统一同步。'),
+                const SizedBox(height: 12),
+                if (account != null)
+                  SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('自动同步全部历史和收藏'),
+                    subtitle: const Text('包含电影、剧集、动漫和 NAS；离线继续本地保存，恢复连接后重试。'),
+                    value: account.enabled,
+                    onChanged: account.busy || account.account == null
+                        ? null
+                        : (value) => unawaited(account.setEnabled(value)),
+                  ),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: connect,
+                      icon: const Icon(Icons.dns_outlined),
+                      label: Text(
+                        account?.account == null ? '登录 NAS 账号' : '管理 NAS 账号',
+                      ),
+                    ),
+                    if (account != null)
+                      OutlinedButton.icon(
+                        onPressed:
+                            account.busy ||
+                                account.paused ||
+                                !account.enabled ||
+                                account.account == null
+                            ? null
+                            : () => unawaited(account.sync()),
+                        icon: account.busy
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.sync),
+                        label: const Text('立即同步'),
+                      ),
+                  ],
                 ),
-              ),
-            ],
+                if (account?.lastSuccess != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Text(
+                      '上次成功同步：${account!.lastSuccess!.toLocal().toString().split('.').first}',
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                const Text('同步不包含账号密码和下载视频文件。其他客户端接入 Naku 同步协议后，可使用同账号共享记录。'),
+              ],
+            ),
           ),
-          const SizedBox(height: 20),
-          Text(service,
-              style: theme.textTheme.labelLarge
-                  ?.copyWith(color: theme.colorScheme.primary)),
-          const SizedBox(height: 6),
-          Semantics(
-            header: true,
-            child: Text(title,
-                style: theme.textTheme.headlineSmall
-                    ?.copyWith(fontWeight: FontWeight.w600)),
+        ),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.backup_outlined),
+            title: const Text('完整片库备份与迁移'),
+            subtitle: const Text('手动导出或恢复片库、片源与设置；下载视频文件需单独复制。'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: backup,
           ),
-          const SizedBox(height: 8),
-          Text(description, style: theme.textTheme.bodyMedium),
-          const SizedBox(height: 16),
-          Text(content,
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-          const SizedBox(height: 24),
-          StateActionButton.tonal(
-            onPressed: onPressed,
-            text: action,
-            icon: Icons.arrow_forward_rounded,
-          ),
-        ],
-      ),
+        ),
+        ExpansionTile(
+          title: const Text('其他动漫同步服务'),
+          subtitle: const Text('保留已有 Bangumi 和 WebDAV 配置，按需使用。'),
+          children: [
+            ListTile(
+              title: const Text('Bangumi 追番状态'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => context.pushNamed('/settings/bangumi/'),
+            ),
+            ListTile(
+              title: const Text('WebDAV 动漫同步'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => context.pushNamed('/settings/webdav/'),
+            ),
+          ],
+        ),
+      ],
     );
-  }
-}
-
-class _SyncStatusChip extends StatelessWidget {
-  const _SyncStatusChip({required this.status});
-
-  final _SyncStatus status;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final (background, foreground) = switch (status) {
-      _SyncStatus.connectionError => (
-          colors.errorContainer,
-          colors.onErrorContainer
-        ),
-      _SyncStatus.enabled => (
-          colors.primaryContainer,
-          colors.onPrimaryContainer
-        ),
-      _ => (colors.surfaceContainerHighest, colors.onSurfaceVariant),
-    };
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-      decoration: BoxDecoration(
-        color: background,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(status.icon, size: 16, color: foreground),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(status.label,
-                style: Theme.of(context)
-                    .textTheme
-                    .labelMedium
-                    ?.copyWith(color: foreground)),
-          ),
-        ],
-      ),
+    return SettingsDetailScaffold(
+      title: const Text('同步与备份'),
+      body: account == null
+          ? content()
+          : ListenableBuilder(
+              listenable: account,
+              builder: (_, _) => content(),
+            ),
     );
   }
 }

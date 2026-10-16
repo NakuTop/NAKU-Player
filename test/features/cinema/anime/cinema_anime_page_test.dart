@@ -294,9 +294,13 @@ void main() {
     await tester.tap(find.text('同步备份'));
     await tester.pumpAndSettle();
     expect(find.byType(SyncSettingsPage), findsOneWidget);
-    expect(find.text('设置 WebDAV'), findsOneWidget);
+    await tester.ensureVisible(find.text('其他动漫同步服务'));
+    await tester.tap(find.text('其他动漫同步服务'));
+    await tester.pumpAndSettle();
+    expect(find.text('WebDAV 动漫同步'), findsOneWidget);
     expect(myController.viewers, 0);
-    await tester.tap(find.text('连接 Bangumi'));
+    await tester.ensureVisible(find.text('Bangumi 追番状态'));
+    await tester.tap(find.text('Bangumi 追番状态'));
     await tester.pumpAndSettle();
     expect(find.byType(BangumiSyncPage), findsOneWidget);
     Navigator.of(

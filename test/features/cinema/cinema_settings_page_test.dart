@@ -111,7 +111,11 @@ void main() {
         '/settings/player/renderer',
       ]),
     );
-    for (final id in ['danmaku', 'downloads', 'sync']) {
+    expect(
+      entries.singleWhere((item) => item.id == 'sync').description,
+      contains('NAS 账号统一同步'),
+    );
+    for (final id in ['danmaku', 'downloads']) {
       expect(
         entries.singleWhere((item) => item.id == id).description,
         startsWith('动漫专用'),

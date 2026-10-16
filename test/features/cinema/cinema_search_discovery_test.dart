@@ -80,6 +80,32 @@ CinemaSearchDiscoveryRepository _repository(
 );
 
 void main() {
+  test(
+    'identity lookup hydrates suggestions before accepting an automatic match',
+    () async {
+      final adapter = _Adapter((request) {
+        if (request.path.endsWith('subject_suggest')) {
+          return [_title('1292720')];
+        }
+        if (request.path.endsWith('/movie/1292720')) return _title('1292720');
+        throw StateError('Unexpected request: ${request.path}');
+      });
+      final repository = _repository(adapter);
+      expect(
+        (await repository.search('参演电影')).titles.single.identityVerified,
+        false,
+      );
+      final result = await repository.searchForIdentity('参演电影');
+      expect(result.titles.single.identityVerified, true);
+      expect(result.titles.single.year, '2014');
+      expect(
+        adapter.calls
+            .where((request) => request.path.endsWith('/movie/1292720'))
+            .length,
+        1,
+      );
+    },
+  );
   setUp(CinemaDoubanAccess.resetForTesting);
   tearDown(CinemaDoubanAccess.resetForTesting);
   test(

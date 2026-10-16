@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'naku_update_service.dart';
@@ -13,13 +14,24 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
   Map<String, dynamic>? _state;
   String? _error;
   bool _busy = false;
+  bool _reading = false;
+  Timer? _refresh;
   @override
   void initState() {
     super.initState();
     _read();
+    _refresh = Timer.periodic(const Duration(seconds: 2), (_) => _read());
+  }
+
+  @override
+  void dispose() {
+    _refresh?.cancel();
+    super.dispose();
   }
 
   Future<void> _read() async {
+    if (_reading) return;
+    _reading = true;
     try {
       final value = await NakuUpdateService.state();
       if (mounted) {
@@ -30,6 +42,8 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
       }
     } catch (_) {
       if (mounted) setState(() => _error = '当前构建未启用 macOS 更新服务，请从项目发布页获取安装包。');
+    } finally {
+      _reading = false;
     }
   }
 
@@ -37,8 +51,8 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
     setState(() => _busy = true);
     try {
       await NakuUpdateService.configure(
-        automaticChecks: checks,
-        automaticDownloads: downloads,
+        automaticChecks: downloads == true ? true : checks,
+        automaticDownloads: checks == false ? false : downloads,
       );
       await _read();
     } catch (_) {
@@ -46,6 +60,12 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  bool get _publicationBehind {
+    final installed = int.tryParse('${_state?['build']}');
+    final published = int.tryParse('${_state?['latestPublishedBuild']}');
+    return installed != null && published != null && installed > published;
   }
 
   @override
@@ -69,7 +89,7 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
           const SizedBox(height: 24),
           SwitchListTile.adaptive(
             title: const Text('自动检查更新'),
-            subtitle: const Text('定期检查 GitHub 上的新版本。'),
+            subtitle: const Text('每次启动及运行期间检查；开启后立即显示检查窗口。'),
             value: _state?['automaticChecks'] == true,
             onChanged: _state == null || _busy
                 ? null
@@ -77,12 +97,31 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
           ),
           SwitchListTile.adaptive(
             title: const Text('自动下载和安装'),
-            subtitle: const Text('下载已验证的更新，并在退出应用时安装。'),
+            subtitle: const Text('同时启用自动检查，下载已签名更新并显示安装窗口；退出应用时安装。'),
             value: _state?['automaticDownloads'] == true,
             onChanged: _state == null || _busy
                 ? null
                 : (v) => _change(downloads: v),
           ),
+          if ((_state?['latestPublishedVersion'] as String? ?? '').isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                '更新源最新：${_state!['latestPublishedVersion']}（${_state!['latestPublishedBuild']}）'
+                '${_publicationBehind ? '\n当前版本高于已发布版本；新构建发布到更新源后才能自动升级。' : ''}',
+                style: const TextStyle(color: CinemaTheme.muted, height: 1.5),
+              ),
+            ),
+          if ((_state?['status'] as String? ?? '').isNotEmpty)
+            Text(
+              _state!['status'] as String,
+              style: const TextStyle(color: CinemaTheme.muted),
+            ),
+          if ((_state?['lastError'] as String? ?? '').isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Text(_state!['lastError'] as String),
+            ),
           const SizedBox(height: 16),
           Wrap(
             spacing: 12,

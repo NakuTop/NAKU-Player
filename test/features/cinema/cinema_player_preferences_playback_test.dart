@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:kazumi/features/cinema/cinema_nas_media.dart';
+import 'package:kazumi/features/cinema/cinema_nas_playback.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -117,6 +119,7 @@ class _Backend extends PlatformPlayer {
 
   @override
   Future<void> playOrPause() => state.playing ? pause() : play();
+  void reportBuffering(bool value) => bufferingController.add(value);
   void reportLog(PlayerLog event) => logController.add(event);
 
   void complete() {
@@ -210,6 +213,46 @@ class _Probe extends CinemaMediaProbe {
   }
 }
 
+class _NAS extends CinemaNASClient {
+  final calls = <String>[];
+  final starts = <Map<String, dynamic>>[];
+  @override
+  Future<Map<String, dynamic>> call(
+    String method, [
+    Map<String, dynamic>? args,
+  ]) async {
+    calls.add(method);
+    if (method == 'playbackOptions') {
+      return {
+        'isRelayOrigin': true,
+        'profiles': [
+          {'id': '1080P', 'label': '1080P'},
+          {'id': '480P', 'label': '480P'},
+        ],
+        'audios': [
+          {'id': 4354, 'label': '中文'},
+        ],
+        'subtitles': [
+          {'id': -1, 'label': '关闭'},
+          {'id': 6145, 'label': '中文'},
+        ],
+      };
+    }
+    if (method == 'startPlayback') {
+      starts.add(Map.of(args!));
+      return {
+        'url': 'https://fixture.invalid/stream.m3u8?token=ephemeral',
+        'taskId': 'task-${starts.length}',
+        'resolution': args['resolution'],
+        'audio': args['audio'] ?? 4354,
+        'subtitle': args['subtitle'] ?? -1,
+      };
+    }
+    if (method == 'closePlayback') return {};
+    throw StateError(method);
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
@@ -295,6 +338,9 @@ void main() {
     bool autoBest = false,
     CinemaMediaProbe? probe,
     int? initialPosition,
+    CinemaTitle? selectedTitle,
+    CinemaNASPlaybackClient? nasPlayback,
+    Future<CinemaTitle> Function(CinemaTitle)? resolveNASRatings,
   }) async {
     await windowControls.initialize();
     tester.view.physicalSize = viewport;
@@ -316,7 +362,9 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: CinemaPlayerPage(
-          title: _title,
+          title: selectedTitle ?? _title,
+          nasPlayback: nasPlayback,
+          resolveNASRatings: resolveNASRatings,
           autoSelectBestRoute: autoBest,
           mediaProbe: probe,
           initialPositionSeconds: initialPosition,
@@ -337,7 +385,7 @@ void main() {
             backends.add(backend);
             return _Player(backend);
           },
-          videoSurfaceBuilder: (_, _) => renderToolbar
+          videoSurfaceBuilder: (_, player) => renderToolbar
               ? Builder(
                   builder: (context) => Column(
                     children: [
@@ -346,7 +394,26 @@ void main() {
                           context,
                         ).normal.topButtonBar,
                       ),
-                      const Expanded(child: Text('fake video')),
+                      Expanded(
+                        child: StreamBuilder<bool>(
+                          stream: player.stream.buffering,
+                          initialData: false,
+                          builder: (context, snapshot) {
+                            final theme = MaterialDesktopVideoControlsTheme.of(
+                              context,
+                            ).normal;
+                            if (snapshot.data == true) {
+                              return theme.bufferingIndicatorBuilder?.call(
+                                    context,
+                                  ) ??
+                                  const SizedBox();
+                            }
+                            return theme.primaryButtonBar.isEmpty
+                                ? const Text('fake video')
+                                : Row(children: theme.primaryButtonBar);
+                          },
+                        ),
+                      ),
                       Row(
                         children: MaterialDesktopVideoControlsTheme.of(context)
                             .normal
@@ -388,23 +455,18 @@ void main() {
     expect(tester.takeException(), isNull);
   }
 
-  Future<void> waitForProbe(WidgetTester tester, _Probe probe) async {
-    for (var i = 0; i < 30 && probe.requests.length < 2; i++) {
-      await tester.pump(const Duration(milliseconds: 20));
-    }
-    expect(probe.requests.length, 2);
-    expect(
-      probe.requests.keys,
-      isNot(contains('https://fixture.invalid/extra.mp4')),
-    );
-  }
-
-  Future<void> snapshotRecommendation(WidgetTester tester, String name) async {
+  Future<void> snapshotRecommendation(
+    WidgetTester tester,
+    String name, {
+    Finder? target,
+  }) async {
     final output = Platform.environment['NAKU_QA_SCREENSHOTS'];
     if (output == null) return;
     await tester.runAsync(() async {
       RenderObject? render = tester
-          .element(find.byKey(const ValueKey('route-recommendation-main')))
+          .element(
+            target ?? find.byKey(const ValueKey('route-recommendation-main')),
+          )
           .findRenderObject();
       RenderRepaintBoundary? boundary;
       while (render != null) {
@@ -417,6 +479,110 @@ void main() {
       await File('$output/$name.png').writeAsBytes(bytes!.buffer.asUint8List());
       image.dispose();
     });
+  }
+
+  testWidgets(
+    'NAS streaming retains resume, hide pause, and closes tasks on quality switch and exit',
+    (tester) async {
+      final nas = _NAS();
+      final identity = Completer<CinemaTitle>();
+      final reference = nasMediaReference(
+        namespace: 'a' * 64,
+        id: 1,
+        library: 1,
+        path: '/movie.mkv',
+      );
+      final title = CinemaTitle(
+        id: 'nas-1',
+        sourceId: cinemaNASSource.id,
+        title: 'NAS fixture',
+        routes: [
+          CinemaRoute(
+            name: 'NAS',
+            episodes: [CinemaEpisode(name: '电影', url: reference)],
+          ),
+        ],
+      );
+      await mount(
+        tester,
+        {},
+        selectedTitle: title,
+        nasPlayback: CinemaNASPlaybackClient(client: nas),
+        resolveNASRatings: (_) => identity.future,
+        initialPosition: 123,
+        renderToolbar: true,
+      );
+      expect(nas.starts.single['resolution'], '480P');
+      identity.complete(title.copyWith(doubanId: '25662329'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<CinemaRatingsPanel>(find.byType(CinemaRatingsPanel))
+            .title
+            .doubanId,
+        '25662329',
+      );
+      expect(nas.starts.length, 1);
+      expect(backends.single.opened!.uri, contains('stream.m3u8'));
+      expect(backends.single.state.position.inSeconds, 123);
+      expect(find.byType(CinemaNASInlinePlaybackControls), findsOneWidget);
+      expect(find.byTooltip('更多选项'), findsNothing);
+      await tester.ensureVisible(find.text('应用并保留播放进度'));
+      await tester.pumpAndSettle();
+      await snapshotRecommendation(
+        tester,
+        'nas-detail-direct-controls',
+        target: find.byType(CinemaPlayerPage),
+      );
+      await tester.tap(find.text('应用并保留播放进度'));
+      await tester.pumpAndSettle();
+      expect(nas.starts.length, 2);
+      expect(nas.calls.where((v) => v == 'closePlayback').length, 1);
+      expect(backends.last.state.position.inSeconds, 123);
+      final fullscreenEntered = Completer<void>();
+      messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+          const MethodCall('onEvent', {'eventName': 'enter-full-screen'}),
+        ),
+        (_) => fullscreenEntered.complete(),
+      );
+      await fullscreenEntered.future;
+      await tester.pumpAndSettle();
+      expect(find.byType(CinemaNASInlinePlaybackControls), findsOneWidget);
+      await snapshotRecommendation(
+        tester,
+        'nas-fullscreen-direct-controls',
+        target: find.byType(CinemaPlayerPage),
+      );
+      expect(find.text('下载选集'), findsOneWidget);
+      expect(find.text('字幕与音轨'), findsOneWidget);
+      expect(find.text('一起看'), findsOneWidget);
+      expect(find.byTooltip('更多选项'), findsNothing);
+      backends.last.reportBuffering(true);
+      await tester.pump();
+      expect(find.byType(CinemaNASInlinePlaybackControls), findsOneWidget);
+      expect(find.text('应用并保留播放进度'), findsOneWidget);
+      backends.last.reportBuffering(false);
+      await tester.pump();
+      nativeWindowState['hidden'] = true;
+      await windowControls.refreshVisibility();
+      await tester.pumpAndSettle();
+      expect(backends.last.state.playing, false);
+      await unmount(tester);
+      expect(nas.calls.where((v) => v == 'closePlayback').length, 2);
+    },
+  );
+
+  Future<void> waitForProbe(WidgetTester tester, _Probe probe) async {
+    for (var i = 0; i < 30 && probe.requests.length < 2; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    expect(probe.requests.length, 2);
+    expect(
+      probe.requests.keys,
+      isNot(contains('https://fixture.invalid/extra.mp4')),
+    );
   }
 
   testWidgets(
@@ -690,15 +856,11 @@ void main() {
       );
       expect(find.byTooltip('下一集'), findsOneWidget);
       expect(find.byTooltip('线路 / 选集'), findsOneWidget);
-      await tester.tap(find.byTooltip('更多选项'));
-      await tester.pump(const Duration(milliseconds: 350));
-      await tester.pumpAndSettle();
+      expect(find.byTooltip('更多选项'), findsNothing);
       for (final label in ['下载选集', '画中画', '一起看', '超分辨率', '倍速']) {
         expect(find.text(label), findsOneWidget);
       }
       expect(tester.takeException(), isNull);
-      await tester.tapAt(const Offset(8, 8));
-      await tester.pumpAndSettle();
       await unmount(tester);
     },
   );

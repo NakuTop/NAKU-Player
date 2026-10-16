@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:kazumi/features/cinema/cinema_models.dart';
+import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'package:kazumi/features/cinema/cinema_media_source.dart';
 import 'package:kazumi/modules/download/download_module.dart';
 import 'package:kazumi/modules/danmaku/danmaku_module.dart';
@@ -741,12 +742,37 @@ abstract class _DownloadController with Store {
         current.episodePageUrl != episode.episodePageUrl) {
       return;
     }
+    String mediaUrl;
+    try {
+      mediaUrl = isNASMediaReference(episode.episodePageUrl)
+          ? await CinemaNASClient().resolveReference(episode.episodePageUrl)
+          : episode.networkM3u8Url;
+    } catch (_) {
+      if (isCurrent?.call() != false &&
+          _repository
+                  .getRecord(record.key)
+                  ?.episodes[episode.episodeNumber]
+                  ?.status ==
+              DownloadStatus.pending) {
+        _failEpisode(
+          record.key,
+          episode.episodeNumber,
+          '请先连接对应 NAS 的影视中心，再重试下载。',
+        );
+      }
+      return;
+    }
+    if (isCurrent?.call() == false) return;
+    final latest = _repository
+        .getRecord(record.key)
+        ?.episodes[episode.episodeNumber];
+    if (latest == null || latest.status != DownloadStatus.pending) return;
     final request = DownloadRequest(
       recordKey: record.key,
       bangumiId: record.bangumiId,
       pluginName: record.pluginName,
       episodeNumber: episode.episodeNumber,
-      m3u8Url: episode.networkM3u8Url,
+      m3u8Url: mediaUrl,
       httpHeaders: headers,
       adBlockerEnabled: false,
       episode: episode,
@@ -927,6 +953,16 @@ abstract class _DownloadController with Store {
       return;
     }
     try {
+      if (isNASMediaReference(episode.episodePageUrl)) {
+        episode.networkM3u8Url = episode.episodePageUrl;
+        episode.requestHeadersJson = '{}';
+        await _enqueueDirect(
+          record,
+          episode,
+          isCurrent: () => !lease.isCancelled,
+        );
+        return;
+      }
       final metadata = jsonDecode(record.mediaMetadata) as Map<String, dynamic>;
       final title = CinemaTitle.fromJson(
         Map<String, dynamic>.from(metadata['title']),

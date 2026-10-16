@@ -321,6 +321,25 @@ class CinemaSearchDiscoveryRepository {
     return _remember(key, result);
   }
 
+  /// Identity lookups verify suggestion records against public subject metadata.
+  /// Unverified suggestions remain suggestions; a restricted subject endpoint
+  /// may use the existing explicit Wikidata identity crosswalk instead.
+  Future<CinemaSearchDiscovery> searchForIdentity(String keyword) async {
+    final result = await search(keyword);
+    final hydrated = await _hydrate(result.titles, null, limit: 2);
+    if (hydrated.any((title) => title.identityVerified)) {
+      return CinemaSearchDiscovery(titles: hydrated);
+    }
+    final fallback = await _wikidataSearch(keyword, null);
+    final byID = {for (final title in hydrated) title.id: title};
+    for (final title in fallback.$1) {
+      if (title.identityVerified || !byID.containsKey(title.id)) {
+        byID[title.id] = title;
+      }
+    }
+    return CinemaSearchDiscovery(titles: byID.values.toList());
+  }
+
   CinemaSearchDiscovery _remember(String key, CinemaSearchDiscovery result) {
     _cache.remove(key);
     _cache[key] = (_now(), result);

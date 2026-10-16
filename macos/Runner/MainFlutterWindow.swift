@@ -91,12 +91,56 @@ private final class GlassContentViewController: NSViewController {
   }
 }
 
+// Observe Sparkle's verified feed and keep automatic update prompts visible.
+// Archive/feed signature validation and installation remain owned by Sparkle.
+private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
+  weak var controller: SPUStandardUpdaterController?
+  var latestVersion = "", latestBuild = "", lastError = "", status = "等待检查"
+
+  func updater(_ updater: SPUUpdater, didFinishLoading appcast: SUAppcast) {
+    lastError = ""
+    if let latest = appcast.items.max(by: {
+      $0.versionString.compare($1.versionString, options: .numeric) == .orderedAscending
+    }) {
+      latestVersion = latest.displayVersionString
+      latestBuild = latest.versionString
+    }
+    status = "检查完成"
+  }
+  func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+    status = "发现新版本 \(item.displayVersionString)"
+    if updater.automaticallyChecksForUpdates {
+      // Promote the real update session; this does not bypass validation or
+      // select Install on behalf of the user. Automatic downloads remain enabled.
+      DispatchQueue.main.async { [weak self] in self?.controller?.checkForUpdates(nil) }
+    }
+  }
+  func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+    let failure = error as NSError
+    if failure.domain == SUSparkleErrorDomain && failure.code == 1001 {
+      status = "当前没有可安装的新版本"
+      return
+    }
+    lastError = "更新失败（\(failure.code)）：\(failure.localizedDescription)"
+    status = "检查或安装失败"
+  }
+  func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool,
+      forUpdate update: SUAppcastItem, state: SPUUserUpdateState) {
+    guard handleShowingUpdate, !state.userInitiated else { return }
+    // Sparkle explicitly permits promoting an existing scheduled update via
+    // checkForUpdates. Do it on the next loop after the alert is constructed.
+    DispatchQueue.main.async { [weak self] in self?.controller?.checkForUpdates(nil) }
+  }
+}
+
 class MainFlutterWindow: NSWindow {
   // Keep the engine owner explicit; the window's root controller is the glass
   // container, while all plugin registrars still belong to this Flutter child.
   private(set) var flutterViewController: FlutterViewController?
   private var updaterController: SPUStandardUpdaterController?
+  private let updaterObserver = NakuUpdaterObserver()
   private var downloadActivity: NSObjectProtocol?
+  private let nasMovies = NakuNASMovies()
   private var desktopControls: NakuDesktopWindowController?
 
   deinit {
@@ -116,6 +160,12 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    let nasChannel = FlutterMethodChannel(name: "naku/nas-movies", binaryMessenger: flutterViewController.engine.binaryMessenger)
+    nasChannel.setMethodCallHandler { [weak self] call, result in
+      guard let self else { result(nil); return }
+      self.nasMovies.handle(call, result: result)
+    }
+
 
     let desktopControls = NakuDesktopWindowController(window: self)
     self.desktopControls = desktopControls
@@ -273,8 +323,14 @@ class MainFlutterWindow: NSWindow {
     // Keep one native controller alive for the window lifetime. Sparkle owns its
     // persisted preferences, signature validation, scheduler, and installer UI.
     let updater = SPUStandardUpdaterController(
-      startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+      startingUpdater: true, updaterDelegate: updaterObserver, userDriverDelegate: updaterObserver)
     updaterController = updater
+    updaterObserver.controller = updater
+    // Sparkle recommends doing an additional launch check immediately after
+    // start, before the next runloop; respect the persisted opt-out preference.
+    if updater.updater.automaticallyChecksForUpdates {
+      updater.updater.checkForUpdatesInBackground()
+    }
     let updateChannel = FlutterMethodChannel(
       name: "naku/updater", binaryMessenger: flutterViewController.engine.binaryMessenger)
     updateChannel.setMethodCallHandler { call, result in
@@ -285,13 +341,16 @@ class MainFlutterWindow: NSWindow {
           "automaticDownloads": updater.updater.automaticallyDownloadsUpdates,
           "canCheck": updater.updater.canCheckForUpdates,
           "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
-          "build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+          "build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "",
+          "latestPublishedVersion": self.updaterObserver.latestVersion,
+          "latestPublishedBuild": self.updaterObserver.latestBuild,
+          "lastCheck": updater.updater.lastUpdateCheckDate?.timeIntervalSince1970 ?? 0,
+          "status": self.updaterObserver.status,
+          "lastError": self.updaterObserver.lastError
         ])
       case "check":
-        guard updater.updater.canCheckForUpdates else {
-          result(FlutterError(code: "busy", message: "更新检查正在进行，请查看更新窗口。", details: nil))
-          return
-        }
+        self.updaterObserver.lastError = ""
+        self.updaterObserver.status = "正在检查更新"
         updater.checkForUpdates(nil)
         result(nil)
       case "configure":
@@ -304,6 +363,19 @@ class MainFlutterWindow: NSWindow {
         }
         if let enabled = args["automaticDownloads"] {
           updater.updater.automaticallyDownloadsUpdates = enabled
+          if enabled && args["automaticChecks"] != false {
+            updater.updater.automaticallyChecksForUpdates = true
+          }
+        }
+        if args["automaticChecks"] == false {
+          updater.updater.automaticallyDownloadsUpdates = false
+        }
+        // Enabling is an explicit user action: check now and show Sparkle's
+        // normal window instead of waiting for its next scheduled interval.
+        if args["automaticChecks"] == true || args["automaticDownloads"] == true {
+          self.updaterObserver.lastError = ""
+          self.updaterObserver.status = "正在检查更新"
+          updater.checkForUpdates(nil)
         }
         result(nil)
       default:

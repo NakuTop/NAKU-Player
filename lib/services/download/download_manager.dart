@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
 import 'package:kazumi/modules/download/download_module.dart';
@@ -434,9 +435,22 @@ class DownloadManager implements IDownloadManager {
       );
 
       episode.status = DownloadStatus.downloading;
-      episode.networkM3u8Url = m3u8Url;
+      episode.networkM3u8Url = isNASMediaReference(episode.episodePageUrl)
+          ? episode.episodePageUrl
+          : m3u8Url;
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
 
+      if (isNASMediaReference(episode.episodePageUrl)) {
+        await _runDirectFileDownload(
+          task: task,
+          bangumiId: bangumiId,
+          pluginName: pluginName,
+          videoUrl: m3u8Url,
+          httpHeaders: httpHeaders,
+          episode: episode,
+        );
+        return;
+      }
       String m3u8Content;
       try {
         m3u8Content = await _fetchM3u8(m3u8Url, httpHeaders, task.cancelToken);
@@ -720,9 +734,16 @@ class DownloadManager implements IDownloadManager {
       episode.status = task.isPaused
           ? DownloadStatus.paused
           : DownloadStatus.failed;
-      episode.errorMessage = task.isPaused ? '' : e.toString();
+      episode.errorMessage = task.isPaused
+          ? ''
+          : isNASMediaReference(episode.episodePageUrl)
+          ? 'NAS 下载失败，请重新连接 NAS 后重试。'
+          : e.toString();
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
-      KazumiLogger().e('DownloadManager: episode download failed', error: e);
+      KazumiLogger().e(
+        'DownloadManager: episode download failed',
+        error: isNASMediaReference(episode.episodePageUrl) ? 'NAS 请求失败' : e,
+      );
     } finally {
       _onTaskComplete(key, task);
     }
@@ -745,7 +766,17 @@ class DownloadManager implements IDownloadManager {
         task.episodeNumber,
       );
 
-      final filePath = path.join(episodeDir, 'video.mp4');
+      final originalExtension = isNASMediaReference(episode.episodePageUrl)
+          ? path
+                .extension(
+                  parseNASMediaReference(episode.episodePageUrl)['path']!,
+                )
+                .toLowerCase()
+          : '.mp4';
+      final extension = RegExp(r'^\.[a-z0-9]{1,8}$').hasMatch(originalExtension)
+          ? originalExtension
+          : '.mp4';
+      final filePath = path.join(episodeDir, 'video$extension');
       final tmpPath = '$filePath.tmp';
 
       int existingBytes = 0;
@@ -908,11 +939,15 @@ class DownloadManager implements IDownloadManager {
       episode.status = task.isPaused
           ? DownloadStatus.paused
           : DownloadStatus.failed;
-      episode.errorMessage = task.isPaused ? '' : e.toString();
+      episode.errorMessage = task.isPaused
+          ? ''
+          : isNASMediaReference(episode.episodePageUrl)
+          ? 'NAS 下载失败，请重新连接 NAS 后重试。'
+          : e.toString();
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
       KazumiLogger().e(
         'DownloadManager: direct file download failed',
-        error: e,
+        error: isNASMediaReference(episode.episodePageUrl) ? 'NAS 请求失败' : e,
       );
     }
   }

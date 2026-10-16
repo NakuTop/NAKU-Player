@@ -15,6 +15,10 @@ import 'dart:async';
 import 'dart:io';
 import 'cinema_download_sheet.dart';
 import 'cinema_media_source.dart';
+import 'cinema_nas_media.dart';
+import 'cinema_nas_playback.dart';
+import 'cinema_rating_identity_search.dart';
+import 'cinema_search_discovery.dart';
 export 'cinema_media_source.dart' show cinemaUsesDirectMedia;
 import 'package:kazumi/services/player/native_playback_setup.dart';
 import 'package:kazumi/request/core/network_config.dart';
@@ -198,6 +202,8 @@ class CinemaPlayerPage extends StatefulWidget {
     this.preferences,
     this.windowControls,
     this.createPlayer,
+    this.nasPlayback,
+    this.resolveNASRatings,
     this.videoSurfaceBuilder,
     this.offlinePaths,
     this.initialPositionSeconds,
@@ -205,6 +211,9 @@ class CinemaPlayerPage extends StatefulWidget {
     this.autoSelectBestRoute,
   });
 
+  final CinemaNASPlaybackClient? nasPlayback;
+  @visibleForTesting
+  final Future<CinemaTitle> Function(CinemaTitle)? resolveNASRatings;
   final CinemaTitle title;
   final CinemaSource source;
 
@@ -302,6 +311,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   int _lifecycleRevision = 0;
   late final _preferences =
       widget.preferences ?? CinemaPlayerPreferences.read();
+  late final _nasPlayback = widget.nasPlayback ?? CinemaNASPlaybackClient();
+  late CinemaTitle _ratingsTitle = widget.title;
+  CinemaNASPlaybackOptions? _nasOptions;
+  String? _nasReference, _nasResolution;
+  int? _nasAudio, _nasSubtitle;
   final _playerFocus = FocusScopeNode(debugLabel: 'NAKU player');
   Timer? _volumeSaveTimer;
   final _volumePersistence = CinemaVolumePersistence();
@@ -424,7 +438,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   );
 
   Future<void> _discoverRoutes() async {
-    if (widget.offlinePaths != null) return;
+    if (widget.offlinePaths != null || widget.source.id == cinemaNASSource.id) {
+      return;
+    }
     await for (final variants in discoverCinemaWorkSources(
       anchor: widget.title,
       known: widget.variants,
@@ -552,14 +568,16 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   @override
   void initState() {
     super.initState();
+    unawaited(_resolveNASRatingIdentity());
     _rate = _preferences.rate;
     _volume = _preferences.initialVolume;
     _audibleVolume = _preferences.volume > 0 ? _preferences.volume : 100;
     _superResolution = _preferences.superResolution;
     _reverseEpisodes = widget.store.extras['reverseEpisodes'] == true;
     _autoBestRoute =
-        widget.autoSelectBestRoute ??
-        widget.store.extras['autoBestRoute'] != false;
+        _source.id != cinemaNASSource.id &&
+        (widget.autoSelectBestRoute ??
+            widget.store.extras['autoBestRoute'] != false);
     _automaticProbePending = _autoBestRoute && widget.offlinePaths == null;
     final cachePrefs = widget.store.extras['mediaCache'];
     if (cachePrefs is Map) {
@@ -716,6 +734,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       positionSeconds: offset,
     );
 
+    CinemaNASPlaybackSession? pendingNAS;
     try {
       final localFile = widget.offlinePaths?[episode.url];
       if (widget.offlinePaths != null &&
@@ -727,7 +746,35 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           : File(localFile).uri.toString();
       var mediaFormat = VideoSourceFormat.auto;
       Map<String, String> mediaHeaders = const {};
-      if (localFile == null) {
+      final nas = localFile == null && isNASMediaReference(episode.url);
+      if (nas) {
+        setState(() => _phase = '正在准备 NAS 播放流');
+        if (_nasReference != episode.url || _nasOptions == null) {
+          final options = await _nasPlayback.options(episode.url);
+          if (!_isCurrent(generation)) return;
+          _nasOptions = options;
+          _nasReference = episode.url;
+          _nasResolution = options.defaultProfile;
+          _nasAudio = null;
+          _nasSubtitle = -1;
+        }
+        if (_nasResolution != nasOriginalFileProfile) {
+          pendingNAS = await _nasPlayback.start(
+            episode.url,
+            resolution: _nasResolution,
+            audio: _nasAudio,
+            subtitle: _nasSubtitle,
+          );
+          if (!_isCurrent(generation)) return;
+          mediaUrl = pendingNAS.url;
+          mediaHeaders = pendingNAS.headers;
+          mediaFormat = VideoSourceFormat.hls;
+          _nasAudio = pendingNAS.audio;
+          _nasSubtitle = pendingNAS.subtitle;
+        }
+      }
+      if (localFile == null &&
+          (!nas || _nasResolution == nasOriginalFileProfile)) {
         if (!cinemaUsesDirectMedia(selectedSource, route, episode)) {
           setState(() => _phase = '正在解析播放页面');
         }
@@ -758,12 +805,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _preferences,
         widget.createPlayer,
       );
+      candidate.nasSession = pendingNAS;
+      pendingNAS = null;
       _playback = candidate;
       candidate.mediaUrl = mediaUrl;
       candidate.mediaHeaders = mediaHeaders;
       candidate.mediaFormat = mediaFormat;
       candidate.firstFrameWatch = watch;
       if (localFile == null &&
+          !nas &&
           !_cacheBypass.contains(selection.key) &&
           widget.createPlayer == null) {
         try {
@@ -856,8 +906,158 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _fail(generation, error.message.toString());
     } catch (_) {
       _fail(generation, '播放失败。片源可能暂时不可用，请重试或更换线路。');
+    } finally {
+      await pendingNAS?.close();
     }
   }
+
+  Future<void> _resolveNASRatingIdentity() async {
+    final original = widget.title;
+    if (original.sourceId != cinemaNASSource.id ||
+        original.doubanId.isNotEmpty ||
+        widget.offlinePaths != null ||
+        (widget.ratingsRepository != null &&
+            widget.resolveNASRatings == null)) {
+      return;
+    }
+    try {
+      final resolve =
+          widget.resolveNASRatings ??
+          CinemaRatingIdentitySearch(
+            search: CinemaSearchDiscoveryRepository().searchForIdentity,
+          ).resolve;
+      final resolved = await resolve(original);
+      if (!mounted ||
+          _closing ||
+          resolved.key != original.key ||
+          resolved.doubanId.isEmpty) {
+        return;
+      }
+      setState(() => _ratingsTitle = resolved);
+    } catch (_) {
+      // An ambiguous or unavailable public match retains manual association.
+    }
+  }
+
+  Future<void> _applyNASPlaybackChoice(
+    CinemaNASPlaybackSelection choice,
+  ) async {
+    final playback = _playback;
+    if (playback == null || !_usesNASPlayback || _loading || _closing) return;
+    _nasResolution = choice.resolution;
+    _nasAudio = choice.audio;
+    _nasSubtitle = choice.subtitle;
+    await _playEpisode(
+      _routeIndex,
+      _episodeIndex,
+      resumeAt: playback.position.inSeconds,
+      playWhenReady: playback.player.state.playing,
+    );
+  }
+
+  Widget _playbackTools({bool overlay = false}) {
+    final playback = _playback;
+    Widget action(String text, IconData icon, VoidCallback? onPressed) =>
+        TextButton.icon(
+          onPressed: onPressed,
+          icon: Icon(icon, size: 18),
+          label: Text(text),
+        );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Wrap(
+          spacing: 4,
+          runSpacing: 4,
+          children: [
+            action('画中画', Icons.picture_in_picture_alt, _togglePip),
+            action(
+              _fullscreen ? '退出全屏' : '全屏',
+              Icons.fullscreen,
+              _toggleFullscreen,
+            ),
+            action(
+              widget.store.isFavorite(_title) ? '已收藏' : '收藏',
+              Icons.bookmark_border,
+              _toggleFavorite,
+            ),
+            if (widget.offlinePaths == null)
+              action('下载选集', Icons.download_rounded, _downloadCurrent),
+            action(
+              '字幕与音轨',
+              Icons.subtitles_outlined,
+              playback == null
+                  ? null
+                  : () => showCinemaTracksSheet(
+                      context,
+                      playback.player,
+                      widget.store,
+                    ),
+            ),
+            action('倍速', Icons.speed, _showSpeedOptions),
+            action(
+              '画质信息与处理',
+              Icons.tune,
+              playback == null
+                  ? null
+                  : () => showCinemaQualitySheet(context, playback.player),
+            ),
+            action('超分辨率', Icons.auto_awesome, _showSuperResolutionOptions),
+            action(
+              '保存截图',
+              Icons.photo_camera_outlined,
+              playback == null ? null : _screenshot,
+            ),
+            action('邀请链接与二维码', Icons.qr_code, _invite),
+            action(
+              '一起看',
+              Icons.people_outline,
+              () => showCinemaSyncSheet(context, coordinator: _together),
+            ),
+            action('线路 / 选集', Icons.playlist_play, _showEpisodes),
+            if (widget.offlinePaths == null && !_usesNASPlayback)
+              action('播放线路测速', Icons.network_check, () {
+                _showEpisodes();
+                _probeRoutes();
+              }),
+            action(
+              '跳过 ${_preferences.buttonSkipSeconds} 秒',
+              Icons.forward_10,
+              playback == null
+                  ? null
+                  : () => _seekBy(_preferences.buttonSkipSeconds),
+            ),
+            if (_canRetryDirect)
+              action('启用视频直连并重试', Icons.network_check, _retryDirect),
+          ],
+        ),
+        if (_usesNASPlayback && _nasOptions != null) ...[
+          const SizedBox(height: 12),
+          CinemaNASInlinePlaybackControls(
+            key: ValueKey(
+              'nas-inline:$_nasReference:${overlay ? 'overlay' : 'detail'}',
+            ),
+            options: _nasOptions!,
+            resolution: _nasResolution ?? _nasOptions!.defaultProfile,
+            audio: _nasAudio,
+            subtitle: _nasSubtitle,
+            bitrate: playback?.nasSession?.bitrate ?? 0,
+            enabled: playback != null && !_loading && !_closing,
+            onApply: (choice) => unawaited(_applyNASPlaybackChoice(choice)),
+          ),
+        ],
+      ],
+    );
+  }
+
+  bool get _usesNASPlayback =>
+      widget.offlinePaths == null &&
+      _nasReference != null &&
+      _nasReference ==
+          _title.routes[_routeIndex].episodes
+              .elementAtOrNull(_episodeIndex)
+              ?.url;
 
   void _listenTo(_CinemaPlayback playback, int generation) {
     bool current() => _isCurrent(generation) && identical(_playback, playback);
@@ -1252,6 +1452,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Future<void> _warmNext(_CinemaPlayback playback, int generation) async {
+    if (_source.id == cinemaNASSource.id) return;
     if (_probingRoutes ||
         !_isCurrent(generation) ||
         widget.offlinePaths != null ||
@@ -1922,6 +2123,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         borderRadius: BorderRadius.circular(12),
         child: AspectRatio(aspectRatio: 16 / 9, child: _videoSurface()),
       ),
+      const SizedBox(height: 12),
+      _playbackTools(),
       const SizedBox(height: 20),
       if (widget.offlinePaths == null &&
           (_probingRoutes ||
@@ -2031,7 +2234,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           key: ValueKey('playing-work-details:${widget.title.key}'),
           // Playback routes belong to the same verified work. Keep its metadata
           // anchor stable while changing source or episode, including ID-less ones.
-          title: widget.title,
+          title: _ratingsTitle,
           sourceName: widget.source.name,
           repository: widget.ratingsRepository,
           reviewsRepository: widget.reviewsRepository,
@@ -2044,6 +2247,21 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                 },
         ),
     ],
+  );
+
+  Widget _fullscreenPlaybackTools(BoxConstraints constraints) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 20),
+    child: ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: constraints.maxHeight * .55),
+      child: Material(
+        color: const Color(0xD91B1B1B),
+        borderRadius: BorderRadius.circular(12),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(12),
+          child: _playbackTools(overlay: true),
+        ),
+      ),
+    ),
   );
 
   Widget _videoSurface() => LayoutBuilder(
@@ -2078,6 +2296,32 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         seekBarPositionColor: _copper,
         seekBarThumbColor: _copper,
         volumeBarActiveColor: _copper,
+        primaryButtonBar: _fullscreen && !_pip
+            ? [
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: _fullscreenPlaybackTools(constraints),
+                  ),
+                ),
+              ]
+            : const [],
+        // media_kit hides its primary controls while buffering. Keep the same
+        // quality/track controls available so a stalled stream can be changed.
+        bufferingIndicatorBuilder: (_) => _fullscreen && !_pip
+            ? Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(),
+                  ),
+                  const SizedBox(height: 12),
+                  _fullscreenPlaybackTools(constraints),
+                ],
+              )
+            : const CircularProgressIndicator(color: Colors.white),
         topButtonBar: _pip
             ? const []
             : [
@@ -2108,87 +2352,6 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                         ? Icons.bookmark
                         : Icons.bookmark_border,
                   ),
-                ),
-                PopupMenuButton<String>(
-                  tooltip: '更多选项',
-                  icon: const Icon(Icons.more_vert),
-                  onSelected: (action) {
-                    switch (action) {
-                      case 'tracks':
-                        if (playback != null) {
-                          showCinemaTracksSheet(
-                            context,
-                            playback.player,
-                            widget.store,
-                          );
-                        }
-                      case 'screenshot':
-                        _screenshot();
-                      case 'invite':
-                        _invite();
-                      case 'probe':
-                        _showEpisodes();
-                        _probeRoutes();
-                      case 'download':
-                        _downloadCurrent();
-                      case 'pip':
-                        _togglePip();
-                      case 'together':
-                        showCinemaSyncSheet(context, coordinator: _together);
-                      case 'quality':
-                        if (playback != null) {
-                          showCinemaQualitySheet(context, playback.player);
-                        }
-                      case 'skip':
-                        _seekBy(_preferences.buttonSkipSeconds);
-                      case 'speed':
-                        _showSpeedOptions();
-                      case 'super':
-                        _showSuperResolutionOptions();
-                      case 'direct':
-                        _retryDirect();
-                    }
-                  },
-                  itemBuilder: (_) => [
-                    if (widget.offlinePaths == null)
-                      const PopupMenuItem(
-                        value: 'download',
-                        child: Text('下载选集'),
-                      ),
-                    const PopupMenuItem(value: 'tracks', child: Text('字幕与音轨')),
-                    const PopupMenuItem(
-                      value: 'screenshot',
-                      child: Text('保存截图'),
-                    ),
-                    const PopupMenuItem(
-                      value: 'invite',
-                      child: Text('邀请链接与二维码'),
-                    ),
-                    if (widget.offlinePaths == null)
-                      const PopupMenuItem(
-                        value: 'probe',
-                        child: Text('播放线路测速'),
-                      ),
-                    const PopupMenuItem(value: 'pip', child: Text('画中画')),
-                    if (!wide)
-                      const PopupMenuItem(value: 'super', child: Text('超分辨率')),
-                    if (narrow)
-                      const PopupMenuItem(value: 'speed', child: Text('倍速')),
-                    const PopupMenuItem(value: 'together', child: Text('一起看')),
-                    const PopupMenuItem(
-                      value: 'quality',
-                      child: Text('画质信息与处理'),
-                    ),
-                    PopupMenuItem(
-                      value: 'skip',
-                      child: Text('跳过 ${_preferences.buttonSkipSeconds} 秒'),
-                    ),
-                    if (_canRetryDirect)
-                      const PopupMenuItem(
-                        value: 'direct',
-                        child: Text('启用视频直连并重试'),
-                      ),
-                  ],
                 ),
               ],
         bottomButtonBar: [
@@ -2963,6 +3126,7 @@ class _CinemaPlayback {
   Map<String, String> mediaHeaders = const {};
   VideoSourceFormat mediaFormat = VideoSourceFormat.auto;
   CinemaCacheSession? cacheSession;
+  CinemaNASPlaybackSession? nasSession;
   Stopwatch? firstFrameWatch;
   bool warmedNext = false;
   bool ready = false;
@@ -2971,13 +3135,18 @@ class _CinemaPlayback {
 
   Future<void> dispose() => _disposal ??= _dispose();
   Future<void> _dispose() async {
-    await cacheSession?.close();
-    watchdogTimer?.cancel();
-    fatalErrorTimer?.cancel();
-    for (final subscription in subscriptions) {
-      await subscription.cancel();
+    final closingNAS = nasSession?.close();
+    try {
+      await cacheSession?.close();
+      watchdogTimer?.cancel();
+      fatalErrorTimer?.cancel();
+      for (final subscription in subscriptions) {
+        await subscription.cancel();
+      }
+      subscriptions.clear();
+      await player.dispose();
+    } finally {
+      await closingNAS;
     }
-    subscriptions.clear();
-    await player.dispose();
   }
 }
