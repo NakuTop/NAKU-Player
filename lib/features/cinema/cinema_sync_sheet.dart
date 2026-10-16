@@ -23,12 +23,12 @@ class _SyncDialog extends StatefulWidget {
 }
 
 class _SyncDialogState extends State<_SyncDialog> {
-  final _peer = TextEditingController();
+  final _code = TextEditingController();
   bool _busy = false;
   String? _error;
   @override
   void dispose() {
-    _peer.dispose();
+    _code.dispose();
     super.dispose();
   }
 
@@ -40,12 +40,14 @@ class _SyncDialogState extends State<_SyncDialog> {
     });
     try {
       await action();
+    } on FormatException catch (error) {
+      if (mounted) setState(() => _error = error.message);
     } on PlatformException catch (error) {
       if (mounted) {
-        setState(() => _error = error.message ?? '请先登录 NAS，再检查对方账号。');
+        setState(() => _error = error.message ?? '请先登录 NAS，再检查配对码。');
       }
     } catch (_) {
-      if (mounted) setState(() => _error = '配对未完成，请先登录 NAS 并检查对方账号和网络连接。');
+      if (mounted) setState(() => _error = '配对未完成，请先登录 NAS 并检查配对码和网络连接。');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -65,26 +67,34 @@ class _SyncDialogState extends State<_SyncDialog> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  '双方分别登录同一台 NAS 的不同账号，填写对方的 NAS 账号并确认配对。双方确认并在线后，即可同步观看。',
-                ),
+                const Text('登录 NAS 后即可使用一起看。生成配对码发给对方，或输入对方的配对码，即可连接。'),
                 const SizedBox(height: 16),
                 if (!together.isNASPaired) ...[
                   TextField(
-                    controller: _peer,
+                    controller: _code,
                     enabled: !_busy,
-                    maxLength: 128,
+                    maxLength: 16,
+                    textCapitalization: TextCapitalization.characters,
                     decoration: const InputDecoration(
-                      labelText: '对方的 NAS 账号',
-                      helperText: '填写登录账号，区分大小写；无需链接、二维码或房间名',
+                      labelText: '配对码（留空自动生成）',
+                      helperText: '另一端也需先登录 NAS，其余设置自动完成',
                     ),
                   ),
                 ] else ...[
                   Text('我的 NAS 账号：${together.nasAccount}'),
-                  Text('配对账号：${together.nasPeerAccount}'),
+                  SelectableText(
+                    '配对码：${together.pairingCode.substring(0, 5)}-${together.pairingCode.substring(5)}',
+                  ),
+                  TextButton.icon(
+                    onPressed: () => Clipboard.setData(
+                      ClipboardData(text: together.pairingCode),
+                    ),
+                    icon: const Icon(Icons.copy, size: 17),
+                    label: const Text('复制配对码'),
+                  ),
                   const SizedBox(height: 10),
                   if (together.peers.isEmpty)
-                    Text(s.connected ? '等待对方填写你的账号并确认配对' : '正在等待连接恢复'),
+                    Text(s.connected ? '等待另一端输入配对码' : '正在等待连接恢复'),
                   for (final peer in together.peers)
                     ListTile(
                       contentPadding: EdgeInsets.zero,
@@ -200,8 +210,8 @@ class _SyncDialogState extends State<_SyncDialog> {
             FilledButton(
               onPressed: _busy
                   ? null
-                  : () => _perform(() => together.pairNAS(_peer.text)),
-              child: Text(_busy ? '正在配对…' : '确认配对'),
+                  : () => _perform(() => together.pairNAS(_code.text)),
+              child: Text(_busy ? '正在配对…' : '开始配对'),
             ),
         ],
       );

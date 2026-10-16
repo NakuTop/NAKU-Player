@@ -18,10 +18,9 @@ class _Pairing {
     this.username, {
     this.nasNamespace,
     this.account,
-    this.peerAccount,
-    this.peerUsername,
+    this.pairingCode,
   });
-  final String? nasNamespace, account, peerAccount, peerUsername;
+  final String? nasNamespace, account, pairingCode;
   final String endpoint, room, username;
   Map<String, Object> toJson() => {
     'version': 1,
@@ -29,9 +28,8 @@ class _Pairing {
     'room': room,
     'username': username,
     'nasNamespace': ?nasNamespace,
+    'pairingCode': ?pairingCode,
     'account': ?account,
-    'peerAccount': ?peerAccount,
-    'peerUsername': ?peerUsername,
   };
   static _Pairing parse(Map raw) {
     String read(String key, int limit) {
@@ -49,14 +47,19 @@ class _Pairing {
     if (parseSyncPlayEndPoint(endpoint) == null) {
       throw const FormatException('一起看服务器格式无效');
     }
+    if (raw['nasNamespace'] != null) {
+      if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(read('nasNamespace', 64)) ||
+          !RegExp(r'^[A-HJ-NP-Z2-9]{10}$').hasMatch(read('pairingCode', 10))) {
+        throw const FormatException('保存的 NAS 配对码无效，请重新配对');
+      }
+    }
     return _Pairing(
       endpoint,
       read('room', 35),
       read('username', 16),
       nasNamespace: raw['nasNamespace'] as String?,
+      pairingCode: raw['pairingCode'] as String?,
       account: raw['account'] as String?,
-      peerAccount: raw['peerAccount'] as String?,
-      peerUsername: raw['peerUsername'] as String?,
     );
   }
 }
@@ -156,24 +159,23 @@ class CinemaWatchTogether extends ChangeNotifier {
   bool get following => _follow != null || _followingNavigation;
   bool isCurrentFollow(CinemaPeerActivity peer) =>
       !_closed && session.connected && identical(_follow?.peer, peer);
-  bool get isNASPaired => _pairing?.nasNamespace != null;
+  bool get isNASPaired =>
+      _pairing?.nasNamespace != null && _pairing?.pairingCode != null;
   String get nasNamespace => _pairing?.nasNamespace ?? '';
   String get nasAccount => _pairing?.account ?? '';
-  String get nasPeerAccount => _pairing?.peerAccount ?? '';
-  String peerDisplayName(CinemaPeerActivity peer) =>
-      isNASPaired && peer.username == _pairing?.peerUsername
-      ? nasPeerAccount
-      : peer.username;
-  List<CinemaPeerActivity> get peers => isNASPaired
-      ? session.peers
-            .where((peer) => peer.username == _pairing?.peerUsername)
-            .toList()
-      : session.peers;
+  String get pairingCode => _pairing?.pairingCode ?? '';
+  String peerDisplayName(CinemaPeerActivity peer) => peer.username;
+  List<CinemaPeerActivity> get peers => session.peers;
+  Stream<String> get notices => _notices.stream;
 
-  Future<void> pairNAS(String peer, {CinemaNASClient? client}) async {
+  Future<void> pairNAS(String code, {CinemaNASClient? client}) async {
+    code = code.toUpperCase().replaceAll(RegExp(r'[\s-]'), '');
+    if (code.isNotEmpty && !RegExp(r'^[A-HJ-NP-Z2-9]{10}$').hasMatch(code)) {
+      throw const FormatException('请输入 10 位配对码，或留空生成新码');
+    }
     final identity = await (client ?? CinemaNASClient()).call(
       'pairingIdentity',
-      {'peer': peer.trim()},
+      {'code': code.trim()},
     );
     final namespace = identity['namespace'] as String? ?? '';
     if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(namespace)) {
@@ -185,12 +187,10 @@ class CinemaWatchTogether extends ChangeNotifier {
       username: identity['username'] as String,
       nasNamespace: namespace,
       account: identity['account'] as String,
-      peerAccount: identity['peerAccount'] as String,
-      peerUsername: identity['peerUsername'] as String,
+      pairingCode: identity['pairingCode'] as String,
     );
   }
 
-  Stream<String> get notices => _notices.stream;
   String get endpoint => _pairing?.endpoint ?? session.endpoint;
   String get roomName => _pairing?.room ?? session.lastRoom;
   String get username => _pairing?.username ?? session.username;
@@ -223,7 +223,8 @@ class CinemaWatchTogether extends ChangeNotifier {
         if (raw is Map &&
             raw['version'] == 1 &&
             raw['paired'] != false &&
-            raw['nasNamespace'] != null) {
+            raw['nasNamespace'] != null &&
+            raw['pairingCode'] != null) {
           _pairing = _Pairing.parse(raw);
         }
       }
@@ -262,8 +263,7 @@ class CinemaWatchTogether extends ChangeNotifier {
     required String username,
     String? nasNamespace,
     account,
-    peerAccount,
-    peerUsername,
+    pairingCode,
   }) async {
     await initialize();
     if (_closed) return;
@@ -272,9 +272,8 @@ class CinemaWatchTogether extends ChangeNotifier {
       'room': roomName,
       'username': username,
       'nasNamespace': nasNamespace,
+      'pairingCode': pairingCode,
       'account': account,
-      'peerAccount': peerAccount,
-      'peerUsername': peerUsername,
     });
     final gen = ++_generation;
     _retry?.cancel();

@@ -67,14 +67,11 @@ final class AutoRouteProtocol: URLProtocol {
         expect(invalid == nil,"reject public IP scans and HTTP remote downgrade")
         print("PASS auto route LAN preference, relay fallback, device identity and credential-free probes")
 
-        let a = NASMovieSession.namespace(serial:"test-nas",username:"alice")
-        let b = NASMovieSession.namespace(serial:"test-nas",username:"bob")
-        let c = NASMovieSession.namespace(serial:"other-nas",username:"bob")
-        let room = NASMovieSession.pairingRoom(first:a,second:b)
-        expect(room == NASMovieSession.pairingRoom(first:b,second:a),"both NAS users derive the same pairing")
-        expect(room != NASMovieSession.pairingRoom(first:a,second:c),"other NAS cannot collide with pairing")
-        expect(room.count == 35 && !room.contains("alice") && !room.contains("bob"),"bounded relay room without raw NAS identity")
-
+        let code=try NASMovieSession.pairingCode("")
+        expect(code.count == 10,"secure pairing code length")
+        let formatted=String(code.prefix(5))+"-"+String(code.suffix(5))
+        expect(try NASMovieSession.pairingCode(formatted.lowercased()) == code,"pairing code case and separator normalization")
+        do {_ = try NASMovieSession.pairingCode("invalid");fatalError("invalid pairing code accepted")}catch NASMovieError.configuration {}
         do {_ = try NASMovieSession.playbackProfileData(["transcodeable":[["name":"invalid","resolution":"../escape"]]]);fatalError("bad profile accepted")}catch NASMovieError.response {}
         do {_ = try NASMovieSession.playbackProfileData(["transcodeable":[["name":"480P","resolution":"720x400"],["name":"duplicate","resolution":"720x400"]]]);fatalError("duplicate accepted")}catch NASMovieError.response {}
         let tracks=NASMovieSession.playbackTrackData([["id":"4354","title":"Chinese","isDefault":1],["id":4354]],subtitles:false)

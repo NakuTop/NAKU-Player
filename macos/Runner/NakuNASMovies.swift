@@ -406,32 +406,28 @@ actor NASMovieSession {
             return ["name":verified.name,"namespace":namespace,"username":username]
         } catch { logout(); throw error }
     }
-    static func pairingRoom(first: String, second: String) -> String {
-        let pair = [first,second].sorted().joined(separator:"|")
-        let hash = SHA256.hash(data:Data(("naku-nas-pair-v1|"+pair).utf8)).map {String(format:"%02x",$0)}.joined()
-        return "NP-"+String(hash.prefix(32))
+    static func pairingCode(_ raw: String) throws -> String {
+        let alphabet=Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+        if raw.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+            var bytes=[UInt8](repeating:0,count:10)
+            guard SecRandomCopyBytes(kSecRandomDefault,bytes.count,&bytes) == errSecSuccess else {throw NASMovieError.crypto}
+            return String(bytes.map {alphabet[Int($0 & 31)]})
+        }
+        let code=raw.uppercased().filter {!$0.isWhitespace && $0 != "-"}
+        guard code.count == 10,code.allSatisfy({alphabet.contains($0)}) else {throw NASMovieError.configuration}
+        return code
     }
-
-    // Resolve account identities only after authenticating to this NAS. Raw
-    // usernames and hardware serials are never sent to the Syncplay relay.
-    func pairingIdentity(peer: String) async throws -> [String:Any] {
+    // NAS login gates participation; the pairing code selects the existing
+    // Syncplay room. No counterpart account entry or NAS-to-NAS binding needed.
+    func pairingIdentity(code raw: String) async throws -> [String:Any] {
         if namespace.isEmpty { _ = try await restore() }
-        let attempt = generation
-        let current = try await api("v1/user/current/user")
-        let machine = try await api("v1/sysinfo/machine/common", parameters:["basic":"1"])
-        guard generation == attempt,
-              let own = current["username"] as? String, !own.isEmpty,
-              let common = machine["common"] as? [String:Any],
-              let serial = common["serial"] as? String, !serial.isEmpty,
-              Self.namespace(serial:serial,username:own) == namespace else { throw NASMovieError.configuration }
-        let partner = peer.trimmingCharacters(in:.whitespacesAndNewlines)
-        guard !partner.isEmpty, partner != own, partner.utf8.count <= 128,
-              !partner.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw NASMovieError.configuration }
-        let other = Self.namespace(serial:serial,username:partner)
-        let room = Self.pairingRoom(first:namespace,second:other)
-        return ["namespace":namespace,"account":own,"peerAccount":partner,
-                "room":room,"username":"N-"+String(namespace.prefix(14)),
-                "peerUsername":"N-"+String(other.prefix(14))]
+        let attempt=generation
+        let current=try await api("v1/user/current/user")
+        guard generation == attempt,let own=current["username"] as? String,!own.isEmpty,!namespace.isEmpty else {throw NASMovieError.expired}
+        let code=try Self.pairingCode(raw)
+        let suffix=UUID().uuidString.replacingOccurrences(of:"-",with:"").prefix(4)
+        return ["namespace":namespace,"account":own,"pairingCode":code,
+                "room":"NP-"+code,"username":"N-"+String(namespace.prefix(8))+"-"+suffix]
     }
 
     func syncDirectory() async throws -> String {
@@ -895,7 +891,7 @@ final class NakuNASMovies {
                 case "qrCancel": await session.cancelQR(); value=nil
                 case "ensure": value=try await session.ensure(expected:args["namespace"] as? String ?? "")
                 case "autoConnect": value=try await session.autoConnect(expected:args["namespace"] as? String ?? "",force:args["force"] as? Bool ?? false)
-                case "pairingIdentity": value=try await session.pairingIdentity(peer:args["peer"] as? String ?? "")
+                case "pairingIdentity": value=try await session.pairingIdentity(code:args["code"] as? String ?? "")
                 case "syncPull": value=try await session.syncPull(expected:args["namespace"] as? String ?? "")
                 case "syncPush": value=try await session.syncPush(expected:args["namespace"] as? String ?? "",device:args["device"] as? String ?? "",sequence:args["sequence"] as? Int ?? 0,document:args["document"] as? String ?? "")
                 case "restoreAt": value=try await session.restoreAt(address:args["address"] as? String ?? "",expected:args["namespace"] as? String ?? "",remember:args["remember"] as? Bool ?? false)
