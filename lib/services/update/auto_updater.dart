@@ -11,6 +11,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:kazumi/utils/device.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:kazumi/utils/date_time.dart';
 import 'package:kazumi/utils/crypto.dart';
 import 'package:kazumi/utils/version.dart';
@@ -55,13 +56,19 @@ class UpdateInfo {
 }
 
 Map<String, dynamic>? getUpdateAssetForType(
-    List<dynamic> assets, InstallationType type) {
+    List<dynamic> assets, InstallationType type, {bool? television}) {
   final patterns = getUpdateFilePatterns(type).map((p) => p.toLowerCase());
 
   try {
     final asset = assets.cast<Map<String, dynamic>>().firstWhere((asset) {
       final name = (asset['name'] as String?)?.toLowerCase() ?? '';
-      return patterns.every((pattern) => name.contains(pattern));
+      if (!patterns.every((pattern) => name.contains(pattern))) return false;
+      if (type == InstallationType.androidApk) {
+        final isTV = RegExp(r'(^|[-_])tv([-_.]|$)').hasMatch(name);
+        return isTV == (television ?? NakuDevice.isTV) &&
+            !name.contains('personal');
+      }
+      return true;
     });
     return asset;
   } catch (_) {
@@ -136,6 +143,13 @@ class AutoUpdater {
         throw Exception('无效的响应数据');
       }
 
+      if (Platform.isAndroid &&
+          getUpdateAssetForType(
+            data['assets'] is List ? data['assets'] as List : [],
+            InstallationType.androidApk,
+          ) == null) {
+        return null;
+      }
       final remoteVersion = data['tag_name'] as String;
       final currentVersion = ApiEndpoints.version;
 
@@ -162,7 +176,9 @@ class AutoUpdater {
   }
 
   Future<Map<String, dynamic>> _latestRelease() async {
-    final raw = await _downloadClient.getPlain(ApiEndpoints.latestAppMirror);
+    final raw = await _downloadClient.getPlain(
+      Platform.isAndroid ? ApiEndpoints.androidApp : ApiEndpoints.latestAppMirror,
+    );
     final data = json.decode(raw);
     if (data is! Map) {
       throw Exception('Invalid update response');

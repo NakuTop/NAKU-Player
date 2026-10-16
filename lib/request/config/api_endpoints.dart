@@ -28,6 +28,10 @@ class ApiEndpoints {
   static const String latestApp =
       'https://api.github.com/repos/NakuTop/NAKU-Player/releases/latest';
 
+  /// Android uses its own channel so macOS releases cannot mask phone updates.
+  static const String androidApp =
+      'https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/android-update.json';
+
   /// Bangumi 镜像测试后端
   static const String bangumiMirrorDomain = 'https://api.kazumi.fyi';
 

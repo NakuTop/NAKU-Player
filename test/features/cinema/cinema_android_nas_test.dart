@@ -119,6 +119,7 @@ class _Request implements HttpClientRequest {
         'duration': 1500,
         'width': 1920,
         'height': 1080,
+        ...transport.playbackOverrides,
       };
     } else if (url.path.endsWith('/getHomeShare')) {
       result['data'] = {'path': '/home/alice'};
@@ -173,6 +174,7 @@ class _Request implements HttpClientRequest {
 class _Client implements HttpClient {
   final requests = <_Request>[];
   final files = <String, String>{};
+  final playbackOverrides = <String, dynamic>{};
   String account = "";
   bool expireOnce = false, wrongQRAccount = false;
   int qrCode = 81520;
@@ -401,6 +403,60 @@ void main() {
         jsonDecode(utf8.decode(opened.bytes))['task_id'],
         jsonDecode(utf8.decode(closed.bytes))['task_id'],
       );
+    },
+  );
+
+  test(
+    'empty NAS tiers retain original playback and reject a transcode start cleanly',
+    () async {
+      final info = await login();
+      http.playbackOverrides['transcodeable'] = [];
+      final args = {
+        'namespace': info['namespace'],
+        'id': 1,
+        'library': 2,
+        'path': '/Movies/a.mkv',
+      };
+      final options = await nas.invoke('playbackOptions', args) as Map;
+      expect(options['profiles'], isEmpty);
+      await expectLater(
+        nas.invoke('startPlayback', args),
+        throwsA(isA<PlatformException>()),
+      );
+      expect(
+        http.requests.where((r) => r.url.path.endsWith('/web/play')),
+        isEmpty,
+      );
+      expect(
+        http.requests.where((r) => r.url.path.endsWith('/web/close')),
+        hasLength(2),
+      );
+    },
+  );
+
+  test(
+    'malformed and duplicate audio IDs cannot create unusable track menus',
+    () async {
+      final info = await login();
+      http.playbackOverrides['audios'] = [
+        {'id': '7', 'language': '中文', 'isDefault': '1'},
+        {'id': 7, 'title': '重复'},
+        {'id': 'invalid'},
+        {'title': '无编号'},
+        {'id': 8, 'title': '', 'language': 'English'},
+      ];
+      final options =
+          await nas.invoke('playbackOptions', {
+                'namespace': info['namespace'],
+                'id': 1,
+                'library': 2,
+                'path': '/Movies/a.mkv',
+              })
+              as Map;
+      final audios = options['audios'] as List;
+      expect(audios.map((v) => v['id']), [7, 8]);
+      expect(audios.first['isDefault'], true);
+      expect(audios.last['label'], 'English');
     },
   );
 

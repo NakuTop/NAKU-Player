@@ -7,6 +7,7 @@ import 'cinema_quality_sheet.dart';
 import 'cinema_tracks_sheet.dart';
 import 'cinema_subtitle_appearance.dart';
 import 'cinema_online_subtitles.dart';
+import 'cinema_mobile_playback_bar.dart';
 import 'cinema_media_cache.dart';
 import 'cinema_media_transport.dart';
 import 'cinema_route_probe.dart';
@@ -208,12 +209,15 @@ class CinemaPlayerPage extends StatefulWidget {
     this.nasPlayback,
     this.resolveNASRatings,
     this.videoSurfaceBuilder,
+    this.mobileControls,
     this.offlinePaths,
     this.initialPositionSeconds,
     this.mediaProbe,
     this.autoSelectBestRoute,
   });
 
+  @visibleForTesting
+  final bool? mobileControls;
   final CinemaNASPlaybackClient? nasPlayback;
   @visibleForTesting
   final Future<CinemaTitle> Function(CinemaTitle)? resolveNASRatings;
@@ -1157,6 +1161,50 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         reference == _nasReference) {
       await _applyNASPlaybackChoice(choice);
     }
+  }
+
+  Future<void> _showMobilePlaybackTools() async {
+    final actions = <String, VoidCallback>{
+      '清晰度与播放设置': () => unawaited(_showQuality()),
+      '字幕与音轨': () => unawaited(_showTracks()),
+      if (_playback != null)
+        '在线搜索字幕': () => unawaited(
+          showCinemaOnlineSubtitles(
+            context,
+            _playback!.player,
+            title: _title.title,
+            imdbId: _title.imdbId,
+          ),
+        ),
+      '播放倍速': _showSpeedOptions,
+      '线路 / 选集': _showEpisodes,
+      if (_hasNext) '下一集': () => _changeEpisode(1),
+      if (_episodeIndex > 0) '上一集': () => _changeEpisode(-1),
+      '画中画': () => unawaited(_togglePip()),
+      if (NakuDevice.canDownload && widget.offlinePaths == null)
+        '下载选集': _downloadCurrent,
+    };
+    final action = await showModalBottomSheet<VoidCallback>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(title: Text('播放工具')),
+              for (final entry in actions.entries)
+                ListTile(
+                  title: Text(entry.key),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.pop(ctx, entry.value),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (mounted && !_closing) action?.call();
   }
 
   Widget _playbackTools({bool overlay = false}) {
@@ -2554,6 +2602,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Widget _videoSurface() => LayoutBuilder(
     builder: (context, constraints) {
       final wide = constraints.maxWidth >= 850;
+      final mobile =
+          widget.mobileControls ??
+          (!NakuDevice.isTV && (Platform.isAndroid || Platform.isIOS));
       final playback = _playback;
       if (widget.videoSurfaceBuilder == null) {
         playback?.observeControllerInitialization();
@@ -2615,6 +2666,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                     style: const TextStyle(fontSize: 14, color: Colors.white),
                   ),
                 ),
+                if (mobile)
+                  IconButton(
+                    tooltip: '播放工具',
+                    onPressed: _showMobilePlaybackTools,
+                    icon: const Icon(Icons.more_vert),
+                  ),
                 IconButton(
                   tooltip: widget.store.isFavorite(_title) ? '已收藏' : '收藏',
                   onPressed: _toggleFavorite,
@@ -2625,225 +2682,93 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   ),
                 ),
               ],
-        bottomButtonBar: [
-          Expanded(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (!_pip && playback != null)
-                  StreamBuilder<Duration>(
-                    stream: playback.player.stream.position,
-                    initialData: playback.position,
-                    builder: (context, snapshot) => Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Row(
-                        children: [
-                          Text(
-                            _time(snapshot.data ?? Duration.zero),
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: Color(0xFFBBBBBB),
-                            ),
-                          ),
-                          const Spacer(),
-                          Text(
-                            _time(playback.duration),
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: Color(0xFFBBBBBB),
-                            ),
-                          ),
-                        ],
+        bottomButtonBar: mobile && !_pip
+            ? [
+                Expanded(
+                  child: StreamBuilder<bool>(
+                    stream: playback?.player.stream.playing,
+                    initialData: playback?.player.state.playing ?? false,
+                    builder: (context, playing) => StreamBuilder<Duration>(
+                      stream: playback?.player.stream.position,
+                      initialData: playback?.position ?? Duration.zero,
+                      builder: (context, position) => CinemaMobilePlaybackBar(
+                        playing: playing.data ?? false,
+                        fullscreen: _fullscreen,
+                        position: _time(position.data ?? Duration.zero),
+                        duration: _time(playback?.duration ?? Duration.zero),
+                        onBackward: playback == null
+                            ? null
+                            : () => _seekBy(-_preferences.buttonSkipSeconds),
+                        onPlay: playback == null
+                            ? null
+                            : () => unawaited(_togglePlayback()),
+                        onForward: playback == null
+                            ? null
+                            : () => _seekBy(_preferences.buttonSkipSeconds),
+                        onQuality: playback == null && !_usesNASPlayback
+                            ? null
+                            : () => unawaited(_showQuality()),
+                        onTracks: playback == null
+                            ? null
+                            : () => unawaited(_showTracks()),
+                        onFullscreen: () => unawaited(_toggleFullscreen()),
                       ),
                     ),
                   ),
-                SizedBox(
-                  height: 44,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxWidth: (constraints.maxWidth * .45).clamp(
-                              0,
-                              260,
-                            ),
-                          ),
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
+                ),
+              ]
+            : [
+                Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (!_pip && playback != null)
+                        StreamBuilder<Duration>(
+                          stream: playback.player.stream.position,
+                          initialData: playback.position,
+                          builder: (context, snapshot) => Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
                             child: Row(
-                              mainAxisSize: MainAxisSize.min,
                               children: [
-                                if (!_pip)
-                                  IconButton(
-                                    constraints: const BoxConstraints.tightFor(
-                                      width: 36,
-                                      height: 40,
-                                    ),
-                                    padding: EdgeInsets.zero,
-                                    tooltip: '上一集',
-                                    icon: const Icon(
-                                      Icons.skip_previous_rounded,
-                                    ),
-                                    onPressed: _episodeIndex > 0 && !_loading
-                                        ? () => _changeEpisode(-1)
-                                        : null,
+                                Text(
+                                  _time(snapshot.data ?? Duration.zero),
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Color(0xFFBBBBBB),
                                   ),
-                                if (!_pip)
-                                  IconButton(
-                                    constraints: const BoxConstraints.tightFor(
-                                      width: 36,
-                                      height: 40,
-                                    ),
-                                    padding: EdgeInsets.zero,
-                                    tooltip:
-                                        '后退 ${_preferences.buttonSkipSeconds} 秒',
-                                    icon: const Icon(Icons.replay_10_rounded),
-                                    onPressed: playback == null
-                                        ? null
-                                        : () => _seekBy(
-                                            -_preferences.buttonSkipSeconds,
-                                          ),
+                                ),
+                                const Spacer(),
+                                Text(
+                                  _time(playback.duration),
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Color(0xFFBBBBBB),
                                   ),
-                                _playPauseButton(),
-                                if (!_pip)
-                                  IconButton(
-                                    constraints: const BoxConstraints.tightFor(
-                                      width: 36,
-                                      height: 40,
-                                    ),
-                                    padding: EdgeInsets.zero,
-                                    tooltip:
-                                        '快进 ${_preferences.buttonSkipSeconds} 秒',
-                                    icon: const Icon(Icons.forward_10_rounded),
-                                    onPressed: playback == null
-                                        ? null
-                                        : () => _seekBy(
-                                            _preferences.buttonSkipSeconds,
-                                          ),
-                                  ),
-                                if (!_pip)
-                                  IconButton(
-                                    constraints: const BoxConstraints.tightFor(
-                                      width: 36,
-                                      height: 40,
-                                    ),
-                                    padding: EdgeInsets.zero,
-                                    tooltip: '下一集',
-                                    icon: const Icon(Icons.skip_next_rounded),
-                                    onPressed: _hasNext && !_loading
-                                        ? () => _changeEpisode(1)
-                                        : null,
-                                  ),
-                                if (!_pip) ...[
-                                  const SizedBox(width: 24),
-                                  if (wide &&
-                                      widget.videoSurfaceBuilder == null)
-                                    const MaterialDesktopVolumeButton(),
-                                ],
+                                ),
                               ],
                             ),
                           ),
                         ),
-                        Expanded(
-                          child: Align(
-                            alignment: Alignment.centerRight,
-                            child: SingleChildScrollView(
-                              scrollDirection: Axis.horizontal,
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  if (!_pip) ...[
-                                    if (_usesNASPlayback && _nasOptions != null)
-                                      CinemaNASInlinePlaybackControls(
-                                        key: ValueKey(
-                                          'nas-bottom:$_nasReference',
-                                        ),
-                                        onPlayerTracks: _showTracks,
-                                        options: _nasOptions!,
-                                        resolution:
-                                            _nasResolution ??
-                                            _nasOptions!.defaultProfile,
-                                        audio: _nasAudio,
-                                        subtitle: _nasSubtitle,
-                                        enabled: !_closing,
-                                        bitrate:
-                                            playback?.nasSession?.bitrate ?? 0,
-                                        onApply: (choice) => unawaited(
-                                          _applyNASPlaybackChoice(choice),
-                                        ),
-                                      ),
-                                    _speedControl(),
-                                    if (_fullscreen) ...[
-                                      IconButton(
-                                        constraints:
-                                            const BoxConstraints.tightFor(
-                                              width: 36,
-                                              height: 40,
-                                            ),
-                                        padding: EdgeInsets.zero,
-                                        tooltip: '保存截图',
-                                        onPressed: playback == null
-                                            ? null
-                                            : _screenshot,
-                                        icon: const Icon(
-                                          Icons.photo_camera_outlined,
-                                          size: 22,
-                                        ),
-                                      ),
-                                      IconButton(
-                                        constraints:
-                                            const BoxConstraints.tightFor(
-                                              width: 36,
-                                              height: 40,
-                                            ),
-                                        padding: EdgeInsets.zero,
-                                        tooltip: '画质信息与处理',
-                                        onPressed:
-                                            playback == null &&
-                                                !_usesNASPlayback
-                                            ? null
-                                            : _showQuality,
-                                        icon: const Icon(
-                                          Icons.tune_rounded,
-                                          size: 22,
-                                        ),
-                                      ),
-                                      IconButton(
-                                        constraints:
-                                            const BoxConstraints.tightFor(
-                                              width: 36,
-                                              height: 40,
-                                            ),
-                                        padding: EdgeInsets.zero,
-                                        tooltip: '超分辨率',
-                                        onPressed: _showSuperResolutionOptions,
-                                        icon: const Icon(
-                                          Icons.auto_awesome_outlined,
-                                          size: 22,
-                                        ),
-                                      ),
-                                      IconButton(
-                                        constraints:
-                                            const BoxConstraints.tightFor(
-                                              width: 36,
-                                              height: 40,
-                                            ),
-                                        padding: EdgeInsets.zero,
-                                        tooltip: 'NAS 用户配对',
-                                        onPressed: () => showCinemaSyncSheet(
-                                          context,
-                                          coordinator: _together,
-                                        ),
-                                        icon: const Icon(
-                                          Icons.people_outline,
-                                          size: 22,
-                                        ),
-                                      ),
-                                      if (NakuDevice.canDownload &&
-                                          widget.offlinePaths == null)
+                      SizedBox(
+                        height: 44,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxWidth: (constraints.maxWidth * .45).clamp(
+                                    0,
+                                    260,
+                                  ),
+                                ),
+                                child: SingleChildScrollView(
+                                  scrollDirection: Axis.horizontal,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (!_pip)
                                         IconButton(
                                           constraints:
                                               const BoxConstraints.tightFor(
@@ -2851,85 +2776,273 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                                 height: 40,
                                               ),
                                           padding: EdgeInsets.zero,
-                                          tooltip: '下载选集',
-                                          onPressed: _downloadCurrent,
+                                          tooltip: '上一集',
                                           icon: const Icon(
-                                            Icons.download_rounded,
-                                            size: 22,
+                                            Icons.skip_previous_rounded,
+                                          ),
+                                          onPressed:
+                                              _episodeIndex > 0 && !_loading
+                                              ? () => _changeEpisode(-1)
+                                              : null,
+                                        ),
+                                      if (!_pip)
+                                        IconButton(
+                                          constraints:
+                                              const BoxConstraints.tightFor(
+                                                width: 36,
+                                                height: 40,
+                                              ),
+                                          padding: EdgeInsets.zero,
+                                          tooltip:
+                                              '后退 ${_preferences.buttonSkipSeconds} 秒',
+                                          icon: const Icon(
+                                            Icons.replay_10_rounded,
+                                          ),
+                                          onPressed: playback == null
+                                              ? null
+                                              : () => _seekBy(
+                                                  -_preferences
+                                                      .buttonSkipSeconds,
+                                                ),
+                                        ),
+                                      _playPauseButton(),
+                                      if (!_pip)
+                                        IconButton(
+                                          constraints:
+                                              const BoxConstraints.tightFor(
+                                                width: 36,
+                                                height: 40,
+                                              ),
+                                          padding: EdgeInsets.zero,
+                                          tooltip:
+                                              '快进 ${_preferences.buttonSkipSeconds} 秒',
+                                          icon: const Icon(
+                                            Icons.forward_10_rounded,
+                                          ),
+                                          onPressed: playback == null
+                                              ? null
+                                              : () => _seekBy(
+                                                  _preferences
+                                                      .buttonSkipSeconds,
+                                                ),
+                                        ),
+                                      if (!_pip)
+                                        IconButton(
+                                          constraints:
+                                              const BoxConstraints.tightFor(
+                                                width: 36,
+                                                height: 40,
+                                              ),
+                                          padding: EdgeInsets.zero,
+                                          tooltip: '下一集',
+                                          icon: const Icon(
+                                            Icons.skip_next_rounded,
+                                          ),
+                                          onPressed: _hasNext && !_loading
+                                              ? () => _changeEpisode(1)
+                                              : null,
+                                        ),
+                                      if (!_pip) ...[
+                                        const SizedBox(width: 24),
+                                        if (wide &&
+                                            widget.videoSurfaceBuilder == null)
+                                          const MaterialDesktopVolumeButton(),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: Align(
+                                  alignment: Alignment.centerRight,
+                                  child: SingleChildScrollView(
+                                    scrollDirection: Axis.horizontal,
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        if (!_pip) ...[
+                                          if (_usesNASPlayback &&
+                                              _nasOptions != null)
+                                            CinemaNASInlinePlaybackControls(
+                                              key: ValueKey(
+                                                'nas-bottom:$_nasReference',
+                                              ),
+                                              onPlayerTracks: _showTracks,
+                                              options: _nasOptions!,
+                                              resolution:
+                                                  _nasResolution ??
+                                                  _nasOptions!.defaultProfile,
+                                              audio: _nasAudio,
+                                              subtitle: _nasSubtitle,
+                                              enabled: !_closing,
+                                              bitrate:
+                                                  playback
+                                                      ?.nasSession
+                                                      ?.bitrate ??
+                                                  0,
+                                              onApply: (choice) => unawaited(
+                                                _applyNASPlaybackChoice(choice),
+                                              ),
+                                            ),
+                                          _speedControl(),
+                                          if (_fullscreen) ...[
+                                            IconButton(
+                                              constraints:
+                                                  const BoxConstraints.tightFor(
+                                                    width: 36,
+                                                    height: 40,
+                                                  ),
+                                              padding: EdgeInsets.zero,
+                                              tooltip: '保存截图',
+                                              onPressed: playback == null
+                                                  ? null
+                                                  : _screenshot,
+                                              icon: const Icon(
+                                                Icons.photo_camera_outlined,
+                                                size: 22,
+                                              ),
+                                            ),
+                                            IconButton(
+                                              constraints:
+                                                  const BoxConstraints.tightFor(
+                                                    width: 36,
+                                                    height: 40,
+                                                  ),
+                                              padding: EdgeInsets.zero,
+                                              tooltip: '画质信息与处理',
+                                              onPressed:
+                                                  playback == null &&
+                                                      !_usesNASPlayback
+                                                  ? null
+                                                  : _showQuality,
+                                              icon: const Icon(
+                                                Icons.tune_rounded,
+                                                size: 22,
+                                              ),
+                                            ),
+                                            IconButton(
+                                              constraints:
+                                                  const BoxConstraints.tightFor(
+                                                    width: 36,
+                                                    height: 40,
+                                                  ),
+                                              padding: EdgeInsets.zero,
+                                              tooltip: '超分辨率',
+                                              onPressed:
+                                                  _showSuperResolutionOptions,
+                                              icon: const Icon(
+                                                Icons.auto_awesome_outlined,
+                                                size: 22,
+                                              ),
+                                            ),
+                                            IconButton(
+                                              constraints:
+                                                  const BoxConstraints.tightFor(
+                                                    width: 36,
+                                                    height: 40,
+                                                  ),
+                                              padding: EdgeInsets.zero,
+                                              tooltip: 'NAS 用户配对',
+                                              onPressed: () =>
+                                                  showCinemaSyncSheet(
+                                                    context,
+                                                    coordinator: _together,
+                                                  ),
+                                              icon: const Icon(
+                                                Icons.people_outline,
+                                                size: 22,
+                                              ),
+                                            ),
+                                            if (NakuDevice.canDownload &&
+                                                widget.offlinePaths == null)
+                                              IconButton(
+                                                constraints:
+                                                    const BoxConstraints.tightFor(
+                                                      width: 36,
+                                                      height: 40,
+                                                    ),
+                                                padding: EdgeInsets.zero,
+                                                tooltip: '下载选集',
+                                                onPressed: _downloadCurrent,
+                                                icon: const Icon(
+                                                  Icons.download_rounded,
+                                                  size: 22,
+                                                ),
+                                              ),
+                                          ],
+                                          IconButton(
+                                            constraints:
+                                                const BoxConstraints.tightFor(
+                                                  width: 36,
+                                                  height: 40,
+                                                ),
+                                            padding: EdgeInsets.zero,
+                                            tooltip: _usesNASPlayback
+                                                ? '外挂字幕 / 播放器音轨'
+                                                : '字幕与音轨',
+                                            icon: const Icon(
+                                              Icons.closed_caption_outlined,
+                                            ),
+                                            onPressed: playback == null
+                                                ? null
+                                                : _showTracks,
+                                          ),
+                                          IconButton(
+                                            constraints:
+                                                const BoxConstraints.tightFor(
+                                                  width: 36,
+                                                  height: 40,
+                                                ),
+                                            padding: EdgeInsets.zero,
+                                            tooltip: '画中画',
+                                            onPressed: _togglePip,
+                                            icon: const Icon(
+                                              Icons
+                                                  .picture_in_picture_alt_outlined,
+                                            ),
+                                          ),
+                                          IconButton(
+                                            constraints:
+                                                const BoxConstraints.tightFor(
+                                                  width: 36,
+                                                  height: 40,
+                                                ),
+                                            padding: EdgeInsets.zero,
+                                            tooltip: '线路 / 选集',
+                                            onPressed: _showEpisodes,
+                                            icon: const Icon(
+                                              Icons.playlist_play_rounded,
+                                            ),
+                                          ),
+                                        ],
+                                        IconButton(
+                                          constraints:
+                                              const BoxConstraints.tightFor(
+                                                width: 36,
+                                                height: 40,
+                                              ),
+                                          padding: EdgeInsets.zero,
+                                          tooltip: _fullscreen ? '退出全屏' : '全屏',
+                                          onPressed: _toggleFullscreen,
+                                          icon: Icon(
+                                            _fullscreen
+                                                ? Icons.fullscreen_exit_rounded
+                                                : Icons.fullscreen_rounded,
                                           ),
                                         ),
-                                    ],
-                                    IconButton(
-                                      constraints:
-                                          const BoxConstraints.tightFor(
-                                            width: 36,
-                                            height: 40,
-                                          ),
-                                      padding: EdgeInsets.zero,
-                                      tooltip: _usesNASPlayback
-                                          ? '外挂字幕 / 播放器音轨'
-                                          : '字幕与音轨',
-                                      icon: const Icon(
-                                        Icons.closed_caption_outlined,
-                                      ),
-                                      onPressed: playback == null
-                                          ? null
-                                          : _showTracks,
-                                    ),
-                                    IconButton(
-                                      constraints:
-                                          const BoxConstraints.tightFor(
-                                            width: 36,
-                                            height: 40,
-                                          ),
-                                      padding: EdgeInsets.zero,
-                                      tooltip: '画中画',
-                                      onPressed: _togglePip,
-                                      icon: const Icon(
-                                        Icons.picture_in_picture_alt_outlined,
-                                      ),
-                                    ),
-                                    IconButton(
-                                      constraints:
-                                          const BoxConstraints.tightFor(
-                                            width: 36,
-                                            height: 40,
-                                          ),
-                                      padding: EdgeInsets.zero,
-                                      tooltip: '线路 / 选集',
-                                      onPressed: _showEpisodes,
-                                      icon: const Icon(
-                                        Icons.playlist_play_rounded,
-                                      ),
-                                    ),
-                                  ],
-                                  IconButton(
-                                    constraints: const BoxConstraints.tightFor(
-                                      width: 36,
-                                      height: 40,
-                                    ),
-                                    padding: EdgeInsets.zero,
-                                    tooltip: _fullscreen ? '退出全屏' : '全屏',
-                                    onPressed: _toggleFullscreen,
-                                    icon: Icon(
-                                      _fullscreen
-                                          ? Icons.fullscreen_exit_rounded
-                                          : Icons.fullscreen_rounded,
+                                      ],
                                     ),
                                   ),
-                                ],
+                                ),
                               ),
-                            ),
+                            ],
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
               ],
-            ),
-          ),
-        ],
       );
       return ColoredBox(
         color: Colors.black,

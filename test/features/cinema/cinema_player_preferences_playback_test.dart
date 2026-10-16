@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'package:kazumi/features/cinema/cinema_nas_playback.dart';
+import 'package:kazumi/features/cinema/cinema_mobile_playback_bar.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -341,6 +342,7 @@ void main() {
     Size viewport = const Size(1200, 900),
     Map<String, String>? offlinePaths,
     bool renderToolbar = false,
+    bool? mobileControls,
     bool autoBest = false,
     CinemaMediaProbe? probe,
     int? initialPosition,
@@ -370,6 +372,7 @@ void main() {
         home: CinemaPlayerPage(
           title: selectedTitle ?? _title,
           nasPlayback: nasPlayback,
+          mobileControls: mobileControls,
           resolveNASRatings: resolveNASRatings,
           autoSelectBestRoute: autoBest,
           mediaProbe: probe,
@@ -478,6 +481,27 @@ void main() {
       image.dispose();
     });
   }
+
+  testWidgets(
+    'Android phone exposes quality, tracks and online subtitles in a touch menu',
+    (tester) async {
+      await mount(
+        tester,
+        {},
+        viewport: const Size(360, 800),
+        mobileControls: true,
+        renderToolbar: true,
+      );
+      expect(find.byType(CinemaMobilePlaybackBar), findsOneWidget);
+      await tester.tap(find.byTooltip('播放工具'));
+      await tester.pumpAndSettle();
+      expect(find.text('在线搜索字幕'), findsWidgets);
+      await tester.tap(find.text('在线搜索字幕').last);
+      await tester.pumpAndSettle();
+      expect(find.text('片名或 IMDb ID'), findsOneWidget);
+      await unmount(tester);
+    },
+  );
 
   testWidgets(
     'NAS quality is selectable before the first video frame and keeps resume intent',

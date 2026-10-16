@@ -901,28 +901,39 @@ class CinemaAndroidNAS {
     }
   }
 
-  List<Map<String, dynamic>> _tracks(
-    dynamic input, {
-    bool subtitles = false,
-  }) => [
-    if (subtitles)
-      {
-        'id': -1,
-        'label': '关闭字幕',
-        'language': '',
-        'isDefault': false,
-        'isText': true,
-      },
-    for (final row in _rows(input).take(256))
-      if (_int(row['id']) >= 0)
+  List<Map<String, dynamic>> _tracks(dynamic input, {bool subtitles = false}) {
+    final result = <Map<String, dynamic>>[
+      if (subtitles)
         {
-          'id': _int(row['id']),
-          'label': row['title'] ?? row['language'] ?? '轨道 ${row['id']}',
-          'language': row['raw_language'] ?? '',
-          'isDefault': row['isDefault'] == true || row['isDefault'] == 1,
-          'isText': !subtitles || row['is_text'] == true || row['is_text'] == 1,
+          'id': -1,
+          'label': '关闭字幕',
+          'language': '',
+          'isDefault': false,
+          'isText': true,
         },
-  ];
+    ];
+    final seen = <int>{};
+    for (final row in _rows(input).take(256)) {
+      final id = int.tryParse('${row['id']}');
+      if (id == null || id < 0 || !seen.add(id)) continue;
+      final title = '${row['title'] ?? ''}'.trim();
+      final language = '${row['language'] ?? ''}'.trim();
+      result.add({
+        'id': id,
+        'label': title.isNotEmpty
+            ? title
+            : language.isNotEmpty
+            ? language
+            : '轨道 $id',
+        'language': row['raw_language'] ?? '',
+        'isDefault': row['isDefault'] == true || '${row['isDefault']}' == '1',
+        'isText':
+            !subtitles || row['is_text'] == true || '${row['is_text']}' == '1',
+      });
+    }
+    return result;
+  }
+
   Future<Map<String, dynamic>> _play(
     Map<String, dynamic> a, {
     required bool start,
@@ -953,6 +964,7 @@ class CinemaAndroidNAS {
           },
         ))['data'],
       );
+      if (info['transcodeable'] is! List) _fail();
       final profiles = [
         for (final r in _rows(info['transcodeable']))
           {
@@ -961,10 +973,12 @@ class CinemaAndroidNAS {
             'isOriginal': r['name'] == _map(info['resolution'])['name'],
           },
       ];
-      if (profiles.isEmpty ||
-          profiles.length > 32 ||
+      if (profiles.length > 32 ||
+          profiles.map((r) => r['id']).toSet().length != profiles.length ||
           profiles.any(
-            (r) => !RegExp(r'^[0-9]{1,5}x[0-9]{1,5}$').hasMatch('${r['id']}'),
+            (r) =>
+                !RegExp(r'^[0-9]{1,5}x[0-9]{1,5}$').hasMatch('${r['id']}') ||
+                '${r['label'] ?? ''}'.trim().isEmpty,
           )) {
         _fail();
       }
@@ -982,6 +996,7 @@ class CinemaAndroidNAS {
           'isRelayOrigin': Uri.parse(_base).host.endsWith('.ug.link'),
         };
       }
+      if (profiles.isEmpty) _fail('NAS 未提供转码档位，请使用原文件播放。');
       final resolution = a['resolution'] ?? profiles.last['id'],
           audio =
               a['audio'] ??

@@ -1,6 +1,6 @@
 # NAKU Android 手机与电视版
 
-同一代码库提供手机自适应版和强制电视版，保留电影、剧集、NAS 影视中心、收藏与观看历史。
+同一代码库提供手机自适应版和强制电视版，保留电影、剧集、NAS 影视中心、收藏与观看历史。当前手机版为 3.1.0（43），TV 保持既有版本。
 
 ## 设备使用
 
@@ -20,7 +20,7 @@
 
 ```sh
 flutter pub get
-flutter build apk --release --build-name 3.0.2 --build-number 42
+flutter build apk --release --build-name 3.1.0 --build-number 43
 # 复制 build/app/outputs/flutter-apk/app-release.apk 为手机包，再构建电视包。
 flutter build apk --release --build-name 3.0.2 --build-number 42 --dart-define=NAKU_TV=true
 ```
@@ -36,3 +36,13 @@ flutter build apk --release --build-name 3.0.2 --build-number 42 --dart-define=N
 个人默认地址通过 `--dart-define-from-file=/本机私有路径/personal-defines.json` 传入，JSON 键为 `NAKU_NAS_ADDRESS`，不写入公共源码。个人 APK 内含该地址，请勿当作通用公开安装包。
 
 电视播放时返回键先收起控制栏，再退出全屏到详情；详情页返回片库。
+
+
+## 手机版 3.1.0
+
+- 手机工具栏提供 44 像素触摸区域，画质、音轨 / 字幕和全屏保持直接可见；右上方“播放工具”可进入在线字幕、倍速、选集和画中画。
+- NAS 首帧未就绪、缓冲和失败时仍可选择实际返回的档位。空转码列表允许原文件播放；重复或无效音轨编号不会生成失效菜单。
+- 在线字幕支持片名、IMDb ID、季集和语言，下载完成后再加载；搜索面板避让软键盘。
+- 手机版独立读取仓库根目录 `android-update.json`，与 macOS Sparkle 更新分开。公开更新只选择 Mobile 包，不选择 TV 或 Personal 包；TV 无适配包时不提示安装手机版。
+- 3.0.2 及更早版本仍使用旧检查逻辑，需要先手动覆盖安装一次 3.1.0，之后可使用新更新源。
+- 公开 APK 不带个人默认 NAS 地址；Personal APK 仅在本地交付，不上传公开发行页。两者使用相同包名、签名和版本号，均可覆盖旧手机版，保留应用已有数据。

@@ -125,14 +125,22 @@ Future<void> showCinemaOnlineSubtitles(
   context: context,
   isScrollControlled: true,
   constraints: const BoxConstraints(maxWidth: 720),
-  builder: (_) => SizedBox(
-    height: MediaQuery.sizeOf(context).height * .85,
-    child: CinemaOnlineSubtitlesPanel(
-      player: player,
-      title: title,
-      imdbId: imdbId,
-    ),
-  ),
+  builder: (ctx) {
+    final media = MediaQuery.of(ctx);
+    return Padding(
+      padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
+      child: SizedBox(
+        height: (media.size.height - media.viewInsets.bottom) * .85,
+        child: SafeArea(
+          child: CinemaOnlineSubtitlesPanel(
+            player: player,
+            title: title,
+            imdbId: imdbId,
+          ),
+        ),
+      ),
+    );
+  },
 );
 
 class CinemaOnlineSubtitlesPanel extends StatefulWidget {
