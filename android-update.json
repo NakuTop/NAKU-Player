@@ -1,15 +1,15 @@
 {
-  "tag_name": "3.1.0",
-  "name": "NAKU Player Android 手机版 3.1.0",
-  "body": "安卓手机版 3.1.0（43）同步 NAS 播放器优化，保留同一包名和签名，可覆盖安装既有手机版。\n\n- 手机触屏工具栏直接提供画质、音轨 / 字幕和全屏，播放工具面板提供在线字幕、倍速、选集和画中画。\n- NAS 加载中、首帧未就绪时也能换档；空转码列表可用原文件，过滤重复和无效音轨编号。\n- 在线字幕支持片名、IMDb ID、季集、语言筛选和下载后加载，搜索面板避让软键盘。\n- 使用独立安卓更新源，避免误选 TV 或个人包。3.0.2 及更早版本需要先手动覆盖安装一次，之后可使用新更新源。\n\nAndroid 7.0+，包含 arm64-v8a、armeabi-v7a、x86_64。公开包不含个人 NAS 地址；个人包仅本地交付。52 项相关测试通过，构建及签名校验通过；尚未进行安卓真机 NAS 播放验收。TV 保持原版本。\n",
-  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.1.0-android",
-  "published_at": "2026-10-16T18:48:31Z",
+  "tag_name": "3.1.1",
+  "name": "NAKU Player Android 手机版 3.1.1",
+  "body": "安卓手机版 3.1.1（44）同步 NAS 播放器优化，保留同一包名和签名，可覆盖安装既有手机版。\n\n- 手机触屏工具栏直接提供画质、音轨 / 字幕和全屏，播放工具面板提供在线字幕、倍速、选集和画中画。\n- NAS 加载中、首帧未就绪时也能换档；空转码列表可用原文件，过滤重复和无效音轨编号。\n- 在线字幕支持片名、IMDb ID、季集、语言筛选和下载后加载，搜索面板避让软键盘。\n- 使用独立安卓更新源，避免误选 TV 或个人包。3.0.2 及更早版本需要先手动覆盖安装一次，之后可使用新更新源。\n\nAndroid 7.0+，包含 arm64-v8a、armeabi-v7a、x86_64。公开包不含个人 NAS 地址；个人包仅本地交付。57 项相关测试通过，构建及签名校验通过；尚未进行安卓真机 NAS 播放验收。TV 保持原版本。\n\n3.1.1 补齐安卓软件更新页面，使用独立安卓检查接口，不再调用 macOS Sparkle 服务。建议直接安装本修订版。\n",
+  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.1.1-android",
+  "published_at": "2026-10-16T19:16:29Z",
   "assets": [
     {
-      "name": "NAKUPlayer-3.1.0-Android-Mobile.apk",
-      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.1.0-android/NAKUPlayer-3.1.0-Android-Mobile.apk",
-      "size": 79193608,
-      "digest": "sha256:af03f90c1fde533cf8f75bfefe8f4bf8839e28b7bc0594a3e2dc3c41a8c8802e"
+      "name": "NAKUPlayer-3.1.1-Android-Mobile.apk",
+      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.1.1-android/NAKUPlayer-3.1.1-Android-Mobile.apk",
+      "size": 79227484,
+      "digest": "sha256:1915fdf4400957182990843476a4a678096addedc23b8211d025b6d578a2664f"
     }
   ]
 }
