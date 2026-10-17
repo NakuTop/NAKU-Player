@@ -111,6 +111,8 @@ void main() async {
   await MacOSSystemProxy.initialize();
   await MeteredNetworkService.refresh();
   ProxyManager.applyProxy();
+  MacOSSystemProxy.changes.addListener(ProxyManager.applyProxy);
+  MacOSSystemProxy.startMonitoring();
   runApp(
     ModularApp(
       module: appModule,

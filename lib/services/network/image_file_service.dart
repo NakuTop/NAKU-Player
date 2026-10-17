@@ -1,3 +1,5 @@
+import 'dart:io';
+import 'package:ech_http/ech_http.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:http/http.dart' as http;
 import 'package:kazumi/services/network/bangumi_ech_image_service.dart';
@@ -41,10 +43,20 @@ class ImageFileService extends FileService {
     var uri = Uri.parse(url);
     if (mode == ImageAcceleration.ech &&
         BangumiImageUrlRewriter.isBangumiImage(uri)) {
-      return _echService.get(
-        uri.replace(scheme: 'https').toString(),
-        headers: headers,
-      );
+      try {
+        return await _echService.get(
+          uri.replace(scheme: 'https').toString(),
+          headers: headers,
+        );
+      } on EchException catch (error) {
+        // Retry transport failures only; certificate rejection remains final.
+        if (!Platform.isMacOS ||
+            !{5, 6, 7, 28, 35, 52, 55, 56}.contains(error.nativeCode)) {
+          rethrow;
+        }
+        if (_closed) rethrow;
+        uri = uri.replace(scheme: 'https');
+      }
     }
     if (mode == ImageAcceleration.mirror) {
       uri = BangumiImageUrlRewriter.rewrite(uri);

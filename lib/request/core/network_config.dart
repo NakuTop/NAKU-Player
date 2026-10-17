@@ -1,6 +1,8 @@
 import 'dart:io';
 
 import 'package:dio/io.dart';
+import 'package:dio/dio.dart';
+import 'package:kazumi/services/network/resilient_read_adapter.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/network/proxy_utils.dart';
 import 'package:kazumi/services/network/system_proxy_service.dart';
@@ -43,8 +45,8 @@ class NetworkConfig {
     return null;
   }
 
-  IOHttpClientAdapter createAdapter() {
-    return IOHttpClientAdapter(
+  HttpClientAdapter createAdapter() {
+    IOHttpClientAdapter primary() => IOHttpClientAdapter(
       createHttpClient: () {
         final client = HttpClient();
         if (hasProxy) {
@@ -62,6 +64,10 @@ class NetworkConfig {
         return client;
       },
     );
+    if (Platform.isMacOS && followSystemProxy && !hasProxy) {
+      return ResilientReadAdapter(primaryFactory: primary);
+    }
+    return primary();
   }
 
   NetworkConfig copyWith({

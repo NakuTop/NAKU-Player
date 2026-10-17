@@ -187,7 +187,10 @@ void main() {
             ),
         isEmpty,
       );
-      expect(client.calls.last.$2?['library'], 2);
+      expect(
+        client.calls.lastWhere((e) => e.$1 == 'catalog').$2?['library'],
+        2,
+      );
       await tester.pumpWidget(const SizedBox());
       client.delayedCatalog!.complete({'video_arr': [], 'total_num': 0});
       await tester.pumpAndSettle();
@@ -307,6 +310,26 @@ void main() {
     },
   );
 
+  testWidgets('catalog reload updates actual LAN route and automatic status', (
+    tester,
+  ) async {
+    final client = FakeNAS()..active = true;
+    client.connectionInfo = {'currentAddress': 'https://fixture.cn21.ug.link'};
+    await tester.pumpWidget(MaterialApp(home: CinemaNASPage(client: client)));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('自动连接 · 远程 UGlink'), findsOneWidget);
+    client.connectionInfo = {
+      'currentAddress': 'http://192.168.1.10:9999',
+      'autoRouteStatus': '已自动切换局域网，同一设备与账号验证通过',
+    };
+    await tester.tap(find.text('收藏'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('自动连接 · 局域网直连'), findsOneWidget);
+    expect(find.text('已自动切换局域网，同一设备与账号验证通过'), findsOneWidget);
+    expect(client.calls.where((e) => e.$1 == 'login'), isEmpty);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'requires login, filters libraries and honours server pagination',
     (tester) async {
@@ -340,7 +363,10 @@ void main() {
       expect(find.text('测试影片 1'), findsOneWidget);
       await tester.tap(find.text('收藏'));
       await tester.pumpAndSettle();
-      expect(client.calls.last.$2?['library'], 2);
+      expect(
+        client.calls.lastWhere((e) => e.$1 == 'catalog').$2?['library'],
+        2,
+      );
       await tester.scrollUntilVisible(
         find.text('加载更多'),
         400,
@@ -353,7 +379,7 @@ void main() {
       );
       await tester.tap(find.text('加载更多'));
       await tester.pumpAndSettle();
-      expect(client.calls.last.$2?['page'], 2);
+      expect(client.calls.lastWhere((e) => e.$1 == 'catalog').$2?['page'], 2);
       expect(find.text('加载更多'), findsNothing);
       await tester.tap(find.text('退出并忘记账号'));
       await tester.pumpAndSettle();
@@ -406,6 +432,7 @@ void main() {
         'libraries',
         'connectionInfo',
         'catalog',
+        'connectionInfo',
       ]);
       expect(
         client.calls.where((e) => e.$2?.containsKey('password') ?? false),
@@ -426,7 +453,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('测试影片 1'));
       await tester.pumpAndSettle();
-      expect(client.calls.last.$1, 'collection');
+      expect(client.calls.where((e) => e.$1 == 'collection'), isNotEmpty);
       expect(client.calls.where((e) => e.$1 == 'details'), isEmpty);
       await tester.tap(find.text('剧集第一季'));
       await tester.pumpAndSettle();

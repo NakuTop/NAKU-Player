@@ -120,6 +120,7 @@ actor NASMovieSession {
     private var connectionInfoLoaded=false
     private var lastAutoProbe = Date.distantPast
     private var autoSelecting = false
+    private var autoRouteStatus = ""
     private let credentialStore = NASMovieCredentialStore()
     private let clientID = UUID().uuidString + "PC-darwin"
     private let session: URLSession
@@ -137,7 +138,7 @@ actor NASMovieSession {
             let transport=session,request=active.closeRequest
             Task {_ = try? await transport.data(for:request)}
         }
-        activePlayback=nil;lanCandidates=[];remoteAddress="";connectionInfoLoaded=false
+        activePlayback=nil;lanCandidates=[];remoteAddress="";connectionInfoLoaded=false;autoRouteStatus=""
         generation += 1; namespace = ""; sessionName = ""; sessionUsername = ""; base = nil; token = ""; publicKey = ""; staticToken = "" }
     static func origin(_ address: String) throws -> URL {
         guard let u = URL(string: address), u.scheme == "https" || u.scheme == "http",
@@ -277,6 +278,13 @@ actor NASMovieSession {
         guard !namespace.isEmpty else {return}
         _ = try? await autoConnect(expected:namespace)
     }
+    // The public routing hint can rotate independently of the canonical device
+    // identity. Refresh it from the current origin, never use it as hardware ID.
+    static func refreshedRouteHint(cached: String?, read: () async throws -> String) async throws -> String {
+        if let live=try? await read(),!live.isEmpty {return live}
+        if let cached,!cached.isEmpty {return cached}
+        throw NASMovieError.response
+    }
     func autoConnect(expected: String, force: Bool = false) async throws -> [String:Any] {
         guard namespace == expected,!namespace.isEmpty,let original=base else {throw NASMovieError.configuration}
         if autoSelecting || (!force && Date().timeIntervalSince(lastAutoProbe)<15) {
@@ -286,10 +294,9 @@ actor NASMovieSession {
         let attempt=generation
         _ = try? await connectionInfo(expected:expected)
         let cache=UserDefaults.standard.dictionary(forKey:"NakuNASAutoRouteV1") ?? [:]
-        let hint:String
-        if cache["namespace"] as? String == expected,let pinned=cache["hint"] as? String {hint=pinned}
-        else if let live=try? await publicDeviceHint(original) {hint=live}
-        else {throw NASMovieError.response}
+        let cachedHint=cache["namespace"] as? String == expected ? cache["hint"] as? String:nil
+        autoRouteStatus="正在自动检测局域网连接"
+        let hint=try await Self.refreshedRouteHint(cached:cachedHint) {try await self.publicDeviceHint(original)}
         guard generation == attempt,namespace == expected else {throw NASMovieError.expired}
         let metadata=try savedLogin(),savedAddress=metadata["address"] as? String ?? "",username=metadata["username"] as? String ?? ""
         let remote=[remoteAddress,savedAddress,original.absoluteString].filter {
@@ -300,8 +307,18 @@ actor NASMovieSession {
         UserDefaults.standard.set(["loginKey":loginCacheKey(address:savedAddress,username:username),"namespace":namespace,
             "hint":hint,"lan":locals,"remote":remote],forKey:"NakuNASAutoRouteV1")
         guard let selected=await Self.selectAutoRoute(lan:locals,remote:remote,hint:hint,transport:session),
-              generation == attempt,namespace == expected else {return ["namespace":expected,"changed":false,"currentAddress":original.absoluteString]}
-        if selected == original.absoluteString {return ["namespace":namespace,"changed":false,"currentAddress":selected]}
+              generation == attempt,namespace == expected else {
+            if generation == attempt,namespace == expected {
+                autoRouteStatus=locals.isEmpty ? "NAS 未提供可用局域网地址，保留当前连接":"局域网连接或设备校验未成功，保留当前连接"
+            }
+            return ["namespace":expected,"changed":false,"currentAddress":original.absoluteString]
+        }
+        if selected == original.absoluteString {
+            autoRouteStatus=Self.isPrivateIPv4(original.host ?? "") ? "局域网设备已验证":"局域网暂不可用，当前使用远程连接"
+            return ["namespace":namespace,"changed":false,"currentAddress":selected]
+        }
+        autoRouteStatus="正在验证目标 NAS 与账号"
+        do {
         let target=try Self.origin(selected)
         let current=try await api("v1/user/current/user",at:target)
         let machine=try await api("v1/sysinfo/machine/common",parameters:["basic":"1"],at:target)
@@ -311,8 +328,14 @@ actor NASMovieSession {
         // Commit only after both account and hardware identity are verified.
         // Concurrent catalogue/download requests keep their existing route.
         base=target
+        autoRouteStatus=Self.isPrivateIPv4(target.host ?? "") ? "已自动切换局域网，同一设备与账号验证通过":"局域网暂不可用，已自动切换远程连接"
         return ["namespace":namespace,"changed":true,"currentAddress":selected]
+        } catch {
+            if generation == attempt,namespace == expected {autoRouteStatus="目标 NAS 或账号验证未成功，保留原连接"}
+            throw error
+        }
     }
+
     func ensure(expected: String) async throws -> [String:Any] {
         if !namespace.isEmpty {
             guard namespace == expected else { throw NASMovieError.configuration }
@@ -677,7 +700,7 @@ actor NASMovieSession {
             }
         }
         return ["currentAddress":base?.absoluteString ?? "","remoteAddress":remoteAddress,"lanCandidates":lanCandidates,
-                "mode":Self.isPrivateIPv4(base?.host ?? "") ? "local":"remote","namespace":namespace]
+                "mode":Self.isPrivateIPv4(base?.host ?? "") ? "local":"remote","namespace":namespace,"autoRouteStatus":autoRouteStatus]
     }
 
     // Playback URLs and task credentials are session-only, separate from download assets.

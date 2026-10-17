@@ -9,6 +9,7 @@ import 'package:kazumi/request/core/network_config.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/network/bangumi_acceleration.dart';
 import 'package:kazumi/services/network/bangumi_ech_resolver.dart';
+import 'package:kazumi/services/network/resilient_read_adapter.dart';
 
 const _echRequestKey = 'bangumiEch';
 
@@ -17,6 +18,7 @@ class BangumiAccelerationInterceptor extends Interceptor {
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
     options.extra.remove(_echRequestKey);
     final uri = options.uri;
+    options.extra['bangumiOriginalRead'] = null;
     if (ApiEndpoints.bangumiPublicApiHosts.contains(uri.host)) {
       switch (BangumiAcceleration.forRequest(uri, options.method)) {
         case BangumiAcceleration.direct:
@@ -26,6 +28,9 @@ class BangumiAccelerationInterceptor extends Interceptor {
           options.queryParameters = {};
           options.extra[_echRequestKey] = true;
         case BangumiAcceleration.mirror:
+          if (ResilientReadAdapter.eligible(options)) {
+            options.extra['bangumiOriginalRead'] = uri.toString();
+          }
           options.path =
               ApiEndpoints.bangumiMirrorDomain +
               uri.path +
@@ -89,7 +94,22 @@ class BangumiEchAdapter implements HttpClientAdapter {
   ) async {
     if (_closed) throw StateError('Bangumi ECH adapter is closed');
     if (options.extra[_echRequestKey] != true) {
-      return _fallback.fetch(options, requestStream, cancelFuture);
+      try {
+        return await _fallback.fetch(options, requestStream, cancelFuture);
+      } on DioException catch (error) {
+        final original = options.extra['bangumiOriginalRead'];
+        if (original is! String ||
+            requestStream != null ||
+            !ResilientReadAdapter.eligible(options) ||
+            !ResilientReadAdapter.networkFailure(error)) {
+          rethrow;
+        }
+        return _fallback.fetch(
+          options.copyWith(path: original, queryParameters: {}),
+          null,
+          cancelFuture,
+        );
+      }
     }
 
     final abort = Completer<void>();

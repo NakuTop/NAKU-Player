@@ -18,6 +18,7 @@ class CinemaAndroidNAS {
   final Set<String> _lan = {};
   bool _ugk = false, _discovered = false;
   DateTime _lastProbe = DateTime(2000);
+  String _autoRouteStatus = '';
   final String _clientID = '${DateTime.now().microsecondsSinceEpoch}Android';
   WebSocket? _socket;
   Timer? _heartbeat;
@@ -232,6 +233,8 @@ class CinemaAndroidNAS {
     _name = '';
     _remote = '';
     _hint = '';
+    _autoRouteStatus = '';
+    _lastProbe = DateTime(2000);
     _lan.clear();
     _discovered = false;
   }
@@ -641,6 +644,7 @@ class CinemaAndroidNAS {
       'remoteAddress': _remote,
       'lanCandidates': _lan.toList(),
       'mode': privateIPv4(Uri.parse(_base).host) ? 'local' : 'remote',
+      'autoRouteStatus': _autoRouteStatus,
     };
   }
 
@@ -676,17 +680,20 @@ class CinemaAndroidNAS {
     }
     _lastProbe = DateTime.now();
     await _connections();
-    if (_hint.isEmpty) {
-      final r = _decode(
-        (await _request(
-          Uri.parse('$_base/ugreen/v1/verify/sn'),
-          limit: 65536,
-        )).bytes,
-      );
-      _check(r);
-      _hint = '${_map(r['data'])['sn'] ?? ''}';
+    final expected = _namespace;
+    _autoRouteStatus = '正在自动检测局域网连接';
+    try {
+      final fresh = await _deviceHint(before);
+      if (_namespace != expected || _base != before) _fail();
+      _hint = fresh;
+    } catch (_) {
+      // A transient read failure must not clear a usable route or login.
+      if (_namespace != expected || _base != before) rethrow;
+      if (_hint.isEmpty) {
+        _autoRouteStatus = 'NAS 设备识别暂不可用，保留当前连接';
+        rethrow;
+      }
     }
-    if (_hint.isEmpty) _fail();
     String? selected;
     for (final group in [
       _lan.take(12).toList(),
@@ -696,17 +703,25 @@ class CinemaAndroidNAS {
       selected = results.whereType<String>().firstOrNull;
       if (selected != null) break;
     }
+    if (_namespace != expected || _base != before) _fail();
     if (selected != null && selected != _base) {
+      _autoRouteStatus = '正在验证目标 NAS 与账号';
       final user = await _api('v1/user/current/user', {}, selected),
           machine = await _api('v1/sysinfo/machine/common', {
             'basic': '1',
           }, selected);
-      if (_digest('${_map(machine['common'])['serial']}|${user['username']}') !=
-          _namespace) {
+      if (_namespace != expected ||
+          _base != before ||
+          _digest('${_map(machine['common'])['serial']}|${user['username']}') !=
+              expected) {
+        _autoRouteStatus = '目标 NAS 或账号验证未成功，保留原连接';
         _fail();
       }
       _base = selected;
     }
+    _autoRouteStatus = privateIPv4(Uri.parse(_base).host)
+        ? '局域网设备与账号已验证，使用局域网直连'
+        : '局域网暂不可用，保留远程连接';
     final saved = await _saved();
     if (saved.isNotEmpty) {
       await _secure.invokeMethod<void>('write', {

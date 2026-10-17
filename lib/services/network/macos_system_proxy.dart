@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 
 /// Read-only snapshot of the user's macOS HTTP proxies. TLS validation stays on.
 /// Refresh on launch/resume; no shell environment or fixed local port is needed.
@@ -8,8 +9,26 @@ abstract final class MacOSSystemProxy {
   static const _channel = MethodChannel('yingchuan/network');
   static Map<String, dynamic> _settings = {};
 
+  static final changes = ValueNotifier<int>(0);
+  static int get revision => changes.value;
+  static Timer? _monitor;
+  static bool _reading = false;
+  static void startMonitoring() {
+    if (!Platform.isMacOS || _monitor != null) return;
+    _monitor = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => unawaited(initialize()),
+    );
+  }
+
+  static void stopMonitoring() {
+    _monitor?.cancel();
+    _monitor = null;
+  }
+
   static Future<void> initialize() async {
-    if (!Platform.isMacOS) return;
+    if (!Platform.isMacOS || _reading) return;
+    _reading = true;
     try {
       final value = await _channel
           .invokeMapMethod<String, dynamic>('systemProxy')
@@ -18,14 +37,32 @@ abstract final class MacOSSystemProxy {
     } on MissingPluginException {
       // Unit-test runners do not own the application's native channel.
     } on PlatformException {
-      _settings = {};
+      // Keep the last valid configuration on a transient bridge error.
     } on TimeoutException {
-      _settings = {};
+      // A missed sample is not proof that the system removed its proxy.
+    } finally {
+      _reading = false;
     }
   }
 
   static void setConfiguration(Map<String, dynamic> value) {
+    if (mapEquals(_settings, value) || _sameConfiguration(_settings, value)) {
+      return;
+    }
     _settings = Map.of(value);
+    changes.value++;
+  }
+
+  static bool _sameConfiguration(
+    Map<String, dynamic> a,
+    Map<String, dynamic> b,
+  ) {
+    if (a.length != b.length) return false;
+    return a.keys.every(
+      (key) => a[key] is List && b[key] is List
+          ? listEquals(a[key] as List, b[key] as List)
+          : a[key] == b[key],
+    );
   }
 
   static bool _enabled(Object? value) => value == 1 || value == true;

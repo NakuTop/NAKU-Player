@@ -84,7 +84,11 @@ class _Request implements HttpClientRequest {
       result['data'] = {'username': 'alice', 'uid': 1000};
     } else if (url.path.endsWith('/machine/common')) {
       result['data'] = {
-        'common': {'serial': 'TEST-NAS'},
+        'common': {
+          'serial': url.host == '192.168.8.4'
+              ? transport.lanSerial
+              : 'TEST-NAS',
+        },
       };
     } else if (url.path.endsWith('/verify/check')) {
       responseHeaders.set('X-Rsa-Token', 'test-public-key');
@@ -101,8 +105,14 @@ class _Request implements HttpClientRequest {
         'http_port': 9999,
       };
     } else if (url.path.endsWith('/verify/sn')) {
+      if (transport.hintFailures > 0) {
+        transport.hintFailures--;
+        result['code'] = 500;
+      }
       result['data'] = {
-        'sn': url.host == '192.168.8.4' ? 'wrong-device' : 'pinned-device',
+        'sn': url.host == '192.168.8.4'
+            ? transport.lanHint
+            : transport.remoteHint,
       };
     } else if (url.path.endsWith('/web/info')) {
       result['data'] = {
@@ -176,8 +186,11 @@ class _Client implements HttpClient {
   final files = <String, String>{};
   final playbackOverrides = <String, dynamic>{};
   String account = "";
+  String remoteHint = "pinned-device", lanHint = "wrong-device";
   bool expireOnce = false, wrongQRAccount = false;
   int qrCode = 81520;
+  int hintFailures = 0;
+  String lanSerial = 'TEST-NAS';
   @override
   set connectionTimeout(Duration? value) {}
   @override
@@ -336,6 +349,64 @@ void main() {
         throwsA(isA<PlatformException>()),
       );
       expect(http.requests.length, count);
+    },
+  );
+  test(
+    'rotated routing hint recovers LAN automatically without clearing saved login',
+    () async {
+      final info = await login();
+      final args = {'namespace': info['namespace'], 'force': true};
+      await nas.invoke('autoConnect', args);
+      expect((await nas.invoke('connectionInfo') as Map)['mode'], 'remote');
+      http.remoteHint = 'fresh-device';
+      http.lanHint = 'fresh-device';
+      final result = await nas.invoke('autoConnect', args) as Map;
+      expect(result['changed'], true);
+      expect(result['currentAddress'], 'http://192.168.8.4:9999');
+      final current = await nas.invoke('connectionInfo') as Map;
+      expect(current['mode'], 'local');
+      expect(current['autoRouteStatus'], contains('局域网直连'));
+      expect(jsonDecode(saved!)['routes']['hint'], 'fresh-device');
+      expect(
+        (await nas.invoke('currentSession') as Map)['namespace'],
+        info['namespace'],
+      );
+    },
+  );
+  test(
+    'temporary routing hint read failure retains working remote login',
+    () async {
+      final info = await login();
+      final args = {'namespace': info['namespace'], 'force': true};
+      await nas.invoke('autoConnect', args);
+      http.hintFailures = 1;
+      final result = await nas.invoke('autoConnect', args) as Map;
+      expect(result['changed'], false);
+      expect(
+        (await nas.invoke('currentSession') as Map)['namespace'],
+        info['namespace'],
+      );
+      expect(jsonDecode(saved!)['routes']['hint'], 'pinned-device');
+    },
+  );
+  test(
+    'matching public hint still requires matching authenticated hardware identity',
+    () async {
+      final info = await login();
+      http.lanHint = http.remoteHint;
+      http.lanSerial = 'OTHER-NAS';
+      await expectLater(
+        nas.invoke('autoConnect', {
+          'namespace': info['namespace'],
+          'force': true,
+        }),
+        throwsA(isA<PlatformException>()),
+      );
+      expect((await nas.invoke('connectionInfo') as Map)['mode'], 'remote');
+      expect(
+        (await nas.invoke('currentSession') as Map)['namespace'],
+        info['namespace'],
+      );
     },
   );
   test('wrong LAN identity never receives session credentials', () async {

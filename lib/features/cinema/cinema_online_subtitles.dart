@@ -1,8 +1,6 @@
-import 'dart:io';
 import 'dart:convert';
 import 'package:dio/dio.dart';
-import 'package:dio/io.dart';
-import 'package:kazumi/services/network/macos_system_proxy.dart';
+import 'package:kazumi/request/core/network_config.dart';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 
@@ -20,15 +18,7 @@ class CinemaOnlineSubtitles {
         },
       ),
     );
-    dio.httpClientAdapter = IOHttpClientAdapter(
-      createHttpClient: () {
-        final client = HttpClient();
-        client.findProxy = Platform.isMacOS
-            ? MacOSSystemProxy.findProxy
-            : HttpClient.findProxyFromEnvironment;
-        return client;
-      },
-    );
+    dio.httpClientAdapter = const NetworkConfig().createAdapter();
     return dio;
   }
 

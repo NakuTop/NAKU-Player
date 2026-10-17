@@ -1,11 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:dio/dio.dart';
-import 'package:dio/io.dart';
+import 'package:kazumi/request/core/network_config.dart';
 import 'package:kazumi/plugins/plugins.dart';
-import 'package:kazumi/services/network/macos_system_proxy.dart';
 
 import 'cinema_models.dart';
 import 'cinema_source_health.dart';
@@ -51,17 +49,7 @@ class CinemaRepository {
         },
       ),
     );
-    dio.httpClientAdapter = IOHttpClientAdapter(
-      createHttpClient: () {
-        final client = HttpClient();
-        if (Platform.isMacOS) {
-          client.findProxy = MacOSSystemProxy.findProxy;
-        } else {
-          client.findProxy = HttpClient.findProxyFromEnvironment;
-        }
-        return client;
-      },
-    );
+    dio.httpClientAdapter = const NetworkConfig().createAdapter();
     return dio;
   }
 
@@ -362,7 +350,7 @@ class CinemaRepository {
       );
       throw CinemaSourceException(
         status == null
-            ? '${source.name}连接失败：${error.type.name}'
+            ? '${source.name}直连或网络回退未成功，请重试或换源（${error.type.name}）'
             : '${source.name}返回 HTTP $status',
       );
     } on FormatException catch (error) {

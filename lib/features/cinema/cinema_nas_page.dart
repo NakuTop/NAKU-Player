@@ -74,6 +74,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   late final _store = widget.store ?? CinemaStore();
   final _address = TextEditingController();
   String _mode = 'remote';
+  String _connectionNote = '';
   String _lanAddress = '', _remoteAddress = '';
   List<String> _lanCandidates = [];
   final _username = TextEditingController(),
@@ -280,6 +281,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
         if (remote is String && remote.isNotEmpty && _remoteAddress.isEmpty) {
           _remoteAddress = remote;
         }
+        _connectionNote = info['autoRouteStatus']?.toString() ?? '';
         final current = info['currentAddress'];
         if (current is String && current.isNotEmpty) {
           _mode = isNASLANAddress(current) ? 'lan' : 'remote';
@@ -520,6 +522,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
             : rows.length < 40;
       });
       _resolveCollectionCounts();
+      await _readConnectionInfo();
     } catch (error) {
       if (!background && mounted && generation == _generation) {
         setState(() => _error = _message(error));
@@ -1074,6 +1077,17 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                 style: const TextStyle(color: CinemaTheme.muted, fontSize: 12),
               ),
               const SizedBox(height: 8),
+              if (_connectionNote.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    _connectionNote,
+                    style: const TextStyle(
+                      color: CinemaTheme.muted,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
               Text(
                 _total > 0 ? '影视中心 · $_total 部资源' : '影视中心已有资源',
                 style: const TextStyle(color: CinemaTheme.muted),

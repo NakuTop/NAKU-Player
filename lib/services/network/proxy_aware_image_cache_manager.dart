@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:http/io_client.dart';
+import 'package:http/http.dart' as http;
+import 'resilient_image_client.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/network/bangumi_ech_image_service.dart';
 import 'package:kazumi/services/network/image_acceleration.dart';
@@ -51,7 +53,10 @@ class ProxyAwareImageCacheManager extends CacheManager with ImageCacheManager {
     return null;
   }
 
-  static IOClient _createHttpClient() {
+  static http.Client _createHttpClient() {
+    if (Platform.isMacOS && _currentProxy() == null) {
+      return ResilientImageClient();
+    }
     final client = HttpClient();
     final proxy = _currentProxy();
     if (proxy != null) {

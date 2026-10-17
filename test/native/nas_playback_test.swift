@@ -59,6 +59,23 @@ final class AutoRouteProtocol: URLProtocol {
         let routeConfig=URLSessionConfiguration.ephemeral
         routeConfig.protocolClasses=[AutoRouteProtocol.self]
         let routeTransport=URLSession(configuration:routeConfig)
+        var reads=0
+        let refreshed=try await NASMovieSession.refreshedRouteHint(cached:"expired-device-hint") {
+            reads += 1
+            return "fixture-device"
+        }
+        expect(reads == 1 && refreshed == "fixture-device","fresh routing hint must replace stale cache")
+        let recovered=await NASMovieSession.selectAutoRoute(lan:["http://192.168.1.10:9999"],remote:["https://fixture.cn21.ug.link"],hint:refreshed,transport:routeTransport)
+        expect(recovered == "http://192.168.1.10:9999","rotated hint must recover LAN without manual refresh")
+        let fallback=try await NASMovieSession.refreshedRouteHint(cached:"fixture-device") {throw NASMovieError.response}
+        expect(fallback == "fixture-device","temporary public endpoint failure preserves usable cache")
+        let empty=try await NASMovieSession.refreshedRouteHint(cached:"fixture-device") {""}
+        expect(empty == "fixture-device","empty discovery cannot erase valid cached hint")
+        do {
+            _ = try await NASMovieSession.refreshedRouteHint(cached:nil) {throw NASMovieError.response}
+            fatalError("missing device hint accepted")
+        } catch NASMovieError.response {}
+        print("PASS rotating routing hint automatically recovers LAN; transient failure, empty result and no hint handled")
         let local=await NASMovieSession.selectAutoRoute(lan:["http://192.168.1.10:9999"],remote:["https://fixture.cn21.ug.link"],hint:"fixture-device",transport:routeTransport)
         expect(local == "http://192.168.1.10:9999","LAN preferred while both paths are online")
         let remote=await NASMovieSession.selectAutoRoute(lan:["http://192.168.1.99:9999"],remote:["https://fixture.cn21.ug.link"],hint:"fixture-device",transport:routeTransport)

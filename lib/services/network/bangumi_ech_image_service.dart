@@ -22,10 +22,16 @@ class BangumiEchImageService extends FileService {
       _proxyForUrl(BangumiEchResolver.endpoint),
     );
     return _current.putIfAbsent(proxies, () {
-      final bootstrap = EchClient(proxy: proxies.$2);
+      final bootstrap = EchClient(
+        proxy: proxies.$2,
+        connectTimeout: const Duration(seconds: 3),
+        timeout: const Duration(seconds: 4),
+      );
       try {
         final images = EchClient(
           proxy: proxies.$1,
+          connectTimeout: const Duration(seconds: 4),
+          timeout: const Duration(seconds: 10),
           resolver: BangumiEchResolver.create(bootstrap),
         );
         final session = _EchSession(bootstrap, images);
