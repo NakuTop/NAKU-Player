@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'personal_defaults.dart';
 import 'dart:io';
 import 'package:hive_ce/hive.dart';
 import 'package:kazumi/services/logging/logger.dart';
@@ -445,7 +446,10 @@ class GStorage {
     SettingKey<T> key, {
     SettingContext context = const SettingContext(),
   }) {
-    final defaultValue = key.resolveDefault(context);
+    final defaultValue = PersonalDefaults.current.value(
+      key.name,
+      key.resolveDefault(context),
+    );
     final storedValue = _setting.get(key.name);
     if (storedValue is T) {
       return storedValue;

@@ -154,7 +154,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   @override
   void initState() {
     super.initState();
-    if (Platform.isAndroid || NakuDevice.isTV) {
+    if (NakuDevice.personalNASAddress.isNotEmpty) {
       _address.text = NakuDevice.personalNASAddress;
       _remoteAddress = NakuDevice.personalNASAddress;
     }
@@ -1284,13 +1284,20 @@ class _NASQRDialog extends StatefulWidget {
 class _NASQRDialogState extends State<_NASQRDialog> {
   Timer? _timer;
   String? _url, _error;
+  late final TextEditingController _target;
   String _status = '正在创建二维码';
+  String _node = '';
   bool _creating = false;
   int _generation = 0;
   @override
   void initState() {
     super.initState();
-    unawaited(_create());
+    _target = TextEditingController(text: widget.address);
+    if (_target.text.trim().isNotEmpty) {
+      unawaited(_create());
+    } else {
+      _status = '首次使用请先填写 NAS 地址或 UGlink 别名，无需输入密码。';
+    }
   }
 
   @override
@@ -1298,11 +1305,16 @@ class _NASQRDialogState extends State<_NASQRDialog> {
     _generation++;
     _timer?.cancel();
     unawaited(widget.client.call('qrCancel').then((_) {}, onError: (_) {}));
+    _target.dispose();
     super.dispose();
   }
 
   Future<void> _create() async {
     if (_creating) return;
+    if (_target.text.trim().isEmpty) {
+      setState(() => _error = '请先填写 NAS 地址或 UGlink 别名。');
+      return;
+    }
     final generation = ++_generation;
     _timer?.cancel();
     setState(() {
@@ -1313,7 +1325,7 @@ class _NASQRDialogState extends State<_NASQRDialog> {
     });
     try {
       final qr = await widget.client.call('qrCreate', {
-        'address': widget.address,
+        'address': _target.text.trim(),
       });
       if (!mounted || generation != _generation) return;
       final url = qr['url']?.toString();
@@ -1322,6 +1334,10 @@ class _NASQRDialogState extends State<_NASQRDialog> {
       }
       setState(() {
         _url = url;
+        final region = '${qr['region'] ?? ''}'.toUpperCase();
+        _node = region == 'CN'
+            ? '扫码节点：中国大陆（按 NAS 所属地区）'
+            : (region.isEmpty ? '' : '扫码节点：$region');
         _status = '请用绿联云 App 扫码，并在手机上确认登录';
       });
       _timer = Timer(const Duration(seconds: 3), () => _poll(generation));
@@ -1379,6 +1395,16 @@ class _NASQRDialogState extends State<_NASQRDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            TextField(
+              controller: _target,
+              enabled: !_creating && _url == null,
+              decoration: const InputDecoration(
+                labelText: 'NAS 地址或 UGlink 别名',
+                hintText: 'https://ug.link/别名 或 192.168.1.10:9999',
+              ),
+              onSubmitted: (_) => _create(),
+            ),
+            const SizedBox(height: 16),
             if (_url != null)
               ColoredBox(
                 color: Colors.white,
@@ -1394,6 +1420,8 @@ class _NASQRDialogState extends State<_NASQRDialog> {
                 child: CircularProgressIndicator(),
               ),
             const SizedBox(height: 20),
+            if (_node.isNotEmpty) Text(_node, textAlign: TextAlign.center),
+            const SizedBox(height: 8),
             Text(_error ?? _status, textAlign: TextAlign.center),
           ],
         ),
@@ -1407,7 +1435,9 @@ class _NASQRDialogState extends State<_NASQRDialog> {
       TextButton(
         autofocus: NakuDevice.isTV,
         onPressed: _creating ? null : _create,
-        child: const Text('刷新二维码'),
+        child: Text(
+          _url == null && _error == null && !_creating ? '生成二维码' : '刷新二维码',
+        ),
       ),
     ],
   );

@@ -164,7 +164,31 @@ actor NASMovieSession {
         guard let o = try JSONSerialization.jsonObject(with:data) as? [String:Any] else { throw NASMovieError.response }
         return o
     }
-    private func resolveOrigin(_ address: String) async throws -> URL {
+    static func connectionInput(_ raw: String) throws -> String {
+        var value=raw.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !value.isEmpty else {throw NASMovieError.configuration}
+        if value.range(of:"^[a-zA-Z0-9-]{1,63}$",options:.regularExpression) != nil {return value}
+        if !value.contains("://") {
+            if value.hasPrefix("ug.link/") || value.range(of:"^[a-zA-Z0-9.-]+\\.ug\\.link/?$",options:.regularExpression) != nil {
+                value="https://"+value
+            } else {
+                guard let url=URL(string:"http://"+value),let host=url.host,isPrivateIPv4(host) else {throw NASMovieError.configuration}
+                value="http://"+value
+            }
+        }
+        guard let parts=URLComponents(string:value),["https","http"].contains(parts.scheme ?? ""),
+              let host=parts.host,!host.isEmpty,parts.user == nil,parts.password == nil,parts.query == nil,parts.fragment == nil,
+              parts.port == nil || (1...65535).contains(parts.port!) else {throw NASMovieError.configuration}
+        if host.lowercased() == "ug.link" {
+            let segments=parts.path.split(separator:"/")
+            guard parts.port == nil,segments.count == 1,
+                  String(segments[0]).range(of:"^[a-zA-Z0-9-]{1,63}$",options:.regularExpression) != nil else {throw NASMovieError.configuration}
+            return String(segments[0])
+        }
+        return try origin(value).absoluteString
+    }
+    private func resolveOrigin(_ rawAddress: String) async throws -> URL {
+        let address=try Self.connectionInput(rawAddress)
         var origin: URL
         if !address.contains("://"), !address.contains("/") {
             guard address.range(of:"^[a-zA-Z0-9-]{1,63}$",options:.regularExpression) != nil else { throw NASMovieError.configuration }
@@ -347,21 +371,26 @@ actor NASMovieSession {
         return info
     }
     func forget() throws { logout(); try credentialStore.forget(); try qrStore.forget() }
-    private func publicDeviceHint(_ target: URL) async throws -> String {
+    private func publicDeviceInfo(_ target: URL) async throws -> [String:Any] {
         let (data,http)=try await send(target.appendingPathComponent("ugreen/v1/verify/sn"))
         let r=try json(data)
-        guard http.statusCode == 200, r["code"] as? Int == 200,
-              let d=r["data"] as? [String:Any], let serial=d["sn"] as? String, !serial.isEmpty else { throw NASMovieError.response }
-        return serial
+        guard http.statusCode == 200,r["code"] as? Int == 200,
+              let d=r["data"] as? [String:Any],let hint=d["sn"] as? String,!hint.isEmpty else {throw NASMovieError.response}
+        return d
+    }
+    private func publicDeviceHint(_ target: URL) async throws -> String {
+        let info=try await publicDeviceInfo(target)
+        return info["sn"] as! String
     }
     func createQR(address: String) async throws -> [String:Any] {
         await cancelQR()
         let attempt=qrGeneration
         let target=try await resolveOrigin(address)
-        let hint=try await publicDeviceHint(target)
+        let device=try await publicDeviceInfo(target)
+        let hint=device["sn"] as! String
         guard attempt == qrGeneration else { throw NASMovieError.expired }
         qrOrigin=target; qrDeviceHint=hint
-        return try await qrBroker.create(alias:"Naku Player",serial:hint)
+        return try await qrBroker.create(alias:"Naku Player",serial:hint,device:device)
     }
     func cancelQR() async { qrGeneration += 1; qrOrigin=nil; qrDeviceHint=""; await qrBroker.cancel() }
     func pollQR(remember: Bool) async throws -> [String:Any] {

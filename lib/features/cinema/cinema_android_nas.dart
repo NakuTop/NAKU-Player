@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'cinema_nas_address.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -25,6 +26,7 @@ class CinemaAndroidNAS {
   String _task = '';
   int _qrGeneration = 0;
   String _qrCode = '', _qrOrigin = '', _qrHint = '';
+  String _qrCloud = 'https://api.ugnas.com/api/';
 
   Uri? _closeURL;
   Map<String, dynamic>? _closeBody;
@@ -187,6 +189,7 @@ class CinemaAndroidNAS {
   }
 
   Future<String> _resolve(String address) async {
+    address = normalizeNASConnectionInput(address);
     if (!address.contains('://') &&
         RegExp(r'^[a-zA-Z0-9-]{1,63}$').hasMatch(address)) {
       final r = _decode(
@@ -350,29 +353,57 @@ class CinemaAndroidNAS {
     _qrCode = '';
     _qrOrigin = '';
     _qrHint = '';
+    _qrCloud = 'https://api.ugnas.com/api/';
     await _secure.invokeMethod<void>('qrClear');
   }
 
-  Future<String> _deviceHint(String origin) async {
+  static String cloudOrigin(Map<String, dynamic> device) {
+    final advertised = '${device['url'] ?? ''}';
+    final fallback = '${device['site_code'] ?? ''}'.toUpperCase() == 'CN'
+        ? 'https://api-zh.ugnas.com'
+        : 'https://api.ugnas.com';
+    final uri = Uri.tryParse(advertised.isEmpty ? fallback : advertised);
+    if (uri == null ||
+        uri.scheme != 'https' ||
+        !RegExp(r'^api(-[a-z]{2,4})?\.ugnas\.com$').hasMatch(uri.host) ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasPort ||
+        uri.hasQuery ||
+        uri.hasFragment ||
+        !['', '/', '/api/'].contains(uri.path)) {
+      throw PlatformException(
+        code: 'nas',
+        message: 'NAS 返回的云节点地址无效，请检查 NAS 地区设置。',
+      );
+    }
+    return 'https://${uri.host}/api/';
+  }
+
+  Future<Map<String, dynamic>> _deviceInfo(String origin) async {
     final r = _decode(
       (await _request(Uri.parse('$origin/ugreen/v1/verify/sn'))).bytes,
     );
     _check(r);
-    final hint = '${_map(r['data'])['sn'] ?? ''}';
-    if (hint.isEmpty) _fail('NAS 未返回设备身份，请检查连接。');
-    return hint;
+    final info = _map(r['data']);
+    if ('${info['sn'] ?? ''}'.isEmpty) _fail('NAS 未返回设备身份，请检查连接。');
+    return info;
   }
+
+  Future<String> _deviceHint(String origin) async =>
+      '${(await _deviceInfo(origin))['sn']}';
 
   Future<Map<String, dynamic>> _createQR(String address) async {
     final attempt = _qrGeneration;
     await _clearQR();
     try {
       final origin = await _resolve(address);
-      final hint = await _deviceHint(origin);
+      final device = await _deviceInfo(origin);
+      final hint = '${device['sn']}';
+      _qrCloud = cloudOrigin(device);
       final publicKey = await _secure.invokeMethod<String>('qrKey');
       final r = _decode(
         (await _request(
-          Uri.parse('https://api.ugnas.com/api/user/v3/sa/create/qrCode'),
+          Uri.parse('${_qrCloud}user/v3/sa/create/qrCode'),
           method: 'POST',
           body: {
             ..._qrIdentity,
@@ -396,7 +427,7 @@ class CinemaAndroidNAS {
       _qrCode = d['qrCode'];
       _qrOrigin = origin;
       _qrHint = hint;
-      return {'url': url.toString()};
+      return {'url': url.toString(), 'region': '${device['site_code'] ?? ''}'};
     } catch (_) {
       await _clearQR();
       rethrow;
@@ -412,7 +443,7 @@ class CinemaAndroidNAS {
         '${fields.entries.map((e) => '--$boundary\r\nContent-Disposition: form-data; name="${e.key}"\r\n\r\n${e.value}\r\n').join()}--$boundary--\r\n';
     final r = _decode(
       (await _request(
-        Uri.parse('https://api.ugnas.com/api/oauth/token'),
+        Uri.parse('${_qrCloud}oauth/token'),
         method: 'POST',
         body: utf8.encode(body),
         headers: {'Content-Type': 'multipart/form-data; boundary=$boundary'},

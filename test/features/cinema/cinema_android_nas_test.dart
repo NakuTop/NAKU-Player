@@ -62,7 +62,9 @@ class _Request implements HttpClientRequest {
     transport.requests.add(this);
     final responseHeaders = _Headers();
     Map<String, dynamic> result = {'code': 200, 'data': <String, dynamic>{}};
-    if (url.path.endsWith('/create/qrCode')) {
+    if (url.path.endsWith('/byAlias')) {
+      result['data'] = {'alias': 'example', 'relayDomain': 'cn21.ug.link'};
+    } else if (url.path.endsWith('/create/qrCode')) {
       result['data'] = {
         'qrCode': 'private-poll-id',
         'url': 'https://example.ugnas.com/scan',
@@ -110,6 +112,8 @@ class _Request implements HttpClientRequest {
         result['code'] = 500;
       }
       result['data'] = {
+        'site_code': 'CN',
+        'url': 'https://api-zh.ugnas.com',
         'sn': url.host == '192.168.8.4'
             ? transport.lanHint
             : transport.remoteHint,
@@ -253,7 +257,7 @@ void main() {
       final qr = await nas.invoke('qrCreate', {
         'address': 'https://example.ug.link',
       });
-      expect(qr, {'url': 'https://example.ugnas.com/scan'});
+      expect(qr, {'url': 'https://example.ugnas.com/scan', 'region': 'CN'});
       final create = http.requests.firstWhere(
         (r) => r.url.path.endsWith('/create/qrCode'),
       );
@@ -281,6 +285,51 @@ void main() {
       );
     },
   );
+  test(
+    'QR creation and polling stay on NAS CN cloud even on an overseas client',
+    () async {
+      final result =
+          await nas.invoke('qrCreate', {'address': 'https://example.ug.link'})
+              as Map;
+      expect(result['region'], 'CN');
+      await nas.invoke('qrPoll');
+      final cloud = http.requests
+          .where(
+            (r) =>
+                r.url.path.endsWith('/create/qrCode') ||
+                r.url.path.endsWith('/oauth/token'),
+          )
+          .toList();
+      expect(cloud, hasLength(2));
+      expect(cloud.every((r) => r.url.host == 'api-zh.ugnas.com'), true);
+      expect(
+        CinemaAndroidNAS.cloudOrigin({'site_code': 'CN'}),
+        'https://api-zh.ugnas.com/api/',
+      );
+      expect(
+        () => CinemaAndroidNAS.cloudOrigin({
+          'url': 'https://api-zh.ugnas.com.evil.example',
+        }),
+        throwsA(isA<PlatformException>()),
+      );
+    },
+  );
+  test('UGlink share resolves before NAS-bound QR creation', () async {
+    final result =
+        await nas.invoke('qrCreate', {'address': 'https://ug.link/example'})
+            as Map;
+    expect(result['url'], startsWith('https://'));
+    expect(http.requests.any((r) => r.url.path.endsWith('/byAlias')), true);
+    expect(
+      http.requests.any(
+        (r) =>
+            r.url.host == 'example.cn21.ug.link' &&
+            r.url.path.endsWith('/verify/sn'),
+      ),
+      true,
+    );
+    expect(http.requests.any((r) => r.url.host == 'ug.link'), false);
+  });
   test(
     'QR rejects mismatched account without persisting and clears temporary key',
     () async {

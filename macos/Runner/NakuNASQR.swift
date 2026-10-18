@@ -44,10 +44,20 @@ actor NASQRBroker {
     private var alias = "Naku Player"
     private var polling = false
     private var consumed = false
-    private let origin = "https://api.ugnas.com/api/"
+    private var origin = "https://api.ugnas.com/api/"
 
-    func create(alias: String, serial: String? = nil) async throws -> [String: Any] {
+    static func cloudOrigin(_ device: [String:Any]) throws -> String {
+        let advertised=device["url"] as? String ?? ""
+        let fallback=(device["site_code"] as? String)?.uppercased() == "CN" ? "https://api-zh.ugnas.com":"https://api.ugnas.com"
+        guard let u=URLComponents(string:advertised.isEmpty ? fallback:advertised),u.scheme == "https",
+              let host=u.host,host.range(of:"^api(-[a-z]{2,4})?\\.ugnas\\.com$",options:.regularExpression) != nil,
+              u.user == nil,u.password == nil,u.port == nil,u.query == nil,u.fragment == nil,
+              ["","/","/api/"].contains(u.path) else {throw NASQRError.invalidResponse}
+        return "https://"+host+"/api/"
+    }
+    func create(alias: String, serial: String? = nil, device: [String:Any] = [:]) async throws -> [String: Any] {
         cancel()
+        origin=try Self.cloudOrigin(device)
         self.alias = alias.isEmpty ? "Naku Player" : String(alias.prefix(128))
         let current = generation
         let key = try makePrivateKey()
@@ -92,7 +102,7 @@ actor NASQRBroker {
         qrCode = identifier
         // The observed API supplies no expiry duration. Server code 8058 governs
         // expiry; do not invent a countdown or expose the poll identifier.
-        return ["url": rawURL, "expiresIn": NSNull()]
+        return ["url": rawURL, "expiresIn": NSNull(), "region":device["site_code"] as? String ?? ""]
     }
 
     func poll() async throws -> NASQRResult {

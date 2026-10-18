@@ -56,6 +56,15 @@ final class AutoRouteProtocol: URLProtocol {
 @main struct NASPlaybackTests {
     static func expect(_ value: Bool,_ name: String) {if !value {fatalError(name)}}
     static func main() async throws {
+        for input in ["example","https://ug.link/example","ug.link/example/","http://ug.link/example"] {
+            expect(try NASMovieSession.connectionInput(input) == "example","share link must resolve alias")
+        }
+        expect(try NASMovieSession.connectionInput("example.cn21.ug.link") == "https://example.cn21.ug.link","remote host without scheme")
+        expect(try NASMovieSession.connectionInput("192.168.1.10:9999") == "http://192.168.1.10:9999","private LAN without scheme")
+        for input in ["","https://ug.link/","https://ug.link/a/b","https://user@ug.link/example","https://ug.link/example?token=secret"] {
+            do {_ = try NASMovieSession.connectionInput(input);fatalError("unsafe input accepted")} catch NASMovieError.configuration {}
+        }
+        print("PASS UGlink shares, bare hosts, LAN input and unsafe address rejection")
         let routeConfig=URLSessionConfiguration.ephemeral
         routeConfig.protocolClasses=[AutoRouteProtocol.self]
         let routeTransport=URLSession(configuration:routeConfig)

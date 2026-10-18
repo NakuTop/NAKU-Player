@@ -131,7 +131,7 @@ class FakeNAS extends CinemaNASClient {
 
 void main() {
   testWidgets(
-    'TV opens QR automatically and has no account password or address form',
+    'TV QR requests target address before creating a bound login code',
     (tester) async {
       NakuDevice.isTV = true;
       addTearDown(() => NakuDevice.isTV = false);
@@ -139,7 +139,10 @@ void main() {
       await tester.pumpWidget(MaterialApp(home: CinemaNASPage(client: client)));
       await tester.pumpAndSettle();
       expect(find.text('扫码登录 NAS'), findsWidgets);
-      expect(find.byType(TextField), findsNothing);
+      expect(client.calls.where((c) => c.$1 == 'qrCreate'), isEmpty);
+      await tester.enterText(find.byType(TextField).last, 'test-nas');
+      await tester.tap(find.text('生成二维码'));
+      await tester.pumpAndSettle();
       expect(client.calls.where((c) => c.$1 == 'qrCreate'), hasLength(1));
       await tester.tap(find.text('取消'));
       await tester.pumpAndSettle();
@@ -534,6 +537,17 @@ void main() {
       await tester.tap(find.text('使用绿联云 App 扫码登录'));
       await tester.pumpAndSettle();
       expect(find.text('扫码登录 NAS'), findsOneWidget);
+      expect(client.calls.where((c) => c.$1 == 'qrCreate'), isEmpty);
+      await tester.enterText(
+        find.byType(TextField).last,
+        'https://ug.link/test-nas',
+      );
+      await tester.tap(find.text('生成二维码'));
+      await tester.pumpAndSettle();
+      expect(
+        client.calls.lastWhere((c) => c.$1 == 'qrCreate').$2?['address'],
+        'https://ug.link/test-nas',
+      );
       await tester.pump(const Duration(seconds: 3));
       await tester.pump();
       expect(find.text('已扫码，请在手机上确认'), findsOneWidget);

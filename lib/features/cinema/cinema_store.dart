@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:kazumi/services/storage/personal_defaults.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -48,7 +49,14 @@ class CinemaStore extends ChangeNotifier {
     List<CinemaSource>? defaults,
     List<CinemaSourcePack>? sourcePacks,
   }) : _file = file,
-       _defaults = List.unmodifiable(defaults ?? bundledCinemaSources),
+       _defaults = List.unmodifiable(
+         defaults ??
+             (PersonalDefaults.current.sources.isEmpty
+                 ? bundledCinemaSources
+                 : PersonalDefaults.current.sources
+                       .map(CinemaSource.fromJson)
+                       .toList()),
+       ),
        _sourcePacks = List.unmodifiable(
          sourcePacks ??
              (defaults == null ? bundledCinemaSourcePacks : const []),
@@ -212,6 +220,7 @@ class CinemaStore extends ChangeNotifier {
           _historyDocuments[item.title.key] = map;
         }
       } else {
+        _libraryExtras.addAll(PersonalDefaults.current.cinema);
         for (final source in _defaults) {
           source.validate();
         }

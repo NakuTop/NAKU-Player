@@ -24,6 +24,12 @@ final class QRFixtureProtocol: URLProtocol {
 @main struct QRAdoptionTests {
     static func expect(_ value: Bool, _ name: String) { if !value {fatalError(name)} }
     static func main() async throws {
+        expect(try NASQRBroker.cloudOrigin(["site_code":"CN","url":"https://api-zh.ugnas.com"]) == "https://api-zh.ugnas.com/api/","NAS CN node must override client geolocation")
+        expect(try NASQRBroker.cloudOrigin(["site_code":"CN"]) == "https://api-zh.ugnas.com/api/","CN fallback is region-specific")
+        for url in ["http://api-zh.ugnas.com","https://api-zh.ugnas.com.evil.example","https://user@api-zh.ugnas.com","https://api-zh.ugnas.com?token=x"] {
+            do {_ = try NASQRBroker.cloudOrigin(["url":url]);fatalError("untrusted cloud endpoint accepted")} catch NASQRError.invalidResponse {}
+        }
+        print("PASS NAS-region QR endpoint selection and untrusted endpoint rejection")
         let attributes:[String:Any]=[kSecAttrKeyType as String:kSecAttrKeyTypeRSA,kSecAttrKeySizeInBits as String:2048]
         let key=SecKeyCreateRandomKey(attributes as CFDictionary,nil)!
         let publicKey=SecKeyCopyPublicKey(key)!
