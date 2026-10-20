@@ -1,4 +1,5 @@
 import 'package:kazumi/features/cinema/naku_update_service.dart';
+import 'package:kazumi/services/platform/desktop_fullscreen.dart';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:io';
@@ -421,12 +422,16 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
     _videoWindowChanging = true;
     try {
       if (enter) {
-        if (await windowManager.isFullScreen()) {
-          await windowManager.setFullScreen(false);
-          for (var i = 0; i < 30 && await windowManager.isFullScreen(); i++) {
+        if (await DesktopFullscreen.isFullScreen()) {
+          await DesktopFullscreen.setFullScreen(false);
+          for (
+            var i = 0;
+            i < 30 && await DesktopFullscreen.isFullScreen();
+            i++
+          ) {
             await Future<void>.delayed(const Duration(milliseconds: 100));
           }
-          if (await windowManager.isFullScreen()) {
+          if (await DesktopFullscreen.isFullScreen()) {
             throw StateError('Fullscreen transition pending');
           }
         }

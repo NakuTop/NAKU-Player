@@ -1,6 +1,7 @@
 import 'package:kazumi/services/platform/naku_device.dart';
 import 'dart:async';
 import 'dart:ui';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'cinema_appearance.dart';
@@ -12,9 +13,12 @@ abstract final class CinemaTheme {
   static Color get background => backgroundFor(CinemaAppearance.instance);
   static Color get surface => surfaceFor(CinemaAppearance.instance);
   static Color get raised => raisedFor(CinemaAppearance.instance);
-  static Color backgroundFor(CinemaAppearance appearance) => const Color(
-    0xFF09090B,
-  ).withValues(alpha: appearance.effectiveBackgroundOpacity);
+  static Color backgroundFor(CinemaAppearance appearance) =>
+      const Color(0xFF09090B).withValues(
+        alpha: defaultTargetPlatform == TargetPlatform.windows
+            ? 1
+            : appearance.effectiveBackgroundOpacity,
+      );
   static Color surfaceFor(CinemaAppearance appearance) =>
       const Color(0xFF1B1B1F).withValues(
         alpha: _panelAlpha(appearance.effectiveBackgroundOpacity, .38, .56),
@@ -215,7 +219,11 @@ class CinemaGlass extends StatelessWidget {
       );
       return ClipRRect(
         borderRadius: BorderRadius.circular(radius),
-        child: blur && opacity < .999 && !appearance.reduceTransparency
+        child:
+            blur &&
+                Theme.of(context).platform != TargetPlatform.windows &&
+                opacity < .999 &&
+                !appearance.reduceTransparency
             ? BackdropFilter(
                 filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
                 child: content,

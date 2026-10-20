@@ -1779,7 +1779,10 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                     DragToMoveArea(
                       child: Container(
                         height: 40,
-                        padding: const EdgeInsets.only(left: 96, right: 24),
+                        padding: EdgeInsets.only(
+                          left: Platform.isMacOS ? 96 : 24,
+                          right: 24,
+                        ),
                         child: Row(
                           children: [
                             Text(
@@ -1984,7 +1987,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           ),
         const SizedBox(height: 28),
         for (final section in _Section.values.where(
-          (s) => !(Platform.isAndroid || NakuDevice.isTV) || s != _Section.anime,
+          (s) =>
+              !(Platform.isAndroid || NakuDevice.isTV) || s != _Section.anime,
         )) ...[
           if (section == _Section.favorites)
             const Padding(

@@ -15,15 +15,16 @@
 
 class FullscreenUtils {
  public:
-  static void EnterNativeFullscreen(HWND window);
+  static bool EnterNativeFullscreen(HWND window);
 
-  static void ExitNativeFullscreen(HWND window);
+  static bool ExitNativeFullscreen(HWND window);
+  static bool IsFullscreen(HWND window);
 
  private:
-  static constexpr auto kFlutterViewWindowClassName = L"FLUTTERVIEW";
-
   static bool fullscreen_;
-  static RECT rect_before_fullscreen_;
+  static HWND window_;
+  static LONG_PTR style_, ex_style_;
+  static WINDOWPLACEMENT placement_;
 };
 
 #endif  // FULLSCREEN_UTILS_H_

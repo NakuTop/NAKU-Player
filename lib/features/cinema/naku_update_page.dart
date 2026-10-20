@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'naku_android_update_page.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'naku_update_service.dart';
 import 'cinema_theme.dart';
@@ -17,6 +18,9 @@ class NakuUpdatePage extends StatefulWidget {
 }
 
 class _NakuUpdatePageState extends State<NakuUpdatePage> {
+  bool get _windows =>
+      defaultTargetPlatform == TargetPlatform.windows &&
+      !(widget.android ?? Platform.isAndroid);
   Map<String, dynamic>? _state;
   String? _error;
   bool _busy = false;
@@ -25,7 +29,7 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
   @override
   void initState() {
     super.initState();
-    if (widget.android ?? Platform.isAndroid) return;
+    if ((widget.android ?? Platform.isAndroid) || _windows) return;
     _read();
     _refresh = Timer.periodic(const Duration(seconds: 2), (_) => _read());
   }
@@ -76,7 +80,37 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
   }
 
   @override
-  Widget build(BuildContext context) => (widget.android ?? Platform.isAndroid)
+  Widget build(BuildContext context) => _windows
+      ? Theme(
+          data: CinemaTheme.of(context),
+          child: Scaffold(
+            appBar: AppBar(title: const Text('软件更新')),
+            body: Padding(
+              padding: const EdgeInsets.all(28),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'NAKU播放器 · Windows',
+                    style: TextStyle(fontSize: 25),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text('Windows 使用安装包手动更新，升级保留片源、收藏和观看记录。'),
+                  const SizedBox(height: 20),
+                  FilledButton.icon(
+                    onPressed: () => launchUrl(
+                      Uri.parse('${NakuUpdateService.repositoryUrl}/releases'),
+                      mode: LaunchMode.externalApplication,
+                    ),
+                    icon: const Icon(Icons.open_in_new),
+                    label: const Text('查看发布页'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        )
+      : (widget.android ?? Platform.isAndroid)
       ? NakuAndroidUpdatePage(check: widget.androidCheck)
       : Theme(
           data: CinemaTheme.of(context),
@@ -147,8 +181,9 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
                               try {
                                 await NakuUpdateService.check();
                               } catch (error) {
-                                if (mounted)
+                                if (mounted) {
                                   setState(() => _error = '无法检查更新：$error');
+                                }
                               }
                             },
                       icon: const Icon(Icons.system_update_alt),

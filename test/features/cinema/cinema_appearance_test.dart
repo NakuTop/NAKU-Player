@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_appearance.dart';
@@ -10,6 +11,28 @@ import 'package:kazumi/features/cinema/cinema_theme.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  testWidgets('Windows uses opaque base and skips live backdrop filtering', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    final settings = _MemoryAppearance();
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) =>
+              CinemaAppearanceScope(appearance: settings, child: child!),
+          home: const _Probe(),
+        ),
+      );
+      expect(CinemaTheme.backgroundFor(settings).a, 1);
+      expect(find.byType(BackdropFilter), findsNothing);
+      expect(find.text('foreground'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+      settings.dispose();
+    }
+  });
 
   test(
     'rapid edits and concurrent flush keep the latest preference across restart',

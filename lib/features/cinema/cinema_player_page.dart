@@ -1,4 +1,5 @@
 import 'package:kazumi/services/platform/naku_device.dart';
+import 'package:kazumi/services/platform/desktop_fullscreen.dart';
 import 'cinema_lan_cast.dart';
 import 'package:kazumi/features/cinema/naku_update_service.dart';
 import 'package:kazumi/services/video_source/video_source_format.dart';
@@ -332,6 +333,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   bool _pip = false, _pipChanging = false;
   Completer<void>? _pipTransition;
   bool _fullscreen = false, _fullscreenChanging = false;
+  // Keep the existing native video output alive across fullscreen/PiP layouts.
+  final _videoSurfaceKey = GlobalKey(debugLabel: 'cinema-video-surface');
   bool _tvControlsVisible = true;
   bool _androidPip = false;
   Timer? _tvControlsTimer;
@@ -397,19 +400,24 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       if (mounted) setState(() => _fullscreen = next);
       return;
     }
-    if (await windowManager.isFullScreen() == next) {
+    if (await DesktopFullscreen.isFullScreen() == next) {
+      if (mounted && !_closing) setState(() => _fullscreen = next);
+      return;
+    }
+    if (!Platform.isMacOS) {
+      await DesktopFullscreen.setFullScreen(next);
       if (mounted && !_closing) setState(() => _fullscreen = next);
       return;
     }
     final transition = Completer<void>();
     _fullscreenTransition = transition;
-    await windowManager.setFullScreen(next);
+    await DesktopFullscreen.setFullScreen(next);
     // AppKit returns from toggleFullScreen before its window animation ends.
     // Wait for the actual transition before PiP reads or changes window bounds.
     try {
       await transition.future.timeout(const Duration(seconds: 5));
     } on TimeoutException {
-      if (await windowManager.isFullScreen() != next) rethrow;
+      if (await DesktopFullscreen.isFullScreen() != next) rethrow;
     } finally {
       if (identical(_fullscreenTransition, transition)) {
         _fullscreenTransition = null;
@@ -544,7 +552,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _pipTransition = transition;
     try {
       if (!_pip) {
-        if (await windowManager.isFullScreen()) {
+        if (await DesktopFullscreen.isFullScreen()) {
           await _setFullscreen(false);
         }
         _windowBounds = await windowManager.getBounds();
@@ -698,7 +706,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     if (!Platform.isAndroid && !Platform.isIOS) windowManager.addListener(this);
     if (!Platform.isAndroid && !Platform.isIOS) {
       unawaited(
-        windowManager.isFullScreen().then((value) {
+        DesktopFullscreen.isFullScreen().then((value) {
           if (mounted && !_closing) setState(() => _fullscreen = value);
         }),
       );
@@ -2600,6 +2608,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   );
 
   Widget _videoSurface() => LayoutBuilder(
+    key: _videoSurfaceKey,
     builder: (context, constraints) {
       final wide = constraints.maxWidth >= 850;
       final mobile =

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/naku_update_page.dart';
@@ -68,6 +69,22 @@ void main() {
     expect(find.textContaining('更新源最新：2.0.3（25）'), findsOneWidget);
     expect(find.textContaining('新构建发布到更新源后才能自动升级'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Windows update page never polls the macOS Sparkle bridge', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    try {
+      await tester.pumpWidget(const MaterialApp(home: NakuUpdatePage()));
+      await tester.pump(const Duration(seconds: 6));
+      expect(find.text('NAKU播放器 · Windows'), findsOneWidget);
+      expect(find.text('自动下载和安装'), findsNothing);
+      expect(calls, isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 
   testWidgets('automatic download enables checks in the same native request', (

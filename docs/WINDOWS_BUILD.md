@@ -2,7 +2,8 @@
 
 This local Windows port is based on NakuTop/NAKU-Player main at
 `b182453de114c97ba853a46d2fdd59daf2f482ff`. The Windows revision is
-2.8.4+51; its installer version is 2.8.4.51.
+2.8.4+52; its installer version is 2.8.4.52. Revision 52 passed user acceptance
+on Windows on 2026-10-20.
 
 Requirements: Windows x64, Flutter 3.47.6 / Dart 3.13.5, Visual Studio 2022 C++
 Build Tools with recommended desktop C++ components and Windows SDK, Developer
@@ -34,6 +35,20 @@ Windows always uses its native caption buttons, regardless of a saved preference
 to hide the title bar. Caption hit tests and mouse events are handled by Win32
 before Flutter plugin delegates. The default merged UI/platform thread is used.
 WM_CLOSE still reaches the existing confirmation and tray/quit preference.
+
+Revision 52 routes cinema, NAS and anime fullscreen through the same Win32
+interface. It removes the entire non-client frame, fills rcMonitor (rather than
+the taskbar-excluding work area), and restores WINDOWPLACEMENT and window styles.
+Windows completes synchronously and never waits for AppKit animation events.
+The video widget subtree is retained across window/fullscreen/PiP layout changes.
+The Windows theme uses an opaque base and gradient panels without live backdrop
+filters; its update page does not poll the macOS Sparkle bridge.
+
+Revision 52 checks: 41 focused playback/appearance/update tests passed. Native
+crypto and fullscreen tests passed. Ten native fullscreen enter/exit cycles took
+106 ms in the isolated test window; this is not a video-frame-rate benchmark.
+The user completed manual acceptance and confirmed that fullscreen works
+correctly and playback/window transitions are smooth.
 
 ## Validation
 

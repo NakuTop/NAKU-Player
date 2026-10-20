@@ -6,6 +6,8 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:kazumi/services/platform/desktop_fullscreen.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -1009,11 +1011,61 @@ void main() {
         {'autoPlay': true, 'privateMode': false},
         offlinePaths: {'https://fixture.invalid/1.mp4': local.path},
       );
-      expect(backends.single.opened!.uri, local.path);
+      expect(
+        backends.single.opened!.uri.replaceAll('\\', '/'),
+        local.path.replaceAll('\\', '/'),
+      );
       expect(backends.single.state.position.inSeconds, 42);
       expect(find.text('离线播放'), findsOneWidget);
       await unmount(tester);
       expect(store.historyFor(_title)!.title.key, _title.key);
+    },
+  );
+
+  testWidgets(
+    'Windows fullscreen toggles immediately without AppKit events or reload',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      addTearDown(() {
+        debugDefaultTargetPlatformOverride = null;
+        messenger.setMockMethodCallHandler(DesktopFullscreen.channel, null);
+      });
+      var full = false;
+      final transitions = <bool>[];
+      messenger.setMockMethodCallHandler(DesktopFullscreen.channel, (
+        call,
+      ) async {
+        if (call.method == 'isFullscreen') return full;
+        if (call.method == 'setFullscreen') {
+          full = (call.arguments as Map)['isFullScreen'] as bool;
+          transitions.add(full);
+          return null; // No window_manager enter/leave animation events on Win32.
+        }
+        throw StateError('Unexpected native call');
+      });
+      await mount(tester, {'autoPlay': true});
+      final player = backends.single;
+      final originalSurface = tester.element(find.text('fake video'));
+      await player.seek(const Duration(seconds: 90));
+      for (var i = 0; i < 4; i++) {
+        final surface = tester.getCenter(find.byType(CinemaVideoGestures));
+        await tester.tapAt(surface);
+        await tester.pump(const Duration(milliseconds: 80));
+        await tester.tapAt(surface);
+        await tester.pump(const Duration(milliseconds: 250));
+        expect(transitions.length, i + 1);
+        expect(player.state.playing, isTrue);
+        expect(player.state.position.inSeconds, 90);
+        expect(player.pauses, 0);
+        expect(backends.length, 1);
+        expect(
+          identical(tester.element(find.text('fake video')), originalSurface),
+          isTrue,
+        );
+      }
+      expect(transitions, [true, false, true, false]);
+      await unmount(tester);
+      debugDefaultTargetPlatformOverride = null;
     },
   );
 

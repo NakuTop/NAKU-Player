@@ -118,12 +118,26 @@ void FlutterWindow::RegisterIntentChannel() {
           &flutter::StandardMethodCodec::GetInstance());
 
   window_channel->SetMethodCallHandler([this](const auto& call, auto result) {
-    if (call.method_name().compare("enterFullscreen") == 0) {
-      FullscreenUtils::EnterNativeFullscreen(GetHandle());
-      result->Success();
-    } else if (call.method_name().compare("exitFullscreen") == 0) {
-      FullscreenUtils::ExitNativeFullscreen(GetHandle());
-      result->Success();
+    if (call.method_name() == "isFullscreen") {
+      result->Success(flutter::EncodableValue(FullscreenUtils::IsFullscreen(GetHandle())));
+    } else if (call.method_name() == "setFullscreen" ||
+               call.method_name() == "enterFullscreen" ||
+               call.method_name() == "exitFullscreen") {
+      bool enter = call.method_name() == "enterFullscreen";
+      if (call.method_name() == "setFullscreen") {
+        const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
+        if (!args) { result->Error("fullscreen", "Missing fullscreen state"); return; }
+        const auto value = args->find(flutter::EncodableValue("isFullScreen"));
+        if (value == args->end() || !std::holds_alternative<bool>(value->second)) {
+          result->Error("fullscreen", "Missing fullscreen state");
+          return;
+        }
+        enter = std::get<bool>(value->second);
+      }
+      const bool okay = enter ? FullscreenUtils::EnterNativeFullscreen(GetHandle())
+                              : FullscreenUtils::ExitNativeFullscreen(GetHandle());
+      if (okay) result->Success();
+      else result->Error("fullscreen", "Windows fullscreen transition failed");
     } else if (call.method_name().compare("openWithMime") == 0) {
       const auto* arguments = std::get_if<flutter::EncodableMap>(call.arguments());
       if (arguments) {
