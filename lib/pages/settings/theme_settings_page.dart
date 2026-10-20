@@ -73,9 +73,11 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
               SettingsTile.switchTile(
                 leading: Icons.web_asset_rounded,
                 title: Text(Platform.isMacOS ? '显示系统窗口按钮' : '使用系统标题栏'),
-                description: const Text('重启应用生效'),
-                enabled: !_saving,
-                initialValue: _windowButtons,
+                description: Text(
+                  Platform.isWindows ? 'Windows 始终显示最小化、最大化和关闭按钮' : '重启应用生效',
+                ),
+                enabled: !_saving && !Platform.isWindows,
+                initialValue: Platform.isWindows || _windowButtons,
                 onToggle: (value) => _save(
                   SettingsKeys.showWindowButton,
                   value ?? !_windowButtons,

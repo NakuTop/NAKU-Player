@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_android_nas.dart';
+import 'package:kazumi/features/cinema/cinema_nas_media.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
 
 class _Headers implements HttpHeaders {
   final values = <String, String>{};
@@ -251,6 +253,28 @@ void main() {
             'password': 'pass',
           })
           as Map;
+  test(
+    'Windows NAS client uses shared protocol and native secure bridge',
+    () async {
+      expect(NakuDevice.hasNAS, isTrue);
+      final session = await HttpOverrides.runZoned(
+        () => CinemaNASClient().call('login', {
+          'address': 'https://example.ug.link',
+          'username': 'alice',
+          'password': 'pass',
+        }),
+        createHttpClient: (_) => http,
+      );
+      expect(session['username'], 'alice');
+      expect(session['namespace'], isNotEmpty);
+      expect(jsonDecode(saved!)['username'], 'alice');
+      expect(
+        http.requests.any((r) => r.url.path.endsWith('/verify/login')),
+        isTrue,
+      );
+    },
+    skip: !Platform.isWindows,
+  );
   test(
     'QR waiting scanned authorization persists verified session and restores without password',
     () async {

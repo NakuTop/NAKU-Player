@@ -25,7 +25,7 @@ constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
 bool ActivateExistingWindow()
 {
   // Find the existing window by class name
-  HWND hwnd = ::FindWindow(kWindowClassName, L"kazumi");
+  HWND hwnd = ::FindWindow(kWindowClassName, L"NAKU播放器");
   if (hwnd != NULL)
   {
     // Check if window is hidden (e.g., minimized to tray)
@@ -63,7 +63,7 @@ bool isSingleInstance()
   {
     return true;
   }
-  std::wstring mutex_str = L"kazumi.win.mutex";
+  std::wstring mutex_str = L"naku.player.win.mutex";
   mutex = ::CreateMutex(NULL, TRUE, mutex_str.c_str());
   if (mutex == NULL || GetLastError() == ERROR_ALREADY_EXISTS)
   {
@@ -98,9 +98,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   flutter::DartProject project(L"data");
 
-  // Disable thread merge to improve performance
-  // Attention: This may impact plugin performance and may be incompatible with future Flutter releases.
-  project.set_ui_thread_policy(flutter::UIThreadPolicy::RunOnSeparateThread);
+  // Use Flutter's current default merged UI/platform thread. Window-manager
+  // callbacks and Win32 caption clicks must share the supported event loop.
 
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();
@@ -110,7 +109,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
-  if (!window.Create(L"kazumi", origin, size))
+  if (!window.Create(L"NAKU播放器", origin, size))
   {
     if (mutex) {
       CloseHandle(mutex);

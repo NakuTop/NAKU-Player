@@ -23,10 +23,11 @@ resolveCinemaMedia({
   required CinemaRoute route,
   required CinemaEpisode episode,
   required Future<VideoSource> Function(String url, bool legacy) resolve,
+  CinemaNASClient? nasClient,
 }) async {
   if (source.id == cinemaNASSource.id) {
     return (
-      url: await CinemaNASClient().resolveReference(episode.url),
+      url: await (nasClient ?? CinemaNASClient()).resolveReference(episode.url),
       headers: <String, String>{},
       format: VideoSourceFormat.auto,
     );

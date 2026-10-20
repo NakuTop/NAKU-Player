@@ -100,6 +100,12 @@ void main() async {
       title: 'NAKU播放器',
     );
     windowManager.waitUntilReadyToShow(windowOptions, () async {
+      if (Platform.isWindows) {
+        await windowManager.setResizable(true);
+        await windowManager.setMinimizable(true);
+        await windowManager.setMaximizable(true);
+        await windowManager.setClosable(true);
+      }
       // window_manager controls desktop visibility to avoid startup flicker.
       await windowManager.show();
       await windowManager.focus();

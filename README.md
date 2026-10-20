@@ -1,6 +1,6 @@
 # NAKU播放器
 
-macOS 电影、剧集与动漫播放器。基于 [Kazumi](https://github.com/Predidit/Kazumi) 2.3.8 修改，保留 GPL-3.0 许可证。
+电影、剧集与动漫播放器，提供 macOS、Android 及 Windows 构建。基于 [Kazumi](https://github.com/Predidit/Kazumi) 2.3.8 修改，保留 GPL-3.0 许可证。
 
 [下载最新版本](https://github.com/NakuTop/NAKU-Player/releases/latest) · [更新记录](CHANGELOG.md) · [构建与发布](docs/RELEASING.md) · [双人一起看](docs/WATCH_TOGETHER.md) · [2.0 使用说明](docs/NAKU_2_0.md)
 
@@ -40,6 +40,14 @@ macOS 电影、剧集与动漫播放器。基于 [Kazumi](https://github.com/Pre
 - 一起看新增缓冲协调、独立版本时间偏移、作品邀请链接和二维码；动漫使用 Bangumi 编号和原有动漫规则接入同一个房间。
 
 ## 安装
+
+### Windows
+
+Windows x64 安装包由 `scripts/build_windows_installer.ps1` 生成，包含播放器和 C++ 运行库，默认安装到当前用户的本地 Programs 目录。Windows 2.8.4（51）支持 NAS 账号 / 扫码登录、会话恢复及影视库，凭据由 Windows DPAPI 加密保存；原生最小化、最大化 / 还原和关闭按钮始终显示。用户已在 Windows 11 实际验收 NAS 登录和窗口按钮。
+
+构建环境、测试命令及平台差异见 [Windows 构建说明](docs/WINDOWS_BUILD.md)。此构建未做商业代码签名；macOS Sparkle 更新与 AppKit 磨砂不适用于 Windows，当前网页影院的内嵌网页组件尚未提供 Windows 实现。
+
+### macOS
 
 macOS 12 或更新版本，通用安装包支持 Apple Silicon / Intel。解压发布页的 ZIP，将 **NAKU播放器.app** 拖入“应用程序”替换旧版。
 

@@ -2,8 +2,10 @@
 #include "fullscreen_utils.h"
 #include "external_player_utils.h"
 #include "shortcut_utils.h"
+#include "naku_secure_bridge.h"
 
 #include <optional>
+#include <stdexcept>
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
 #include <flutter/plugin_registrar_windows.h>
@@ -53,6 +55,7 @@ bool FlutterWindow::OnCreate() {
 
   // Register Shortcut MethodChannel
   RegisterShortcutChannel();
+  RegisterSecureChannel();
 
   return true;
 }
@@ -69,6 +72,25 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // Let Windows hit-test and operate its real caption controls before plugin
+  // delegates see them. This preserves DPI-aware button bounds and keeps the
+  // Flutter drag area from consuming native minimize/maximize/close clicks.
+  // WM_CLOSE still reaches window_manager below, including its exit dialog.
+  const bool native_caption =
+      (::GetWindowLongPtr(hwnd, GWL_STYLE) & WS_CAPTION) == WS_CAPTION;
+  const auto caption_hit = [](LRESULT hit) {
+    return hit == HTCAPTION || hit == HTSYSMENU || hit == HTMINBUTTON ||
+           hit == HTMAXBUTTON || hit == HTCLOSE;
+  };
+  if (native_caption && message == WM_NCHITTEST) {
+    const LRESULT hit = ::DefWindowProc(hwnd, message, wparam, lparam);
+    if (caption_hit(hit)) return hit;
+  }
+  if (native_caption &&
+      (message == WM_NCLBUTTONDOWN || message == WM_NCLBUTTONUP ||
+       message == WM_NCLBUTTONDBLCLK) && caption_hit(static_cast<LRESULT>(wparam))) {
+    return ::DefWindowProc(hwnd, message, wparam, lparam);
+  }
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =
@@ -168,11 +190,56 @@ void FlutterWindow::RegisterShortcutChannel() {
       return;
     }
 
-    bool success = ShortcutUtils::CreateDesktopShortcut(L"Kazumi", L"Kazumi - Anime Player");
+    bool success = ShortcutUtils::CreateDesktopShortcut(L"NAKU Player", L"NAKU Player");
     if (success) {
       result->Success(flutter::EncodableValue(true));
     } else {
       result->Error("Failed", "Failed to create desktop shortcut");
+    }
+  });
+}
+
+void FlutterWindow::RegisterSecureChannel() {
+  auto bridge = std::make_shared<NakuSecureBridge>();
+  auto channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+      flutter_controller_->engine()->messenger(), "naku/secure",
+      &flutter::StandardMethodCodec::GetInstance());
+  channel->SetMethodCallHandler([bridge](const auto& call, auto result) {
+    try {
+      const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
+      const auto text = [args](const char* name) -> std::string {
+        if (!args) throw std::runtime_error("Missing NAS argument");
+        const auto entry = args->find(flutter::EncodableValue(name));
+        if (entry == args->end() || !std::holds_alternative<std::string>(entry->second))
+          throw std::runtime_error("Invalid NAS argument");
+        return std::get<std::string>(entry->second);
+      };
+      const auto& method = call.method_name();
+      if (method == "read") {
+        const auto value = bridge->Read();
+        result->Success(value ? flutter::EncodableValue(*value) : flutter::EncodableValue());
+      } else if (method == "write") {
+        bridge->Write(text("value"));
+        result->Success();
+      } else if (method == "delete") {
+        bridge->Delete();
+        result->Success();
+      } else if (method == "rsa") {
+        result->Success(flutter::EncodableValue(NakuSecureBridge::Rsa(text("text"), text("key"))));
+      } else if (method == "seal") {
+        result->Success(flutter::EncodableValue(NakuSecureBridge::Seal(text("text"), text("key"))));
+      } else if (method == "open") {
+        result->Success(flutter::EncodableValue(NakuSecureBridge::Open(text("text"), text("key"))));
+      } else if (method == "qrKey") {
+        result->Success(flutter::EncodableValue(bridge->QrKey()));
+      } else if (method == "qrDecrypt") {
+        result->Success(flutter::EncodableValue(bridge->QrDecrypt(text("text"))));
+      } else if (method == "qrClear") {
+        bridge->QrClear();
+        result->Success();
+      } else result->NotImplemented();
+    } catch (const std::exception&) {
+      result->Error("secure", "无法读取本机加密凭据或处理 NAS 加密数据，请重新登录。");
     }
   });
 }

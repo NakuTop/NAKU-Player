@@ -6,8 +6,9 @@ import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 
-/// Android implementation of the existing NAS channel contract. Credentials
-/// remain encrypted by Android Keystore; persisted media use stable NAS IDs.
+/// Shared Android/Windows implementation of the existing NAS channel contract.
+/// Native secure bridges use Android Keystore or Windows current-user DPAPI.
+/// Persisted media use stable NAS IDs, never session-bearing URLs.
 class CinemaAndroidNAS {
   static final instance = CinemaAndroidNAS();
   static const _secure = MethodChannel('naku/secure');
@@ -20,7 +21,8 @@ class CinemaAndroidNAS {
   bool _ugk = false, _discovered = false;
   DateTime _lastProbe = DateTime(2000);
   String _autoRouteStatus = '';
-  final String _clientID = '${DateTime.now().microsecondsSinceEpoch}Android';
+  final String _clientID =
+      '${DateTime.now().microsecondsSinceEpoch}${Platform.isWindows ? 'Windows' : 'Android'}';
   WebSocket? _socket;
   Timer? _heartbeat;
   String _task = '';
@@ -102,7 +104,7 @@ class CinemaAndroidNAS {
       (await _secure.invokeMethod<String>(method, {'text': text, 'key': key}))!;
   Map<String, String> get _headers => {
     'UG-Agent': 'PC/WEB',
-    'User-Feature': 'Android',
+    'User-Feature': Platform.isWindows ? 'Windows' : 'Android',
     'UG-Client-Id': _clientID,
     'Client-Id': _clientID,
     'Client-Version-Str': '1.20.0',
@@ -343,7 +345,7 @@ class CinemaAndroidNAS {
   Map<String, String> get _qrIdentity => {
     'platform': 'Mac',
     'clientType': 'Mac',
-    'model': 'Android',
+    'model': Platform.isWindows ? 'Windows' : 'Android',
     'osVer': Platform.operatingSystemVersion,
     'bid': _clientID,
     'alias': 'Naku Player',

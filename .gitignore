@@ -63,6 +63,11 @@ android/build/reports/problems/
 *.p8
 *.pem
 *.key
+!/third_party/ech_http/src/cacert.pem
+!/third_party/ech_http/test/fixtures/localhost-cert.pem
+!/third_party/ech_http/test/fixtures/localhost-key.pem
+*.dpapi
+*.dpapi.tmp
 .env
 .env.*
 

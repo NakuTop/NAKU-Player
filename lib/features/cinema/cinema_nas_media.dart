@@ -84,10 +84,16 @@ Map<String, String> parseNASMediaReference(String value) {
 
 /// Persist stable identities only. Session-bearing URLs are resolved in memory.
 class CinemaNASClient {
+  CinemaNASClient({
+    Future<dynamic> Function(String, Map<String, dynamic>?)? invoke,
+  }) : _transport = invoke;
+  final Future<dynamic> Function(String, Map<String, dynamic>?)? _transport;
   static const channel = MethodChannel('naku/nas-movies');
   String namespace = '';
   Future<dynamic> _invoke(String method, [Map<String, dynamic>? args]) =>
-      Platform.isAndroid
+      _transport != null
+      ? _transport(method, args)
+      : (Platform.isAndroid || Platform.isWindows)
       ? CinemaAndroidNAS.instance.invoke(method, args)
       : channel.invokeMethod<dynamic>(method, args);
   Future<Map<String, dynamic>> call(

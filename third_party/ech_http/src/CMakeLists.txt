@@ -1,0 +1,43 @@
+cmake_minimum_required(VERSION 3.22)
+project(ech_http LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+if(NOT DEFINED EH_DEPS_ROOT)
+  message(FATAL_ERROR "Use the Dart build hook to supply the verified dependency SDK")
+endif()
+include("${EH_DEPS_ROOT}/cmake/EchHttpDeps.cmake")
+if(NOT EXISTS "${EH_DART_INCLUDE}/dart_native_api.h")
+  message(FATAL_ERROR "Use the Dart build hook to supply EH_DART_INCLUDE from the active Dart SDK")
+endif()
+
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/cacert.pem" EH_CA_PEM)
+# Keep each raw literal below MSVC's literal size limit. Certificate bytes,
+# including newlines between certificates, are preserved.
+string(REPLACE "-----END CERTIFICATE-----"
+  "-----END CERTIFICATE-----)ECH_CA_BUNDLE\";\n    roots += R\"ECH_CA_BUNDLE("
+  EH_CA_PEM "${EH_CA_PEM}")
+configure_file(ca_bundle.h.in "${CMAKE_CURRENT_BINARY_DIR}/ca_bundle.h" @ONLY)
+add_library(ech_http SHARED ech_http.cpp)
+if(MSVC)
+  target_compile_options(ech_http PRIVATE /utf-8)
+endif()
+# Imported includes default to -isystem, which can lose to a host OpenSSL
+# installation in /usr/local/include. Always prefer this SDK's pinned headers.
+set_target_properties(ech_http PROPERTIES NO_SYSTEM_FROM_IMPORTED ON)
+target_include_directories(ech_http PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${EH_DART_INCLUDE}")
+target_link_libraries(ech_http PRIVATE EchHttp::curl)
+find_package(Threads REQUIRED)
+target_link_libraries(ech_http PRIVATE Threads::Threads)
+if(ANDROID)
+  target_link_options(ech_http PRIVATE "-Wl,-z,max-page-size=16384" "-Wl,--exclude-libs,ALL" "-Wl,--strip-debug")
+elseif(UNIX AND NOT APPLE)
+  target_link_options(ech_http PRIVATE "-Wl,--exclude-libs,ALL")
+endif()
+if(APPLE)
+  set_target_properties(ech_http PROPERTIES INSTALL_NAME_DIR "@rpath" BUILD_WITH_INSTALL_NAME_DIR ON)
+endif()
+set_target_properties(ech_http PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out" LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out")

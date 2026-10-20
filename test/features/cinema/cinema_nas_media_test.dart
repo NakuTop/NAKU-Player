@@ -66,6 +66,10 @@ void main() {
           });
       final episode = CinemaEpisode(name: '原画', url: reference);
       final resolved = await resolveCinemaMedia(
+        nasClient: CinemaNASClient(
+          invoke: (method, args) =>
+              CinemaNASClient.channel.invokeMethod<dynamic>(method, args),
+        ),
         source: cinemaNASSource,
         route: CinemaRoute(name: 'NAS 原画', episodes: [episode]),
         episode: episode,

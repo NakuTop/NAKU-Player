@@ -6,7 +6,8 @@ class NakuDevice {
   static bool isTV = false;
   static const personalNASAddress = String.fromEnvironment('NAKU_NAS_ADDRESS');
   static bool get canDownload => !isTV;
-  static bool get hasNAS => Platform.isMacOS || Platform.isAndroid;
+  static bool get hasNAS =>
+      Platform.isMacOS || Platform.isAndroid || Platform.isWindows;
   static Future<void> initialize() async {
     if (!Platform.isAndroid) return;
     final info = await const MethodChannel(

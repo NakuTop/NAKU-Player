@@ -405,7 +405,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   }) async {
     if (_busy) return;
     if (!NakuDevice.hasNAS && widget.client == null) {
-      setState(() => _error = 'NAS 影视中心当前支持 macOS 版。');
+      setState(() => _error = 'NAS 影视中心当前支持 macOS、Windows 和 Android。');
       return;
     }
     setState(() {
