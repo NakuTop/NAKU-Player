@@ -11,6 +11,7 @@ try {
   if ($LASTEXITCODE) { throw 'Flutter dependency resolution failed' }
   & $Flutter build windows --release --no-pub
   if ($LASTEXITCODE) { throw 'Windows build failed' }
+  & (Join-Path $PSScriptRoot 'prepare_windows_asr.ps1')
   $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
   $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
   $redistVersion = Get-ChildItem (Join-Path $vs 'VC/Redist/MSVC') -Directory |

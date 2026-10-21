@@ -13,6 +13,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_media_transport.dart';
+import 'package:kazumi/features/cinema/cinema_media_cache.dart';
+import 'package:kazumi/features/cinema/cinema_online_subtitles.dart';
+import 'package:kazumi/features/cinema/cinema_season_subtitle_preferences.dart';
+import 'package:kazumi/features/cinema/cinema_subtitle_catalogs.dart';
 import 'package:dio/dio.dart';
 import 'package:kazumi/features/cinema/cinema_player_page.dart';
 import 'package:kazumi/features/cinema/cinema_player_preferences.dart';
@@ -70,6 +74,7 @@ class _Backend extends PlatformPlayer {
   final bool emitVideo;
   Media? opened;
   int pauses = 0;
+  final subtitles = <SubtitleTrack>[];
   bool disposed = false;
   @override
   Future<void> open(Playable playable, {bool play = true}) async {
@@ -122,7 +127,16 @@ class _Backend extends PlatformPlayer {
 
   @override
   Future<void> playOrPause() => state.playing ? pause() : play();
-  void reportBuffering(bool value) => bufferingController.add(value);
+  void reportBuffering(bool value) {
+    state = state.copyWith(buffering: value);
+    bufferingController.add(value);
+  }
+
+  void reportBuffer(Duration value) {
+    state = state.copyWith(buffer: value);
+    bufferController.add(value);
+  }
+
   void reportLog(PlayerLog event) => logController.add(event);
 
   void complete() {
@@ -162,6 +176,11 @@ class _Player implements Player {
   @override
   Future<void> playOrPause() => backend.playOrPause();
   @override
+  Future<void> setSubtitleTrack(SubtitleTrack track) async {
+    backend.subtitles.add(track);
+  }
+
+  @override
   Future<void> dispose() => backend.dispose();
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -174,6 +193,59 @@ class _Repository extends CinemaRepository {
     String keyword, {
     int page = 1,
   }) async => const CinemaPage(items: []);
+}
+
+class _EpisodeSubtitleClient extends CinemaOnlineSubtitles {
+  _EpisodeSubtitleClient() : super(dio: Dio(), useFallbackCatalog: false);
+  final requests = <Map<String, dynamic>>[];
+  final downloads = <String>[];
+  bool closed = false;
+
+  @override
+  Future<CinemaSubtitleCatalogResult> aggregate(
+    String query,
+    String type, {
+    String imdbId = '',
+    int season = 1,
+    int episode = 1,
+    String language = 'zh-eng',
+    String mediaRelease = '',
+    void Function(List<Map<String, dynamic>> rows)? onVerified,
+  }) async {
+    requests.add({
+      'query': query,
+      'type': type,
+      'imdbId': imdbId,
+      'season': season,
+      'episode': episode,
+      'language': language,
+    });
+    final rows = <Map<String, dynamic>>[
+      {
+        'url': 'https://fixture.invalid/subtitle-$episode.srt',
+        'subtitleFileName':
+            'Fixture.S${season.toString().padLeft(2, '0')}E${episode.toString().padLeft(2, '0')}.简体.srt',
+        'lang': 'zh',
+        'verified': true,
+        'provider': 'fixture',
+      },
+    ];
+    onVerified?.call(rows);
+    return CinemaSubtitleCatalogResult(rows, const {});
+  }
+
+  @override
+  Future<String> download(String url, {String? archiveEntry}) async {
+    downloads.add(url);
+    final episode = RegExp(r'subtitle-(\d+)\.srt').firstMatch(url)![1]!;
+    return '1\n00:00:01,000 --> 00:00:02,000\n第 $episode 集的中文字幕\n';
+  }
+
+  @override
+  void close() {
+    closed = true;
+    super.close();
+  }
 }
 
 class _Ratings extends CinemaRatingsRepository {
@@ -212,6 +284,34 @@ class _Probe extends CinemaMediaProbe {
           ),
         );
       }
+    }
+  }
+}
+
+class _Warmup {
+  _Warmup(this.url, this.cancel);
+  final String url;
+  final CancelToken cancel;
+  final finished = Completer<void>();
+}
+
+class _Cache extends CinemaMediaCache {
+  final warmups = <_Warmup>[];
+
+  @override
+  Future<void> warmNext(
+    String url,
+    Map<String, String> headers, {
+    CancelToken? cancel,
+  }) {
+    final request = _Warmup(url, cancel!);
+    warmups.add(request);
+    return request.finished.future;
+  }
+
+  void finish() {
+    for (final request in warmups) {
+      if (!request.finished.isCompleted) request.finished.complete();
     }
   }
 }
@@ -347,10 +447,13 @@ void main() {
     bool? mobileControls,
     bool autoBest = false,
     CinemaMediaProbe? probe,
+    CinemaMediaCache? cache,
     int? initialPosition,
     CinemaTitle? selectedTitle,
     CinemaNASPlaybackClient? nasPlayback,
     Future<CinemaTitle> Function(CinemaTitle)? resolveNASRatings,
+    CinemaOnlineSubtitles Function()? subtitleClientFactory,
+    int initialEpisode = 0,
   }) async {
     await windowControls.initialize();
     tester.view.physicalSize = viewport;
@@ -373,11 +476,14 @@ void main() {
       MaterialApp(
         home: CinemaPlayerPage(
           title: selectedTitle ?? _title,
+          episodeIndex: initialEpisode,
+          subtitleClientFactory: subtitleClientFactory,
           nasPlayback: nasPlayback,
           mobileControls: mobileControls,
           resolveNASRatings: resolveNASRatings,
           autoSelectBestRoute: autoBest,
           mediaProbe: probe,
+          mediaCache: cache,
           initialPositionSeconds: initialPosition,
           offlinePaths: offlinePaths,
           source: _source,
@@ -501,7 +607,121 @@ void main() {
       await tester.tap(find.text('在线搜索字幕').last);
       await tester.pumpAndSettle();
       expect(find.text('片名或 IMDb ID'), findsOneWidget);
+      expect(backends.single.state.playing, isFalse);
+      final pauses = backends.single.pauses;
+      Navigator.of(
+        tester.element(find.byType(CinemaOnlineSubtitlesPanel)),
+      ).pop();
+      await tester.pumpAndSettle();
+      expect(find.byType(CinemaOnlineSubtitlesPanel), findsNothing);
+      expect(backends.single.state.playing, isFalse);
+      expect(backends.single.pauses, pauses);
       await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'player automatically loads each subsequent season episode into its own player',
+    (tester) async {
+      const title = CinemaTitle(
+        id: 'season-subtitle-fixture',
+        sourceId: 'fixture',
+        title: '自动字幕测试 第十季',
+        category: '电视剧',
+        imdbId: 'tt1844624',
+        routes: [
+          CinemaRoute(
+            name: 'mp4',
+            episodes: [
+              CinemaEpisode(
+                name: 'S10E02',
+                url: 'https://fixture.invalid/season-10-2.mp4',
+              ),
+              CinemaEpisode(
+                name: 'S10E03',
+                url: 'https://fixture.invalid/season-10-3.mp4',
+              ),
+              CinemaEpisode(
+                name: 'S10E04',
+                url: 'https://fixture.invalid/season-10-4.mp4',
+              ),
+            ],
+          ),
+        ],
+      );
+      await tester.runAsync(
+        () => CinemaSeasonSubtitlePreferences(store).remember(
+          seriesIdentity: title.key,
+          season: 10,
+          fromEpisode: 2,
+          queryTitle: '自动字幕测试',
+          imdbId: title.imdbId,
+          row: const {
+            'subtitleFileName': 'Fixture.S10E02.简体.srt',
+            'lang': 'zh',
+            'verified': true,
+            'provider': 'fixture',
+          },
+        ),
+      );
+      final clients = <_EpisodeSubtitleClient>[];
+      await mount(
+        tester,
+        {'autoPlay': true},
+        selectedTitle: title,
+        initialEpisode: 1,
+        renderToolbar: true,
+        subtitleClientFactory: () {
+          final client = _EpisodeSubtitleClient();
+          clients.add(client);
+          return client;
+        },
+      );
+      expect(backends.single.opened!.uri, endsWith('/season-10-3.mp4'));
+      expect(clients, hasLength(1));
+      expect(clients.single.requests, [
+        {
+          'query': '自动字幕测试',
+          'type': 'series',
+          'imdbId': 'tt1844624',
+          'season': 10,
+          'episode': 3,
+          'language': 'zh',
+        },
+      ]);
+      expect(clients.single.downloads, [
+        'https://fixture.invalid/subtitle-3.srt',
+      ]);
+      expect(backends.single.subtitles, hasLength(1));
+      expect(backends.single.subtitles.single.id, contains('第 3 集的中文字幕'));
+      expect(backends.single.subtitles.single.language, 'zh');
+      final previous = backends.single;
+      final previousClient = clients.single;
+      final next = find.widgetWithIcon(IconButton, Icons.skip_next_rounded);
+      await tester.ensureVisible(next);
+      await tester.tap(next);
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.pumpAndSettle();
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pump();
+      expect(backends, hasLength(2));
+      expect(clients, hasLength(2));
+      expect(previous.disposed, isTrue);
+      expect(previousClient.closed, isTrue);
+      expect(previous.subtitles, hasLength(1));
+      expect(backends.last.opened!.uri, endsWith('/season-10-4.mp4'));
+      expect(clients.last.requests.single['season'], 10);
+      expect(clients.last.requests.single['episode'], 4);
+      expect(clients.last.requests.single['language'], 'zh');
+      expect(clients.last.downloads, [
+        'https://fixture.invalid/subtitle-4.srt',
+      ]);
+      expect(backends.last.subtitles, hasLength(1));
+      expect(backends.last.subtitles.single.id, contains('第 4 集的中文字幕'));
+      expect(backends.last.subtitles.single.id, isNot(contains('第 3 集的中文字幕')));
+      expect(backends.last.state.playing, isTrue);
+      await unmount(tester);
+      expect(clients.every((client) => client.closed), isTrue);
     },
   );
 
@@ -1164,6 +1384,12 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.digit2);
       await tester.pump();
       expect(player.state.rate, 2);
+      // The unbound arrow key can move focus into a control. Return focus to
+      // the video before asserting the player's Space shortcut.
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump();
+      FocusScope.of(tester.element(find.text('fake video'))).requestFocus();
+      await tester.pump();
       await tester.sendKeyEvent(LogicalKeyboardKey.space);
       await tester.pump();
       expect(player.state.playing, isTrue);
@@ -1270,6 +1496,97 @@ void main() {
       expect(store.history.single.positionSeconds, 90);
       await unmount(tester);
       expect(store.history.single.positionSeconds, 90);
+    },
+  );
+
+  testWidgets(
+    'buffering cancels next-episode traffic and stable playback can retry',
+    (tester) async {
+      final cache = _Cache();
+      addTearDown(cache.finish);
+      await mount(tester, {}, cache: cache);
+      final backend = backends.single;
+      backend.reportBuffer(const Duration(seconds: 30));
+      await backend.seek(const Duration(seconds: 20));
+      await tester.pump();
+      expect(cache.warmups, isEmpty, reason: 'Playback needs buffer headroom.');
+
+      backend.reportBuffer(const Duration(seconds: 60));
+      await backend.seek(const Duration(seconds: 21));
+      await tester.pump();
+      expect(cache.warmups.single.url, 'https://fixture.invalid/2.mp4');
+      final first = cache.warmups.single;
+      backend.reportBuffering(true);
+      await tester.pump();
+      expect(first.cancel.isCancelled, isTrue);
+
+      await backend.seek(const Duration(seconds: 22));
+      await tester.pump();
+      expect(cache.warmups, hasLength(1));
+      backend.reportBuffering(false);
+      await backend.seek(const Duration(seconds: 23));
+      await tester.pump();
+      expect(cache.warmups, hasLength(2));
+      final resumed = cache.warmups.last;
+      expect(resumed.cancel.isCancelled, isFalse);
+
+      // Cancellation can finish late. It must not clear the resumed request.
+      first.finished.complete();
+      await tester.pump();
+      await backend.seek(const Duration(seconds: 24));
+      await tester.pump();
+      expect(cache.warmups, hasLength(2));
+      await unmount(tester);
+      expect(resumed.cancel.isCancelled, isTrue);
+      cache.finish();
+      await tester.pump();
+    },
+  );
+
+  testWidgets(
+    'changing episodes cancels old warmup without disturbing the new selection',
+    (tester) async {
+      final cache = _Cache();
+      addTearDown(cache.finish);
+      final title = _title.copyWith(
+        routes: const [
+          CinemaRoute(
+            name: 'mp4',
+            episodes: [
+              CinemaEpisode(name: '第1集', url: 'https://fixture.invalid/1.mp4'),
+              CinemaEpisode(name: '第2集', url: 'https://fixture.invalid/2.mp4'),
+              CinemaEpisode(name: '第3集', url: 'https://fixture.invalid/3.mp4'),
+            ],
+          ),
+        ],
+      );
+      await mount(tester, {}, cache: cache, selectedTitle: title);
+      backends.single.reportBuffer(const Duration(seconds: 60));
+      await backends.single.seek(const Duration(seconds: 20));
+      await tester.pump();
+      final old = cache.warmups.single;
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
+      await tester.pumpAndSettle();
+      expect(backends, hasLength(2));
+      expect(old.cancel.isCancelled, isTrue);
+      expect(backends.last.opened!.uri, 'https://fixture.invalid/2.mp4');
+
+      backends.last.reportBuffer(const Duration(seconds: 60));
+      await backends.last.seek(const Duration(seconds: 20));
+      await tester.pump();
+      expect(cache.warmups, hasLength(2));
+      final current = cache.warmups.last;
+      expect(current.url, 'https://fixture.invalid/3.mp4');
+      old.finished.complete();
+      await tester.pump();
+      await backends.last.seek(const Duration(seconds: 21));
+      await tester.pump();
+      expect(cache.warmups, hasLength(2));
+      expect(current.cancel.isCancelled, isFalse);
+      await unmount(tester);
+      expect(current.cancel.isCancelled, isTrue);
+      cache.finish();
+      await tester.pump();
     },
   );
 

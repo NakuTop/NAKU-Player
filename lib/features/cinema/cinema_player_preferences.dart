@@ -7,6 +7,7 @@ import 'package:kazumi/services/storage/storage.dart';
 import 'package:kazumi/utils/constants.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:kazumi/services/player/windows_playback_policy.dart';
 
 typedef CinemaSettingReader = T Function<T>(SettingKey<T> key);
 typedef CinemaSettingWriter =
@@ -97,7 +98,7 @@ class CinemaPlayerPreferences {
           : 100,
       muted: read(SettingsKeys.playerMuted),
       hardwareAcceleration: read(SettingsKeys.hAenable),
-      hardwareDecoder: decoder.isEmpty ? 'auto-safe' : decoder,
+      hardwareDecoder: cinemaHardwareDecoder(decoder),
       superResolution: SuperResolutionMode.fromStorageValue(
         read(SettingsKeys.defaultSuperResolutionMode),
       ),

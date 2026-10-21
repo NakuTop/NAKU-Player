@@ -17,7 +17,7 @@ class PlayerLongPressShortcutActions {
   final PlayerShortcutAction onRelease;
 }
 
-/// Dispatches player shortcuts before focused controls handle the key event.
+/// Dispatches player shortcuts while preserving focused controls' own keys.
 ///
 /// [focusScopeNode] must be attached to a stable ancestor of the player area.
 /// Dialog routes and explicitly blocked overlay interactions keep their normal
@@ -47,8 +47,7 @@ class PlayerKeyboardShortcuts extends StatefulWidget {
 class _PlayerKeyboardShortcutsState extends State<PlayerKeyboardShortcuts> {
   late Map<String, List<String>> _shortcuts;
   final Map<LogicalKeyboardKey, PlayerLongPressShortcutActions>
-      _activeLongPressKeys =
-      <LogicalKeyboardKey, PlayerLongPressShortcutActions>{};
+  _activeLongPressKeys = <LogicalKeyboardKey, PlayerLongPressShortcutActions>{};
 
   @override
   void initState() {
@@ -91,7 +90,7 @@ class _PlayerKeyboardShortcutsState extends State<PlayerKeyboardShortcuts> {
       }
     }
 
-    if (!_shouldHandleShortcut()) {
+    if (!_shouldHandleShortcut(event.logicalKey)) {
       return KeyEventResult.ignored;
     }
 
@@ -128,7 +127,7 @@ class _PlayerKeyboardShortcutsState extends State<PlayerKeyboardShortcuts> {
     return KeyEventResult.ignored;
   }
 
-  bool _shouldHandleShortcut() {
+  bool _shouldHandleShortcut(LogicalKeyboardKey key) {
     if (widget.isBlocked?.call() ?? false) {
       return false;
     }
@@ -149,9 +148,45 @@ class _PlayerKeyboardShortcutsState extends State<PlayerKeyboardShortcuts> {
     if (focusContext == null) {
       return true;
     }
-    return focusContext.widget is! EditableText &&
-        focusContext.findAncestorWidgetOfExactType<EditableText>() == null;
+    if (focusContext.widget is EditableText ||
+        focusContext.findAncestorWidgetOfExactType<EditableText>() != null) {
+      return false;
+    }
+
+    if (!_controlKeys.contains(key)) return true;
+    var controlHasFocus = _ownsControlKeys(focusContext.widget);
+    focusContext.visitAncestorElements((element) {
+      if (controlHasFocus || element == widget.focusScopeNode.context) {
+        return false;
+      }
+      controlHasFocus = _ownsControlKeys(element.widget);
+      return !controlHasFocus;
+    });
+    return !controlHasFocus;
   }
+
+  static const _controlKeys = [
+    LogicalKeyboardKey.space,
+    LogicalKeyboardKey.enter,
+    LogicalKeyboardKey.numpadEnter,
+    LogicalKeyboardKey.arrowLeft,
+    LogicalKeyboardKey.arrowRight,
+    LogicalKeyboardKey.arrowUp,
+    LogicalKeyboardKey.arrowDown,
+  ];
+
+  bool _ownsControlKeys(Widget candidate) =>
+      candidate is ButtonStyleButton ||
+      candidate is IconButton ||
+      candidate is DropdownButton ||
+      candidate is PopupMenuButton ||
+      candidate is MenuItemButton ||
+      candidate is SubmenuButton ||
+      candidate is Slider ||
+      candidate is RangeSlider ||
+      candidate is Checkbox ||
+      candidate is Radio ||
+      candidate is Switch;
 
   String? _findActionName(String keyLabel) {
     for (final entry in _shortcuts.entries) {

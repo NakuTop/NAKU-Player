@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:kazumi/request/core/network_config.dart';
 import 'package:media_kit/media_kit.dart';
+import 'windows_playback_policy.dart';
 
 /// Native and Dart downloads must use the same explicit connection choice.
 /// Never disable certificate checks or silently bypass a configured proxy.
@@ -9,6 +10,7 @@ Future<void> configureNativePlayback(
   Uri media, {
   required bool Function() isCurrent,
   bool diskCache = true,
+  int? bufferBytes,
 }) async {
   final config = NetworkConfig.forMedia();
   final properties = <String, String>{
@@ -22,6 +24,8 @@ Future<void> configureNativePlayback(
     // by PlayerConfiguration.bufferSize; don't repeatedly try an invalid file.
     if (!diskCache) 'cache-on-disk': 'no',
     'vd-lavc-software-fallback': '3',
+    if (Platform.isWindows && bufferBytes != null)
+      ...windowsPlaybackProperties(bufferBytes),
   };
   for (final entry in properties.entries) {
     if (!isCurrent()) return;

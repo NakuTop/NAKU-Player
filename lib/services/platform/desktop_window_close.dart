@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show AppExitResponse;
 
 /// Route-owned players register only their final local progress save. Hiding a
 /// window is handled separately by the shared opt-in pause-on-hide policy.
@@ -43,6 +44,24 @@ class DesktopWindowCloseActions {
   bool _quitting = false;
   Future<void>? _preparation, _quit;
   bool get isQuitting => _quitting;
+
+  /// Windows sends caption Close and Alt-F4 through Flutter's exit request
+  /// before window_manager receives WM_CLOSE. Treating that request as Quit
+  /// sets [isQuitting] too early: the re-dispatched WM_CLOSE is then ignored,
+  /// while window_manager still prevents the native window from closing.
+  /// Handle the window choice here and consume the engine's duplicate close.
+  /// macOS application Quit remains an explicit exit, independent of Hide.
+  Future<AppExitResponse> requestPlatformExit({
+    required bool windowClose,
+    required Future<void> Function() onWindowClose,
+  }) async {
+    if (windowClose) {
+      await onWindowClose();
+      return AppExitResponse.cancel;
+    }
+    await prepareQuit();
+    return AppExitResponse.exit;
+  }
 
   Future<void> prepareQuit() {
     _quitting = true;

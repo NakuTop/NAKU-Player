@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_ce/hive.dart';
 import 'package:kazumi/features/cinema/anime/cinema_anime_page.dart';
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
+import 'package:kazumi/features/cinema/cinema_player_page.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/cinema_settings_page.dart';
@@ -56,6 +57,7 @@ void main() {
   late _Douban douban;
   late DoubanThemeCatalog themes;
   var sequence = 0;
+  CinemaPlayerPage? launchedPlayer;
 
   setUpAll(() async {
     Logger.level = Level.off;
@@ -68,6 +70,7 @@ void main() {
   });
   setUp(() async {
     repository = _Catalogue();
+    launchedPlayer = null;
     douban = _Douban();
     themes = DoubanThemeCatalog();
     store = CinemaStore(
@@ -124,6 +127,10 @@ void main() {
               doubanThemeCatalog: themes,
               enableWatchTogether: false,
               enableSearchDiscovery: false,
+              playerPageBuilder: (page) {
+                launchedPlayer = page;
+                return const Scaffold(body: Text('history-player-fixture'));
+              },
             ),
           );
       },
@@ -301,6 +308,60 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets(
+    'history click directly resumes saved episode and position after catalogue reorder',
+    (tester) async {
+      const first = CinemaEpisode(
+        name: '第1集',
+        url: 'https://example.com/e1.m3u8',
+      );
+      const second = CinemaEpisode(
+        name: '第2集',
+        url: 'https://example.com/e2.m3u8',
+      );
+      const saved = CinemaTitle(
+        id: 'ahs10',
+        sourceId: 'fixture',
+        title: '美国恐怖故事 第10季',
+        category: '电视剧',
+        routes: [
+          CinemaRoute(name: '路线', episodes: [first, second]),
+        ],
+      );
+      await tester.runAsync(
+        () => store.recordProgress(
+          title: saved,
+          routeIndex: 0,
+          episodeIndex: 1,
+          positionSeconds: 777,
+          durationSeconds: 3000,
+        ),
+      );
+      repository.detailTitle = saved.copyWith(
+        routes: [
+          const CinemaRoute(name: '路线', episodes: [second, first]),
+        ],
+      );
+      await mount(tester, '/cinema?section=history');
+      await tester.tap(find.text('美国恐怖故事 第10季').first);
+      await tester.pumpAndSettle();
+      expect(find.text('history-player-fixture'), findsOneWidget);
+      expect(launchedPlayer!.episodeIndex, 0);
+      expect(
+        launchedPlayer!
+            .title
+            .routes[0]
+            .episodes[launchedPlayer!.episodeIndex]
+            .url,
+        second.url,
+      );
+      expect(launchedPlayer!.initialPositionSeconds, 777);
+      expect(launchedPlayer!.routeIndex, 0);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   for (final entry in {'favorites': '我的收藏', 'history': '继续观看'}.entries) {
     testWidgets('${entry.key} startup avoids movie catalogue work', (
       tester,
@@ -315,6 +376,10 @@ void main() {
 }
 
 class _Catalogue extends CinemaRepository {
+  CinemaTitle? detailTitle;
+  @override
+  Future<CinemaTitle> detail(CinemaSource source, CinemaTitle title) async =>
+      detailTitle ?? title;
   int categoriesRead = 0;
   final browsed = <String?>[];
   @override

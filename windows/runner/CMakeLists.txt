@@ -14,6 +14,7 @@ add_executable(${BINARY_NAME} WIN32
   "fullscreen_utils.cpp"
   "shortcut_utils.cpp"
   "naku_secure_bridge.cpp"
+  "naku_audio_capture.cpp"
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
   "Runner.rc"
@@ -39,7 +40,7 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
-target_link_libraries(${BINARY_NAME} PRIVATE "bcrypt.lib" "crypt32.lib" "shell32.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "bcrypt.lib" "crypt32.lib" "shell32.lib" "mmdevapi.lib" "ole32.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.

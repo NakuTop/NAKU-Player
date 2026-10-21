@@ -1,9 +1,97 @@
 import 'dart:async';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/services/platform/desktop_window_close.dart';
 
 void main() {
+  test(
+    'Windows system close reaches choice before entering quit state',
+    () async {
+      var saves = 0, hides = 0, quits = 0, choices = 0;
+      final actions = DesktopWindowCloseActions(
+        beforeQuit: () async => saves++,
+        terminate: () => quits++,
+        hideWindow: () async => hides++,
+      );
+      Future<void> chooseHide() async {
+        if (actions.isQuitting) return;
+        choices++;
+        await actions.hide();
+      }
+
+      final result = await actions.requestPlatformExit(
+        windowClose: true,
+        onWindowClose: chooseHide,
+      );
+      expect(choices, 1);
+      expect(hides, 1);
+      expect(saves, 0);
+      expect(quits, 0);
+      expect(actions.isQuitting, isFalse);
+      expect(
+        result,
+        AppExitResponse.cancel,
+        reason: 'Do not ask the engine to dispatch another WM_CLOSE.',
+      );
+
+      // A window hidden to the tray can be restored and closed normally again.
+      await actions.requestPlatformExit(
+        windowClose: true,
+        onWindowClose: () async {
+          if (!actions.isQuitting) await actions.quit();
+        },
+      );
+      expect(saves, 1);
+      expect(quits, 1);
+    },
+  );
+
+  test('canceling Windows close permits the next close attempt', () async {
+    var choices = 0, saves = 0;
+    final actions = DesktopWindowCloseActions(
+      beforeQuit: () async => saves++,
+      terminate: () => fail('Cancelled close must not terminate.'),
+      hideWindow: () async => fail('Cancelled close must not hide.'),
+    );
+    for (var i = 0; i < 2; i++) {
+      expect(
+        await actions.requestPlatformExit(
+          windowClose: true,
+          onWindowClose: () async {
+            if (!actions.isQuitting) choices++;
+          },
+        ),
+        AppExitResponse.cancel,
+      );
+    }
+    expect(choices, 2);
+    expect(saves, 0);
+    expect(actions.isQuitting, isFalse);
+  });
+
+  test(
+    'macOS application Quit bypasses the close choice and prepares once',
+    () async {
+      var saves = 0;
+      final actions = DesktopWindowCloseActions(
+        beforeQuit: () async => saves++,
+        terminate: () {},
+        hideWindow: () async {},
+      );
+      expect(
+        await actions.requestPlatformExit(
+          windowClose: false,
+          onWindowClose: () async => fail('Cmd-Q is not a window close.'),
+        ),
+        AppExitResponse.exit,
+      );
+      await actions.prepareQuit();
+      expect(saves, 1);
+      expect(actions.isQuitting, isTrue);
+    },
+  );
+
   test(
     'hiding preserves playback and does not prepare an application exit',
     () async {

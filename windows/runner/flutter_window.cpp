@@ -3,6 +3,7 @@
 #include "external_player_utils.h"
 #include "shortcut_utils.h"
 #include "naku_secure_bridge.h"
+#include "naku_audio_capture.h"
 
 #include <optional>
 #include <stdexcept>
@@ -56,6 +57,7 @@ bool FlutterWindow::OnCreate() {
   // Register Shortcut MethodChannel
   RegisterShortcutChannel();
   RegisterSecureChannel();
+  RegisterAudioCaptureChannel();
 
   return true;
 }
@@ -210,6 +212,26 @@ void FlutterWindow::RegisterShortcutChannel() {
     } else {
       result->Error("Failed", "Failed to create desktop shortcut");
     }
+  });
+}
+
+void FlutterWindow::RegisterAudioCaptureChannel() {
+  auto capture = std::make_shared<NakuAudioCapture>();
+  auto channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+      flutter_controller_->engine()->messenger(), "naku/live_audio",
+      &flutter::StandardMethodCodec::GetInstance());
+  channel->SetMethodCallHandler([capture](const auto& call, auto result) {
+    if (call.method_name() == "start") { capture->Start(); result->Success(); }
+    else if (call.method_name() == "stop") { capture->Stop(); result->Success(); }
+    else if (call.method_name() == "clear") { capture->Clear(); result->Success(); }
+    else if (call.method_name() == "pull") {
+      auto chunk = capture->Pull();
+      flutter::EncodableMap values;
+      values[flutter::EncodableValue("pcm")] = flutter::EncodableValue(chunk.pcm);
+      values[flutter::EncodableValue("active")] = flutter::EncodableValue(chunk.active);
+      values[flutter::EncodableValue("error")] = flutter::EncodableValue(static_cast<int64_t>(chunk.error));
+      result->Success(flutter::EncodableValue(values));
+    } else result->NotImplemented();
   });
 }
 

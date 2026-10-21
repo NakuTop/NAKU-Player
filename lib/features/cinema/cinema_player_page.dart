@@ -8,6 +8,9 @@ import 'cinema_quality_sheet.dart';
 import 'cinema_tracks_sheet.dart';
 import 'cinema_subtitle_appearance.dart';
 import 'cinema_online_subtitles.dart';
+import 'cinema_live_subtitles.dart';
+import 'cinema_external_subtitles.dart';
+import 'cinema_season_subtitle_controller.dart';
 import 'cinema_mobile_playback_bar.dart';
 import 'cinema_media_cache.dart';
 import 'cinema_media_transport.dart';
@@ -207,6 +210,7 @@ class CinemaPlayerPage extends StatefulWidget {
     this.preferences,
     this.windowControls,
     this.createPlayer,
+    this.subtitleClientFactory,
     this.nasPlayback,
     this.resolveNASRatings,
     this.videoSurfaceBuilder,
@@ -214,6 +218,7 @@ class CinemaPlayerPage extends StatefulWidget {
     this.offlinePaths,
     this.initialPositionSeconds,
     this.mediaProbe,
+    this.mediaCache,
     this.autoSelectBestRoute,
   });
 
@@ -234,6 +239,8 @@ class CinemaPlayerPage extends StatefulWidget {
   @visibleForTesting
   final CinemaMediaProbe? mediaProbe;
   @visibleForTesting
+  final CinemaMediaCache? mediaCache;
+  @visibleForTesting
   final bool? autoSelectBestRoute;
   final List<CinemaTitle> variants;
   final CinemaRepository? repository;
@@ -246,6 +253,8 @@ class CinemaPlayerPage extends StatefulWidget {
   final DesktopWindowControls? windowControls;
   @visibleForTesting
   final Player Function(PlayerConfiguration configuration)? createPlayer;
+  @visibleForTesting
+  final CinemaOnlineSubtitles Function()? subtitleClientFactory;
   @visibleForTesting
   final Widget Function(BuildContext context, Player player)?
   videoSurfaceBuilder;
@@ -265,7 +274,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   final _resolver = WebViewVideoSourceService();
   final _health = CinemaSourceHealth.instance;
-  final _cache = CinemaMediaCache.instance;
+  late final _cache = widget.mediaCache ?? CinemaMediaCache.instance;
   final Map<String, CinemaMediaProbeResult> _probeResults = {};
   late final _mediaProbe = widget.mediaProbe ?? CinemaMediaProbe();
   CancelToken? _routeProbeToken;
@@ -752,14 +761,21 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       positionSeconds: current.completed ? 0 : current.position.inSeconds,
     );
     if (_preferences.privateMode) return;
+    final progress = (
+      position: current.position.inSeconds,
+      duration: current.duration.inSeconds,
+      completed: current.completed,
+    );
+    if (current.persistedProgress == progress) return;
     try {
       await widget.store.recordProgress(
         title: current.title,
         routeIndex: current.routeIndex,
         episodeIndex: current.episodeIndex,
-        positionSeconds: current.position.inSeconds,
-        durationSeconds: current.duration.inSeconds,
+        positionSeconds: progress.position,
+        durationSeconds: progress.duration,
       );
+      current.persistedProgress = progress;
       if (mounted && _historyError != null) {
         setState(() => _historyError = null);
       }
@@ -804,6 +820,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _loadTimer?.cancel();
     _playback = null;
     if (old != null) {
+      old.subtitles?.close();
       _volume = old.player.state.volume;
       unawaited(_persistProgress(old));
       unawaited(old.dispose());
@@ -924,7 +941,29 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _preferences,
         widget.createPlayer,
       );
+      final subtitlePlaybackRevision = candidate.manualPlaybackRevision;
       candidate.nasSession = pendingNAS;
+      candidate.subtitles = CinemaSeasonSubtitleController(
+        player: candidate.player,
+        client: widget.subtitleClientFactory?.call(),
+        store: widget.store,
+        seriesIdentity: selectedTitle.key,
+        mediaIdentity: '${selectedTitle.key}|${episode.url}',
+        query: CinemaSubtitleQuery.parse(
+          selectedTitle.title,
+          category: selectedTitle.category,
+          episodeName: _subtitleEpisodeName,
+          fallbackEpisode: episodeIndex + 1,
+        ),
+        imdbId: selectedTitle.imdbId,
+        mediaRelease: _subtitleEpisodeName,
+        canResume: () =>
+            _isCurrent(generation) &&
+            identical(_playback, candidate) &&
+            !_backgroundPaused &&
+            !_windowControls.blocksPlayback &&
+            candidate.manualPlaybackRevision == subtitlePlaybackRevision,
+      );
       pendingNAS = null;
       _playback = candidate;
       candidate.mediaUrl = mediaUrl;
@@ -982,12 +1021,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           Uri.parse(mediaUrl),
           isCurrent: () => _isCurrent(generation),
           diskCache: false,
+          bufferBytes: _preferences.bufferSize,
         );
         if (!_isCurrent(generation)) return;
-        if (mediaFormat == VideoSourceFormat.hls) {
-          await native.setProperty('demuxer-lavf-format', 'hls');
-          if (!_isCurrent(generation)) return;
-        }
+        // Probe each input independently. Forcing HLS globally also forces
+        // external SRT/ASS inputs through the HLS demuxer and rejects them.
         try {
           await PlaybackQualityPreferences.read().apply(native);
         } catch (_) {
@@ -1017,6 +1055,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }
       candidate.opened = true;
       _updateReady(candidate, generation);
+      unawaited(
+        candidate.subtitles!.load(
+          onNotice: (message) {
+            if (_isCurrent(generation) && identical(_playback, candidate)) {
+              setState(() => _playbackNotice = message);
+            }
+          },
+        ),
+      );
     } on VideoSourceCancelledException {
       // Cancellation is expected when the user chooses another episode.
     } on VideoSourceTimeoutException {
@@ -1120,12 +1167,18 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Future<void> _showTracks() async {
     final playback = _playback;
     if (playback == null) return;
+    playback.subtitles?.beginManualSelection();
     await showCinemaTracksSheet(
       context,
       playback.player,
       widget.store,
       title: _title.title,
       imdbId: _title.imdbId,
+      liveSubtitles: playback.liveSubtitles,
+      category: _title.category,
+      episodeName: _subtitleEpisodeName,
+      episodeNumber: _episodeIndex + 1,
+      onSubtitleApplied: (selection) => _rememberSubtitle(playback, selection),
       nasControls:
           _usesNASPlayback &&
               _nasOptions != null &&
@@ -1141,6 +1194,30 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               },
             )
           : null,
+    );
+  }
+
+  Future<void> _rememberSubtitle(
+    _CinemaPlayback playback,
+    CinemaOnlineSubtitleSelection selection,
+  ) async {
+    if (!mounted || _closing || !identical(_playback, playback)) return;
+    await playback.subtitles?.remember(selection);
+  }
+
+  Future<void> _showOnlineSubtitles() async {
+    final playback = _playback;
+    if (playback == null) return;
+    playback.subtitles?.beginManualSelection();
+    await showCinemaOnlineSubtitles(
+      context,
+      playback.player,
+      title: _title.title,
+      imdbId: _title.imdbId,
+      category: _title.category,
+      episodeName: _subtitleEpisodeName,
+      episodeNumber: _episodeIndex + 1,
+      onApplied: (selection) => _rememberSubtitle(playback, selection),
     );
   }
 
@@ -1175,15 +1252,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final actions = <String, VoidCallback>{
       '清晰度与播放设置': () => unawaited(_showQuality()),
       '字幕与音轨': () => unawaited(_showTracks()),
-      if (_playback != null)
-        '在线搜索字幕': () => unawaited(
-          showCinemaOnlineSubtitles(
-            context,
-            _playback!.player,
-            title: _title.title,
-            imdbId: _title.imdbId,
-          ),
-        ),
+      if (_playback != null) '在线搜索字幕': () => unawaited(_showOnlineSubtitles()),
       '播放倍速': _showSpeedOptions,
       '线路 / 选集': _showEpisodes,
       if (_hasNext) '下一集': () => _changeEpisode(1),
@@ -1319,14 +1388,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               action(
                 '在线搜索字幕',
                 Icons.search,
-                playback == null
-                    ? null
-                    : () => showCinemaOnlineSubtitles(
-                        context,
-                        playback.player,
-                        title: _title.title,
-                        imdbId: _title.imdbId,
-                      ),
+                playback == null ? null : _showOnlineSubtitles,
               ),
               action(
                 _usesNASPlayback ? '清晰度与 NAS 播放设置' : '画质信息与处理',
@@ -1351,6 +1413,19 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         ],
       ],
     );
+  }
+
+  String get _subtitleEpisodeName {
+    final episode = _episode;
+    if (episode == null) return '';
+    final filename = isNASMediaReference(episode.url)
+        ? (parseNASMediaReference(episode.url)['path'] ?? '')
+              .split('/')
+              .last
+              .split('\\')
+              .last
+        : '';
+    return '${episode.name} $filename'.trim();
   }
 
   bool get _usesNASPlayback =>
@@ -1407,12 +1482,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             playback.ready &&
             position.inSeconds > 15 &&
             playback.player.state.buffer.inSeconds - position.inSeconds >= 20) {
-          playback.warmedNext = true;
           unawaited(_warmNext(playback, generation));
         }
       }),
       playback.player.stream.buffering.listen((value) {
         if (!current()) return;
+        if (value) playback.cancelNextWarmup('当前视频正在缓冲，暂停下一集预热');
         playback.cacheSession?.update(
           playback.position,
           buffering: value || _probingRoutes,
@@ -1449,16 +1524,19 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }),
       playback.player.stream.width.listen((width) {
         if (!current()) return;
+        if (playback.width == (width ?? 0)) return;
         setState(() => playback.width = width ?? 0);
         _updateReady(playback, generation);
       }),
       playback.player.stream.height.listen((height) {
         if (!current()) return;
+        if (playback.height == (height ?? 0)) return;
         setState(() => playback.height = height ?? 0);
         _updateReady(playback, generation);
       }),
       playback.player.stream.completed.listen((completed) {
         if (!current()) return;
+        if (playback.completed == completed) return;
         final newlyCompleted = completed && !playback.completed;
         setState(() => playback.completed = completed);
         if (completed) unawaited(_persistProgress(playback));
@@ -1510,7 +1588,6 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       if (_isCurrent(generation) && !playback.player.state.buffering) {
         unawaited(_probeCurrent(playback, generation));
         if (!playback.warmedNext) {
-          playback.warmedNext = true;
           unawaited(_warmNext(playback, generation));
         }
       }
@@ -1768,9 +1845,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     if (_source.id == cinemaNASSource.id) return;
     if (_probingRoutes ||
         !_isCurrent(generation) ||
+        playback.warmedNext ||
         widget.offlinePaths != null ||
         _route == null ||
         playback.player.state.buffering ||
+        playback.player.state.buffer - playback.position <
+            const Duration(seconds: 20) ||
         _episodeIndex + 1 >= _route!.episodes.length) {
       return;
     }
@@ -1779,9 +1859,20 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     // must not open webviews or execute the next episode's page during playback.
     if (!cinemaUsesDirectMedia(_source, _route!, episode)) return;
     final token = CancelToken();
+    playback.nextWarmup = token;
+    playback.warmedNext = true;
     _probeTokens.add(token);
-    await _cache.warmNext(episode.url, _source.headers, cancel: token);
-    _probeTokens.remove(token);
+    try {
+      await _cache.warmNext(episode.url, _source.headers, cancel: token);
+    } finally {
+      _probeTokens.remove(token);
+      // A cancelled request may finish after playback has resumed or changed.
+      // It only owns this playback's token, never another episode's warmup.
+      if (identical(playback.nextWarmup, token)) {
+        playback.nextWarmup = null;
+        if (token.isCancelled) playback.warmedNext = false;
+      }
+    }
   }
 
   void _cancelRouteProbe() {
@@ -1952,6 +2043,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Future<void> _screenshot() async {
     final playback = _playback;
     if (playback == null || !playback.ready) return;
+    playback.manualPlaybackRevision++;
     try {
       final bytes = await playback.player.screenshot(format: 'image/png');
       if (bytes == null || !mounted) return;
@@ -2115,6 +2207,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         return;
       }
       _backgroundPaused = false;
+      playback.manualPlaybackRevision++;
       await playback.player.playOrPause();
     } finally {
       _manualPlaybackChanging = false;
@@ -3079,7 +3172,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                         playback.player,
                       ) ??
                       ListenableBuilder(
-                        listenable: widget.store,
+                        listenable: Listenable.merge([
+                          widget.store,
+                          cinemaExternalSubtitleState(playback.player).active,
+                        ]),
                         builder: (context, _) => Video(
                           key: ValueKey(playback),
                           controller: playback.controller,
@@ -3092,10 +3188,58 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                           subtitleViewConfiguration:
                               CinemaSubtitleAppearance.from(
                                 widget.store.extras['subtitleAppearance'],
-                              ).configuration,
+                              ).configurationFor(
+                                visible: !cinemaExternalSubtitleState(
+                                  playback.player,
+                                ).active.value,
+                              ),
                           pauseUponEnteringBackgroundMode: false,
                         ),
                       ),
+                ),
+              ),
+            if (playback != null)
+              Positioned.fill(
+                child: ListenableBuilder(
+                  listenable: widget.store,
+                  builder: (context, _) => CinemaExternalSubtitleOverlay(
+                    player: playback.player,
+                    appearance: CinemaSubtitleAppearance.from(
+                      widget.store.extras['subtitleAppearance'],
+                    ),
+                  ),
+                ),
+              ),
+            if (playback != null)
+              Positioned(
+                left: 20,
+                right: 20,
+                bottom: _pip ? 12 : 74,
+                child: IgnorePointer(
+                  child: ListenableBuilder(
+                    listenable: playback.liveSubtitles,
+                    builder: (context, _) => playback.liveSubtitles.text.isEmpty
+                        ? const SizedBox.shrink()
+                        : Center(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 7,
+                              ),
+                              color: const Color(0xB3000000),
+                              child: Text(
+                                playback.liveSubtitles.text,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: CinemaSubtitleAppearance.from(
+                                    widget.store.extras['subtitleAppearance'],
+                                  ).fontSize,
+                                ),
+                              ),
+                            ),
+                          ),
+                  ),
                 ),
               ),
             if (NakuDevice.isTV &&
@@ -3813,6 +3957,8 @@ class _CinemaPlayback {
     player,
     configuration: preferences.videoConfiguration,
   );
+  late final liveSubtitles = CinemaLiveSubtitles(player);
+  CinemaSeasonSubtitleController? subtitles;
   String lastStage = 'created';
   bool _controllerDiagnosticsAttached = false;
 
@@ -3846,6 +3992,7 @@ class _CinemaPlayback {
   int width = 0;
   int height = 0;
   bool opened = false;
+  int manualPlaybackRevision = 0;
   String? mediaUrl;
   Map<String, String> mediaHeaders = const {};
   VideoSourceFormat mediaFormat = VideoSourceFormat.auto;
@@ -3853,12 +4000,27 @@ class _CinemaPlayback {
   CinemaNASPlaybackSession? nasSession;
   Stopwatch? firstFrameWatch;
   bool warmedNext = false;
+  CancelToken? nextWarmup;
+
+  void cancelNextWarmup(String reason) {
+    final token = nextWarmup;
+    if (token == null) return;
+    nextWarmup = null;
+    warmedNext = false;
+    token.cancel(reason);
+  }
+
   bool ready = false;
   bool completed = false;
+  ({int position, int duration, bool completed})? persistedProgress;
   Future<void>? _disposal;
 
   Future<void> dispose() => _disposal ??= _dispose();
   Future<void> _dispose() async {
+    subtitles?.close();
+    cancelNextWarmup('播放已结束，取消下一集预热');
+    liveSubtitles.dispose();
+    await closeCinemaExternalSubtitles(player);
     final closingNAS = nasSession?.close();
     try {
       await cacheSession?.close();

@@ -111,9 +111,13 @@ class CinemaHomePage extends StatefulWidget {
     this.catalogDiscovery,
     this.doubanThemeCatalog,
     this.animePageBuilder,
+    this.playerPageBuilder,
     this.initialStartup = const CinemaStartupTarget(),
   });
   final CinemaStartupTarget initialStartup;
+
+  /// Allows embedding the player or inspecting navigation without an engine.
+  final Widget Function(CinemaPlayerPage)? playerPageBuilder;
   final CinemaStore? store;
   final CinemaRepository? repository;
   final CinemaRatingsRepository? ratingsRepository;
@@ -670,33 +674,37 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             MaterialPageRoute<void>(
               builder: (context) => Theme(
                 data: CinemaTheme.of(context),
-                child: CinemaPlayerPage(
-                  title: detail,
-                  source: source,
-                  offlinePaths: offlinePaths,
-                  initialPositionSeconds: initialPositionSeconds,
-                  watchTogether: widget.enableWatchTogether ? _together : null,
-                  store: _store,
-                  variants: variants,
-                  repository: _repository,
-                  ratingsRepository: _ratings,
-                  onRecommendationSelected: (recommendation) async {
-                    if (!mounted) return;
-                    if (keepBrowseRoute) {
-                      await _openDoubanRecommendation(recommendation);
-                      return;
-                    }
-                    await _selectSection(
-                      _matchesCategory(detail.category, _Section.series)
-                          ? _Section.series
-                          : _Section.movies,
-                    );
-                    if (!mounted) return;
-                    _search.text = recommendation.title;
-                    unawaited(_runSearch());
-                  },
-                  routeIndex: road,
-                  episodeIndex: episode,
+                child: _buildPlayerPage(
+                  CinemaPlayerPage(
+                    title: detail,
+                    source: source,
+                    offlinePaths: offlinePaths,
+                    initialPositionSeconds: initialPositionSeconds,
+                    watchTogether: widget.enableWatchTogether
+                        ? _together
+                        : null,
+                    store: _store,
+                    variants: variants,
+                    repository: _repository,
+                    ratingsRepository: _ratings,
+                    onRecommendationSelected: (recommendation) async {
+                      if (!mounted) return;
+                      if (keepBrowseRoute) {
+                        await _openDoubanRecommendation(recommendation);
+                        return;
+                      }
+                      await _selectSection(
+                        _matchesCategory(detail.category, _Section.series)
+                            ? _Section.series
+                            : _Section.movies,
+                      );
+                      if (!mounted) return;
+                      _search.text = recommendation.title;
+                      unawaited(_runSearch());
+                    },
+                    routeIndex: road,
+                    episodeIndex: episode,
+                  ),
                 ),
               ),
             ),
@@ -706,6 +714,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           }),
     );
   }
+
+  Widget _buildPlayerPage(CinemaPlayerPage page) =>
+      widget.playerPageBuilder?.call(page) ?? page;
 
   void _onHealthChanged() {
     if (mounted && _section == _Section.settings && _showSourceManager) {
@@ -1676,6 +1687,35 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     if (source == null) {
       _toast('此片源已移除，请重新添加后播放。');
       return;
+    }
+    if (resume != null) {
+      // A history click resumes saved media, not the details page's first item.
+      try {
+        final detail = await _repository.detail(source, title);
+        if (!mounted) return;
+        final selection = cinemaResumeSelection(detail, resume);
+        if (selection != null) {
+          _playTitle(
+            detail,
+            source,
+            selection.routeIndex,
+            selection.episodeIndex,
+            variants,
+            keepBrowseRoute: keepBrowseRoute,
+            initialPositionSeconds: cinemaResumePosition(
+              detail,
+              resume,
+              selection.routeIndex,
+              selection.episodeIndex,
+            ),
+          );
+          return;
+        }
+        _toast('历史集数无法与当前片源对应，请选择集数。');
+      } catch (_) {
+        if (!mounted) return;
+        _toast('暂时无法刷新片源，请在详情中重试继续观看。');
+      }
     }
     await showModalBottomSheet<void>(
       context: context,
@@ -2708,27 +2748,43 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     ),
   );
 
-  Widget _posterFallback(String name) => Container(
-    color: CinemaTheme.raised,
-    padding: const EdgeInsets.all(18),
-    child: Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        const Icon(
-          Icons.local_movies_outlined,
-          color: CinemaTheme.copper,
-          size: 30,
-        ),
-        const SizedBox(height: 15),
-        Text(
-          name,
-          maxLines: 4,
-          overflow: TextOverflow.ellipsis,
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: CinemaTheme.muted, fontSize: 13),
-        ),
-      ],
-    ),
+  Widget _posterFallback(String name) => LayoutBuilder(
+    builder: (context, bounds) => bounds.maxWidth < 96 || bounds.maxHeight < 100
+        ? ColoredBox(
+            color: CinemaTheme.raised,
+            child: const Center(
+              child: Icon(
+                Icons.local_movies_outlined,
+                size: 24,
+                color: CinemaTheme.copper,
+              ),
+            ),
+          )
+        : Container(
+            color: CinemaTheme.raised,
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(
+                  Icons.local_movies_outlined,
+                  color: CinemaTheme.copper,
+                  size: 30,
+                ),
+                const SizedBox(height: 15),
+                Text(
+                  name,
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: CinemaTheme.muted,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
   );
 
   Widget _titleCard(

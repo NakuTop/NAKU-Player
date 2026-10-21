@@ -21,8 +21,13 @@ class CinemaSubtitleAppearance {
   }
   final double fontSize, bottom;
   Map<String, double> toJson() => {'fontSize': fontSize, 'bottom': bottom};
-  SubtitleViewConfiguration get configuration => SubtitleViewConfiguration(
-    style: const SubtitleViewConfiguration().style.copyWith(fontSize: fontSize),
-    padding: EdgeInsets.fromLTRB(16, 0, 16, bottom),
-  );
+  SubtitleViewConfiguration get configuration => configurationFor();
+  SubtitleViewConfiguration configurationFor({bool visible = true}) =>
+      SubtitleViewConfiguration(
+        visible: visible,
+        style: const SubtitleViewConfiguration().style.copyWith(
+          fontSize: fontSize,
+        ),
+        padding: EdgeInsets.fromLTRB(16, 0, 16, bottom),
+      );
 }

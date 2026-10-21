@@ -245,12 +245,11 @@ class _AppWidgetState extends State<AppWidget>
   }
 
   @override
-  Future<AppExitResponse> didRequestAppExit() async {
-    // macOS Cmd-Q / application menu termination is an explicit Quit, even when
-    // the close button has been configured to hide the window.
-    await _closeActions.prepareQuit();
-    return AppExitResponse.exit;
-  }
+  Future<AppExitResponse> didRequestAppExit() =>
+      _closeActions.requestPlatformExit(
+        windowClose: Platform.isWindows,
+        onWindowClose: onWindowClose,
+      );
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) async {
