@@ -6,8 +6,7 @@ import 'package:kazumi/services/video_source/video_source_service.dart';
 /// WebView 视频源解析服务
 ///
 /// 使用 WebView 解析视频页面，提取视频源 URL。
-/// WebView 实例在服务生命周期内复用，切换集数时调用 unloadPage 释放页面资源，
-/// 仅在 [dispose] 时才真正销毁 WebView。
+/// 每次解析拥有独立 WebView，避免上一集的 iframe / JS 迟到回调污染下一集。
 class WebViewVideoSourceService implements IVideoSourceService {
   WebViewVideoSourceService({VideoWebviewController Function()? createWebview})
     : _createWebview =
@@ -15,7 +14,6 @@ class WebViewVideoSourceService implements IVideoSourceService {
 
   final VideoWebviewController Function() _createWebview;
   VideoWebviewController? _webview;
-  bool? _legacyParser;
   StreamSubscription? _logSubscription;
 
   // 单个服务实例持有一个 WebView，因此解析任务按实例串行执行。
@@ -66,28 +64,10 @@ class WebViewVideoSourceService implements IVideoSourceService {
   }) async {
     request.throwIfNotCurrent(_activeRequest);
 
-    if (_webview != null && _legacyParser != useLegacyParser) {
-      final previous = _webview!;
-      _webview = null;
-      await _logSubscription?.cancel();
-      _logSubscription = null;
-      unawaited(
-        previous
-            .dispose()
-            .timeout(const Duration(seconds: 2))
-            .catchError((Object _) {}),
-      );
-    }
-    final needsInit = _webview == null;
-    _legacyParser = useLegacyParser;
-    final webview = _webview ??= _createWebview();
-    if (needsInit) {
-      _logSubscription = webview.onLog.listen((log) {
-        if (!_logController.isClosed) {
-          _logController.add(log);
-        }
-      });
-    }
+    final webview = _webview = _createWebview();
+    _logSubscription = webview.onLog.listen((log) {
+      if (!_logController.isClosed) _logController.add(log);
+    });
 
     // Subscribe before init/load: a cached page may report a URL before
     // loadUrl's platform-channel future completes.
@@ -101,10 +81,9 @@ class WebViewVideoSourceService implements IVideoSourceService {
         if (!parsed.isCompleted) parsed.completeError(error, stack);
       },
     );
-    var reusable = false;
     try {
       final operation = () async {
-        if (needsInit) await webview.init();
+        await webview.init();
         request.throwIfNotCurrent(_activeRequest);
         await webview.loadUrl(episodeUrl, useLegacyParser, offset: offset);
         request.throwIfNotCurrent(_activeRequest);
@@ -122,7 +101,6 @@ class WebViewVideoSourceService implements IVideoSourceService {
         },
       );
       request.throwIfNotCurrent(_activeRequest);
-      reusable = true;
       return VideoSource(
         url: event.url,
         offset: event.offset,
@@ -138,26 +116,17 @@ class WebViewVideoSourceService implements IVideoSourceService {
     } finally {
       request.cancel();
       await parserSubscription.cancel();
-      if (reusable) {
-        try {
-          await webview.unloadPage().timeout(const Duration(seconds: 2));
-        } catch (_) {
-          reusable = false;
-        }
-      }
-      if (!reusable) {
-        // Retire a timed-out controller. Its late callbacks must never resolve
-        // a subsequent episode, and a stuck native dispose must not block it.
-        if (identical(_webview, webview)) _webview = null;
-        await _logSubscription?.cancel();
-        _logSubscription = null;
-        unawaited(
-          webview
-              .dispose()
-              .timeout(const Duration(seconds: 2))
-              .catchError((Object _) {}),
-        );
-      }
+      // Successful pages can also emit late callbacks. Retire every instance,
+      // including when the next task uses the same parser and host.
+      if (identical(_webview, webview)) _webview = null;
+      await _logSubscription?.cancel();
+      _logSubscription = null;
+      unawaited(
+        webview
+            .dispose()
+            .timeout(const Duration(seconds: 2))
+            .catchError((Object _) {}),
+      );
       if (identical(_activeRequest, request)) {
         _activeRequest = null;
       }

@@ -406,6 +406,7 @@ void main() {
       await choose(tester, 'genre', '科幻');
       await choose(tester, 'region', '美国');
       await choose(tester, 'year', '2024');
+      expect(find.text('综合排序'), findsNothing);
       await tester.tap(find.byKey(const ValueKey('douban-sort-S')));
       await tester.pumpAndSettle();
       expect(repo.requests.last.filters.genre, '科幻');
@@ -420,7 +421,7 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('douban-reset-filters')));
       await tester.pumpAndSettle();
       expect(repo.requests.last.filters.isEmpty, isTrue);
-      expect(repo.requests.last.sort, isNull);
+      expect(repo.requests.last.sort, 'U');
       expect(selected(tester, 'genre'), '');
       expect(tester.takeException(), isNull);
     },

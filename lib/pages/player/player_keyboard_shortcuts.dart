@@ -11,10 +11,16 @@ class PlayerLongPressShortcutActions {
   const PlayerLongPressShortcutActions({
     required this.onRepeat,
     required this.onRelease,
+    this.onCancel,
+    this.holdDelay,
   });
 
   final PlayerShortcutAction onRepeat;
   final PlayerShortcutAction onRelease;
+  final PlayerShortcutAction? onCancel;
+
+  /// A timed hold does not depend on the operating system's key repeat setting.
+  final Duration? holdDelay;
 }
 
 /// Dispatches player shortcuts while preserving focused controls' own keys.
@@ -44,16 +50,21 @@ class PlayerKeyboardShortcuts extends StatefulWidget {
       _PlayerKeyboardShortcutsState();
 }
 
-class _PlayerKeyboardShortcutsState extends State<PlayerKeyboardShortcuts> {
+class _PlayerKeyboardShortcutsState extends State<PlayerKeyboardShortcuts>
+    with WidgetsBindingObserver {
   late Map<String, List<String>> _shortcuts;
   final Map<LogicalKeyboardKey, PlayerLongPressShortcutActions>
   _activeLongPressKeys = <LogicalKeyboardKey, PlayerLongPressShortcutActions>{};
+  final _holdTimers = <LogicalKeyboardKey, Timer>{};
+  final _timedHolds = <LogicalKeyboardKey>{};
 
   @override
   void initState() {
     super.initState();
     _shortcuts = widget.shortcuts ?? _loadShortcuts();
     FocusManager.instance.addEarlyKeyEventHandler(_handleKeyEvent);
+    FocusManager.instance.addListener(_focusChanged);
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
@@ -67,7 +78,9 @@ class _PlayerKeyboardShortcutsState extends State<PlayerKeyboardShortcuts> {
   @override
   void dispose() {
     FocusManager.instance.removeEarlyKeyEventHandler(_handleKeyEvent);
-    _releaseAllLongPressShortcuts();
+    FocusManager.instance.removeListener(_focusChanged);
+    WidgetsBinding.instance.removeObserver(this);
+    _releaseAllLongPressShortcuts(cancel: true);
     super.dispose();
   }
 
@@ -83,6 +96,8 @@ class _PlayerKeyboardShortcutsState extends State<PlayerKeyboardShortcuts> {
 
   KeyEventResult _handleKeyEvent(KeyEvent event) {
     if (event is KeyUpEvent) {
+      _holdTimers.remove(event.logicalKey)?.cancel();
+      _timedHolds.remove(event.logicalKey);
       final longPressActions = _activeLongPressKeys.remove(event.logicalKey);
       if (longPressActions != null) {
         _invokeAction(longPressActions.onRelease);
@@ -109,7 +124,24 @@ class _PlayerKeyboardShortcutsState extends State<PlayerKeyboardShortcuts> {
       }
       final longPressActions = widget.longPressActions[actionName];
       if (longPressActions != null) {
+        if (longPressActions.holdDelay != null &&
+            _activeLongPressKeys.isNotEmpty) {
+          _releaseAllLongPressShortcuts(cancel: true);
+        }
         _activeLongPressKeys[event.logicalKey] = longPressActions;
+        if (longPressActions.holdDelay case final delay?) {
+          _holdTimers[event.logicalKey] = Timer(delay, () {
+            _holdTimers.remove(event.logicalKey);
+            if (!_shouldHandleShortcut(event.logicalKey)) {
+              _releaseAllLongPressShortcuts(cancel: true);
+              return;
+            }
+            if (_activeLongPressKeys.containsKey(event.logicalKey) &&
+                _timedHolds.add(event.logicalKey)) {
+              _invokeAction(longPressActions.onRepeat);
+            }
+          });
+        }
       }
       _invokeAction(action);
       return KeyEventResult.handled;
@@ -120,7 +152,11 @@ class _PlayerKeyboardShortcutsState extends State<PlayerKeyboardShortcuts> {
       if (longPressActions == null) {
         return KeyEventResult.ignored;
       }
-      _invokeAction(longPressActions.onRepeat);
+      if (longPressActions.holdDelay == null ||
+          _timedHolds.add(event.logicalKey)) {
+        _holdTimers.remove(event.logicalKey)?.cancel();
+        _invokeAction(longPressActions.onRepeat);
+      }
       return KeyEventResult.handled;
     }
 
@@ -197,11 +233,31 @@ class _PlayerKeyboardShortcutsState extends State<PlayerKeyboardShortcuts> {
     return null;
   }
 
-  void _releaseAllLongPressShortcuts() {
+  void _focusChanged() {
+    if (_activeLongPressKeys.keys.any((key) => !_shouldHandleShortcut(key))) {
+      _releaseAllLongPressShortcuts(cancel: true);
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) {
+      _releaseAllLongPressShortcuts(cancel: true);
+    }
+  }
+
+  void _releaseAllLongPressShortcuts({bool cancel = false}) {
     final actions = _activeLongPressKeys.values.toSet();
     _activeLongPressKeys.clear();
+    for (final timer in _holdTimers.values) {
+      timer.cancel();
+    }
+    _holdTimers.clear();
+    _timedHolds.clear();
     for (final action in actions) {
-      _invokeAction(action.onRelease);
+      _invokeAction(
+        cancel ? action.onCancel ?? action.onRelease : action.onRelease,
+      );
     }
   }
 

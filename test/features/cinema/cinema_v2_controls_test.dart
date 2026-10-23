@@ -12,6 +12,11 @@ import 'package:kazumi/features/cinema/cinema_sync_session.dart';
 import 'package:kazumi/features/cinema/cinema_theme.dart';
 import 'package:kazumi/features/cinema/cinema_tools_settings.dart';
 import 'package:kazumi/features/cinema/cinema_tracks_sheet.dart';
+import 'package:kazumi/features/cinema/cinema_external_subtitles.dart';
+import 'package:kazumi/features/cinema/cinema_season_subtitle_controller.dart';
+import 'package:kazumi/features/cinema/cinema_subtitle_auto_sync.dart';
+import 'package:kazumi/features/cinema/cinema_online_subtitles.dart';
+import 'package:kazumi/features/cinema/cinema_danmaku.dart';
 
 class _Tracks extends PlatformPlayer {
   _Tracks() : super(configuration: const PlayerConfiguration()) {
@@ -132,6 +137,7 @@ void main() {
         RepaintBoundary(
           key: const ValueKey('qa'),
           child: MaterialApp(
+            debugShowCheckedModeBanner: false,
             theme: CinemaTheme.data,
             home: CinemaToolsSettingsPage(store: store),
           ),
@@ -170,6 +176,174 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
   }
+  for (final width in [360.0, 680.0]) {
+    testWidgets('subtitle menu stays compact and usable at $width', (
+      tester,
+    ) async {
+      tester.view.physicalSize = Size(width, 780);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final backend = _Tracks();
+      final player = _Player(backend);
+      final automation = CinemaSeasonSubtitleController(
+        player: player,
+        store: store,
+        seriesIdentity: 'qa',
+        mediaIdentity: 'qa',
+        query: const CinemaSubtitleQuery('自写测试影片', 'movie', 1, 1),
+      );
+      automation.status.value = '已恢复本视频字幕及对齐设置';
+      final autoSync = CinemaSubtitleAutoSync(player, media: () => '');
+      cinemaExternalSubtitleState(player).select(
+        '1\n00:00:01,000 --> 00:00:04,000\n这是自写的字幕预览\nSelf-authored subtitle preview\n\n'
+            '2\n00:00:05,000 --> 00:00:08,000\n选中听到的这句对白\nSelect the dialogue you hear\n\n'
+            '3\n00:00:10,000 --> 00:00:13,000\n再对齐到当前画面\nAlign it to the current picture\n',
+        'qa.srt',
+        'qa',
+        0,
+        title: '测试影片.简体中文.srt',
+      );
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: const ValueKey('qa'),
+          child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: CinemaTheme.data,
+            home: Scaffold(
+              body: CinemaTracksPanel(
+                player: player,
+                store: store,
+                automation: automation,
+                autoSync: autoSync,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('自动字幕 · 中文优先'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('subtitle-current-file')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('subtitle-quick-auto')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('subtitle-quick-earlier')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('subtitle-quick-later')),
+        findsOneWidget,
+      );
+      expect(find.text('字幕文件内容'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.byKey(const ValueKey('subtitle-quick-auto'))).dy,
+        lessThan(300),
+      );
+      cinemaExternalSubtitleState(player).saveTiming = null;
+      await tester.tap(find.byKey(const ValueKey('subtitle-quick-earlier')));
+      await tester.pump();
+      expect(cinemaExternalSubtitleState(player).delay, -.5);
+      await tester.tap(find.byKey(const ValueKey('subtitle-quick-later')));
+      await tester.pump();
+      expect(cinemaExternalSubtitleState(player).delay, 0);
+      expect(find.byKey(const ValueKey('subtitle-cue-search')), findsNothing);
+      expect(tester.takeException(), isNull);
+      await _snapshot(tester, 'subtitles-${width.toInt()}');
+      for (final tab in ['音轨', '显示']) {
+        await tester.tap(find.text(tab));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        await _snapshot(tester, 'tracks-$tab-${width.toInt()}');
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+      automation.close();
+      autoSync.dispose();
+      await closeCinemaExternalSubtitles(player);
+      await player.dispose();
+    });
+  }
+
+  testWidgets('film danmaku button only exposes display styles and switch', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(680, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('naku/danmaku-credentials'),
+          (_) async => null,
+        );
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('naku/danmaku-credentials'),
+            null,
+          ),
+    );
+    final player = _Player(_Tracks());
+    late CinemaDanmakuController controller;
+
+    await tester.runAsync(() async {
+      controller = CinemaDanmakuController(player, store, 'qa-danmaku');
+      await controller.ready;
+    });
+
+    await tester.pumpWidget(
+      RepaintBoundary(
+        key: const ValueKey('qa'),
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: CinemaTheme.data,
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => Center(
+                child: FilledButton(
+                  onPressed: () => showCinemaDanmakuSheet(
+                    context,
+                    controller,
+                    title: '自写测试影片',
+                  ),
+                  child: const Text('打开弹幕'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('打开弹幕'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('显示弹幕'), findsOneWidget);
+    for (final label in ['字号', '不透明度', '显示区域', '滚动时长']) {
+      expect(find.text(label), findsOneWidget);
+    }
+    expect(find.byType(TextField), findsNothing);
+    expect(find.text('配置弹弹play'), findsNothing);
+    expect(find.text('配置 NAS'), findsNothing);
+    expect(find.text('重新自动匹配'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await _snapshot(tester, 'danmaku-styles');
+    await tester.runAsync(() async {
+      await tester.tap(find.byKey(const ValueKey('cinema-danmaku-enabled')));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await store.flush();
+    });
+    await tester.pumpAndSettle();
+    expect(controller.enabled, isFalse);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(() async {
+      await controller.close();
+      await player.dispose();
+    });
+  });
+
   testWidgets('changing subtitle and audio tracks does not pause playback', (
     tester,
   ) async {
@@ -184,14 +358,20 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await tester.tap(find.text('音轨'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('English · en · '));
     await tester.pumpAndSettle();
     expect(player.state.track.audio.id, '2');
+    await tester.tap(find.text('字幕'));
+    await tester.pumpAndSettle();
     final subtitle = find.text('中文字幕 · zh');
     await tester.ensureVisible(subtitle);
     await tester.tap(subtitle);
     await tester.pumpAndSettle();
     expect(player.state.track.subtitle.id, '3');
+    await tester.tap(find.text('显示'));
+    await tester.pumpAndSettle();
     final appearance = find.byKey(const ValueKey('subtitle-font-size'));
     await tester.ensureVisible(appearance);
     final slider = tester.widget<Slider>(appearance);

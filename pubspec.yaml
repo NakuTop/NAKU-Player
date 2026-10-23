@@ -1,7 +1,7 @@
 name: kazumi
 description: "NAKU播放器：电影、剧集与动漫客户端。"
 publish_to: "none"
-version: 2.8.4+59
+version: 2.12.3+74
 
 environment:
   sdk: ">=3.10.0 <4.0.0"
@@ -106,8 +106,11 @@ dependencies:
       ref: 803c4a27912091db6f839d48d1b984a0d9f588c7
       path: ./media_kit_video
   macos_secure_bookmarks: ^0.2.1
+  brotli: ^0.6.0
 
 dev_dependencies:
+  integration_test:
+    sdk: flutter
   path_provider_platform_interface: ^2.1.2
   plugin_platform_interface: ^2.1.8
   flutter_test:
@@ -122,6 +125,10 @@ dev_dependencies:
   msix: ^3.16.12
 
 dependency_overrides:
+  hive_ce:
+    path: third_party/hive_ce
+  media_kit_video:
+    path: third_party/media_kit_video
   ech_http:
     path: third_party/ech_http
 
@@ -172,6 +179,8 @@ flutter:
     - assets/images/logo/
     - assets/statements/
     - licenses/ech_http/
+    - licenses/libfvad/
+    - licenses/danmu_api/
   fonts:
     - family: MI_Sans_Regular
       fonts:

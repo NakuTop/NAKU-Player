@@ -1,6 +1,9 @@
 import 'package:kazumi/services/platform/naku_device.dart';
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
+import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart';
 import 'package:dio/dio.dart';
 import 'package:kazumi/features/cinema/cinema_search_discovery.dart';
 import 'package:flutter/material.dart';
@@ -42,6 +45,26 @@ class _CatalogDiscovery extends DoubanRepository {
   }) async {
     calls.add(filters);
     if (fail) throw const DoubanException('fixture unavailable');
+    if (sort == 'U') {
+      final prefix = kind == DoubanKind.movie ? '电影' : '剧集';
+      final suffix = start == 0 ? '' : '第2页';
+      return DoubanResultPage(
+        items: [
+          for (final (i, name) in ['较早热门', '最近更新', '缺少数据'].indexed)
+            DoubanTitle(
+              id: '${kind == DoubanKind.movie ? 10000 : 20000}${start + i}',
+              title: '$prefix$name$suffix',
+              kind: kind,
+              year: '${DateTime.now().year}',
+              score: i == 0 ? 6 : 9,
+            ),
+        ],
+        start: start,
+        nextStart: start + 3,
+        hasMore: start == 0,
+      );
+    }
+
     return const DoubanResultPage(
       items: [],
       start: 0,
@@ -52,6 +75,7 @@ class _CatalogDiscovery extends DoubanRepository {
 }
 
 class _Repository extends CinemaRepository {
+  bool hasHotResource = false;
   Completer<CinemaPage>? pending;
   final browsed = <String?>[];
   bool useMetadata = false;
@@ -85,7 +109,9 @@ class _Repository extends CinemaRepository {
     if (failedSources.contains(source.id)) {
       throw const CinemaSourceException('fixture offline');
     }
-    if (year.isEmpty) return browse(source, categoryId: categoryId, page: page);
+    if (year.isEmpty || year == '${DateTime.now().year}') {
+      return browse(source, categoryId: categoryId, page: page);
+    }
     if (failBrowse) throw const CinemaSourceException('fixture offline');
     if (categoryId == '1' || categoryId == '2') {
       return const CinemaPage(items: []);
@@ -114,6 +140,7 @@ class _Repository extends CinemaRepository {
         sourceId: _source.id,
         title: '$prefix较早热门$suffix',
         category: category,
+        year: '${DateTime.now().year}',
         sourceHits: 90,
         sourceUpdatedAt: DateTime.utc(2025),
       ),
@@ -122,6 +149,7 @@ class _Repository extends CinemaRepository {
         sourceId: _source.id,
         title: '$prefix最近更新$suffix',
         category: category,
+        year: '${DateTime.now().year}',
         sourceHits: 10,
         sourceUpdatedAt: DateTime.utc(2026),
       ),
@@ -130,6 +158,7 @@ class _Repository extends CinemaRepository {
         sourceId: _source.id,
         title: '$prefix缺少数据$suffix',
         category: category,
+        year: '${DateTime.now().year}',
       ),
     ];
   }
@@ -168,6 +197,7 @@ class _Repository extends CinemaRepository {
                 id: '$categoryId-$index',
                 sourceId: source.id,
                 title: '${categoryId == '22' ? '剧集' : '电影'}作品 $index',
+                year: '${DateTime.now().year}',
                 category: categoryId == '22' ? '欧美剧' : '剧情片',
               ),
             )
@@ -193,6 +223,31 @@ class _Repository extends CinemaRepository {
     int page = 1,
   }) async {
     searched.add(keyword);
+    if (hasHotResource && keyword.contains('较早热门')) {
+      return CinemaPage(
+        items: [
+          CinemaTitle(
+            id: 'hot4k',
+            sourceId: source.id,
+            title: '${keyword}4K',
+            year: '${DateTime.now().year}',
+            category: '电影',
+            routes: const [
+              CinemaRoute(
+                name: 'test',
+                episodes: [
+                  CinemaEpisode(
+                    name: '正片',
+                    url: 'https://media.example/test.m3u8',
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ],
+      );
+    }
+
     if (keyword == 'Interstellar') return const CinemaPage(items: []);
     if (keyword == '延迟') return (pending = Completer<CinemaPage>()).future;
     if (keyword == '排序搜索') {
@@ -281,6 +336,29 @@ class _Discovery extends CinemaSearchDiscoveryRepository {
 }
 
 void main() {
+  setUpAll(() async {
+    if (const String.fromEnvironment('NAKU_HOME_UI_OUTPUT').isEmpty) return;
+    final bytes = await File(
+      '/System/Library/Fonts/STHeiti Light.ttc',
+    ).readAsBytes();
+    for (final name in [
+      '.AppleSystemUIFont',
+      'Roboto',
+      'MI_Sans_Regular',
+      'Ahem',
+    ]) {
+      await (FontLoader(
+        name,
+      )..addFont(Future.value(ByteData.sublistView(bytes)))).load();
+    }
+    await (FontLoader('MaterialIcons')..addFont(
+          File(
+            '../toolchains/flutter/bin/cache/artifacts/material_fonts/MaterialIcons-Regular.otf',
+          ).readAsBytes().then(ByteData.sublistView),
+        ))
+        .load();
+  });
+
   late Directory directory;
   late CinemaStore store;
   late _Repository repository;
@@ -303,6 +381,8 @@ void main() {
   Future<void> mount(
     WidgetTester tester, {
     double width = 1280,
+    bool recentHot = false,
+    bool prepareSeries = true,
     CinemaSearchDiscoveryRepository? discovery,
   }) async {
     tester.view.physicalSize = Size(width, 860);
@@ -311,20 +391,90 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       MaterialApp(
-        theme: ThemeData.dark(),
-        home: CinemaHomePage(
-          enableSearchDiscovery: discovery != null,
-          searchDiscovery: discovery,
-          catalogDiscovery: catalogDiscovery,
-          enableWatchTogether: false,
-          store: store,
-          repository: repository,
+        theme: ThemeData.dark().copyWith(platform: TargetPlatform.macOS),
+        home: RepaintBoundary(
+          key: const ValueKey('home-capture'),
+          child: CinemaHomePage(
+            enableSearchDiscovery: discovery != null,
+            searchDiscovery: discovery,
+            catalogDiscovery: catalogDiscovery,
+            enableWatchTogether: false,
+            store: store,
+            repository: repository,
+          ),
         ),
       ),
     );
     await tester.pumpAndSettle();
+    Future<void> section(String name) async {
+      if (find.text(name).evaluate().isEmpty) {
+        await tester.tap(find.byIcon(Icons.menu_rounded));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.text(name).first);
+      await tester.pumpAndSettle();
+    }
+
+    if (!recentHot) {
+      await tester.tap(find.byKey(const ValueKey('catalog-sort-latest')));
+      await tester.pumpAndSettle();
+      if (prepareSeries && width >= 1000) {
+        await section('剧集');
+        await tester.tap(find.byKey(const ValueKey('catalog-sort-latest')));
+        await tester.pumpAndSettle();
+        await section('电影');
+      }
+      repository.searched.clear();
+    }
   }
 
+  Future<void> captureHome(WidgetTester tester, String name) async {
+    const path = String.fromEnvironment('NAKU_HOME_UI_OUTPUT');
+    if (path.isEmpty) return;
+    await tester.runAsync(() async {
+      final boundary = tester.renderObject<RenderRepaintBoundary>(
+        find.byKey(const ValueKey('home-capture')),
+      );
+      final image = await boundary.toImage(pixelRatio: 1);
+      final data = await image.toByteData(format: ui.ImageByteFormat.png);
+      final file = File('$path/$name');
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(data!.buffer.asUint8List());
+      image.dispose();
+    });
+  }
+
+  testWidgets('compact recent-hot cards keep readable resource states', (
+    tester,
+  ) async {
+    repository.hasHotResource = true;
+    await mount(tester, width: 700, recentHot: true);
+    expect(find.byKey(const ValueKey('resource-found')), findsOneWidget);
+    await captureHome(tester, 'home-compact.png');
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets(
+    'home defaults to recent hot and all years with resource badges, without 4K navigation',
+    (tester) async {
+      repository.hasHotResource = true;
+      await mount(tester, recentHot: true);
+      expect(find.text('4K'), findsNothing);
+      expect(
+        tester
+            .widget<ChoiceChip>(
+              find.byKey(const ValueKey('catalog-sort-popular')),
+            )
+            .selected,
+        isTrue,
+      );
+      expect(find.text('电影较早热门'), findsWidgets);
+      expect(find.byKey(const ValueKey('resource-found')), findsOneWidget);
+      expect(find.byKey(const ValueKey('resource-missing')), findsNWidgets(2));
+      await captureHome(tester, 'home-wide.png');
+      expect(catalogDiscovery.calls.first.year, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
   testWidgets(
     'TV has a remote navigation rail and no downloads; phone keeps downloads',
     (tester) async {
@@ -458,7 +608,7 @@ void main() {
     await tester.tap(sortChip(CinemaCatalogSort.popular));
     await tester.pumpAndSettle();
     expectSelected(tester, CinemaCatalogSort.popular);
-    expect(find.text('已加载作品 · 片源热度'), findsOneWidget);
+    expect(find.text('豆瓣 · 近期热门'), findsOneWidget);
     expectBefore(tester, '电影较早热门', '电影最近更新');
     expectBefore(tester, '电影最近更新', '电影缺少数据');
     expect(repository.browsed, hasLength(requests));
@@ -477,6 +627,8 @@ void main() {
     await tester.tap(find.text('剧集'));
     await tester.pumpAndSettle();
     expectSelected(tester, CinemaCatalogSort.latest);
+    await tester.tap(sortChip(CinemaCatalogSort.latest));
+    await tester.pumpAndSettle();
     expectBefore(tester, '剧集最近更新', '剧集较早热门');
     await tester.tap(sortChip(CinemaCatalogSort.popular));
     await tester.pumpAndSettle();
@@ -536,8 +688,11 @@ void main() {
       expect(find.text('片源未提供可用更新时间，保留目录顺序。'), findsOneWidget);
       await tester.tap(sortChip(CinemaCatalogSort.popular));
       await tester.pumpAndSettle();
-      expect(find.text('片源未提供可用热度，保留目录顺序。'), findsOneWidget);
-      expect(find.text('电影测试作品'), findsWidgets);
+      expect(
+        find.text('按豆瓣近期热门顺序展示，卡片会自动检查片源；同片优先选择标记为 4K 的版本。'),
+        findsOneWidget,
+      );
+      expect(find.text('电影较早热门'), findsWidgets);
     },
   );
 
@@ -545,7 +700,7 @@ void main() {
     'unified catalogues load real movie and series leaves without provider tabs',
     (tester) async {
       await mount(tester);
-      expect(repository.browsed.first, '11');
+      expect(repository.browsed, contains('11'));
       expect(find.text('电影测试作品'), findsWidgets);
       expect(find.text('奇幻片'), findsNothing);
       expect(find.text('Netflix电影'), findsNothing);
@@ -694,9 +849,11 @@ void main() {
   testWidgets('an offscreen catalogue finishes once and is ready on return', (
     tester,
   ) async {
-    await mount(tester);
+    await mount(tester, prepareSeries: false);
     final pending = repository.delayedBrowse['22'] = Completer<CinemaPage>();
     await tester.tap(find.text('剧集'));
+    await tester.pumpAndSettle();
+    await tester.tap(sortChip(CinemaCatalogSort.latest));
     await tester.pump();
     await tester.tap(find.text('电影'));
     await tester.pumpAndSettle();
@@ -708,6 +865,7 @@ void main() {
             id: 'ready-series',
             sourceId: 'fixture',
             title: '后台完成的剧集',
+            year: '2026',
             category: '欧美剧',
           ),
         ],

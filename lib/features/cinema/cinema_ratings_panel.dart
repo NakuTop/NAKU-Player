@@ -45,12 +45,32 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
   @override
   void initState() {
     super.initState();
+    _repository.changes.addListener(_ratingsChanged);
     _load();
+  }
+
+  void _ratingsChanged() {
+    if (!mounted || _editing) return;
+    final current = _repository.peek(widget.title);
+    if (current != null && !identical(current, _result)) {
+      setState(() => _result = current);
+    }
+  }
+
+  @override
+  void dispose() {
+    _repository.changes.removeListener(_ratingsChanged);
+    super.dispose();
   }
 
   @override
   void didUpdateWidget(CinemaRatingsPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.repository != widget.repository) {
+      (oldWidget.repository ?? CinemaRatingsRepository.instance).changes
+          .removeListener(_ratingsChanged);
+      _repository.changes.addListener(_ratingsChanged);
+    }
     if (oldWidget.title != widget.title ||
         oldWidget.repository != widget.repository) {
       _result = null;
@@ -407,7 +427,7 @@ class _RatingCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            provider,
+            '$provider${rating.scope.isEmpty ? '' : ' · ${rating.scope}'}',
             style: const TextStyle(
               color: CinemaTheme.text,
               fontSize: 13,
@@ -417,7 +437,7 @@ class _RatingCard extends StatelessWidget {
           const SizedBox(height: 8),
           Semantics(
             label: valid
-                ? '$provider $score${isTomatometer ? '%' : ' / 10'}'
+                ? '$provider ${rating.scope} $score${isTomatometer ? '%' : ' / 10'}'
                 : '$provider 暂无评分',
             excludeSemantics: true,
             child: Wrap(

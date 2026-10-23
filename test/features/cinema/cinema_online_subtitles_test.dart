@@ -64,6 +64,118 @@ class _Player implements Player {
 
 void main() {
   test(
+    'metadata selects the matching film rather than the first search hit',
+    () async {
+      final adapter = _Adapter()
+        ..respond = (o) {
+          if (o.uri.path.startsWith('/catalog/')) {
+            return {
+              'metas': [
+                {
+                  'id': 'tt0000001',
+                  'name': 'Shakugan no Shana',
+                  'type': 'series',
+                  'year': '2005',
+                },
+                {
+                  'id': 'tt0120338',
+                  'name': 'Titanic',
+                  'type': 'movie',
+                  'year': '1997',
+                },
+                {
+                  'id': 'tt0000002',
+                  'name': 'Titanic',
+                  'type': 'movie',
+                  'year': '2012',
+                },
+              ],
+            };
+          }
+          if (o.uri.host == 'opensubtitles-v3.strem.io') {
+            expect(o.uri.path, '/subtitles/movie/tt0120338.json');
+            return {
+              'subtitles': [
+                {
+                  'url': 'https://subs.example/titanic.srt',
+                  'lang': 'zh',
+                  'subtitleFileName': 'Titanic.1997.chs.srt',
+                },
+              ],
+            };
+          }
+          return {};
+        };
+      final client = CinemaOnlineSubtitles(
+        useFallbackCatalog: false,
+        dio: Dio()..httpClientAdapter = adapter,
+      );
+      try {
+        final result = await client.aggregate(
+          '泰坦尼克号（普通话版）',
+          'movie',
+          year: '1997',
+        );
+        expect(result.rows, hasLength(1));
+        expect(result.rows.single['matchedWorkId'], 'tt0120338');
+      } finally {
+        client.close();
+      }
+    },
+  );
+
+  test(
+    'unrelated metadata cannot change a film query into a series query',
+    () async {
+      final adapter = _Adapter()
+        ..respond = (o) {
+          if (o.uri.path.startsWith('/catalog/')) {
+            expect(o.uri.path, startsWith('/catalog/movie/'));
+            return {
+              'metas': [
+                {
+                  'id': 'tt0000001',
+                  'name': 'Shakugan no Shana',
+                  'type': 'series',
+                },
+              ],
+            };
+          }
+          expect(o.uri.host, isNot('opensubtitles-v3.strem.io'));
+          return {};
+        };
+      final client = CinemaOnlineSubtitles(
+        useFallbackCatalog: false,
+        dio: Dio()..httpClientAdapter = adapter,
+      );
+      try {
+        final result = await client.aggregate('泰坦尼克号（普通话版）', 'movie');
+        expect(result.rows, isEmpty);
+        expect(
+          adapter.requests.any(
+            (r) => r.uri.path.contains('/subtitles/series/'),
+          ),
+          isFalse,
+        );
+      } finally {
+        client.close();
+      }
+    },
+  );
+
+  test('explicit Chinese episode names identify an uncategorized series', () {
+    final query = CinemaSubtitleQuery.parse(
+      '自写连续剧',
+      episodeName: '第12集',
+      fallbackEpisode: 1,
+    );
+    expect(query.type, 'series');
+    expect(query.episode, 12);
+    expect(query.season, 1);
+    expect(CinemaSubtitleQuery.parse('自写电影', episodeName: '正片').type, 'movie');
+  });
+
+  test(
     'fallback metadata is episode-specific and never substitutes another work',
     () {
       List<Map<String, dynamic>> find(String name, String id, int episode) =>

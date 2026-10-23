@@ -16,6 +16,7 @@ import 'package:kazumi/features/cinema/cinema_media_transport.dart';
 import 'package:kazumi/features/cinema/cinema_media_cache.dart';
 import 'package:kazumi/features/cinema/cinema_online_subtitles.dart';
 import 'package:kazumi/features/cinema/cinema_season_subtitle_preferences.dart';
+import 'package:kazumi/features/cinema/cinema_season_subtitle_prefetch.dart';
 import 'package:kazumi/features/cinema/cinema_subtitle_catalogs.dart';
 import 'package:dio/dio.dart';
 import 'package:kazumi/features/cinema/cinema_player_page.dart';
@@ -206,6 +207,7 @@ class _EpisodeSubtitleClient extends CinemaOnlineSubtitles {
     String query,
     String type, {
     String imdbId = '',
+    String year = '',
     int season = 1,
     int episode = 1,
     String language = 'zh-eng',
@@ -564,6 +566,22 @@ void main() {
     expect(tester.takeException(), isNull);
   }
 
+  Future<void> waitForSubtitles(WidgetTester tester, _Backend backend) async {
+    for (
+      var attempt = 0;
+      attempt < 100 && backend.subtitles.isEmpty;
+      attempt++
+    ) {
+      // File I/O finishes outside the widget test's fake clock, while its
+      // continuation must be pumped inside it. Wait for the actual selection.
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+      await tester.pump();
+    }
+    expect(backend.subtitles, isNotEmpty);
+  }
+
   Future<void> snapshotRecommendation(
     WidgetTester tester,
     String name, {
@@ -589,6 +607,32 @@ void main() {
       image.dispose();
     });
   }
+
+  testWidgets('buffering keeps only the spinner in the video center', (
+    tester,
+  ) async {
+    await mount(tester, {}, renderToolbar: true);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+    await tester.pump(const Duration(milliseconds: 500));
+    backends.single.reportBuffering(true);
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(
+      find.text('字幕与音轨'),
+      findsNothing,
+      reason: 'Buffering must not mount a second tools bar under the spinner',
+    );
+    expect(find.text('线路 / 选集'), findsNothing);
+    expect(
+      find.byTooltip('字幕与音轨'),
+      findsWidgets,
+      reason: 'Regular playback controls remain available',
+    );
+    backends.single.reportBuffering(false);
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    await unmount(tester);
+  });
 
   testWidgets(
     'Android phone exposes quality, tracks and online subtitles in a touch menu',
@@ -678,25 +722,31 @@ void main() {
         },
       );
       expect(backends.single.opened!.uri, endsWith('/season-10-3.mp4'));
-      expect(clients, hasLength(1));
-      expect(clients.single.requests, [
-        {
-          'query': '自动字幕测试',
-          'type': 'series',
-          'imdbId': 'tt1844624',
-          'season': 10,
-          'episode': 3,
-          'language': 'zh',
-        },
-      ]);
-      expect(clients.single.downloads, [
-        'https://fixture.invalid/subtitle-3.srt',
-      ]);
+      await waitForSubtitles(tester, backends.single);
+      await tester.pumpAndSettle();
+      final batch = CinemaSeasonSubtitlePrefetch.forStore(store);
+      for (var i = 0; i < 200; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump();
+        if (batch.total > 0 && !batch.busy) break;
+      }
+      expect(batch.ready, 3);
+      expect(
+        clients
+            .expand((client) => client.requests)
+            .map((row) => row['episode']),
+        unorderedEquals([2, 3, 4]),
+        reason:
+            'each episode is searched once, including foreground reuse of the background queue',
+      );
+      final clientsBeforeNext = clients.length;
       expect(backends.single.subtitles, hasLength(1));
       expect(backends.single.subtitles.single.id, contains('第 3 集的中文字幕'));
       expect(backends.single.subtitles.single.language, 'zh');
       final previous = backends.single;
-      final previousClient = clients.single;
+      final previousClient = clients.first;
       final next = find.widgetWithIcon(IconButton, Icons.skip_next_rounded);
       await tester.ensureVisible(next);
       await tester.tap(next);
@@ -705,20 +755,34 @@ void main() {
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await tester.pump();
       expect(backends, hasLength(2));
-      expect(clients, hasLength(2));
+      await waitForSubtitles(tester, backends.last);
+      await tester.pumpAndSettle();
+      expect(clients, hasLength(clientsBeforeNext + 1));
       expect(previous.disposed, isTrue);
       expect(previousClient.closed, isTrue);
       expect(previous.subtitles, hasLength(1));
       expect(backends.last.opened!.uri, endsWith('/season-10-4.mp4'));
-      expect(clients.last.requests.single['season'], 10);
-      expect(clients.last.requests.single['episode'], 4);
-      expect(clients.last.requests.single['language'], 'zh');
-      expect(clients.last.downloads, [
-        'https://fixture.invalid/subtitle-4.srt',
-      ]);
+      expect(
+        clients.last.requests,
+        isEmpty,
+        reason: 'next episode must load from the season cache',
+      );
+      expect(clients.last.downloads, isEmpty);
       expect(backends.last.subtitles, hasLength(1));
       expect(backends.last.subtitles.single.id, contains('第 4 集的中文字幕'));
       expect(backends.last.subtitles.single.id, isNot(contains('第 3 集的中文字幕')));
+      // Wait for the completed selection notice, which follows releasing the
+      // owned pause and writing the selected file, rather than track arrival.
+      for (var i = 0; i < 100; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump();
+        if (find.textContaining('已从本季缓存加载').evaluate().isNotEmpty &&
+            backends.last.state.playing) {
+          break;
+        }
+      }
       expect(backends.last.state.playing, isTrue);
       await unmount(tester);
       expect(clients.every((client) => client.closed), isTrue);
@@ -1161,6 +1225,38 @@ void main() {
   );
 
   testWidgets(
+    'toolbar speed selection and next/previous actually reach the active player',
+    (tester) async {
+      await mount(tester, {'autoPlay': true}, renderToolbar: true);
+      await tester.ensureVisible(find.byTooltip('倍速'));
+      await tester.tap(find.byTooltip('倍速'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('1.5×').last);
+      await tester.pumpAndSettle();
+      expect(backends.last.state.rate, 1.5);
+      await tester.ensureVisible(find.byTooltip('下一集'));
+      await tester.tap(find.byTooltip('下一集'));
+      await tester.pumpAndSettle();
+      expect(backends.last.opened!.uri, 'https://fixture.invalid/2.mp4');
+      expect(backends.last.state.rate, 1.5);
+      await tester.ensureVisible(find.byTooltip('上一集'));
+      await tester.tap(find.byTooltip('上一集'));
+      await tester.pumpAndSettle();
+      expect(backends.last.opened!.uri, 'https://fixture.invalid/1.mp4');
+      expect(backends.last.state.rate, 1.5);
+      expect(
+        tester
+            .widget<IconButton>(
+              find.widgetWithIcon(IconButton, Icons.skip_previous_rounded),
+            )
+            .onPressed,
+        isNull,
+      );
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
     'narrow player keeps episodes and extra controls reachable without overflow',
     (tester) async {
       await mount(
@@ -1268,6 +1364,8 @@ void main() {
       final originalSurface = tester.element(find.text('fake video'));
       await player.seek(const Duration(seconds: 90));
       for (var i = 0; i < 4; i++) {
+        // Each pair starts after Flutter's double-click cooldown.
+        await tester.pump(const Duration(milliseconds: 350));
         final surface = tester.getCenter(find.byType(CinemaVideoGestures));
         await tester.tapAt(surface);
         await tester.pump(const Duration(milliseconds: 80));
@@ -1398,6 +1496,15 @@ void main() {
     },
   );
 
+  testWidgets('desktop bottom bar has one subtitle/audio entry', (
+    tester,
+  ) async {
+    await mount(tester, {}, renderToolbar: true);
+    expect(find.byTooltip('字幕与音轨'), findsOneWidget);
+    expect(find.ancestor(of: find.byIcon(Icons.closed_caption_outlined), matching: find.byType(IconButton)), findsNothing);
+    await unmount(tester);
+  });
+
   testWidgets(
     'long press uses shared rate and releases back to the session rate',
     (tester) async {
@@ -1418,6 +1525,42 @@ void main() {
     },
   );
 
+  testWidgets(
+    'timed arrow holds need no repeat, restore on focus loss, and do not leak into next episode',
+    (tester) async {
+      await mount(tester, {'defaultPlaySpeed': 1.5, 'autoPlay': true});
+      final first = backends.single;
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyL);
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(first.state.rate, 2);
+      expect(find.text('2.0× 快进'), findsOneWidget);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(first.state.rate, 1.5);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyL);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(first.state.playing, false);
+      expect(find.text('2× 回退'), findsOneWidget);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      expect(first.state.playing, true);
+      expect(first.state.rate, 1.5);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyL);
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(first.state.rate, 2);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
+      await tester.pumpAndSettle();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyL);
+      await tester.pump();
+      expect(backends, hasLength(2));
+      expect(backends.last.state.rate, 1.5);
+      expect(backends.last.state.position, Duration.zero);
+      await unmount(tester);
+    },
+  );
   for (final enabled in [false, true]) {
     testWidgets(
       'background playback $enabled keeps ordinary focus changes harmless',
@@ -1538,6 +1681,159 @@ void main() {
       expect(cache.warmups, hasLength(2));
       await unmount(tester);
       expect(resumed.cancel.isCancelled, isTrue);
+      cache.finish();
+      await tester.pump();
+    },
+  );
+
+  for (final autoplay in [true, false]) {
+    testWidgets(
+      'manual episode navigation preserves the explicit play intent with global autoplay=$autoplay',
+      (tester) async {
+        await mount(tester, {'autoPlay': autoplay}, renderToolbar: true);
+        await tester.ensureVisible(find.byTooltip(autoplay ? '暂停' : '播放'));
+        await tester.tap(find.byTooltip(autoplay ? '暂停' : '播放'));
+        await tester.pumpAndSettle();
+        expect(backends.last.state.playing, !autoplay);
+        await tester.ensureVisible(find.byTooltip('下一集'));
+        await tester.tap(find.byTooltip('下一集'));
+        await tester.pumpAndSettle();
+        expect(backends.last.opened!.uri, 'https://fixture.invalid/2.mp4');
+        expect(backends.last.state.playing, !autoplay);
+        await tester.ensureVisible(find.byTooltip('上一集'));
+        await tester.tap(find.byTooltip('上一集'));
+        await tester.pumpAndSettle();
+        expect(backends.last.state.playing, !autoplay);
+        await unmount(tester);
+      },
+    );
+  }
+  testWidgets(
+    'automatic next episode continues an explicit Play even with global autoplay disabled',
+    (tester) async {
+      await mount(tester, {
+        'autoPlay': false,
+        'autoPlayNext': true,
+      }, renderToolbar: true);
+      await tester.ensureVisible(find.byTooltip('播放'));
+      await tester.tap(find.byTooltip('播放'));
+      await tester.pumpAndSettle();
+      backends.last.complete();
+      await tester.pumpAndSettle();
+      expect(backends.last.opened!.uri, 'https://fixture.invalid/2.mp4');
+      expect(backends.last.state.playing, isTrue);
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'network recovery retries the same episode twice and then falls back with progress and rate intact',
+    (tester) async {
+      await mount(tester, {'autoPlay': false, 'defaultPlaySpeed': 1.5});
+      for (var attempt = 0; attempt < 3; attempt++) {
+        final backend = backends.last;
+        await backend.seek(const Duration(seconds: 42));
+        backend.reportBuffering(true);
+        backend.reportLog(
+          const PlayerLog(
+            prefix: 'ffmpeg',
+            level: 'error',
+            text: 'Connection reset by peer',
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 6));
+        await tester.pump(const Duration(seconds: 2));
+        await tester.pumpAndSettle();
+        expect(
+          backends.last.opened!.uri,
+          attempt < 2
+              ? 'https://fixture.invalid/1.mp4'
+              : 'https://fixture.invalid/backup.mp4',
+        );
+        expect(backends.last.state.position.inSeconds, 42);
+        expect(backends.last.state.rate, 1.5);
+        expect(backends.last.state.playing, isFalse);
+      }
+      expect(backends, hasLength(4));
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'manual next episode cancels a pending retry and cannot reopen the old episode',
+    (tester) async {
+      await mount(tester, {'autoPlay': true});
+      final backend = backends.single;
+      backend.reportBuffering(true);
+      backend.reportLog(
+        const PlayerLog(
+          prefix: 'ffmpeg',
+          level: 'error',
+          text: 'HTTP error 503',
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 6));
+      expect(backends, hasLength(1));
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 3));
+      expect(backends, hasLength(2));
+      expect(backends.last.opened!.uri, 'https://fixture.invalid/2.mp4');
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'a recovered stream cancels the pending reconnect before replacement',
+    (tester) async {
+      await mount(tester, {'autoPlay': true});
+      final backend = backends.single;
+      backend.reportBuffering(true);
+      backend.reportLog(
+        const PlayerLog(
+          prefix: 'ffmpeg',
+          level: 'error',
+          text: 'HTTP error 503',
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 6));
+      backend.reportBuffering(false);
+      await backend.seek(const Duration(seconds: 1));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 2));
+      expect(backends, hasLength(1));
+      expect(backend.state.playing, isTrue);
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'double speed cancels speculative next-episode traffic until real playback headroom recovers',
+    (tester) async {
+      final cache = _Cache();
+      addTearDown(cache.finish);
+      await mount(tester, {}, cache: cache);
+      final backend = backends.single;
+      backend.reportBuffer(const Duration(seconds: 60));
+      await backend.seek(const Duration(seconds: 21));
+      await tester.pump();
+      final first = cache.warmups.single;
+      await tester.sendKeyEvent(LogicalKeyboardKey.digit2);
+      await tester.pump();
+      expect(backend.state.rate, 2);
+      expect(first.cancel.isCancelled, isTrue);
+      backend.reportBuffer(const Duration(seconds: 80));
+      await backend.seek(const Duration(seconds: 22));
+      await tester.pump();
+      expect(cache.warmups, hasLength(2));
+      expect(cache.warmups.last.cancel.isCancelled, isFalse);
+      first.finished.complete();
+      await tester.pump();
+      expect(cache.warmups.last.cancel.isCancelled, isFalse);
+      await unmount(tester);
       cache.finish();
       await tester.pump();
     },

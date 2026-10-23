@@ -65,9 +65,19 @@ final class AutoRouteProtocol: URLProtocol {
             do {_ = try NASMovieSession.connectionInput(input);fatalError("unsafe input accepted")} catch NASMovieError.configuration {}
         }
         print("PASS UGlink shares, bare hosts, LAN input and unsafe address rejection")
+        expect(try NASMovieSession.origin("https://Mixed-Alias.cn21.ug.link").host == "mixed-alias.cn21.ug.link","UGlink DNS casing must not fail response origin validation")
         let routeConfig=URLSessionConfiguration.ephemeral
         routeConfig.protocolClasses=[AutoRouteProtocol.self]
         let routeTransport=URLSession(configuration:routeConfig)
+        let oldAddress="https://fixture.cn21.ug.link",savedLAN="http://192.168.1.99:9999"
+        let routeCache:[String:Any]=["loginKey":NASMovieSession.loginCacheKey(address:savedLAN,username:"fixture-user"),
+            "namespace":String(repeating:"a",count:64),"hint":"expired-hint","lan":[savedLAN],"remote":[oldAddress]]
+        expect(NASMovieSession.routeCacheMatches(address:savedLAN,username:"fixture-user",cache:routeCache),"saved address and username preserve cache binding")
+        expect(!NASMovieSession.routeCacheMatches(address:savedLAN,username:"other-user",cache:routeCache),"another user's cache cannot authorize routing")
+        expect(!NASMovieSession.routeCacheMatches(address:"http://192.168.1.50:9999",username:"fixture-user",cache:routeCache),"unrelated saved endpoint cannot reuse cache")
+        let restored=await NASMovieSession.restorationRoute(address:savedLAN,username:"fixture-user",cache:routeCache,transport:routeTransport)
+        expect(restored == oldAddress,"startup refreshes expired hint and falls back from wrong LAN before login")
+        print("PASS startup cache binding, rotating hint, remote recovery and account isolation")
         var reads=0
         let refreshed=try await NASMovieSession.refreshedRouteHint(cached:"expired-device-hint") {
             reads += 1

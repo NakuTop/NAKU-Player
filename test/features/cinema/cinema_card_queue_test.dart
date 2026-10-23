@@ -65,7 +65,7 @@ void main() {
       final expectedSkip = expectLater(skipped, throwsStateError);
       final second = repository.loadForCard(title('second'));
       // Crosswalk now runs independently of the first slow primary request.
-      expect(paths.where((path) => path != '/sparql'), [
+      expect(paths.where((path) => path != '/sparql' && path != '/w/api.php'), [
         '/rexxar/api/v2/movie/12341',
       ]);
       final result = await second.timeout(const Duration(seconds: 2));
@@ -75,7 +75,7 @@ void main() {
       await expectedSkip;
       expect(paths.any((path) => path.contains('12343')), isFalse);
       expect(peak, lessThanOrEqualTo(3));
-      expect(paths.where((path) => path != '/sparql'), [
+      expect(paths.where((path) => path != '/sparql' && path != '/w/api.php'), [
         '/rexxar/api/v2/movie/12341',
         '/rexxar/api/v2/movie/12342',
       ]);
@@ -105,7 +105,7 @@ void main() {
         },
       );
       final result = await restored.loadForCard(item);
-      expect(paths, ['/rexxar/api/v2/movie/12345', '/sparql']);
+      expect(paths, ['/rexxar/api/v2/movie/12345', '/sparql', '/w/api.php']);
       expect(result.ratings.first.value, 8);
     },
   );

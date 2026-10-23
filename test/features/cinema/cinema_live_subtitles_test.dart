@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/material.dart';
@@ -67,7 +68,30 @@ void main() {
       live.dispose();
       store.dispose();
     },
+    skip: !Platform.isWindows,
   );
+  testWidgets('Mac track panel does not offer real-time subtitle generation', (
+    tester,
+  ) async {
+    final live = CinemaLiveSubtitles(_Player());
+    final store = CinemaStore(defaults: const []);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CinemaTracksPanel(
+            player: live.player,
+            store: store,
+            liveSubtitles: live,
+          ),
+        ),
+      ),
+    );
+    expect(find.text('实时生成字幕'), findsNothing);
+    expect(find.text('开启实时原文字幕'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    live.dispose();
+    store.dispose();
+  }, skip: !Platform.isMacOS);
   test(
     'capture PCM is wrapped in 16k mono PCM wave without copying header data into samples',
     () {

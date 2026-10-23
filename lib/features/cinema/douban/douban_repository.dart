@@ -6,6 +6,7 @@ import 'package:dio/io.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 
 import 'douban_models.dart';
+import '../cinema_douban_access.dart';
 
 class DoubanException implements Exception {
   const DoubanException(this.message);
@@ -73,6 +74,12 @@ class DoubanRepository {
       if (selectedTags.isNotEmpty) 'tags': selectedTags.join(','),
     }, cancelToken);
     try {
+      for (final row in (json['items'] as List? ?? []).whereType<Map>()) {
+        final data = Map<String, dynamic>.from(row);
+        if (DoubanTitle.fromJson(data, kind) != null) {
+          CinemaDoubanAccess.rememberFeedSubject(data);
+        }
+      }
       return DoubanResultPage.fromJson(json, kind, start: start, count: count);
     } on FormatException catch (error) {
       throw DoubanException(error.message);

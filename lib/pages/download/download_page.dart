@@ -144,7 +144,9 @@ class _DownloadPageState extends State<DownloadPage> {
   String _getStatusText(DownloadRecord record, DownloadEpisode episode) {
     switch (episode.status) {
       case DownloadStatus.completed:
-        return '已完成 · ${formatBytes(episode.totalBytes)}';
+        return episode.errorMessage.isEmpty
+            ? '已完成 · ${formatBytes(episode.totalBytes)}'
+            : '本地可播放 · ${formatBytes(episode.totalBytes)} · ${episode.errorMessage}';
       case DownloadStatus.downloading:
         final speed = downloadController.getSpeed(
           record.bangumiId,

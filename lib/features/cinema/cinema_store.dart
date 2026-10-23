@@ -292,6 +292,13 @@ class CinemaStore extends ChangeNotifier {
 
   Map<String, dynamic> get extras => Map.unmodifiable(_libraryExtras);
 
+  /// Caption contents stay in the local application cache, outside library
+  /// exports and backups. Tests use the directory of their explicit store.
+  Future<Directory> subtitleCacheDirectory() async {
+    await _ready();
+    return Directory('${_file!.parent.path}/subtitles-v1');
+  }
+
   Future<void> setExtra(String key, Object? value) async {
     if (const {
       'version',

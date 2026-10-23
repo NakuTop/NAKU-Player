@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'cinema_models.dart';
+import 'cinema_media_identity.dart';
 import 'cinema_search_discovery.dart';
+import 'cinema_rating_lookup.dart';
 
 /// Reuses public search's candidate cache, but applies stricter rules than a
 /// search results list. Ambiguous titles, years, kinds and seasons stay unbound.
@@ -50,7 +52,10 @@ class CinemaRatingIdentitySearch {
     final cached = _cache[key];
     CinemaDiscoveryTitle? candidate;
     if (cached != null &&
-        _now().difference(cached.$1) < const Duration(minutes: 15)) {
+        _now().difference(cached.$1) <
+            (cached.$2 == null
+                ? const Duration(seconds: 30)
+                : const Duration(minutes: 15))) {
       candidate = cached.$2;
     } else {
       // Drop excess speculative work without caching a failure; visible cards
@@ -59,7 +64,7 @@ class CinemaRatingIdentitySearch {
       candidate = await _pending.putIfAbsent(key, () async {
         await _acquire();
         try {
-          final result = await search(title.title);
+          final result = await search(cinemaMediaBaseTitle(title.title));
           final matched = _candidate(title, result.titles);
           _cache[key] = (_now(), matched);
           while (_cache.length > 128) {
@@ -125,8 +130,17 @@ class CinemaRatingIdentitySearch {
       candidate.title,
       '${candidate.originalTitle} / ${candidate.aliases}',
     );
-    return sourceNames.intersection(candidateNames).isNotEmpty &&
-        seasonForLabel(title.title) == seasonForLabel(candidate.title);
+    final sourceSeason = seasonForLabel(title.title);
+    final candidateSeason = seasonForLabel(candidate.title);
+    return (sourceNames.intersection(candidateNames).isNotEmpty &&
+            sourceSeason == candidateSeason) ||
+        cinemaOfficialTitleMatches(
+          title.title,
+          {candidate.title, candidate.originalTitle},
+          kind: candidate.kind,
+          sourceSeason: sourceSeason,
+          officialSeason: candidateSeason,
+        );
   }
 
   static String _kind(String value) {
@@ -139,7 +153,7 @@ class CinemaRatingIdentitySearch {
   static Set<String> _names(String title, String aliases) => {
     for (final value in [title, ...aliases.split(RegExp(r'[/／|,，;；\n]'))])
       if (value.trim().isNotEmpty)
-        value
+        cinemaMediaBaseTitle(value)
             .toLowerCase()
             .replaceFirst(RegExp(r'\s*[（(](原声版|普通话版|国语版|英语版)[）)]\s*$'), '')
             .replaceAll(RegExp(r'[\s\p{P}]', unicode: true), ''),

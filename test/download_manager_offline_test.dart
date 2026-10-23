@@ -3,12 +3,14 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'package:hive_ce/hive.dart';
 import 'package:kazumi/modules/download/download_module.dart';
 import 'package:kazumi/request/core/dio_factory.dart';
 import 'package:kazumi/services/download/download_manager.dart';
+import 'package:kazumi/services/download/download_catalog.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:logger/logger.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -125,6 +127,245 @@ void main() {
       () => !manager.isDownloading('fixture_1', episode.episodeNumber),
     );
   }
+
+  test(
+    'changing source preserves the old partial and starts a fresh transfer',
+    () async {
+      final before = [1, 2, 3, 4];
+      final after = [5, 6, 7, 8, 9, 10];
+      await File('${media.path}/video.mp4.tmp').writeAsBytes(before);
+      await File('${media.path}/.naku-transfer.json').writeAsString(
+        jsonEncode({
+          'identity': sha256
+              .convert(utf8.encode('https://fixture.invalid/old.mp4'))
+              .toString(),
+        }),
+      );
+      DioFactory.downloadDio.httpClientAdapter = _Adapter((options) {
+        expect(options.headers.containsKey('Range'), false);
+        return _bytes(after);
+      });
+      final episode = _episode(media.path, 'https://fixture.invalid/new.mp4');
+      await complete(episode);
+      expect(episode.status, DownloadStatus.completed);
+      expect(await File('${media.path}/video.mp4').readAsBytes(), after);
+      final preserved = await media
+          .list()
+          .where((f) => f.path.contains('.preserved-transfer-'))
+          .toList();
+      expect(await File(preserved.single.path).readAsBytes(), before);
+    },
+  );
+
+  test('ETag is carried as If-Range when resuming the same source', () async {
+    const url = 'https://fixture.invalid/resume.mp4';
+    await File('${media.path}/video.mp4.tmp').writeAsBytes([1, 2, 3]);
+    await File('${media.path}/.naku-transfer.json').writeAsString(
+      jsonEncode({
+        'identity': sha256.convert(utf8.encode(url)).toString(),
+        'etag': 'fixture-v1',
+      }),
+    );
+    DioFactory.downloadDio.httpClientAdapter = _Adapter((options) {
+      if (options.responseType == ResponseType.stream) {
+        expect(options.headers['If-Range'], 'fixture-v1');
+        return _bytes(
+          [4, 5, 6],
+          status: 206,
+          headers: {
+            'content-range': ['bytes 3-5/6'],
+          },
+        );
+      }
+      return _bytes([4, 5, 6]);
+    });
+    final episode = _episode(media.path, url);
+    await complete(episode);
+    expect(episode.status, DownloadStatus.completed);
+    expect(await File('${media.path}/video.mp4').readAsBytes(), [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+    ]);
+  });
+
+  test('the same source cannot download as two episode numbers', () async {
+    final adapter = _Adapter((_) => _bytes(List.generate(64, (i) => i)));
+    DioFactory.downloadDio.httpClientAdapter = adapter;
+    final one = _episode('${media.path}/1', 'https://fixture.invalid/same.mp4');
+    await complete(one);
+    expect(one.status, DownloadStatus.completed);
+    final requestsBefore = adapter.requests.length;
+    final two = _episode(
+      '${media.path}/2',
+      'https://fixture.invalid/same.mp4',
+      number: 2,
+    );
+    await complete(two);
+    expect(two.status, DownloadStatus.failed);
+    expect(two.errorMessage, contains('第1集相同'));
+    expect(adapter.requests.length, requestsBefore);
+    expect(await File('${media.path}/1/video.mp4').exists(), true);
+    expect(await File('${media.path}/2/video.mp4').exists(), false);
+  });
+
+  test(
+    'different URLs serving identical bytes are not both completed',
+    () async {
+      final content = List.generate(64, (i) => i);
+      DioFactory.downloadDio.httpClientAdapter = _Adapter(
+        (_) => _bytes(content),
+      );
+      final one = _episode(
+        '${media.path}/1',
+        'https://fixture.invalid/one.mp4',
+      );
+      await complete(one);
+      final two = _episode(
+        '${media.path}/2',
+        'https://fixture.invalid/two.mp4',
+        number: 2,
+      );
+      await complete(two);
+      expect(one.status, DownloadStatus.completed);
+      expect(two.status, DownloadStatus.failed);
+      expect(two.errorMessage, contains('第1集相同'));
+      expect(two.networkM3u8Url, isEmpty);
+      expect(await File('${media.path}/1/video.mp4').readAsBytes(), content);
+      expect(await File('${media.path}/2/video.mp4').exists(), false);
+    },
+  );
+
+  test('identical HLS payload from different playlists is detected', () async {
+    DioFactory.downloadDio.httpClientAdapter = _Adapter(
+      (options) => options.uri.path.endsWith('.m3u8')
+          ? _text(
+              '#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXTINF:5,\nseg.ts\n#EXT-X-ENDLIST\n',
+            )
+          : _bytes(List.generate(64, (i) => i), type: 'video/mp2t'),
+    );
+    final one = _episode('${media.path}/1', 'https://fixture.invalid/one.m3u8');
+    await complete(one);
+    final two = _episode(
+      '${media.path}/2',
+      'https://fixture.invalid/two.m3u8',
+      number: 2,
+    );
+    await complete(two);
+    expect(one.status, DownloadStatus.completed);
+    expect(two.status, DownloadStatus.failed);
+    expect(two.errorMessage, contains('第1集相同'));
+    expect(two.networkM3u8Url, isEmpty);
+    expect(
+      await DownloadCatalog.findVideo(Directory(two.downloadDirectory)),
+      isNull,
+    );
+    expect(await File('${media.path}/1/playlist.m3u8').exists(), true);
+  });
+
+  test(
+    'changing an unfinished HLS plan preserves old segments and never mixes them',
+    () async {
+      await File('${media.path}/video.mp4.tmp').writeAsBytes([7, 8, 9]);
+      await File('${media.path}/seg_00000.ts').writeAsBytes([1, 2, 3]);
+      await File('${media.path}/download-plan.json').writeAsString('old-plan');
+      DioFactory.downloadDio.httpClientAdapter = _Adapter(
+        (options) => options.uri.path.endsWith('.m3u8')
+            ? _text(
+                '#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXTINF:5,\nnew.ts\n#EXT-X-ENDLIST\n',
+              )
+            : _bytes([4, 5, 6], type: 'video/mp2t'),
+      );
+      final episode = _episode(
+        media.path,
+        'https://fixture.invalid/changed.m3u8',
+      );
+      await complete(episode);
+      expect(
+        episode.status,
+        DownloadStatus.completed,
+        reason: episode.errorMessage,
+      );
+      expect(await File('${media.path}/seg_00000.ts').readAsBytes(), [4, 5, 6]);
+      expect(await File('${media.path}/video.mp4.tmp').readAsBytes(), [
+        7,
+        8,
+        9,
+      ]);
+      final preserved = await media
+          .list()
+          .where((f) => f is Directory && f.path.contains('.preserved-hls-'))
+          .toList();
+      expect(
+        await File('${preserved.single.path}/seg_00000.ts').readAsBytes(),
+        [1, 2, 3],
+      );
+      expect(
+        await File(
+          '${preserved.single.path}/download-plan.json',
+        ).readAsString(),
+        'old-plan',
+      );
+    },
+  );
+
+  test(
+    'a changed HLS plan cannot erase an already complete local video',
+    () async {
+      const playlist = '#EXTM3U\n#EXTINF:5,\nseg_00000.ts\n#EXT-X-ENDLIST\n';
+      await File('${media.path}/playlist.m3u8').writeAsString(playlist);
+      await File('${media.path}/seg_00000.ts').writeAsBytes([1, 2, 3]);
+      final adapter = _Adapter(
+        (options) => options.uri.path.endsWith('.m3u8')
+            ? _text(
+                '#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXTINF:5,\nnew.ts\n#EXT-X-ENDLIST\n',
+              )
+            : _bytes([4, 5, 6], type: 'video/mp2t'),
+      );
+      DioFactory.downloadDio.httpClientAdapter = adapter;
+      final episode = _episode(
+        media.path,
+        'https://fixture.invalid/changed.m3u8',
+      );
+      await complete(episode);
+      expect(episode.status, DownloadStatus.failed);
+      expect(episode.errorMessage, contains('已有完整视频'));
+      expect(
+        await File('${media.path}/playlist.m3u8').readAsString(),
+        playlist,
+      );
+      expect(await File('${media.path}/seg_00000.ts').readAsBytes(), [1, 2, 3]);
+      expect(
+        adapter.requests.every((r) => r.uri.path.endsWith('.m3u8')),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'deleting an episode releases its URL reservation for a later download',
+    () async {
+      DioFactory.downloadDio.httpClientAdapter = _Adapter(
+        (_) => _bytes([1, 2, 3]),
+      );
+      final one = _episode(
+        '${media.path}/1',
+        'https://fixture.invalid/reused.mp4',
+      );
+      await complete(one);
+      await manager.deleteEpisodeFiles(1, 'fixture', 1, episode: one);
+      final two = _episode(
+        '${media.path}/2',
+        'https://fixture.invalid/reused.mp4',
+        number: 2,
+      );
+      await complete(two);
+      expect(two.status, DownloadStatus.completed, reason: two.errorMessage);
+    },
+  );
 
   test(
     'NAS original download resumes as MKV and never persists its session URL',

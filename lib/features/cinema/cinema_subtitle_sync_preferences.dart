@@ -7,6 +7,9 @@ import 'cinema_subtitle_timing.dart';
 
 final _timingWrites = Expando<Future<void>>();
 
+Future<void> flushCinemaSubtitleTiming(CinemaStore store) =>
+    _timingWrites[store] ?? Future<void>.value();
+
 /// Store only hashed media/content keys and timing numbers, never the private
 /// media reference, subtitle dialogue or a signed playback URL.
 void bindCinemaSubtitleTiming(

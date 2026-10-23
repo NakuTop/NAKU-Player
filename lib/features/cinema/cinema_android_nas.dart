@@ -412,7 +412,6 @@ class CinemaAndroidNAS {
             'qrType': 'LOCAL_LOGIN',
             'ak': 'UG8FKSDUGREEN001',
             'public_key': publicKey,
-            'sn': hint,
           },
         )).bytes,
       );

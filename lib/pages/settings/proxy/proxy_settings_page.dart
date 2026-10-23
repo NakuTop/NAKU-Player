@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:kazumi/features/cinema/cinema_media_routing.dart';
 import 'package:kazumi/request/core/dio_factory.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
@@ -41,9 +42,31 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
           SettingsSection(
             title: const Text('视频连接'),
             tiles: [
+              if (Theme.of(context).platform == TargetPlatform.macOS)
+                SettingsTile.switchTile(
+                  leading: Icons.alt_route_rounded,
+                  title: const Text('影视自动选择直连 / 代理'),
+                  description: const Text(
+                    '比较真实媒体片段，按片源及 CDN 记住较快路径；连接失败或持续变慢时重新比较。NAS 局域网保持直连。',
+                  ),
+                  initialValue: GStorage.getSetting(
+                    SettingsKeys.mediaAutoRouting,
+                  ),
+                  onToggle: (value) async {
+                    await GStorage.putSetting(
+                      SettingsKeys.mediaAutoRouting,
+                      value ?? true,
+                    );
+                    CinemaMediaRouter.instance.close();
+                    if (mounted) setState(() {});
+                  },
+                ),
               SettingsTile.switchTile(
                 leading: Icons.video_settings_rounded,
                 title: const Text('视频直连'),
+                enabled:
+                    Theme.of(context).platform != TargetPlatform.macOS ||
+                    !GStorage.getSetting(SettingsKeys.mediaAutoRouting),
                 description: const Text(
                   '视频和下载不经过系统或应用代理；关闭则跟随代理设置。更改在重新播放及新下载请求时生效。',
                 ),

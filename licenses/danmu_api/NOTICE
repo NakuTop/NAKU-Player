@@ -1,0 +1,7 @@
+NAKU native direct danmaku adapters
+Protocol reference and adapted logic: LogVar / danmu_api by huangxd- and contributors.
+Source: https://github.com/huangxd-/danmu_api
+License: GNU Affero General Public License, version 3 or later.
+Native Dart adaptation: lib/features/cinema/cinema_direct_danmaku.dart.
+No upstream server, Docker image, browser cookies or personal credentials are bundled.
+The corresponding NAKU source accompanies this personal build.

@@ -207,9 +207,9 @@ void main() {
       expect(peak, lessThanOrEqualTo(3));
       expect(
         calls,
-        2,
+        3,
         reason:
-            'One exact subject and one failed crosswalk, reused by all sources',
+            'One exact subject and two exact-ID crosswalk endpoints, reused by all sources',
       );
     },
   );
@@ -282,10 +282,15 @@ void main() {
     'failed dataset downloads have a shared cooldown across different IMDb IDs',
     () async {
       var downloads = 0;
+      final pageFallbacks = <String>[];
       final repository = CinemaRatingsRepository(
         directory: directory,
         fetch: (uri, _) async {
-          downloads++;
+          if (uri.host == 'datasets.imdbws.com') {
+            downloads++;
+          } else if (uri.host == 'www.imdb.com') {
+            pageFallbacks.add(uri.path);
+          }
           throw const HttpException('IMDb temporarily unavailable');
         },
       );
@@ -299,6 +304,7 @@ void main() {
         );
       }
       expect(downloads, 1);
+      expect(pageFallbacks, ['/title/tt1234567/', '/title/tt7654321/']);
     },
   );
 

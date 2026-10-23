@@ -21,11 +21,11 @@ const modu = CinemaSource(
   kind: CinemaSourceKind.maccms,
   url: 'https://b.example/api',
 );
-CinemaTitle sample(CinemaSource source, {String year = '2014'}) => CinemaTitle(
+CinemaTitle sample(CinemaSource source, {String? year}) => CinemaTitle(
   id: source == modu ? 'm1' : 'a1',
   sourceId: source.id,
   title: '星际穿越',
-  year: year,
+  year: year ?? '${DateTime.now().year}',
   category: '科幻片',
   sourceDoubanScore: 9.4,
 );
@@ -55,6 +55,14 @@ class CatalogueStub extends CinemaRepository {
   Future<List<CinemaCategory>> categories(CinemaSource source) async => const [
     CinemaCategory(id: '1', name: '科幻片'),
   ];
+  @override
+  Future<CinemaPage> browseFiltered(
+    CinemaSource source, {
+    String? categoryId,
+    String year = '',
+    int page = 1,
+  }) => browse(source, categoryId: categoryId, page: page);
+
   @override
   Future<CinemaPage> browse(
     CinemaSource source, {
@@ -150,6 +158,8 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('catalog-sort-latest')));
     await tester.pumpAndSettle();
   }
 

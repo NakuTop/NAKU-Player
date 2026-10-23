@@ -1,0 +1,31 @@
+name: hive_ce
+description: Hive Community Edition - A spiritual continuation of Hive v2
+version: 2.19.3
+homepage: https://github.com/IO-Design-Team/hive_ce/tree/main/hive
+
+topics:
+  - hive
+  - database
+  - nosql
+
+funding:
+  - https://github.com/sponsors/Rexios80
+
+environment:
+  sdk: ^3.4.0
+
+dependencies:
+  meta: ^1.14.0
+  crypto: ^3.0.0
+  web: ">=0.5.0 <2.0.0"
+  isolate_channel: ^0.6.0
+  json_annotation: ^4.9.0
+
+dev_dependencies:
+  test: ^1.17.12
+  mocktail: ^1.0.4
+  rexios_lints: ^17.0.2
+  path: ^1.7.0
+  pointycastle: ^4.0.0
+  build_runner: ^2.5.4
+  json_serializable: ^6.9.4

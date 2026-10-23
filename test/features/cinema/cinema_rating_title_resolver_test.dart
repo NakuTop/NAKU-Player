@@ -44,6 +44,25 @@ class Repository extends CinemaRepository {
 }
 
 void main() {
+  test(
+    'source detail fills a missing year before strict identity discovery',
+    () async {
+      final repo = Repository()
+        ..response = (value) => change(value, {'year': '2020'});
+      final resolver = CinemaRatingTitleResolver(
+        repository: repo,
+        sourceFor: (_) => source,
+        discoverTitle: (value) async {
+          expect(value.year, '2020');
+          return enriched(value);
+        },
+      );
+      final result = await resolver.resolve(change(title('1'), {'year': ''}));
+      expect(result.year, '2020');
+      expect(result.doubanId, '1292052');
+      resolver.dispose();
+    },
+  );
   test('hydrates without changing card fields, coalesces and caches', () async {
     final repo = Repository();
     final resolver = CinemaRatingTitleResolver(

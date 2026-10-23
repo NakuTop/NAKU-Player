@@ -1,3 +1,12 @@
+import 'package:kazumi/services/network/macos_system_proxy.dart';
+import 'cinema_playback_buffer.dart';
+import 'cinema_buffer_status.dart';
+import 'cinema_keyboard_transport.dart';
+import 'cinema_subtitle_auto_sync.dart';
+import 'cinema_danmaku.dart';
+import 'cinema_logvar_client.dart';
+import 'cinema_playback_recovery.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:kazumi/services/platform/desktop_fullscreen.dart';
 import 'cinema_lan_cast.dart';
@@ -303,6 +312,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   final Set<String> _detailAttempts = {};
   CinemaPlaybackCandidate? _failoverAnchor;
   _CinemaPlayback? _playback;
+  final _recovery = CinemaPlaybackRecovery();
+  Timer? _recoveryTimer;
   Timer? _historyTimer;
   Timer? _loadTimer;
   int _generation = 0;
@@ -322,8 +333,6 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   double _rate = 1;
   double _volume = 100;
   double _audibleVolume = 100;
-  double? _beforeForwardRate;
-  bool _forwardHeld = false;
   bool _backgroundPaused = false;
   DesktopWindowControls get _windowControls =>
       widget.windowControls ?? DesktopWindowControls.instance;
@@ -413,7 +422,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       if (mounted && !_closing) setState(() => _fullscreen = next);
       return;
     }
-    if (!Platform.isMacOS) {
+    if (defaultTargetPlatform != TargetPlatform.macOS) {
       await DesktopFullscreen.setFullScreen(next);
       if (mounted && !_closing) setState(() => _fullscreen = next);
       return;
@@ -799,7 +808,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }) async {
     final selectedTitle = title ?? _title;
     final selectedSource = source ?? _source;
-    _pendingPlayIntent = playWhenReady ?? _preferences.autoPlay;
+    _recoveryTimer?.cancel();
+    _recoveryTimer = null;
+    _pendingPlayIntent =
+        playWhenReady ??
+        (automatic ? _pendingPlayIntent : _preferences.autoPlay);
     if (_closing || selectedTitle.routes.isEmpty) return;
     final route = selectedTitle.routes[routeIndex];
     final offset =
@@ -853,6 +866,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       episodeIndex: episodeIndex,
     );
     if (!automatic) {
+      _recovery.reset();
       _attempts = CinemaFailoverAttempts();
       _detailAttempts.clear();
       _failoverAnchor = selection;
@@ -870,6 +884,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
     CinemaNASPlaybackSession? pendingNAS;
     try {
+      if (Platform.isMacOS &&
+          widget.createPlayer == null &&
+          widget.offlinePaths == null &&
+          !isNASMediaReference(episode.url)) {
+        await MacOSSystemProxy.initialize();
+        if (!_isCurrent(generation)) return;
+      }
       final localFile = widget.offlinePaths?[episode.url];
       if (widget.offlinePaths != null &&
           (localFile == null || !await File(localFile).exists())) {
@@ -941,13 +962,78 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _preferences,
         widget.createPlayer,
       );
+      candidate.keyboardTransport = CinemaKeyboardTransport(
+        player: candidate.player,
+        skipSeconds: _preferences.arrowSkipSeconds,
+        forwardRate: _preferences.longPressRate,
+        onSeek: candidate.watchdog.reset,
+        canResume: () =>
+            !_closing &&
+            identical(_playback, candidate) &&
+            !_backgroundPaused &&
+            !_windowControls.blocksPlayback &&
+            (_preferences.backgroundPlayback ||
+                !const {
+                  AppLifecycleState.hidden,
+                  AppLifecycleState.paused,
+                  AppLifecycleState.detached,
+                }.contains(WidgetsBinding.instance.lifecycleState)),
+        setTemporaryRate: (rate) async {
+          if (identical(_playback, candidate)) {
+            await _setRate(rate, temporary: true);
+          } else {
+            await candidate.player.setRate(rate);
+          }
+        },
+      );
       final subtitlePlaybackRevision = candidate.manualPlaybackRevision;
       candidate.nasSession = pendingNAS;
+      if (widget.createPlayer == null) {
+        candidate.danmaku = CinemaDanmakuController(
+          candidate.player,
+          widget.store,
+          '${selectedTitle.key}|${episode.url}',
+          autoQuery: CinemaLogvarQuery.parse(
+            selectedTitle.title,
+            category: selectedTitle.category,
+            episodeName: _subtitleNameForEpisode(episode),
+            fallbackEpisode: episodeIndex + 1,
+            year: selectedTitle.year,
+          ),
+        );
+        candidate.subtitleAutoSync = CinemaSubtitleAutoSync(
+          candidate.player,
+          media: () => candidate.mediaUrl ?? '',
+          sampleSeconds:
+              widget.store.extras['subtitleSyncSampleSeconds'] is num &&
+                  (widget.store.extras['subtitleSyncSampleSeconds'] as num)
+                      .isFinite
+              ? (widget.store.extras['subtitleSyncSampleSeconds'] as num)
+                    .round()
+                    .clamp(5, 20)
+              : 5,
+          onSampleSecondsChanged: (value) =>
+              widget.store.setExtra('subtitleSyncSampleSeconds', value),
+          headers: () => candidate.mediaHeaders,
+        );
+      }
       candidate.subtitles = CinemaSeasonSubtitleController(
         player: candidate.player,
+        autoSync: candidate.subtitleAutoSync,
         client: widget.subtitleClientFactory?.call(),
+        prefetchClientFactory: widget.subtitleClientFactory,
+        seasonEpisodes: [
+          for (var index = 0; index < route.episodes.length; index++)
+            CinemaSubtitleQuery.parse(
+              selectedTitle.title,
+              category: selectedTitle.category,
+              episodeName: _subtitleNameForEpisode(route.episodes[index]),
+              fallbackEpisode: index + 1,
+            ),
+        ],
         store: widget.store,
-        seriesIdentity: selectedTitle.key,
+        // The work opened by the user owns the season, across route changes.
+        seriesIdentity: widget.title.key,
         mediaIdentity: '${selectedTitle.key}|${episode.url}',
         query: CinemaSubtitleQuery.parse(
           selectedTitle.title,
@@ -956,6 +1042,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           fallbackEpisode: episodeIndex + 1,
         ),
         imdbId: selectedTitle.imdbId,
+        year: selectedTitle.year,
         mediaRelease: _subtitleEpisodeName,
         canResume: () =>
             _isCurrent(generation) &&
@@ -1005,7 +1092,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _loadTimer = Timer(const Duration(seconds: 35), () {
         if (_isCurrent(generation) && !candidate.ready) {
           candidate.logStage('timeout(lastStage=${candidate.lastStage})');
-          _fail(generation, '视频连接超时，请重试或更换线路。');
+          _fail(
+            generation,
+            '视频连接超时，请重试或更换线路。',
+            failure: CinemaPlaybackFailure.transientNetwork,
+          );
         }
       });
       await candidate.player.setVolume(_volume);
@@ -1022,6 +1113,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           isCurrent: () => _isCurrent(generation),
           diskCache: false,
           bufferBytes: _preferences.bufferSize,
+          playbackRate: _rate,
+          automaticRoute: !nas && localFile == null,
+          mediaHeaders: mediaHeaders,
         );
         if (!_isCurrent(generation)) return;
         // Probe each input independently. Forcing HLS globally also forces
@@ -1055,23 +1149,26 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }
       candidate.opened = true;
       _updateReady(candidate, generation);
-      unawaited(
-        candidate.subtitles!.load(
-          onNotice: (message) {
-            if (_isCurrent(generation) && identical(_playback, candidate)) {
-              setState(() => _playbackNotice = message);
-            }
-          },
-        ),
-      );
     } on VideoSourceCancelledException {
       // Cancellation is expected when the user chooses another episode.
     } on VideoSourceTimeoutException {
-      _fail(generation, '播放页面解析超时，请重试或更换线路。');
+      _fail(
+        generation,
+        '播放页面解析超时，请重试或更换线路。',
+        failure: CinemaPlaybackFailure.transientNetwork,
+      );
     } on FormatException catch (error) {
-      _fail(generation, error.message.toString());
-    } catch (_) {
-      _fail(generation, '播放失败。片源可能暂时不可用，请重试或更换线路。');
+      _fail(
+        generation,
+        error.message.toString(),
+        failure: cinemaPlaybackException(error),
+      );
+    } catch (error) {
+      _fail(
+        generation,
+        '播放失败。片源可能暂时不可用，请重试或更换线路。',
+        failure: cinemaPlaybackException(error),
+      );
     } finally {
       await pendingNAS?.close();
     }
@@ -1167,7 +1264,6 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Future<void> _showTracks() async {
     final playback = _playback;
     if (playback == null) return;
-    playback.subtitles?.beginManualSelection();
     await showCinemaTracksSheet(
       context,
       playback.player,
@@ -1175,6 +1271,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       title: _title.title,
       imdbId: _title.imdbId,
       liveSubtitles: playback.liveSubtitles,
+      automation: playback.subtitles,
+      autoSync: playback.subtitleAutoSync,
       category: _title.category,
       episodeName: _subtitleEpisodeName,
       episodeNumber: _episodeIndex + 1,
@@ -1221,6 +1319,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     );
   }
 
+  Future<void> _showDanmaku() async {
+    final controller = _playback?.danmaku;
+    if (controller != null) {
+      await showCinemaDanmakuSheet(context, controller, title: _title.title);
+    }
+  }
+
   Future<void> _showQuality() async {
     final playback = _playback;
     if (!_usesNASPlayback || _nasOptions == null) {
@@ -1253,6 +1358,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       '清晰度与播放设置': () => unawaited(_showQuality()),
       '字幕与音轨': () => unawaited(_showTracks()),
       if (_playback != null) '在线搜索字幕': () => unawaited(_showOnlineSubtitles()),
+      '弹幕': () => unawaited(_showDanmaku()),
       '播放倍速': _showSpeedOptions,
       '线路 / 选集': _showEpisodes,
       if (_hasNext) '下一集': () => _changeEpisode(1),
@@ -1333,6 +1439,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                 ),
               action('倍速', Icons.speed, _showSpeedOptions),
               tracks,
+              action(
+                '弹幕',
+                Icons.comment_outlined,
+                playback?.danmaku == null ? null : _showDanmaku,
+              ),
               if (!NakuDevice.isTV)
                 action('画中画', Icons.picture_in_picture_alt, _togglePip),
               if (!overlay)
@@ -1360,6 +1471,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             runSpacing: 2,
             children: [
               tracks,
+              action(
+                '弹幕',
+                Icons.comment_outlined,
+                playback?.danmaku == null ? null : _showDanmaku,
+              ),
               if (Platform.isAndroid && !NakuDevice.isTV)
                 action(
                   '发送到电视',
@@ -1418,6 +1534,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   String get _subtitleEpisodeName {
     final episode = _episode;
     if (episode == null) return '';
+    return _subtitleNameForEpisode(episode);
+  }
+
+  String _subtitleNameForEpisode(CinemaEpisode episode) {
     final filename = isNASMediaReference(episode.url)
         ? (parseNASMediaReference(episode.url)['path'] ?? '')
               .split('/')
@@ -1458,6 +1578,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               kind == PlaybackFailureKind.network
                   ? '视频网络连接失败，请重试、更换线路或在网络设置调整视频连接。'
                   : '当前视频无法打开，正在尝试其他线路。',
+              failure: cinemaPlaybackFailure(message),
             );
           }
         },
@@ -1473,15 +1594,31 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             playback.ready) {
           setState(() => _playbackNotice = null);
         }
+        if (position > playback.position &&
+            !playback.player.state.buffering &&
+            _selection != null) {
+          _recovery.progress(_selection!.key);
+          if (_recoveryTimer != null) {
+            _recoveryTimer?.cancel();
+            _recoveryTimer = null;
+            setState(() {
+              _loading = false;
+              _playbackNotice = null;
+            });
+          }
+        }
         playback.position = position;
         playback.cacheSession?.update(
           position,
           buffering: playback.player.state.buffering || _probingRoutes,
+          rate: _rate,
         );
         if (!playback.warmedNext &&
             playback.ready &&
             position.inSeconds > 15 &&
-            playback.player.state.buffer.inSeconds - position.inSeconds >= 20) {
+            CinemaPlaybackBufferPolicy(
+              _rate,
+            ).mayWarmNext(position, playback.player.state.buffer)) {
           unawaited(_warmNext(playback, generation));
         }
       }),
@@ -1491,6 +1628,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         playback.cacheSession?.update(
           playback.position,
           buffering: value || _probingRoutes,
+          rate: _rate,
         );
       }),
       playback.player.stream.playing.listen((playing) {
@@ -1547,7 +1685,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             following: _together.following,
           );
           if (next != null) {
-            unawaited(_playEpisode(_routeIndex, next, resumeAt: 0));
+            unawaited(
+              _playEpisode(
+                _routeIndex,
+                next,
+                resumeAt: 0,
+                playWhenReady: _pendingPlayIntent,
+              ),
+            );
           }
         }
       }),
@@ -1578,6 +1723,19 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return;
     }
     playback.ready = true;
+    playback.bufferMonitor.start();
+    unawaited(playback.danmaku?.loadAutomatic());
+    // A cached caption is available immediately, before MPV's asynchronous
+    // open has necessarily loaded a video. Add it only once the video exists.
+    unawaited(
+      playback.subtitles!.load(
+        onNotice: (message) {
+          if (_isCurrent(generation) && identical(_playback, playback)) {
+            setState(() => _playbackNotice = message);
+          }
+        },
+      ),
+    );
     _health.observe(
       _source,
       ok: true,
@@ -1611,7 +1769,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         playing: state.playing,
         completed: playback.completed,
       )) {
-        _fail(generation, '视频已连续 30 秒没有播放进展，请重试或更换线路。');
+        _fail(
+          generation,
+          '视频已连续 30 秒没有播放进展，请重试或更换线路。',
+          failure: CinemaPlaybackFailure.transientNetwork,
+        );
       }
     });
     setState(() => _loading = false);
@@ -1621,10 +1783,16 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
   }
 
-  void _fail(int generation, String message) {
-    if (!_isCurrent(generation)) return;
+  void _fail(
+    int generation,
+    String message, {
+    CinemaPlaybackFailure failure = CinemaPlaybackFailure.unknown,
+  }) {
+    if (!_isCurrent(generation) || _recoveryTimer != null) return;
     final selection = _selection;
     if (_playback?.cacheSession != null &&
+        failure != CinemaPlaybackFailure.accessDenied &&
+        failure != CinemaPlaybackFailure.unavailable &&
         selection != null &&
         _cacheBypass.add(selection.key)) {
       unawaited(
@@ -1635,6 +1803,36 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           automatic: true,
         ),
       );
+      return;
+    }
+    final delay = selection == null || widget.offlinePaths != null
+        ? null
+        : _recovery.retry(selection.key, failure);
+    if (delay != null) {
+      final at = _positionForEpisode(_routeIndex, _episodeIndex);
+      final playback = _playback;
+      if (playback?.ready == true) {
+        _pendingPlayIntent = playback!.player.state.playing;
+      }
+      setState(() {
+        _loading = true;
+        _phase = '网络连接中断，${delay.inMilliseconds / 1000} 秒后重试当前集';
+        _playbackNotice = _phase;
+      });
+      _recoveryTimer = Timer(delay, () {
+        _recoveryTimer = null;
+        if (!_isCurrent(generation)) return;
+        unawaited(
+          _playEpisode(
+            _routeIndex,
+            _episodeIndex,
+            resumeAt: at,
+            automatic: true,
+            playWhenReady:
+                _pendingPlayIntent && !_windowControls.blocksPlayback,
+          ),
+        );
+      });
       return;
     }
     _health.observe(_source, ok: false, media: true, reason: '视频未能继续');
@@ -1651,6 +1849,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   void _releasePlayback() {
+    _recoveryTimer?.cancel();
+    _recoveryTimer = null;
     _resolver.cancel();
     _loadTimer?.cancel();
     final old = _playback;
@@ -1849,8 +2049,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         widget.offlinePaths != null ||
         _route == null ||
         playback.player.state.buffering ||
-        playback.player.state.buffer - playback.position <
-            const Duration(seconds: 20) ||
+        !CinemaPlaybackBufferPolicy(
+          _rate,
+        ).mayWarmNext(playback.position, playback.player.state.buffer) ||
         _episodeIndex + 1 >= _route!.episodes.length) {
       return;
     }
@@ -1901,7 +2102,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         ..._catalogue.matching(current).where((c) => c.key != current.key),
       ])
         if (_probeResults[candidate.key] case final result?)
-          CinemaRouteMeasurement(candidate, result),
+          CinemaRouteMeasurement(candidate, result, playbackRate: _rate),
     ]);
   }
 
@@ -1930,6 +2131,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   Future<void> _probeRoutes({bool automatic = false}) async {
     if (_probingRoutes || _selection == null) return;
+    if (!automatic) _mediaProbe.invalidate();
     final generation = _generation;
     for (final background in _probeTokens) {
       background.cancel('线路测速优先，暂停重复采样和下一集预热');
@@ -2035,6 +2237,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         playback?.cacheSession?.update(
           playback.position,
           buffering: playback.player.state.buffering,
+          rate: _rate,
         );
       }
     }
@@ -2093,13 +2296,37 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
   }
 
-  Future<void> _setRate(double rate) async {
+  Future<void> _setRate(double rate, {bool temporary = false}) async {
     final playback = _playback;
     if (playback == null) return;
     try {
       await playback.player.setRate(rate);
       if (mounted && identical(playback, _playback)) {
-        setState(() => _rate = rate);
+        if (!temporary) setState(() => _rate = rate);
+        final policy = CinemaPlaybackBufferPolicy(rate);
+        if (!policy.mayWarmNext(
+          playback.position,
+          playback.player.state.buffer,
+        )) {
+          playback.cancelNextWarmup('倍速提高，优先缓存当前集');
+        }
+        playback.cacheSession?.update(
+          playback.position,
+          buffering: playback.player.state.buffering,
+          rate: rate,
+        );
+        final native = playback.player.platform;
+        if (native is NativePlayer) {
+          try {
+            for (final entry
+                in policy.nativeProperties(_preferences.bufferSize).entries) {
+              if (!mounted || !identical(playback, _playback)) return;
+              await native.setProperty(entry.key, entry.value);
+            }
+          } catch (_) {
+            KazumiLogger().w('Cinema: optional rate cache policy unavailable');
+          }
+        }
       }
     } catch (_) {
       if (mounted && identical(playback, _playback)) {
@@ -2128,10 +2355,21 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   void _changeEpisode(int delta) {
-    if (_closing || _loading || _requiresEpisodeSelection) return;
+    if (_closing ||
+        (_loading && _recoveryTimer == null) ||
+        _requiresEpisodeSelection) {
+      return;
+    }
     final target = _episodeIndex + delta;
     if (target >= 0 && target < (_route?.episodes.length ?? 0)) {
-      unawaited(_playEpisode(_routeIndex, target, resumeAt: 0));
+      unawaited(
+        _playEpisode(
+          _routeIndex,
+          target,
+          resumeAt: 0,
+          playWhenReady: _pendingPlayIntent,
+        ),
+      );
     }
   }
 
@@ -2142,34 +2380,18 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     if (choices.isNotEmpty) unawaited(_setRate(choices.first));
   }
 
-  Future<void> _holdForward() async {
-    if (_closing || _playback == null) return;
-    _forwardHeld = true;
-    if (_rate < _preferences.longPressRate) {
-      await _setRate(_preferences.longPressRate);
-    }
-  }
-
-  Future<void> _releaseForward() async {
-    final previous = _beforeForwardRate;
-    final held = _forwardHeld;
-    _beforeForwardRate = null;
-    _forwardHeld = false;
-    if (_closing || !mounted) return;
-    if (held && previous != null) {
-      await _setRate(previous);
-    } else {
-      _seekBy(_preferences.arrowSkipSeconds);
-    }
-  }
-
   Map<String, PlayerShortcutAction> get _keyboardActions => {
     'playorpause': _togglePlayback,
     'forward': () {
-      _beforeForwardRate = _rate;
-      _forwardHeld = false;
+      if (_playback?.ready == true) {
+        return _playback?.keyboardTransport?.press(1);
+      }
     },
-    'rewind': () => _seekBy(-_preferences.arrowSkipSeconds),
+    'rewind': () {
+      if (_playback?.ready == true) {
+        return _playback?.keyboardTransport?.press(-1);
+      }
+    },
     'next': () => _changeEpisode(1),
     'prev': () => _changeEpisode(-1),
     'volumeup': () => _setVolume(_volume + 10),
@@ -2208,7 +2430,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }
       _backgroundPaused = false;
       playback.manualPlaybackRevision++;
+      final intendedPlaying = !playback.player.state.playing;
       await playback.player.playOrPause();
+      if (identical(playback, _playback)) {
+        _pendingPlayIntent = intendedPlaying;
+      }
     } finally {
       _manualPlaybackChanging = false;
     }
@@ -2246,6 +2472,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Future<void> _saveBeforeApplicationExit() async {
     if (!mounted) return;
     _closing = true;
+    _recoveryTimer?.cancel();
+    _recoveryTimer = null;
     ++_generation;
     _historyTimer?.cancel();
     _loadTimer?.cancel();
@@ -2270,6 +2498,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Future<void> _leaveOnce() async {
     if (_closing) return;
     _closing = true;
+    _recoveryTimer?.cancel();
+    _recoveryTimer = null;
     await _pipTransition?.future;
     if (_fullscreen) await _setFullscreen(false);
     if (_pip) {
@@ -2378,6 +2608,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     unawaited(_together.detachPlayback(_syncOwner));
     if (_pip) unawaited(_restoreWindow());
     _closing = true;
+    _recoveryTimer?.cancel();
+    _recoveryTimer = null;
     ++_generation;
     _historyTimer?.cancel();
     _loadTimer?.cancel();
@@ -2411,6 +2643,37 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         fit: StackFit.expand,
         children: [
           _buildPlayer(context),
+          if (_playback?.keyboardTransport case final transport?)
+            Positioned(
+              top: 60,
+              left: 0,
+              right: 0,
+              child: IgnorePointer(
+                child: ListenableBuilder(
+                  listenable: transport,
+                  builder: (context, _) => transport.label.isEmpty
+                      ? const SizedBox.shrink()
+                      : Center(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: Colors.black87,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 8,
+                              ),
+                              child: Text(
+                                transport.label,
+                                style: const TextStyle(color: Colors.white),
+                              ),
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+            ),
           PlayerKeyboardShortcuts(
             focusScopeNode: _playerFocus,
             shortcuts: NakuDevice.isTV
@@ -2422,10 +2685,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                 : _preferences.shortcuts,
             actions: _keyboardActions,
             longPressActions: {
-              'forward': PlayerLongPressShortcutActions(
-                onRepeat: _holdForward,
-                onRelease: _releaseForward,
-              ),
+              for (final direction in const {
+                'forward': 1,
+                'rewind': -1,
+              }.entries)
+                if (_playback?.keyboardTransport case final transport?)
+                  direction.key: PlayerLongPressShortcutActions(
+                    holdDelay: const Duration(milliseconds: 400),
+                    onRepeat: () => transport.hold(direction.value),
+                    onRelease: transport.release,
+                    onCancel: () => transport.release(cancel: true),
+                  ),
             },
             isBlocked: () =>
                 _closing ||
@@ -2678,28 +2948,6 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     ],
   );
 
-  Widget _fullscreenPlaybackTools(BoxConstraints constraints) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 24),
-    child: Align(
-      alignment: Alignment.bottomCenter,
-      heightFactor: 1,
-      child: Material(
-        color: const Color(0xF2222222),
-        borderRadius: BorderRadius.circular(8),
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: 880,
-            maxHeight: constraints.maxHeight * .35,
-          ),
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            child: _playbackTools(overlay: true),
-          ),
-        ),
-      ),
-    ),
-  );
-
   Widget _videoSurface() => LayoutBuilder(
     key: _videoSurfaceKey,
     builder: (context, constraints) {
@@ -2736,22 +2984,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         seekBarThumbColor: const Color(0xFF3388FF),
         volumeBarActiveColor: const Color(0xFF3388FF),
         primaryButtonBar: const [],
-        // media_kit hides its primary controls while buffering. Keep the same
-        // quality/track controls available so a stalled stream can be changed.
-        bufferingIndicatorBuilder: (_) => _fullscreen && !_pip
-            ? Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(),
-                  ),
-                  const SizedBox(height: 12),
-                  _fullscreenPlaybackTools(constraints),
-                ],
-              )
-            : const CircularProgressIndicator(color: Colors.white),
+        bufferingIndicatorBuilder: (_) => const SizedBox.square(
+          key: ValueKey('cinema-buffering-indicator'),
+          dimension: 24,
+          child: CircularProgressIndicator(
+            color: Colors.white,
+            strokeWidth: 2.5,
+          ),
+        ),
         topButtonBar: _pip
             ? const []
             : [
@@ -2840,6 +3080,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                   ),
                                 ),
                                 const Spacer(),
+                                CinemaBufferStatus(
+                                  monitor: playback.bufferMonitor,
+                                  capacity: _preferences.bufferSize,
+                                  rate: _rate,
+                                  routeLabel: () =>
+                                      playback.cacheSession?.networkRoute ?? '',
+                                ),
+                                const Spacer(),
                                 Text(
                                   _time(playback.duration),
                                   style: const TextStyle(
@@ -2883,7 +3131,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                             Icons.skip_previous_rounded,
                                           ),
                                           onPressed:
-                                              _episodeIndex > 0 && !_loading
+                                              _episodeIndex > 0 &&
+                                                  (!_loading ||
+                                                      _recoveryTimer != null)
                                               ? () => _changeEpisode(-1)
                                               : null,
                                         ),
@@ -2940,7 +3190,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                           icon: const Icon(
                                             Icons.skip_next_rounded,
                                           ),
-                                          onPressed: _hasNext && !_loading
+                                          onPressed:
+                                              _hasNext &&
+                                                  (!_loading ||
+                                                      _recoveryTimer != null)
                                               ? () => _changeEpisode(1)
                                               : null,
                                         ),
@@ -2963,6 +3216,18 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
                                         if (!_pip) ...[
+                                          IconButton(
+                                            tooltip: _usesNASPlayback
+                                                ? '外挂字幕 / 播放器音轨'
+                                                : '字幕与音轨',
+                                            onPressed: playback == null
+                                                ? null
+                                                : _showTracks,
+                                            icon: const Icon(
+                                              Icons.subtitles_outlined,
+                                              size: 20,
+                                            ),
+                                          ),
                                           if (_usesNASPlayback &&
                                               _nasOptions != null)
                                             CinemaNASInlinePlaybackControls(
@@ -2986,6 +3251,16 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                                 _applyNASPlaybackChoice(choice),
                                               ),
                                             ),
+                                          IconButton(
+                                            tooltip: '弹幕',
+                                            onPressed: playback?.danmaku == null
+                                                ? null
+                                                : _showDanmaku,
+                                            icon: const Icon(
+                                              Icons.comment_outlined,
+                                              size: 20,
+                                            ),
+                                          ),
                                           _speedControl(),
                                           if (_fullscreen) ...[
                                             IconButton(
@@ -3072,23 +3347,6 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                                 ),
                                               ),
                                           ],
-                                          IconButton(
-                                            constraints:
-                                                const BoxConstraints.tightFor(
-                                                  width: 36,
-                                                  height: 40,
-                                                ),
-                                            padding: EdgeInsets.zero,
-                                            tooltip: _usesNASPlayback
-                                                ? '外挂字幕 / 播放器音轨'
-                                                : '字幕与音轨',
-                                            icon: const Icon(
-                                              Icons.closed_caption_outlined,
-                                            ),
-                                            onPressed: playback == null
-                                                ? null
-                                                : _showTracks,
-                                          ),
                                           IconButton(
                                             constraints:
                                                 const BoxConstraints.tightFor(
@@ -3210,6 +3468,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   ),
                 ),
               ),
+            if (playback?.danmaku case final danmaku?)
+              Positioned.fill(child: CinemaDanmakuOverlay(controller: danmaku)),
             if (playback != null)
               Positioned(
                 left: 20,
@@ -3597,7 +3857,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final result = _probeResults['${title.key}::$route::$index'];
     return result == null
         ? ''
-        : '\n${recommended ? '本次最佳 · ' : ''}${result.label}';
+        : '\n${recommended ? '本次最佳 · ' : ''}${result.labelForRate(_rate)}';
   }
 
   Widget _routeRecommendation({bool compact = false}) {
@@ -3673,7 +3933,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             ),
             const SizedBox(height: 4),
             Text(
-              best.result.label,
+              best.result.labelForRate(_rate),
               style: const TextStyle(color: _text, fontSize: 12),
             ),
             const SizedBox(height: 6),
@@ -3958,7 +4218,11 @@ class _CinemaPlayback {
     configuration: preferences.videoConfiguration,
   );
   late final liveSubtitles = CinemaLiveSubtitles(player);
+  late final bufferMonitor = CinemaBufferMonitor(player);
+  CinemaKeyboardTransport? keyboardTransport;
   CinemaSeasonSubtitleController? subtitles;
+  CinemaSubtitleAutoSync? subtitleAutoSync;
+  CinemaDanmakuController? danmaku;
   String lastStage = 'created';
   bool _controllerDiagnosticsAttached = false;
 
@@ -4017,9 +4281,18 @@ class _CinemaPlayback {
 
   Future<void> dispose() => _disposal ??= _dispose();
   Future<void> _dispose() async {
+    await keyboardTransport?.close();
+    try {
+      await subtitles?.flush();
+    } catch (_) {
+      KazumiLogger().w('Cinema: subtitle preferences could not be saved');
+    }
     subtitles?.close();
+    subtitleAutoSync?.dispose();
+    await danmaku?.close();
     cancelNextWarmup('播放已结束，取消下一集预热');
     liveSubtitles.dispose();
+    bufferMonitor.dispose();
     await closeCinemaExternalSubtitles(player);
     final closingNAS = nasSession?.close();
     try {

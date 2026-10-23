@@ -37,8 +37,14 @@ void main() {
   test(
     'cached page result emitted during load is retained, including HLS hint',
     () async {
-      final webview = _Webview();
-      final service = WebViewVideoSourceService(createWebview: () => webview);
+      final controllers = <_Webview>[];
+      final service = WebViewVideoSourceService(
+        createWebview: () {
+          final view = _Webview();
+          controllers.add(view);
+          return view;
+        },
+      );
       final result = await service.resolve(
         'https://fixture.invalid/1',
         useLegacyParser: false,
@@ -53,9 +59,39 @@ void main() {
         useLegacyParser: false,
       );
       expect(second.url, endsWith('/2/stream'));
-      expect(webview.loads, 2);
+      expect(controllers.length, 2);
+      expect(controllers.every((v) => v.loads == 1 && v.disposed), isTrue);
       await service.dispose();
-      webview.disposeEventControllers();
+      for (final view in controllers) {
+        view.disposeEventControllers();
+      }
+    },
+  );
+
+  test(
+    'late callback after a successful episode cannot resolve the next one',
+    () async {
+      final old = _Webview();
+      final next = _Webview()..initializing = Completer<void>();
+      var created = 0;
+      final service = WebViewVideoSourceService(
+        createWebview: () => created++ == 0 ? old : next,
+      );
+      await service.resolve(
+        'https://fixture.invalid/1',
+        useLegacyParser: false,
+      );
+      final resolving = service.resolve(
+        'https://fixture.invalid/2',
+        useLegacyParser: false,
+      );
+      await Future<void>.delayed(Duration.zero);
+      old.emit('https://fixture.invalid/1/stream');
+      next.initializing!.complete();
+      expect((await resolving).url, endsWith('/2/stream'));
+      await service.dispose();
+      old.disposeEventControllers();
+      next.disposeEventControllers();
     },
   );
 

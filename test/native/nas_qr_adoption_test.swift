@@ -24,6 +24,10 @@ final class QRFixtureProtocol: URLProtocol {
 @main struct QRAdoptionTests {
     static func expect(_ value: Bool, _ name: String) { if !value {fatalError(name)} }
     static func main() async throws {
+        let createBody=NASQRBroker.creationBody(identity:["platform":"Mac","clientType":"Mac","bid":"fixture-client","sn":"opaque-routing-hint"],publicKey:"fixture-key")
+        expect(createBody["sn"] == nil,"desktop QR must not bind the opaque route hint as a cloud serial")
+        expect(createBody["qrType"] == "LOCAL_LOGIN" && createBody["public_key"] == "fixture-key","desktop QR preserves its public-key login profile")
+        print("PASS desktop QR uses phone-selected NAS without a false serial binding")
         expect(try NASQRBroker.cloudOrigin(["site_code":"CN","url":"https://api-zh.ugnas.com"]) == "https://api-zh.ugnas.com/api/","NAS CN node must override client geolocation")
         expect(try NASQRBroker.cloudOrigin(["site_code":"CN"]) == "https://api-zh.ugnas.com/api/","CN fallback is region-specific")
         for url in ["http://api-zh.ugnas.com","https://api-zh.ugnas.com.evil.example","https://user@api-zh.ugnas.com","https://api-zh.ugnas.com?token=x"] {

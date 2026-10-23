@@ -184,14 +184,24 @@ class CinemaExternalSubtitleState {
   final timing = ValueNotifier<CinemaSubtitleTiming>(
     const CinemaSubtitleTiming(),
   );
+  final saveError = ValueNotifier<String?>(null);
+  final sourceLabel = ValueNotifier<String>('手动加载 · 本地文件或链接');
+  String origin = 'manual';
+  Future<void> _pendingSave = Future<void>.value();
   final _subscriptions = <StreamSubscription<dynamic>>[];
   List<CinemaSubtitleCue> _cues = [];
   String _nativeId = '', _filePath = '';
+  String _normalized = '';
+  String title = '在线字幕', language = 'zh';
   String _secondary = '';
   Duration _position = Duration.zero;
   double get delay => timing.value.offsetSeconds;
   List<CinemaSubtitleCue> get cues => List.unmodifiable(_cues);
   String get sourceIdentity => _filePath;
+  String get normalizedSubtitle => _normalized;
+  bool ownsTrack(SubtitleTrack track) =>
+      _cues.isNotEmpty && (track.id == _nativeId || track.id == _filePath);
+  Future<void> Function()? disableSavedSelection;
   ({Duration subtitle, Duration media})? firstSyncAnchor;
   CinemaSubtitleTiming? Function(String fingerprint)? readSavedTiming;
   Future<void> Function(String fingerprint, CinemaSubtitleTiming value)?
@@ -200,7 +210,19 @@ class CinemaExternalSubtitleState {
   bool _closed = false;
   Directory? folder;
   final files = <File>[];
-  void select(String normalized, String path, String id, double offset) {
+  void select(
+    String normalized,
+    String path,
+    String id,
+    double offset, {
+    String title = '在线字幕',
+    String language = 'zh',
+  }) {
+    _normalized = normalized;
+    origin = 'manual';
+    sourceLabel.value = '手动加载 · 本地文件或链接';
+    this.title = title.length > 512 ? title.substring(0, 512) : title;
+    this.language = language.length > 32 ? language.substring(0, 32) : language;
     _cues = cinemaSubtitleCues(normalized);
     _position = player.state.position;
     _filePath = path;
@@ -232,10 +254,21 @@ class CinemaExternalSubtitleState {
     _update();
     final save = saveTiming;
     if (active.value && fingerprint.isNotEmpty && save != null) {
-      // A disk failure must not interrupt the currently applied calibration.
-      unawaited(save(fingerprint, value).catchError((Object _) {}));
+      // Start now to capture this selection before a close/episode change.
+      // Retain the write so closing cannot outrun it, and surface failures.
+      final pending = Future<void>.sync(() => save(fingerprint, value));
+      _pendingSave = Future.wait<void>([_pendingSave, pending]).then<void>(
+        (_) {
+          if (!_closed) saveError.value = null;
+        },
+        onError: (Object _, StackTrace _) {
+          if (!_closed) saveError.value = '字幕校准保存失败，请检查磁盘空间后重试';
+        },
+      );
     }
   }
+
+  Future<void> flush() => _pendingSave;
 
   void _update() {
     if (_closed || !active.value) return;
@@ -252,9 +285,12 @@ class CinemaExternalSubtitleState {
 
   Future<void> close() async {
     if (_closed) return;
+    await flush();
+    if (_closed) return;
     _closed = true;
     readSavedTiming = null;
     saveTiming = null;
+    disableSavedSelection = null;
     for (final subscription in _subscriptions) {
       await subscription.cancel();
     }
@@ -276,6 +312,8 @@ class CinemaExternalSubtitleState {
     active.dispose();
     text.dispose();
     timing.dispose();
+    saveError.dispose();
+    sourceLabel.dispose();
   }
 }
 
@@ -299,10 +337,21 @@ Future<void> applyCinemaExternalSubtitle(
   checkCurrent();
   final native = player.platform;
   if (native is! NativePlayer) {
-    await player.setSubtitleTrack(
-      SubtitleTrack.data(normalized, title: title, language: language),
+    final track = SubtitleTrack.data(
+      normalized,
+      title: title,
+      language: language,
     );
+    await player.setSubtitleTrack(track);
     checkCurrent();
+    cinemaExternalSubtitleState(player).select(
+      normalized,
+      'data:${sha256.convert(utf8.encode(normalized))}',
+      track.id,
+      0,
+      title: title,
+      language: language,
+    );
     return;
   }
   final session = cinemaExternalSubtitleState(player);
@@ -342,7 +391,14 @@ Future<void> applyCinemaExternalSubtitle(
   checkCurrent();
   final offset = double.tryParse(await native.getProperty('sub-delay')) ?? 0;
   checkCurrent();
-  session.select(normalized, file.path, selected, offset);
+  session.select(
+    normalized,
+    file.path,
+    selected,
+    offset,
+    title: title,
+    language: language,
+  );
 }
 
 class CinemaExternalSubtitleOverlay extends StatelessWidget {

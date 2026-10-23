@@ -7,6 +7,18 @@ import 'package:kazumi/services/platform/dandan_credential_store.dart';
 import 'package:kazumi/utils/dandan_credentials.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+class DirectDanmakuServiceStatusTile extends StatelessWidget {
+  const DirectDanmakuServiceStatusTile({super.key});
+  @override
+  Widget build(BuildContext context) => SettingsTile(
+    leading: Icons.cloud_done_outlined,
+    title: const Text('电影与剧集弹幕：播放器直连'),
+    description: const Text(
+      '自动核对片名、年份、季和集数，直接获取腾讯、优酷、爱奇艺、芒果和 Bilibili 弹幕，无需 NAS 或令牌。播放页可调整开关和样式。',
+    ),
+  );
+}
+
 class DanmakuServiceStatusTile extends StatefulWidget {
   const DanmakuServiceStatusTile({super.key});
   static final guideUri = Uri.parse('https://doc.dandanplay.com/open/');
@@ -36,9 +48,7 @@ class _DanmakuServiceStatusTileState extends State<DanmakuServiceStatusTile> {
   Widget build(BuildContext context) => SettingsTile(
     leading: _configured ? Icons.check_circle_outline : Icons.settings_outlined,
     title: Text(_configured ? '弹弹play已配置' : '弹弹play（可选）'),
-    description: const Text(
-      'Bilibili 自动弹幕无需此项配置。填写自有凭据后可增加弹弹play聚合弹幕；也可导入 XML / JSON。',
-    ),
+    description: const Text('播放器直连平台弹幕无需此项配置。填写自有凭据后可增加弹弹play聚合弹幕。'),
     trailing: const Icon(Icons.chevron_right_rounded),
     onPressed: (context) async {
       await showDialog<void>(
@@ -95,8 +105,16 @@ class _DanmakuServiceDialogState extends State<DanmakuServiceDialog> {
     try {
       await action();
       if (mounted) setState(() => _message = success);
-    } catch (_) {
-      if (mounted) setState(() => _message = '操作失败，请检查凭据、网络或钥匙串授权');
+    } catch (error) {
+      if (mounted) {
+        setState(
+          () => _message =
+              error is DanmakuServiceException ||
+                  error is DanmakuNotConfiguredException
+              ? error.toString()
+              : '操作失败，请检查凭据、网络或钥匙串授权',
+        );
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -113,7 +131,7 @@ class _DanmakuServiceDialogState extends State<DanmakuServiceDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              '使用你申请的弹弹play开发者凭据。凭据仅保存在本机钥匙串，不参与备份或同步。没有凭据时，仍可自动加载 Bilibili 弹幕或导入本地弹幕。',
+              '使用开发者中心审核通过的 AppId 与任一 AppSecret。凭据只保存在本机钥匙串。无需弹弹play用户账号；应用配额按官方分层管理。没有凭据时仍可用 B 站或本地弹幕。',
             ),
             const SizedBox(height: 18),
             TextField(
@@ -160,6 +178,15 @@ class _DanmakuServiceDialogState extends State<DanmakuServiceDialog> {
                           }
                         },
                   child: const Text('官方接入说明'),
+                ),
+                TextButton(
+                  onPressed: _busy
+                      ? null
+                      : () => launchUrl(
+                          Uri.parse('https://dev.dandanplay.com/Center'),
+                          mode: LaunchMode.externalApplication,
+                        ),
+                  child: const Text('开发者中心'),
                 ),
                 TextButton(
                   onPressed: _busy

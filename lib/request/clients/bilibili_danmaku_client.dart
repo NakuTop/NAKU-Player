@@ -9,10 +9,16 @@ import 'package:kazumi/request/core/dio_factory.dart';
 import 'package:kazumi/services/player/local_danmaku_store.dart';
 
 class BilibiliDanmakuPage {
-  const BilibiliDanmakuPage(this.cid, this.name, {this.episodeNumber});
+  const BilibiliDanmakuPage(
+    this.cid,
+    this.name, {
+    this.episodeNumber,
+    this.duration = 0,
+  });
   final int cid;
   final String name;
   final int? episodeNumber;
+  final double duration;
 }
 
 class BilibiliAnimeCandidate {
@@ -87,13 +93,24 @@ class BilibiliDanmakuClient {
   Future<List<BilibiliAnimeCandidate>> searchAnime(
     String keyword, {
     CancelToken? cancelToken,
+  }) => _search(keyword, cancelToken: cancelToken);
+
+  Future<List<BilibiliAnimeCandidate>> searchFilms(
+    String keyword, {
+    CancelToken? cancelToken,
+  }) => _search(keyword, cancelToken: cancelToken, films: true);
+
+  Future<List<BilibiliAnimeCandidate>> _search(
+    String keyword, {
+    CancelToken? cancelToken,
+    bool films = false,
   }) async {
     final query = keyword.trim();
     if (query.isEmpty) throw const FormatException('请输入动漫名称');
     final response = await _http.get<dynamic>(
       'https://api.bilibili.com/x/web-interface/search/type',
       queryParameters: {
-        'search_type': 'media_bangumi',
+        'search_type': films ? 'media_ft' : 'media_bangumi',
         'keyword': query.substring(0, query.length.clamp(0, 160)),
       },
       options: Options(
@@ -195,6 +212,9 @@ class BilibiliDanmakuClient {
             episodeNumber: ugc
                 ? item['page'] as int?
                 : int.tryParse('${item['title']}'),
+            duration: item['duration'] is num
+                ? (item['duration'] as num).toDouble() / (ugc ? 1 : 1000)
+                : 0,
           ),
         );
       }

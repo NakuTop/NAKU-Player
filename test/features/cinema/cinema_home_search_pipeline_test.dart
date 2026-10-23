@@ -233,7 +233,11 @@ void main() {
   }
 
   Future<void> year(WidgetTester tester, String current, String next) async {
-    await tester.tap(find.byKey(ValueKey('cinema-filter-年份-$current')));
+    final selected = tester
+        .widget<CinemaFilterBar>(find.byType(CinemaFilterBar))
+        .value
+        .year;
+    await tester.tap(find.byKey(ValueKey('cinema-filter-年份-$selected')));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text(next).last);
     await tester.tap(find.text(next).last);
@@ -262,8 +266,10 @@ void main() {
     'new searches clear the previous catalogue or search year filter',
     (tester) async {
       await mount(tester);
-      await year(tester, '', '2026');
-      expect(repository.browses.any((r) => r.year == '2026'), isTrue);
+      await tester.tap(find.byKey(const ValueKey('catalog-sort-latest')));
+      await tester.pumpAndSettle();
+      await year(tester, '', '2025');
+      expect(repository.browses.any((r) => r.year == '2025'), isTrue);
       await search(tester, 'Interstellar');
       final firstFilters = tester.widget<CinemaFilterBar>(
         find.byType(CinemaFilterBar),

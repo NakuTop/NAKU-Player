@@ -1,4 +1,5 @@
 import 'cinema_models.dart';
+import 'cinema_media_identity.dart';
 import 'cinema_seasons.dart';
 
 /// One search card, retaining each source's own identity and playback data.
@@ -24,23 +25,18 @@ class CinemaTitleGroup {
   final String _preferredSourceId;
   final List<String> sourcePriority;
 
-  CinemaTitle get representative =>
-      sourcePriority
-          .map((id) => variants.where((v) => v.sourceId == id).firstOrNull)
-          .whereType<CinemaTitle>()
-          .firstOrNull ??
-      variants
-          .where((title) => title.sourceId == _preferredSourceId)
-          .firstOrNull ??
-      variants.first;
+  CinemaTitle get representative => orderCinemaVariants(variants, [
+    ...sourcePriority,
+    _preferredSourceId,
+  ]).first;
 
   /// Keep the preferred playback source while sharing only unambiguous rating
   /// identities from variants that already passed the work identity checks.
   /// The original variants remain untouched for playback and persistence.
   late final CinemaTitle catalogTitle = _catalogTitle();
 
-  CinemaTitle _catalogTitle() {
-    final base = representative;
+  CinemaTitle _catalogTitle({CinemaTitle? primary}) {
+    final base = primary ?? representative;
     Set<String> identities(String Function(CinemaTitle) read) => variants
         .map(read)
         .map((id) => id.trim())
@@ -98,7 +94,7 @@ CinemaTitle inheritCinemaRatingMetadata(
     key: detail.key,
     variants: [detail, anchor],
     preferredSourceId: detail.sourceId,
-  ).catalogTitle;
+  )._catalogTitle(primary: detail);
 }
 
 /// Conservatively groups only compatible works in first-appearance order.
@@ -215,7 +211,7 @@ class _Group {
 }
 
 String _normalizeName(String value) {
-  var name = value.trim().toLowerCase();
+  var name = cinemaMediaBaseTitle(value).toLowerCase();
   const language = r'(?:原声版|普通话版|国语版|英语版)';
   name = name.replaceFirst(
     RegExp(
@@ -295,14 +291,23 @@ int? _year(String text, _Kind kind) {
   return last == null || last >= first ? first : null;
 }
 
-/// Stable source priority; keeps the provider's route and episode order intact.
+/// Prefer labelled 4K editions, then stable source priority. Playback still
+/// probes the actual stream; a catalogue label is not a resolution guarantee.
+/// Provider route and episode order are never changed.
 List<CinemaTitle> orderCinemaVariants(
   Iterable<CinemaTitle> values,
   Iterable<String> ids,
 ) {
-  final priority = {for (final entry in ids.indexed) entry.$2: entry.$1};
+  final priority = <String, int>{};
+  for (final id in ids) {
+    priority.putIfAbsent(id, () => priority.length);
+  }
   final entries = values.toList().indexed.toList()
     ..sort((a, b) {
+      final quality = cinemaVariantQuality(
+        b.$2,
+      ).compareTo(cinemaVariantQuality(a.$2));
+      if (quality != 0) return quality;
       final compared = (priority[a.$2.sourceId] ?? priority.length).compareTo(
         priority[b.$2.sourceId] ?? priority.length,
       );
@@ -310,3 +315,10 @@ List<CinemaTitle> orderCinemaVariants(
     });
   return entries.map((e) => e.$2).toList();
 }
+
+int cinemaVariantQuality(CinemaTitle title) =>
+    title.sourceId == 'douban-discovery'
+    ? -1
+    : cinemaIs4KLabel('${title.title} ${title.remarks} ${title.category}')
+    ? 1
+    : 0;

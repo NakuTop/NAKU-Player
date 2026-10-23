@@ -144,7 +144,11 @@ actor NASMovieSession {
         guard let u = URL(string: address), u.scheme == "https" || u.scheme == "http",
               u.host != nil, u.user == nil, u.password == nil, u.query == nil, u.fragment == nil,
               u.path.isEmpty || u.path == "/" else { throw NASMovieError.configuration }
-        return u
+        // DNS host names are case-insensitive; URLSession canonicalizes them
+        // in responses even when UGlink returns a mixed-case alias.
+        var normalized=URLComponents(url:u,resolvingAgainstBaseURL:false)!
+        normalized.host=u.host!.lowercased()
+        return normalized.url!
     }
     private func headers() -> [String:String] {
         ["UG-Agent":"PC/WEB", "User-Feature":"Mac", "UG-Client-Id":clientID,
@@ -157,7 +161,7 @@ actor NASMovieSession {
         for (k,v) in headers().merging(extra, uniquingKeysWith: { _,new in new }) { req.setValue(v, forHTTPHeaderField:k) }
         if let body { req.httpBody = try JSONSerialization.data(withJSONObject:body); req.setValue("application/json",forHTTPHeaderField:"Content-Type") }
         let (data,res) = try await session.data(for:req)
-        guard let http = res as? HTTPURLResponse, http.url?.host == url.host, data.count <= 8*1024*1024 else { throw NASMovieError.response }
+        guard let http = res as? HTTPURLResponse, http.url?.host?.lowercased() == url.host?.lowercased(), data.count <= 8*1024*1024 else { throw NASMovieError.response }
         return (data,http)
     }
     private func json(_ data: Data) throws -> [String:Any] {
@@ -244,7 +248,7 @@ actor NASMovieSession {
         if let saved=try qrStore.loadValue(NASMovieSavedQR.self) { return ["address":saved.address,"username":saved.username,"qr":true] }
         return [:]
     }
-    private func loginCacheKey(address: String, username: String) -> String {
+    static func loginCacheKey(address: String, username: String) -> String {
         SHA256.hash(data:Data((address+"|"+username).utf8)).map {String(format:"%02x",$0)}.joined()
     }
     static func probeAutoRoute(_ address: String, hint: String, transport: URLSession) async -> String? {
@@ -254,7 +258,7 @@ actor NASMovieSession {
         request.timeoutInterval=isPrivateIPv4(host) ? 1.2:3.0
         do {
             let (bytes,response)=try await transport.data(for:request)
-            guard let http=response as? HTTPURLResponse,http.statusCode == 200,http.url?.host == host,bytes.count < 65536,
+            guard let http=response as? HTTPURLResponse,http.statusCode == 200,http.url?.host?.lowercased() == host.lowercased(),bytes.count < 65536,
                   let object=try JSONSerialization.jsonObject(with:bytes) as? [String:Any],object["code"] as? Int == 200,
                   let data=object["data"] as? [String:Any],data["sn"] as? String == hint else {return nil}
             return target.absoluteString
@@ -276,14 +280,35 @@ actor NASMovieSession {
         }
         return nil
     }
+    static func routeCacheMatches(address: String, username: String, cache: [String:Any]) -> Bool {
+        guard let identity=cache["namespace"] as? String,
+              identity.range(of:"^[a-f0-9]{64}$",options:.regularExpression) != nil else {return false}
+        return cache["loginKey"] as? String == loginCacheKey(address:address,username:username)
+    }
+    static func restorationRoute(address: String, username: String, cache: [String:Any], transport: URLSession) async -> String? {
+        guard routeCacheMatches(address:address,username:username,cache:cache) else {return nil}
+        let remotes=cache["remote"] as? [String] ?? []
+        var hint=cache["hint"] as? String ?? ""
+        // Refresh a rotating public hint before authentication. Only an already
+        // saved TLS UGlink origin is eligible; these requests carry no secrets.
+        for address in remotes.prefix(12) {
+            guard let target=try? origin(address),let host=target.host,target.scheme == "https",
+                  host.hasSuffix(".ug.link") else {continue}
+            var request=URLRequest(url:target.appendingPathComponent("ugreen/v1/verify/sn"));request.timeoutInterval=10
+            if let (bytes,response)=try? await transport.data(for:request),
+               let http=response as? HTTPURLResponse,http.statusCode == 200,http.url?.host?.lowercased() == host.lowercased(),bytes.count < 65536,
+               let object=try? JSONSerialization.jsonObject(with:bytes) as? [String:Any],object["code"] as? Int == 200,
+               let data=object["data"] as? [String:Any],let live=data["sn"] as? String,!live.isEmpty {
+                hint=live;break
+            }
+        }
+        return await selectAutoRoute(lan:cache["lan"] as? [String] ?? [],remote:remotes,hint:hint,transport:transport)
+    }
     func restore() async throws -> [String:Any] {
         let metadata=try savedLogin(),address=metadata["address"] as? String ?? "",username=metadata["username"] as? String ?? ""
-        var selected=address
         let cache=UserDefaults.standard.dictionary(forKey:"NakuNASAutoRouteV1") ?? [:]
-        if cache["loginKey"] as? String == loginCacheKey(address:address,username:username),
-           let hint=cache["hint"] as? String {
-            selected=await Self.selectAutoRoute(lan:cache["lan"] as? [String] ?? [],remote:cache["remote"] as? [String] ?? [],hint:hint,transport:session) ?? address
-        }
+        let route=await Self.restorationRoute(address:address,username:username,cache:cache,transport:session)
+        let selected=route ?? address
         let result:[String:Any]
         if let saved=try credentialStore.load() {
             result=try await login(address:selected,username:saved.username,password:saved.password,remember:nil)
@@ -291,7 +316,7 @@ actor NASMovieSession {
             result=try await adoptQR(NASMovieSavedQR(address:selected,token:saved.token,publicKey:saved.publicKey,staticToken:saved.staticToken,
                 authType:saved.authType,username:saved.username,serial:saved.serial,name:saved.name,uid:saved.uid,ugk:saved.ugk),remember:nil)
         } else {throw NASMovieError.expired}
-        if selected != address {
+        if route != nil {
             guard cache["namespace"] as? String == namespace else {logout();throw NASMovieError.configuration}
             remoteAddress=(cache["remote"] as? [String])?.first ?? ""
             lanCandidates=cache["lan"] as? [String] ?? []
@@ -328,7 +353,7 @@ actor NASMovieSession {
             return u.scheme == "https" && (host == "ug.link" || host.hasSuffix(".ug.link"))
         }
         let locals=lanCandidates.filter {guard let u=try? Self.origin($0) else {return false};return Self.isPrivateIPv4(u.host ?? "")}
-        UserDefaults.standard.set(["loginKey":loginCacheKey(address:savedAddress,username:username),"namespace":namespace,
+        UserDefaults.standard.set(["loginKey":Self.loginCacheKey(address:savedAddress,username:username),"namespace":namespace,
             "hint":hint,"lan":locals,"remote":remote],forKey:"NakuNASAutoRouteV1")
         guard let selected=await Self.selectAutoRoute(lan:locals,remote:remote,hint:hint,transport:session),
               generation == attempt,namespace == expected else {
@@ -390,7 +415,7 @@ actor NASMovieSession {
         let hint=device["sn"] as! String
         guard attempt == qrGeneration else { throw NASMovieError.expired }
         qrOrigin=target; qrDeviceHint=hint
-        return try await qrBroker.create(alias:"Naku Player",serial:hint,device:device)
+        return try await qrBroker.create(alias:"Naku Player",device:device)
     }
     func cancelQR() async { qrGeneration += 1; qrOrigin=nil; qrDeviceHint=""; await qrBroker.cancel() }
     func pollQR(remember: Bool) async throws -> [String:Any] {

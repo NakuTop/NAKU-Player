@@ -7,23 +7,27 @@ import 'package:flutter/foundation.dart';
 import 'cinema_filters.dart';
 import 'cinema_grouping.dart';
 import 'cinema_models.dart';
+import 'cinema_media_identity.dart';
 import 'cinema_repository.dart';
 import 'douban/douban_models.dart';
 import 'douban/douban_repository.dart';
 
-enum CinemaAggregateKind { movies, series }
+enum CinemaAggregateKind { movies, series, ultraHd }
 
 bool cinemaOrdinaryCategory(String value) =>
     !RegExp('伦理|福利|情色|成人|里番|写真|三级|擦边').hasMatch(value);
 
 bool cinemaMatchesAggregateKind(CinemaTitle title, CinemaAggregateKind kind) =>
     cinemaOrdinaryCategory('${title.category} ${title.genres}') &&
-    _matchesKindName(title.category, kind);
+    (kind == CinemaAggregateKind.ultraHd
+        ? cinemaIs4KLabel('${title.title} ${title.category}')
+        : _matchesKindName(title.category, kind));
 
 bool _matchesKindName(String name, CinemaAggregateKind kind) => switch (kind) {
   CinemaAggregateKind.movies => RegExp(
     '电影|动作片|喜剧片|爱情片|科幻片|恐怖片|剧情片|战争片|纪录片|记录片|悬疑片|动画片|犯罪片|奇幻片|冒险片|惊悚片|灾难片|家庭片|家庭篇|历史片|古装片|西部片|短片',
   ).hasMatch(name),
+  CinemaAggregateKind.ultraHd => cinemaIs4KLabel(name),
   CinemaAggregateKind.series => RegExp(
     '电视剧|连续剧|大陆剧|内地剧|国产剧|欧美剧|美国剧|英国剧|美剧|日剧|韩剧|日本剧|韩国剧|香港剧|港澳剧|台湾剧|海外剧|泰国剧|泰剧|马泰剧|Netflix自制剧|短剧',
   ).hasMatch(name),
@@ -111,7 +115,11 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
       filters.year,
       filters.region,
       filters.genre,
-      filters.isEmpty ? '' : sort.name,
+      filters.isEmpty &&
+              (sort != CinemaCatalogSort.popular ||
+                  kind == CinemaAggregateKind.ultraHd)
+          ? ''
+          : sort.name,
       enabled.map((source) => source.toJson()).toList(),
     ]);
     if (!refresh && _active?.key == key && _active!.loading) {
@@ -141,7 +149,7 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
       session = _Session(key, kind, filters, sort, enabled);
       // A refresh leaves cards visible while the first new round is fetched.
       if (oldItems.isNotEmpty) session.staleItems = oldItems;
-      if (session.metadataOnly) {
+      if (session.metadataOnly && !session.recentPopular) {
         for (final cached in _sessions.values.where((s) => s.kind == kind)) {
           for (final item in cached.items.values.where(
             (item) =>
@@ -240,18 +248,29 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
     _publish(session);
     try {
       final sourceKey = _sourceKey(cursor.source);
-      if (session.filters.year.isNotEmpty && _ignoredYear.contains(sourceKey)) {
+      if (session.kind != CinemaAggregateKind.ultraHd &&
+          session.filters.year.isNotEmpty &&
+          _ignoredYear.contains(sourceKey)) {
         cursor.yearUnsupported = true;
         cursor.exhausted = true;
         return;
       }
       if (cursor.categories == null) {
-        final categories = await _repository.categories(cursor.source);
+        List<CinemaCategory> categories;
+        try {
+          categories = await _repository.categories(cursor.source);
+        } catch (_) {
+          if (session.kind != CinemaAggregateKind.ultraHd) rethrow;
+          categories = [];
+        }
         if (!_valid(session, generation)) return;
         cursor.categories = categories;
         cursor.blockedIds.addAll(_blockedCategoryIds(categories));
         cursor.allowedIds.addAll(_categoryIds(categories, session.kind));
         _includeDescendants(cursor.allowedIds, categories);
+        if (session.kind == CinemaAggregateKind.ultraHd) {
+          cursor.pages.add(_CategoryCursor('@4k-search'));
+        }
         cursor.pages.addAll(
           _categoryIds(categories, session.kind).map(_CategoryCursor.new),
         );
@@ -261,15 +280,18 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
         return;
       }
       final category = cursor.pages.removeAt(0);
-      final page = await _repository.browseFiltered(
-        cursor.source,
-        categoryId: category.id.isEmpty ? null : category.id,
-        year: session.filters.year,
-        page: category.page,
-      );
+      final page = category.id == '@4k-search'
+          ? await _repository.search(cursor.source, '4K', page: category.page)
+          : await _repository.browseFiltered(
+              cursor.source,
+              categoryId: category.id.isEmpty ? null : category.id,
+              year: session.filters.year,
+              page: category.page,
+            );
       if (!_valid(session, generation)) return;
       final year = session.filters.year;
-      if (year.isNotEmpty &&
+      if (session.kind != CinemaAggregateKind.ultraHd &&
+          year.isNotEmpty &&
           page.items.any((item) {
             final found = RegExp(r'\d{4}').firstMatch(item.year)?.group(0);
             return found != null && found != year;
@@ -288,7 +310,8 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
             !cursor.blockedIds.contains(title.categoryId) &&
             (cinemaMatchesAggregateKind(title, session.kind) ||
                 (cinemaOrdinaryCategory('${title.category} ${title.genres}') &&
-                    cursor.allowedIds.contains(title.categoryId))) &&
+                    cursor.allowedIds.contains(title.categoryId) &&
+                    category.id != '@4k-search')) &&
             session.filters.matches(title),
       )) {
         if (session.items.length >= 800) break;
@@ -396,10 +419,12 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
       ...raw.where((item) => item.sourceId == 'douban-discovery'),
     ];
     final groups = groupCinemaTitles(ordered);
-    final representatives = sortCinemaTitles(
-      groups.map((g) => g.representative).toList(),
-      session.sort,
-    );
+    final representatives = session.recentPopular
+        ? groups.map((g) => g.representative).toList()
+        : sortCinemaTitles(
+            groups.map((g) => g.representative).toList(),
+            session.sort,
+          );
     final byKey = {for (final group in groups) group.representative.key: group};
     final statuses = session.sources
         .map(
@@ -431,7 +456,7 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
       usesMetadataDiscovery: session.usesMetadata,
       error:
           session.discoveryError ??
-          (session.sources.isEmpty
+          (session.sources.isEmpty && !session.usesMetadata
               ? '还没有启用的影视接口，请在设置中添加或启用片源。'
               : errors == session.sources.length
               ? '当前片源暂时无法连接，请刷新重试。'
@@ -489,7 +514,9 @@ List<String> _categoryIds(
       .where(
         (category) =>
             !blocked.contains(category.id) &&
-            (kind == CinemaAggregateKind.movies
+            (kind == CinemaAggregateKind.ultraHd
+                ? cinemaIs4KLabel(category.name)
+                : kind == CinemaAggregateKind.movies
                 ? ['电影', '电影片'].contains(category.name)
                 : ['电视剧', '连续剧'].contains(category.name)),
       )
@@ -516,6 +543,7 @@ List<String> _categoryIds(
     // includes all of its children.
     ...allowed.where((category) => parents.contains(category.id)),
   ];
+  if (kind == CinemaAggregateKind.ultraHd && selected.isEmpty) return [];
   if (selected.isNotEmpty) {
     return selected.map((category) => category.id).toList();
   }
@@ -571,11 +599,17 @@ class _Session {
   String? discoveryError;
   DateTime? fetchedAt;
   CancelToken? cancel;
-  bool get usesMetadata => !filters.isEmpty;
+  bool get recentPopular =>
+      kind != CinemaAggregateKind.ultraHd && sort == CinemaCatalogSort.popular;
+  bool get usesMetadata =>
+      kind != CinemaAggregateKind.ultraHd &&
+      (recentPopular || !filters.isEmpty);
   bool get metadataOnly =>
-      filters.region.isNotEmpty ||
-      filters.genre.isNotEmpty ||
-      filters.year == '更早';
+      kind != CinemaAggregateKind.ultraHd &&
+      (recentPopular ||
+          filters.region.isNotEmpty ||
+          filters.genre.isNotEmpty ||
+          filters.year == '更早');
 }
 
 class _SourceCursor {

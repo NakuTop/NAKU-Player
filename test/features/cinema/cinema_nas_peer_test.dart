@@ -11,16 +11,18 @@ class _Library extends CinemaNASClient {
     Map<String, dynamic>? args,
   ]) async {
     if (!allowed) throw StateError('permission denied');
-    if (method == 'catalog')
+    if (method == 'catalog') {
       return {
         'video_arr': [_row],
       };
-    if (method == 'details')
+    }
+    if (method == 'details') {
       return {
         'file_information': [
           {'path': '/movies/film.mkv', 'name': '原画'},
         ],
       };
+    }
     return {};
   }
 }

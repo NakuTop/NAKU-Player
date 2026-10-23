@@ -82,7 +82,7 @@ const cinemaSettingsGroups = <CinemaSettingsGroup>[
     CinemaSettingsDestination(
       id: 'danmaku',
       title: '弹幕设置',
-      description: '动漫专用：弹幕服务、显示效果与屏蔽规则',
+      description: '电影、剧集与动漫：平台直连弹幕、显示效果与屏蔽规则',
       icon: Icons.subtitles_rounded,
       route: '/settings/danmaku/',
     ),

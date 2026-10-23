@@ -55,7 +55,18 @@ actor NASQRBroker {
               ["","/","/api/"].contains(u.path) else {throw NASQRError.invalidResponse}
         return "https://"+host+"/api/"
     }
-    func create(alias: String, serial: String? = nil, device: [String:Any] = [:]) async throws -> [String: Any] {
+    static func creationBody(identity: [String:String], publicKey: String) -> [String:String] {
+        // The desktop LOCAL_LOGIN profile lets the phone select its NAS. The
+        // public /verify/sn value is an opaque routing hint, not a cloud SN.
+        // Sending it as sn produces a QR that the app reports as disconnected.
+        var body = identity
+        body.removeValue(forKey:"sn")
+        body["qrType"] = "LOCAL_LOGIN"
+        body["ak"] = "UG8FKSDUGREEN001"
+        body["public_key"] = publicKey
+        return body
+    }
+    func create(alias: String, device: [String:Any] = [:]) async throws -> [String: Any] {
         cancel()
         origin=try Self.cloudOrigin(device)
         self.alias = alias.isEmpty ? "Naku Player" : String(alias.prefix(128))
@@ -71,11 +82,7 @@ actor NASQRBroker {
                                    delegate: NASQRNoRedirect(), delegateQueue: nil)
         session = transport
         privateKey = key
-        var body = identity()
-        body["qrType"] = "LOCAL_LOGIN"
-        body["ak"] = "UG8FKSDUGREEN001"
-        body["public_key"] = publicKey
-        if let serial = serial, !serial.isEmpty { body["sn"] = serial }
+        let body = Self.creationBody(identity:identity(), publicKey:publicKey)
         let response: [String: Any]
         do {
             response = try await post("user/v3/sa/create/qrCode",

@@ -81,6 +81,96 @@ CinemaSearchDiscoveryRepository _repository(
 
 void main() {
   test(
+    'series and miniseries identity fallback accepts official start dates and coalesces hydration',
+    () async {
+      final adapter = _Adapter((r) {
+        if (r.uri.host == 'movie.douban.com' || r.uri.host == 'm.douban.com') {
+          return _restricted();
+        }
+        if (r.queryParameters['action'] == 'wbsearchentities') {
+          return {
+            'search': [
+              {'id': 'Q123'},
+            ],
+          };
+        }
+        return {
+          'entities': {
+            'Q123': {
+              'labels': {
+                'zh': {'value': '原名剧集'},
+              },
+              'claims': {
+                'P4529': [_claim('12345')],
+                'P31': [
+                  _claim({'id': 'Q1259759'}),
+                ],
+                'P580': [
+                  _claim({'time': '+2026-01-01T00:00:00Z'}),
+                ],
+              },
+            },
+          },
+        };
+      });
+      final repository = _repository(adapter);
+      final results = await Future.wait([
+        repository.searchForIdentity('原名剧集'),
+        repository.searchForIdentity('原名剧集'),
+      ]);
+      expect(results.first.titles.single.kind, 'tv');
+      expect(results.first.titles.single.year, '2026');
+      expect(results.first.titles.single.identityVerified, isTrue);
+      expect(
+        adapter.calls.where((r) => r.uri.host == 'm.douban.com'),
+        hasLength(1),
+        reason: 'Verified fallback must not rehydrate the same subject again',
+      );
+      final count = adapter.calls.length;
+      await repository.searchForIdentity('原名剧集');
+      expect(adapter.calls.length, count);
+    },
+  );
+  test(
+    'identity hydration follows the same-ID TV route and keeps login redirects blocked',
+    () async {
+      CinemaDoubanAccess.resetForTesting();
+      addTearDown(CinemaDoubanAccess.resetForTesting);
+      for (final safe in [true, false]) {
+        final adapter = _Adapter((request) {
+          if (request.path.endsWith('subject_suggest')) {
+            return [_title('1292720')];
+          }
+          if (request.path.endsWith('/movie/1292720')) {
+            return ResponseBody.fromString(
+              '',
+              301,
+              headers: {
+                'location': [
+                  safe
+                      ? 'https://m.douban.com/rexxar/api/v2/tv/1292720'
+                      : 'https://accounts.douban.com/passport/login',
+                ],
+              },
+            );
+          }
+          if (request.path.endsWith('/tv/1292720')) {
+            return {..._title('1292720'), 'type': 'tv'};
+          }
+          if (request.uri.host == 'www.wikidata.org') return {'search': []};
+          throw StateError('Unexpected request ${request.path}');
+        });
+        final result = await _repository(adapter).searchForIdentity('参演电影');
+        expect(result.titles.single.identityVerified, safe);
+        expect(adapter.calls.any((r) => r.path.contains('/tv/1292720')), safe);
+        expect(
+          adapter.calls.any((r) => r.uri.host == 'accounts.douban.com'),
+          isFalse,
+        );
+      }
+    },
+  );
+  test(
     'identity lookup hydrates suggestions before accepting an automatic match',
     () async {
       final adapter = _Adapter((request) {

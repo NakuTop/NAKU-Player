@@ -16,6 +16,8 @@ class _Player implements Player {
 
   @override
   PlatformPlayer? get platform => null;
+  @override
+  PlayerState get state => const PlayerState();
 
   @override
   Future<void> pause() async {
@@ -55,6 +57,7 @@ class _Client extends CinemaOnlineSubtitles {
     String query,
     String type, {
     String imdbId = '',
+    String year = '',
     int season = 1,
     int episode = 1,
     String language = 'zh-eng',

@@ -1,9 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:html/parser.dart' as html;
 import 'package:kazumi/services/network/macos_system_proxy.dart';
+import 'cinema_douban_access.dart';
+
+Future<CinemaDoubanReviews> _parseReviewsOffscreen(
+  String id,
+  String body,
+  DateTime at,
+) => Isolate.run(
+  () => CinemaDoubanReviewsRepository.parse(id, body, fetchedAt: at),
+);
 
 class CinemaDoubanReview {
   const CinemaDoubanReview({
@@ -59,7 +69,7 @@ class CinemaDoubanReviewsException implements Exception {
 }
 
 /// Public long-form reviews, separate from /interests short comments. The movie
-/// endpoint accepts both film and TV subject IDs. No login, cookies or redirects.
+/// endpoint redirects TV IDs once to the exact TV review resource. No login or cookies.
 class CinemaDoubanReviewsRepository {
   CinemaDoubanReviewsRepository({
     CinemaDoubanReviewsFetch? fetch,
@@ -92,7 +102,7 @@ class CinemaDoubanReviewsRepository {
                 CinemaDoubanReviewsStatus.available,
                 CinemaDoubanReviewsStatus.empty,
               ].contains(cached.result.status)
-          ? const Duration(minutes: 5)
+          ? const Duration(seconds: 30)
           : cached.result.items.isEmpty
           ? const Duration(minutes: 30)
           : const Duration(hours: 6);
@@ -133,7 +143,7 @@ class CinemaDoubanReviewsRepository {
           '豆瓣影评响应超过大小限制。',
         );
       }
-      result = parse(id, utf8.decode(bytes), fetchedAt: _now());
+      result = await _parseReviewsOffscreen(id, utf8.decode(bytes), _now());
     } catch (error) {
       final status = error is CinemaDoubanReviewsException
           ? error.status
@@ -289,53 +299,70 @@ class CinemaDoubanReviewsRepository {
     client.findProxy = Platform.isMacOS
         ? MacOSSystemProxy.findProxy
         : HttpClient.findProxyFromEnvironment;
-    try {
-      return await (() async {
-        final request = await client.getUrl(uri);
-        request.followRedirects = false;
-        request.headers.set(
-          'User-Agent',
-          'NAKUPlayer/1.5.0 (https://github.com/NakuTop/NAKU-Player)',
+    Future<List<int>> requestPage(
+      Uri target, {
+      bool allowRedirect = true,
+    }) async {
+      final request = await client.getUrl(target);
+      request.followRedirects = false;
+      request.headers.set(
+        'User-Agent',
+        'NAKUPlayer/1.5.0 (https://github.com/NakuTop/NAKU-Player)',
+      );
+      request.headers.set('Accept', 'application/json');
+      request.headers.set(
+        'Referer',
+        'https://m.douban.com/movie/subject/${uri.pathSegments[4]}/',
+      );
+      final response = await request.close();
+      if (allowRedirect &&
+          const {301, 302, 307, 308}.contains(response.statusCode)) {
+        final next = CinemaDoubanAccess.subjectRedirect(
+          target,
+          response.headers.value(HttpHeaders.locationHeader),
+          resource: 'reviews',
         );
-        request.headers.set('Accept', 'application/json');
-        request.headers.set(
-          'Referer',
-          'https://m.douban.com/movie/subject/${uri.pathSegments[4]}/',
-        );
-        final response = await request.close();
-        if (response.statusCode != 200) {
-          final restricted =
-              response.statusCode >= 300 && response.statusCode < 400 ||
-              [401, 403, 418, 429].contains(response.statusCode);
-          throw CinemaDoubanReviewsException(
-            restricted
-                ? CinemaDoubanReviewsStatus.restricted
-                : CinemaDoubanReviewsStatus.unavailable,
-            response.statusCode == 429
-                ? '豆瓣影评请求暂受限，请稍后重试。'
-                : restricted
-                ? '豆瓣限制了公开访问或要求验证，请前往官网查看影评。'
-                : '豆瓣影评暂不可用（HTTP ${response.statusCode}）。',
-          );
+        if (next != null) {
+          await response.drain<void>();
+          return requestPage(next, allowRedirect: false);
         }
-        if (response.contentLength > maxBytes) {
+      }
+      if (response.statusCode != 200) {
+        final restricted =
+            response.statusCode >= 300 && response.statusCode < 400 ||
+            [401, 403, 418, 429].contains(response.statusCode);
+        throw CinemaDoubanReviewsException(
+          restricted
+              ? CinemaDoubanReviewsStatus.restricted
+              : CinemaDoubanReviewsStatus.unavailable,
+          response.statusCode == 429
+              ? '豆瓣影评请求暂受限，请稍后重试。'
+              : restricted
+              ? '豆瓣限制了公开访问或要求验证，请前往官网查看影评。'
+              : '豆瓣影评暂不可用（HTTP ${response.statusCode}）。',
+        );
+      }
+      if (response.contentLength > maxBytes) {
+        throw const CinemaDoubanReviewsException(
+          CinemaDoubanReviewsStatus.invalidResponse,
+          '豆瓣影评响应超过大小限制。',
+        );
+      }
+      final bytes = <int>[];
+      await for (final chunk in response) {
+        if (bytes.length + chunk.length > maxBytes) {
           throw const CinemaDoubanReviewsException(
             CinemaDoubanReviewsStatus.invalidResponse,
             '豆瓣影评响应超过大小限制。',
           );
         }
-        final bytes = <int>[];
-        await for (final chunk in response) {
-          if (bytes.length + chunk.length > maxBytes) {
-            throw const CinemaDoubanReviewsException(
-              CinemaDoubanReviewsStatus.invalidResponse,
-              '豆瓣影评响应超过大小限制。',
-            );
-          }
-          bytes.addAll(chunk);
-        }
-        return bytes;
-      })().timeout(const Duration(seconds: 12));
+        bytes.addAll(chunk);
+      }
+      return bytes;
+    }
+
+    try {
+      return await requestPage(uri).timeout(const Duration(seconds: 12));
     } finally {
       client.close(force: true);
     }

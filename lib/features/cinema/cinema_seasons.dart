@@ -1,4 +1,5 @@
 import 'cinema_models.dart';
+import 'cinema_media_identity.dart';
 
 /// Chinese catalogue names often omit the spaces used by metadata providers.
 /// Preserve English word boundaries and spaces around punctuation.
@@ -24,12 +25,7 @@ bool cinemaIsSeasonProjection(CinemaTitle title) =>
     _seasonId.hasMatch(title.id);
 
 List<String> cinemaWorkQueries(CinemaTitle title) {
-  final name = cinemaSourceQuery(
-    title.title.replaceFirst(
-      RegExp(r'\s*[（(]?(?:原声版|普通话版|国语版|英语版)[）)]?\s*$'),
-      '',
-    ),
-  );
+  final name = cinemaSourceQuery(cinemaMediaBaseTitle(title.title));
   return {
     name,
     name.replaceFirst(_seasonSuffix, '').trim(),

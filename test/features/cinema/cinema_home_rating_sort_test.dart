@@ -221,32 +221,31 @@ void main() {
     return positions.map((item) => item.id).toList();
   }
 
-  testWidgets(
-    'movie and series homes start with this year and rating sorting',
-    (tester) async {
-      await mount(tester);
-      expect(find.text('${DateTime.now().year}'), findsWidgets);
-      expect(
-        tester
-            .widget<ChoiceChip>(
-              find.byKey(const ValueKey('catalog-sort-rating')),
-            )
-            .selected,
-        isTrue,
-      );
-      await tester.tap(find.text('剧集').first);
-      await tester.pumpAndSettle();
-      expect(find.text('${DateTime.now().year}'), findsWidgets);
-      expect(
-        tester
-            .widget<ChoiceChip>(
-              find.byKey(const ValueKey('catalog-sort-rating')),
-            )
-            .selected,
-        isTrue,
-      );
-    },
-  );
+  testWidgets('movie and series homes start with all years and recent hot', (
+    tester,
+  ) async {
+    await mount(tester);
+    expect(find.text('全部年份'), findsWidgets);
+    expect(
+      tester
+          .widget<ChoiceChip>(
+            find.byKey(const ValueKey('catalog-sort-popular')),
+          )
+          .selected,
+      isTrue,
+    );
+    await tester.tap(find.text('剧集').first);
+    await tester.pumpAndSettle();
+    expect(find.text('全部年份'), findsWidgets);
+    expect(
+      tester
+          .widget<ChoiceChip>(
+            find.byKey(const ValueKey('catalog-sort-popular')),
+          )
+          .selected,
+      isTrue,
+    );
+  });
 
   testWidgets(
     'rating chip sorts by the chosen provider and leaves missing scores last',
@@ -419,11 +418,11 @@ void main() {
       );
       expect(
         ratings.cardCalls.length,
-        60,
-        reason: 'Default rating sort preloads all loaded works immediately.',
+        0,
+        reason: 'Recent-hot browse does not prefetch source rating order.',
       );
-      final browses = catalogue.browseCalls;
       await selectRatingSort(tester);
+      final browses = catalogue.browseCalls;
       expect(
         ratings.cardCalls.keys.toSet(),
         catalogue.items.map((item) => item.id).toSet(),

@@ -1,3 +1,4 @@
+import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -320,6 +321,7 @@ CinemaTitle _concreteTitle({
 );
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   test(
     'manual pause during a pending remote apply is published after completion',
     () async {
@@ -669,6 +671,19 @@ void main() {
   test(
     'persistent pairing survives leaving, source changes, restart and explicit unpair',
     () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(CinemaNASClient.channel, (call) async {
+            expect(call.method, 'ensure');
+            expect(
+              (call.arguments as Map)['namespace'],
+              anyOf('a' * 64, 'b' * 64),
+            );
+            return <String, dynamic>{};
+          });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(CinemaNASClient.channel, null),
+      );
       final server = await _Server.start();
       final dir = await Directory.systemTemp.createTemp('naku-pair-');
       final aFile = File('${dir.path}/a.json'),
@@ -690,11 +705,17 @@ void main() {
         endpoint: server.endpoint,
         roomName: 'pair-test',
         username: 'Alice',
+        nasNamespace: 'a' * 64,
+        account: 'Alice NAS',
+        pairingCode: 'ABCDEFGHJK',
       );
       await b.pair(
         endpoint: server.endpoint,
         roomName: 'pair-test',
         username: 'Bob',
+        nasNamespace: 'b' * 64,
+        account: 'Bob NAS',
+        pairingCode: 'ABCDEFGHJK',
       );
       await _eventually(() => b.peers.firstOrNull?.media != null);
       expect(b.peers.single.media!.title, work.title);

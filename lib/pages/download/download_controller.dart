@@ -14,6 +14,7 @@ import 'package:kazumi/repositories/download_repository.dart';
 import 'package:kazumi/services/download/background_download_service.dart';
 import 'package:kazumi/services/download/download_sleep_guard.dart';
 import 'package:kazumi/services/download/download_manager.dart';
+import 'package:kazumi/services/download/download_catalog.dart';
 import 'package:kazumi/utils/format.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/storage/storage.dart';
@@ -67,6 +68,17 @@ abstract class _DownloadController with Store {
   bool _isBackgroundServiceInitialized = false;
 
   Future<void> init() async {
+    _replaceRecords(_repository.getAllRecords());
+    if (_repository case DownloadRecordRecovery recovery) {
+      try {
+        await recovery.recoverLocalRecords();
+      } catch (e) {
+        KazumiLogger().w(
+          'Download recovery unavailable; existing records retained',
+          error: e,
+        );
+      }
+    }
     await _sleepGuard.update(
       enabled: GStorage.getSetting(SettingsKeys.downloadPreventSleep),
     );

@@ -3,10 +3,16 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'cinema_media_source.dart';
 import 'cinema_media_transport.dart';
+import 'cinema_playback_buffer.dart';
 import 'cinema_playback_candidates.dart';
 
 class CinemaRouteMeasurement {
-  const CinemaRouteMeasurement(this.candidate, this.result);
+  const CinemaRouteMeasurement(
+    this.candidate,
+    this.result, {
+    this.playbackRate = 1,
+  });
+  final double playbackRate;
   final CinemaPlaybackCandidate candidate;
   final CinemaMediaProbeResult result;
   bool get usable =>
@@ -17,7 +23,8 @@ class CinemaRouteMeasurement {
   bool get sufficient =>
       result.bitrate == null ||
       result.bitrate! <= 0 ||
-      result.mbps! * 1000000 >= result.bitrate! * 1.3;
+      result.mbps! * 1000000 >=
+          result.bitrate! * 1.3 * CinemaPlaybackBufferPolicy(playbackRate).rate;
 }
 
 /// Rank successful video reads by sustainable bandwidth, then actual speed and

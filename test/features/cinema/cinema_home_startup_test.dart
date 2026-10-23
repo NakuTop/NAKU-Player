@@ -218,9 +218,15 @@ void main() {
   testWidgets('series startup only requests series categories', (tester) async {
     await mount(tester, '/cinema?section=series');
     expect(selected(tester, '剧集'), isTrue);
+    expect(repository.browsed, isEmpty);
+    await tester.tap(find.byKey(const ValueKey('catalog-sort-latest')));
+    await tester.pumpAndSettle();
     expect(repository.browsed, ['22']);
     expect(repository.browsed, isNot(contains('11')));
     await tester.tap(find.widgetWithText(ListTile, '电影').first);
+    await tester.pumpAndSettle();
+    expect(repository.browsed, ['22']);
+    await tester.tap(find.byKey(const ValueKey('catalog-sort-latest')));
     await tester.pumpAndSettle();
     expect(repository.browsed, ['22', '11']);
     await tester.tap(find.widgetWithText(ListTile, '剧集').first);
@@ -297,6 +303,7 @@ void main() {
     await mount(tester, '/cinema?section=douban');
     expect(find.byType(DoubanPage), findsOneWidget);
     expect(douban.browses, 1);
+    expect(repository.categoriesRead, 0);
     Navigator.of(tester.element(find.byType(DoubanPage))).pop();
     await tester.pumpAndSettle();
     expect(find.byType(DoubanPage), findsNothing);
@@ -304,7 +311,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(CinemaSettingsPage), findsOneWidget);
     expect(find.byType(DoubanPage), findsNothing);
-    expect(douban.browses, 1);
+    expect(
+      douban.browses,
+      2,
+      reason:
+          'The second read belongs to the movie catalogue revealed after Back.',
+    );
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -390,6 +402,14 @@ class _Catalogue extends CinemaRepository {
       CinemaCategory(id: '22', name: '欧美剧'),
     ];
   }
+
+  @override
+  Future<CinemaPage> browseFiltered(
+    CinemaSource source, {
+    String? categoryId,
+    String year = '',
+    int page = 1,
+  }) => browse(source, categoryId: categoryId, page: page);
 
   @override
   Future<CinemaPage> browse(

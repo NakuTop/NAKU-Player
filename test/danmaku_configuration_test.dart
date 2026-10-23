@@ -238,7 +238,7 @@ void main() {
       find.text(dandanCredentials.isConfigured ? '弹弹play已配置' : '弹弹play（可选）'),
       findsOneWidget,
     );
-    expect(find.textContaining('Bilibili 自动弹幕无需此项配置'), findsOneWidget);
+    expect(find.textContaining('播放器直连平台弹幕无需此项配置'), findsOneWidget);
     expect(
       DanmakuServiceStatusTile.guideUri.toString(),
       'https://doc.dandanplay.com/open/',

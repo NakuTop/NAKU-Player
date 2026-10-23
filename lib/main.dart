@@ -11,6 +11,7 @@ import 'package:hive_ce_flutter/hive_flutter.dart';
 import 'package:kazumi/services/network/metered_network_service.dart';
 import 'package:kazumi/services/network/ech_http_licenses.dart';
 import 'package:kazumi/services/player/bangumi_data_licenses.dart';
+import 'package:kazumi/services/player/subtitle_tools_licenses.dart';
 import 'package:kazumi/services/network/proxy_manager.dart';
 import 'package:kazumi/services/network/system_proxy_service.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
@@ -24,12 +25,14 @@ import 'package:kazumi/services/platform/desktop_window_config.dart';
 import 'package:kazumi/services/platform/webview_feature_service.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/navigation.dart';
+import 'package:kazumi/services/player/macos_playback_profile.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await NakuDevice.initialize();
   registerEchHttpLicenses();
   registerBangumiDataLicenses();
+  registerSubtitleToolsLicenses();
   MediaKit.ensureInitialized();
   if ((Platform.isAndroid || Platform.isIOS) && !NakuDevice.isTV) {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -50,6 +53,7 @@ void main() async {
     final hivePath = '${(await getApplicationSupportDirectory()).path}/hive';
     await Hive.initFlutter(hivePath);
     await GStorage.init();
+    await MacOSPlaybackProfile.apply();
   } catch (e) {
     debugPrint('Storage initialization failed: $e');
 
@@ -78,7 +82,7 @@ void main() async {
           countryCode: "CN",
         ),
         builder: (context, child) {
-          return const StorageErrorPage();
+          return StorageErrorPage(error: e);
         },
       ),
     );

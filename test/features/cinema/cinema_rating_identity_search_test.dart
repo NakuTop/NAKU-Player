@@ -30,6 +30,32 @@ CinemaDiscoveryTitle candidate({
 
 void main() {
   test(
+    '4K editions keep exact rating identity and never become sequels or remakes',
+    () {
+      for (final label in ['星际穿越4K', '星际穿越国语4K', '星际穿越（4K HDR）']) {
+        final edition = CinemaTitle.fromJson({
+          ...movie.toJson(),
+          'title': label,
+        });
+        expect(
+          CinemaRatingIdentitySearch.match(edition, [candidate()])?.doubanId,
+          '1889243',
+        );
+        expect(
+          CinemaRatingIdentitySearch.match(edition, [candidate(year: '2024')]),
+          isNull,
+        );
+        expect(
+          CinemaRatingIdentitySearch.match(edition, [
+            candidate(title: '星际穿越2', aliases: ''),
+          ]),
+          isNull,
+        );
+      }
+    },
+  );
+
+  test(
     'unique verified exact title, year and kind enriches source metadata only',
     () {
       final result = CinemaRatingIdentitySearch.match(movie, [candidate()]);

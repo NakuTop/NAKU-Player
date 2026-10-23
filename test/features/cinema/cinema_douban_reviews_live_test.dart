@@ -17,7 +17,13 @@ void main() {
     }
     final repo = CinemaDoubanReviewsRepository();
     final results = <Map<String, dynamic>>[];
-    for (final id in ['1292052', '36889088', '1393859']) {
+    for (final id in [
+      '1292052',
+      '1292722',
+      '1393859',
+      '10748120',
+      '30301247',
+    ]) {
       final result = await repo.load(id);
       results.add({
         'subjectId': id,
@@ -38,16 +44,6 @@ void main() {
       await File(
         '../douban-reviews-1.4-live.json',
       ).writeAsString(const JsonEncoder.withIndent('  ').convert(results));
-      if (id == '1393859' &&
-          result.status == CinemaDoubanReviewsStatus.restricted) {
-        // An upstream access restriction is an observed limitation, not proof
-        // that TV reviews loaded. Verify the honest fallback separately.
-        expect(result.items, isEmpty);
-        expect(result.fetchedAt, isNull);
-        expect(result.message, contains('官网'));
-        expect(result.url, 'https://movie.douban.com/subject/1393859/reviews');
-        continue;
-      }
       expect(
         result.status,
         CinemaDoubanReviewsStatus.available,

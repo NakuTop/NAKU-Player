@@ -19,6 +19,7 @@ void main() {
             theme: CinemaTheme.data.copyWith(platform: TargetPlatform.macOS),
             home: Scaffold(
               body: CinemaSettingsPage(
+                platform: TargetPlatform.macOS,
                 enabledSourceCount: 7,
                 sourceCount: 10,
                 onSources: () => opened.add('sources'),
@@ -63,6 +64,7 @@ void main() {
         theme: CinemaTheme.data.copyWith(platform: TargetPlatform.android),
         home: Scaffold(
           body: CinemaSettingsPage(
+            platform: TargetPlatform.android,
             enabledSourceCount: 0,
             sourceCount: 0,
             onSources: () {},
@@ -115,11 +117,13 @@ void main() {
       entries.singleWhere((item) => item.id == 'sync').description,
       contains('NAS 账号统一同步'),
     );
-    for (final id in ['danmaku', 'downloads']) {
-      expect(
-        entries.singleWhere((item) => item.id == id).description,
-        startsWith('动漫专用'),
-      );
-    }
+    expect(
+      entries.singleWhere((item) => item.id == 'danmaku').description,
+      contains('电影、剧集与动漫'),
+    );
+    expect(
+      entries.singleWhere((item) => item.id == 'downloads').description,
+      startsWith('动漫专用'),
+    );
   });
 }

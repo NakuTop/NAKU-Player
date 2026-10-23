@@ -24,9 +24,10 @@ class DanmakuNotConfiguredException implements Exception {
 }
 
 class DanmakuServiceException implements Exception {
-  const DanmakuServiceException();
+  const DanmakuServiceException([this.message = '弹幕服务未通过验证，请检查凭据或稍后重试']);
+  final String message;
   @override
-  String toString() => '弹幕服务未通过验证，请检查凭据或稍后重试';
+  String toString() => message;
 }
 
 String danmakuFailureMessage(

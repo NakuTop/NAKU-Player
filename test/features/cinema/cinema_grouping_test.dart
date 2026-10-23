@@ -20,6 +20,49 @@ CinemaTitle _title(
 
 void main() {
   test(
+    'detail keeps freshly loaded routes even if its 4K card has a higher quality label',
+    () {
+      final card = CinemaTitle(
+        id: '4k',
+        sourceId: 'one',
+        title: '星际穿越国语4K',
+        category: '4K电影',
+        year: '2014',
+        doubanId: '1889243',
+        imdbId: 'tt0816692',
+      );
+      final detail = CinemaTitle(
+        id: '4k',
+        sourceId: 'one',
+        title: '星际穿越',
+        category: '科幻片',
+        year: '2014',
+        routes: const [
+          CinemaRoute(
+            name: 'fresh',
+            episodes: [
+              CinemaEpisode(name: '正片', url: 'https://example.com/actual.m3u8'),
+            ],
+          ),
+        ],
+      );
+      final merged = inheritCinemaRatingMetadata(detail, card);
+      expect(
+        merged.routes.single.episodes.single.url,
+        'https://example.com/actual.m3u8',
+      );
+      expect(merged.title, detail.title);
+      expect(merged.imdbId, 'tt0816692');
+      final conflict = inheritCinemaRatingMetadata(
+        detail.copyWith(imdbId: 'tt0120338'),
+        card,
+      );
+      expect(conflict.imdbId, 'tt0120338');
+      expect(conflict.routes.single.name, 'fresh');
+    },
+  );
+
+  test(
     'same work keeps all source variants and prefers Feifan as representative',
     () {
       final first = _title('a', source: 'maccms-360', doubanId: '1889243');

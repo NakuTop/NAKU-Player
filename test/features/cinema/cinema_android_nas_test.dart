@@ -338,22 +338,31 @@ void main() {
       );
     },
   );
-  test('UGlink share resolves before NAS-bound QR creation', () async {
-    final result =
-        await nas.invoke('qrCreate', {'address': 'https://ug.link/example'})
-            as Map;
-    expect(result['url'], startsWith('https://'));
-    expect(http.requests.any((r) => r.url.path.endsWith('/byAlias')), true);
-    expect(
-      http.requests.any(
-        (r) =>
-            r.url.host == 'example.cn21.ug.link' &&
-            r.url.path.endsWith('/verify/sn'),
-      ),
-      true,
-    );
-    expect(http.requests.any((r) => r.url.host == 'ug.link'), false);
-  });
+  test(
+    'UGlink verifies target but desktop QR does not bind a routing hint',
+    () async {
+      final result =
+          await nas.invoke('qrCreate', {'address': 'https://ug.link/example'})
+              as Map;
+      expect(result['url'], startsWith('https://'));
+      final create = http.requests.firstWhere(
+        (r) => r.url.path.endsWith('/create/qrCode'),
+      );
+      final body = jsonDecode(utf8.decode(create.bytes)) as Map;
+      expect(body.containsKey('sn'), false);
+      expect(body['qrType'], 'LOCAL_LOGIN');
+      expect(http.requests.any((r) => r.url.path.endsWith('/byAlias')), true);
+      expect(
+        http.requests.any(
+          (r) =>
+              r.url.host == 'example.cn21.ug.link' &&
+              r.url.path.endsWith('/verify/sn'),
+        ),
+        true,
+      );
+      expect(http.requests.any((r) => r.url.host == 'ug.link'), false);
+    },
+  );
   test(
     'QR rejects mismatched account without persisting and clears temporary key',
     () async {

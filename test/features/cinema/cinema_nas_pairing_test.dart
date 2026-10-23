@@ -26,8 +26,9 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(CinemaNASClient.channel, (call) async {
           calls.add(call);
-          if (!authenticated)
+          if (!authenticated) {
             throw PlatformException(code: 'expired', message: '请先登录 NAS');
+          }
           if (call.method == 'ensure') return {'namespace': 'a' * 64};
           expect(call.method, 'pairingIdentity');
           expect(call.arguments['code'], 'ABCDE23456');

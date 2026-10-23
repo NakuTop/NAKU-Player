@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
@@ -19,8 +19,10 @@ class CinemaSettingsPage extends StatelessWidget {
     required this.sourceCount,
     this.onOpenRoute,
     this.onTools,
+    this.platform,
   });
 
+  final TargetPlatform? platform;
   final VoidCallback onSources;
   final VoidCallback? onTools;
   final VoidCallback onAppearance;
@@ -36,7 +38,8 @@ class CinemaSettingsPage extends StatelessWidget {
       final width = (constraints.maxWidth - inset * 2).clamp(0.0, 1080.0);
       final twoColumns = width >= 900;
       final columnWidth = twoColumns ? (width - 20) / 2 : width;
-      final android = Platform.isAndroid;
+      final android =
+          (platform ?? defaultTargetPlatform) == TargetPlatform.android;
       void openRoute(String route) {
         final callback = onOpenRoute;
         if (callback != null) {
@@ -150,7 +153,6 @@ class CinemaSettingsPage extends StatelessWidget {
                                               !{
                                                 'rules',
                                                 'danmaku',
-                                                'renderer',
                                                 'keyboard',
                                               }.contains(destination.id)))
                                         _entry(

@@ -314,7 +314,7 @@ class _ScoreLabel extends StatelessWidget {
           fit: BoxFit.scaleDown,
           alignment: Alignment.centerLeft,
           child: Text(
-            '$provider $score',
+            '$provider${rating.scope.isEmpty ? '' : '·${rating.scope}'} $score',
             maxLines: 1,
             softWrap: false,
             style: TextStyle(
@@ -351,8 +351,24 @@ bool _sameDisplayedRatings(CinemaRatings a, CinemaRatings? b) {
   if (b == null || a.ratings.length != b.ratings.length) return false;
   for (var i = 0; i < a.ratings.length; i++) {
     final x = a.ratings[i], y = b.ratings[i];
-    if ((x.provider, x.value, x.scale, x.verified, x.note, x.fetchedAt) !=
-        (y.provider, y.value, y.scale, y.verified, y.note, y.fetchedAt)) {
+    if ((
+          x.provider,
+          x.value,
+          x.scale,
+          x.verified,
+          x.note,
+          x.fetchedAt,
+          x.scope,
+        ) !=
+        (
+          y.provider,
+          y.value,
+          y.scale,
+          y.verified,
+          y.note,
+          y.fetchedAt,
+          y.scope,
+        )) {
       return false;
     }
   }

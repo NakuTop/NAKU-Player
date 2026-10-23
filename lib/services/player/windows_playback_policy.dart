@@ -3,7 +3,29 @@ import 'package:flutter/foundation.dart';
 /// Keep foreign platform preferences from disabling Windows' native decoder.
 String cinemaHardwareDecoder(String saved, {TargetPlatform? platform}) {
   final value = saved.trim();
-  if ((platform ?? defaultTargetPlatform) != TargetPlatform.windows) {
+  final target = platform ?? defaultTargetPlatform;
+  if (target == TargetPlatform.macOS) {
+    if (value.isEmpty ||
+        [
+          'auto',
+          'auto-safe',
+          'd3d11va',
+          'd3d11va,auto',
+          'd3d11va-copy',
+          'dxva2',
+          'dxva2-copy',
+          'mediacodec',
+          'mediacodec-copy',
+          'vaapi',
+          'vdpau',
+          'cuda',
+          'nvdec',
+        ].contains(value)) {
+      return 'videotoolbox,auto';
+    }
+    return value;
+  }
+  if (target != TargetPlatform.windows) {
     return value.isEmpty ? 'auto-safe' : value;
   }
   if (value.isEmpty ||

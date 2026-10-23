@@ -8,6 +8,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'cinema_media_transport.dart';
+import 'cinema_playback_buffer.dart';
 
 class CinemaCachePreferences {
   const CinemaCachePreferences({
@@ -62,7 +63,10 @@ class CinemaCacheSession {
   bool closed = false, buffering = false, prefetching = false;
   double position = 0;
   int hits = 0, downloadedBytes = 0;
+  String networkRoute = '';
+  Uri? networkMediaUri;
   CancelToken? _token;
+  String? _fetchKey;
   final Set<CancelToken> _requests = {};
   Timer? _timer;
   DateTime? _lastPrefetchAt;
@@ -83,14 +87,19 @@ class CinemaCacheSession {
     );
   }
 
-  void update(Duration at, {required bool buffering}) {
+  double playbackRate = 1;
+  void update(Duration at, {required bool buffering, double rate = 1}) {
+    playbackRate = CinemaPlaybackBufferPolicy(rate).rate;
     if ((position - at.inMilliseconds / 1000).abs() > 30) {
       _lastPrefetchAt = null;
     }
     position = at.inMilliseconds / 1000;
+    if (buffering && !this.buffering && networkMediaUri != null) {
+      cache.transport.router?.reconsiderAfterStall(networkMediaUri!);
+    }
     this.buffering = buffering;
     if (buffering) {
-      _token?.cancel('播放优先');
+      if (!cache._promoted.contains(_fetchKey)) _token?.cancel('播放优先');
     } else if (!prefetching && !closed) {
       unawaited(cache._prefetch(this));
     }
@@ -130,6 +139,7 @@ class CinemaMediaCache extends ChangeNotifier {
   ).join();
   final Map<String, CinemaCacheSession> _sessions = {};
   final Map<String, Future<File?>> _pending = {};
+  final Set<String> _promoted = {};
   final Set<String> _pinned = {};
   int _serial = 0, _foreground = 0, _background = 0;
   int bytesUsed = 0, hits = 0;
@@ -154,7 +164,7 @@ class CinemaMediaCache extends ChangeNotifier {
     bool hls = false,
   }) async {
     final uri = Uri.tryParse(url);
-    if (!preferences.enabled ||
+    if ((!preferences.enabled && transport.router?.active != true) ||
         uri == null ||
         !['http', 'https'].contains(uri.scheme) ||
         !(hls || uri.path.toLowerCase().endsWith('.m3u8'))) {
@@ -215,6 +225,7 @@ class CinemaMediaCache extends ChangeNotifier {
     return _pending.putIfAbsent(key, () async {
       _background++;
       final token = session._token = CancelToken();
+      session._fetchKey = key;
       try {
         final data = await transport.bytes(
           segment.uri,
@@ -235,6 +246,7 @@ class CinemaMediaCache extends ChangeNotifier {
                         int.parse(bounds[2]!) - int.parse(bounds[1]!) + 1))) {
           return null;
         }
+        session.networkRoute = transport.router?.labelFor(segment.uri) ?? '';
         return await _store(key, data);
       } catch (_) {
         return null;
@@ -242,6 +254,7 @@ class CinemaMediaCache extends ChangeNotifier {
         _background--;
         _pending.remove(key);
         if (identical(session._token, token)) session._token = null;
+        if (session._fetchKey == key) session._fetchKey = null;
       }
     });
   }
@@ -253,8 +266,15 @@ class CinemaMediaCache extends ChangeNotifier {
     final temp = File('${_directory!.path}/$key.${++_serial}.part');
     try {
       await temp.writeAsBytes(data, flush: true);
+      final previous = File('${_directory!.path}/$key.bin');
+      final oldBytes = await previous.exists() ? await previous.length() : 0;
       final file = await temp.rename('${_directory!.path}/$key.bin');
-      await _prune();
+      bytesUsed += data.length - oldBytes;
+      if (bytesUsed > preferences.quotaMB * 1024 * 1024) {
+        await _prune();
+      } else {
+        _notify();
+      }
       return file;
     } on FileSystemException {
       error = '视频缓存写入失败，播放仍可继续';
@@ -283,10 +303,8 @@ class CinemaMediaCache extends ChangeNotifier {
       }
       _foreground++;
       counted = true;
-      for (final background in _sessions.values) {
-        background._token?.cancel('播放优先');
-      }
       if (resource.manifest) {
+        _yieldBackground();
         final cancel = CancelToken();
         session._requests.add(cancel);
         late final ({String text, Uri uri}) document;
@@ -318,14 +336,42 @@ class CinemaMediaCache extends ChangeNotifier {
       final key = _key(resource.uri, session.headers, range);
       _pinned.add(key);
       try {
-        var cached = resource.persist && _cacheable(resource.uri)
+        var cached =
+            preferences.enabled && resource.persist && _cacheable(resource.uri)
             ? await _cached(key)
             : null;
         var completeFile = range == null;
+        final wholeKey = _key(resource.uri, session.headers, null);
+        final canUseWhole =
+            range == null || RegExp(r'^bytes=(\d*)-(\d*)$').hasMatch(range);
+        final pendingKey = _pending.containsKey(key)
+            ? key
+            : canUseWhole
+            ? wholeKey
+            : key;
+        final pending = preferences.enabled && resource.persist
+            ? _pending[pendingKey]
+            : null;
+        if (cached == null && pending != null) {
+          // Adopt an in-flight warmup for this exact segment instead of
+          // cancelling it and downloading the same bytes a second time.
+          _promoted.add(pendingKey);
+          _yieldBackground();
+          try {
+            cached = await pending.timeout(
+              const Duration(seconds: 20),
+              onTimeout: () => null,
+            );
+            completeFile = pendingKey == wholeKey;
+          } finally {
+            _promoted.remove(pendingKey);
+          }
+        }
         // FFmpeg commonly sends bytes=0- even for whole HLS segments. A warmed
         // complete segment can answer open, suffix and explicit byte ranges.
         if (cached == null &&
             range != null &&
+            preferences.enabled &&
             resource.persist &&
             _cacheable(resource.uri) &&
             RegExp(r'^bytes=(\d*)-(\d*)$').hasMatch(range)) {
@@ -366,12 +412,16 @@ class CinemaMediaCache extends ChangeNotifier {
             await response.addStream(cached.openRead(start, end + 1));
           }
         } else {
+          _yieldBackground();
           await _relay(
             request,
             session,
             resource,
             key,
-            cache: resource.persist && _cacheable(resource.uri),
+            cache:
+                preferences.enabled &&
+                resource.persist &&
+                _cacheable(resource.uri),
           );
         }
       } finally {
@@ -386,6 +436,14 @@ class CinemaMediaCache extends ChangeNotifier {
       try {
         await response.close();
       } catch (_) {}
+    }
+  }
+
+  void _yieldBackground() {
+    for (final session in _sessions.values) {
+      if (!_promoted.contains(session._fetchKey)) {
+        session._token?.cancel('播放优先');
+      }
     }
   }
 
@@ -420,12 +478,17 @@ class CinemaMediaCache extends ChangeNotifier {
       () => token.cancel('片段超时'),
     );
     try {
+      if (resource.persist) session.networkMediaUri = resource.uri;
       final upstream = await transport.stream(
         resource.uri,
         session.headers,
         cancel: token,
         range: request.headers.value('range'),
+        metadata: !resource.persist,
       );
+      if (resource.persist) {
+        session.networkRoute = upstream.extra['cinemaRoute'] as String? ?? '';
+      }
       final response = request.response;
       response.statusCode = upstream.statusCode ?? 200;
       for (final name in ['content-type', 'content-range', 'accept-ranges']) {
@@ -433,13 +496,25 @@ class CinemaMediaCache extends ChangeNotifier {
         if (value != null) response.headers.set(name, value);
       }
       final range = request.headers.value('range');
+      var storeKey = key;
       if (range == null && upstream.statusCode != 200) cache = false;
       if (range != null) {
         final bounds = RegExp(r'^bytes=(\d+)-(\d+)$').firstMatch(range);
         final returned = RegExp(
           r'^bytes (\d+)-(\d+)/',
         ).firstMatch(upstream.headers.value('content-range') ?? '');
-        if (upstream.statusCode != 206 ||
+        final fullRange = RegExp(
+          r'^bytes 0-(\d+)/(\d+)$',
+        ).firstMatch(upstream.headers.value('content-range') ?? '');
+        final wholeResponse =
+            range == 'bytes=0-' &&
+            (upstream.statusCode == 200 ||
+                upstream.statusCode == 206 &&
+                    fullRange != null &&
+                    int.parse(fullRange[1]!) + 1 == int.parse(fullRange[2]!));
+        if (wholeResponse) {
+          storeKey = _key(resource.uri, session.headers, null);
+        } else if (upstream.statusCode != 206 ||
             bounds == null ||
             returned == null ||
             bounds[1] != returned[1] ||
@@ -452,6 +527,10 @@ class CinemaMediaCache extends ChangeNotifier {
       );
       if (length != null) response.contentLength = length;
       var builder = cache ? BytesBuilder(copy: false) : null;
+      final saved = cache && !_pending.containsKey(storeKey)
+          ? Completer<File?>()
+          : null;
+      if (saved != null) _pending[storeKey] = saved.future;
       try {
         await for (final chunk in upstream.data!.stream) {
           if (session.closed) {
@@ -475,9 +554,16 @@ class CinemaMediaCache extends ChangeNotifier {
           }
         }
         if (builder != null && builder.length > 0 && !token.isCancelled) {
-          await _store(key, builder.takeBytes());
+          final file = await _store(storeKey, builder.takeBytes());
+          saved?.complete(file);
         }
       } finally {
+        if (saved != null) {
+          if (!saved.isCompleted) saved.complete(null);
+          if (identical(_pending[storeKey], saved.future)) {
+            _pending.remove(storeKey);
+          }
+        }
         token.cancel();
       }
     } finally {
@@ -559,7 +645,11 @@ class CinemaMediaCache extends ChangeNotifier {
           }
           if (segment.start + segment.duration < session.position ||
               segment.start >
-                  session.position + (seconds ?? preferences.forwardSeconds)) {
+                  session.position +
+                      (seconds ??
+                          CinemaPlaybackBufferPolicy(
+                            session.playbackRate,
+                          ).prefetchSeconds(preferences.forwardSeconds))) {
             continue;
           }
           // One background request at a time; no new traffic while playback

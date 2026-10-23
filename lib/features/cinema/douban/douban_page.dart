@@ -82,7 +82,7 @@ class _KindState {
   _KindState(_KindSnapshot? saved) {
     if (saved != null) {
       filters = saved.filters;
-      sort = saved.sort;
+      sort = saved.sort == null || saved.sort == 'T' ? 'U' : saved.sort;
       error = saved.error;
       filterError = saved.filterError;
       items = List.of(saved.items);
@@ -115,7 +115,7 @@ class _KindState {
   double scrollOffset = 0, themeScrollOffset = 0;
   bool resumePage = false, resumeFilters = false, resumeThemes = false;
   DoubanFilters filters = const DoubanFilters();
-  String? sort, error, filterError;
+  String? sort = 'U', error, filterError;
   List<DoubanTitle> items = [];
   List<DoubanSort> sorts = [];
   final categories = <String, DoubanCategoryGroup>{};
@@ -280,7 +280,11 @@ class _DoubanPageState extends State<DoubanPage> {
         // Pagination cannot reshuffle controls. A partial response cannot remove
         // previously available taxonomy or a selected filter.
         if (!append || state.sorts.isEmpty) {
-          if (page.sorts.isNotEmpty) state.sorts = page.sorts;
+          if (page.sorts.isNotEmpty) {
+            state.sorts = page.sorts
+                .where((s) => s.name != 'T' && !s.text.contains('综合'))
+                .toList();
+          }
         }
         for (final group in page.categoryGroups) {
           final previous = state.categories[group.name];
@@ -430,7 +434,7 @@ class _DoubanPageState extends State<DoubanPage> {
   void _reset() {
     setState(() {
       _state.filters = const DoubanFilters();
-      _state.sort = null;
+      _state.sort = 'U';
       _state.selectedThemes.clear();
     });
     if (_state.scroll.hasClients) _state.scroll.jumpTo(0);
@@ -621,9 +625,7 @@ class _DoubanPageState extends State<DoubanPage> {
                           (state.sort == null && sort.isDefault)) {
                         return;
                       }
-                      setState(
-                        () => state.sort = sort.isDefault ? null : sort.name,
-                      );
+                      setState(() => state.sort = sort.name);
                       if (state.scroll.hasClients) state.scroll.jumpTo(0);
                       unawaited(_loadPage(_kind));
                     },

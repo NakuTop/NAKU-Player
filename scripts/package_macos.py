@@ -40,10 +40,19 @@ def run(*args: str | Path) -> str:
     return result.stdout.strip()
 
 
+def minimum_os_versions(load_commands: str) -> list[tuple[int, ...]]:
+    # Match deployment commands only, never a dylib's unrelated current version.
+    values = re.findall(r"\bminos ([0-9.]+)", load_commands)
+    values += re.findall(r"cmd LC_VERSION_MIN_MACOSX\s+cmdsize \d+\s+version ([0-9.]+)", load_commands)
+    return [tuple(int(part) for part in value.split('.')) + (0,) * (3 - len(value.split('.'))) for value in values]
+
+
 def verify_app(app: Path, version: str) -> None:
     with (app / "Contents/Info.plist").open("rb") as stream:
         info = plistlib.load(stream)
     actual_version = str(info.get("CFBundleShortVersionString", ""))
+    if info.get("CFBundleIdentifier") != "com.shenminghao.yingchuan":
+        raise ValueError("The bundle identifier changed; this would disconnect existing user data")
     if actual_version != version:
         raise ValueError(
             f"App version {actual_version!r} does not match --version {version!r}"
@@ -54,6 +63,10 @@ def verify_app(app: Path, version: str) -> None:
         if isinstance(item, dict)
     ):
         raise ValueError('NAKU 2.0 invitation URL scheme is missing')
+    minimum = str(info.get("LSMinimumSystemVersion", ""))
+    if not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", minimum):
+        raise ValueError("Invalid or missing LSMinimumSystemVersion")
+    declared_minimum = tuple(int(part) for part in minimum.split('.')) + (0,) * (3 - len(minimum.split('.')))
     executable = info.get("CFBundleExecutable")
     if not isinstance(executable, str) or Path(executable).name != executable:
         raise ValueError("Invalid or missing CFBundleExecutable")
@@ -66,6 +79,10 @@ def verify_app(app: Path, version: str) -> None:
             raise ValueError(f"Required binary is missing: {binary.relative_to(app)}")
 
     run("codesign", "--verify", "--deep", "--strict", "--verbose=2", app)
+    entitlement_dump = run("codesign", "-d", "--entitlements", ":-", app)
+    entitlement_xml = re.search(r"<\?xml.*?</plist>", entitlement_dump, re.S)
+    if entitlement_xml is None or plistlib.loads(entitlement_xml[0].encode()).get("com.apple.security.app-sandbox") is not True:
+        raise ValueError("The macOS sandbox/data domain changed; preserve the existing container")
 
     # Inspect actual Mach-O files, including embedded Sparkle XPC executables;
     # framework aliases are resolved once so symlinks are not checked twice.
@@ -85,19 +102,22 @@ def verify_app(app: Path, version: str) -> None:
         if not ARCHITECTURES.issubset(archs):
             relative = binary.relative_to(app.resolve())
             raise ValueError(f"Not universal: {relative} contains {sorted(archs)}")
-    print(f"Verified code signature and both architectures in {len(binaries)} binaries.")
+        required_os = minimum_os_versions(run("otool", "-l", binary))
+        if any(value > declared_minimum for value in required_os):
+            raise ValueError(f"Minimum macOS mismatch: {binary.relative_to(app.resolve())} requires a newer OS than {minimum}")
+    print(f"Verified code signature, both architectures and macOS {minimum} minimum in {len(binaries)} binaries.")
 
 
-def installation_text(version: str) -> str:
+def installation_text(version: str, minimum_macos: str) -> str:
     return f"""NAKU播放器 {version}
 
-安装要求：macOS 12 或更新版本；支持 Apple Silicon 和 Intel。
+安装要求：macOS {minimum_macos} 或更新版本；支持 Apple Silicon 和 Intel。
 
 1. 解压 ZIP 或打开 DMG，将“NAKU播放器.app”拖入“Applications”（应用程序）文件夹。
 2. 从应用程序中打开 NAKU播放器，不要直接从 DMG 运行。
-3. 从映川或旧版 NAKU 升级时先退出旧程序；正常替换应用会保留片源、收藏和观看记录。
+3. 从映川或旧版 NAKU 升级时先退出旧程序；正常替换应用会保留片源、收藏、观看和下载记录。
 
-当前公开版本采用本地 ad-hoc 签名，未通过 Apple Developer ID 公证。
+此安装包采用本地 ad-hoc 签名，未通过 Apple Developer ID 公证。
 若系统阻止首次打开，先核对官方发布来源和 SHA256SUMS，再到
 “系统设置 → 隐私与安全性”选择“仍要打开”。无需关闭系统安全功能。
 
@@ -122,7 +142,21 @@ def installation_text(version: str) -> str:
 动漫弹幕：播放和换集自动匹配 Bilibili 弹幕，无需粘贴链接。
 匹配不明确时，在“弹幕切换”确认一次版本与集数；保留 XML/JSON 导入。
 
+2.11.2 下载保护：数据库占用或读取失败时保留数据并提示退出其他版本；
+下载索引为空时可从独立索引及现有视频恢复。更新时请先完全退出旧版，
+不要删除应用数据目录。历史重复视频会保留并标注，不能视为不同集数。
+
+2.12.1：默认电影、剧集为近期热门及全部年份；卡片显示资源查找状态。
+同片普通版与 4K 版合并，默认优先选择带 4K 标签的版本；播放时探测真实画质。
+修复国语、4K 标签导致的跨站评分缺失，缩短临时失败重试间隔。
+
+2.12.2：修复剧集资料跳转被误判为访问受限的问题，补查缺失的跨站评分。
+跨站索引缺项时核对官网片名、年份和类型；IMDb 每日数据缺项时补查官网。
+IMDb 整剧评分与烂番茄当季评分分别注明，官网未公布的分数保持为空。
+
 软件更新：在“软件更新”中检查版本；自动安装可由用户自行开启。
+2.12.3 为 2.x 收官更新：兼容未标季数的美剧和同名剧集，修复豆瓣剧集影评跳转。
+评分与评论的大型页面在后台解析，合并重复检索，保留原有功能与数据。
 正式更新目录和安装包使用 Ed25519 签名验证。
 
 下载、源码、更新记录与问题反馈：
@@ -143,16 +177,18 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def package(app: Path, output: Path, version: str, *, zip_only: bool = False) -> None:
+def package(app: Path, output: Path, version: str, *, zip_only: bool = False, source_archive: Path | None = None) -> None:
     if sys.platform != "darwin":
         raise ValueError("Packaging requires macOS")
-    for tool in ("codesign", "lipo", "ditto", *(() if zip_only else ("hdiutil",))):
+    for tool in ("codesign", "lipo", "otool", "ditto", *(() if zip_only else ("hdiutil",))):
         if shutil.which(tool) is None:
             raise ValueError(f"Required macOS tool is unavailable: {tool}")
     if not app.is_dir() or app.suffix != ".app":
         raise ValueError("--app must point to an existing .app bundle")
     if output == app or output.is_relative_to(app):
         raise ValueError("--output must be outside the app bundle")
+    if source_archive is not None and (not source_archive.is_file() or source_archive.suffix != '.zip'):
+        raise ValueError("--source-archive must point to an existing source ZIP")
     stem = f"NAKUPlayer-{version}-macOS-universal"
     filenames = [f"{stem}.zip", f"{stem}.dmg", "INSTALL-zh-CN.txt", "SHA256SUMS"]
     for name in filenames:
@@ -170,7 +206,13 @@ def package(app: Path, output: Path, version: str, *, zip_only: bool = False) ->
         run("codesign", "--verify", "--deep", "--strict", staged_app)
         (stage / "Applications").symlink_to("/Applications", target_is_directory=True)
         guide = work / "INSTALL-zh-CN.txt"
-        guide.write_text(installation_text(version), encoding="utf-8")
+        with (app / "Contents/Info.plist").open("rb") as stream:
+            minimum = str(plistlib.load(stream)["LSMinimumSystemVersion"])
+        instructions = installation_text(version, minimum).replace('当前公开版本', '当前安装包')
+        if source_archive is not None:
+            shutil.copyfile(source_archive, stage / source_archive.name)
+            instructions += f'\n本次交付附对应源码：{source_archive.name}。源码无需安装。\n直连弹幕适配的 LogVar / danmu_api 许可及源文件见该档案中的 licenses/danmu_api。\n'
+        guide.write_text(instructions, encoding="utf-8")
         shutil.copyfile(guide, stage / guide.name)
         zip_path = work / filenames[0]
         # No enclosing directory: Sparkle finds the one app at archive root.
@@ -188,6 +230,8 @@ def package(app: Path, output: Path, version: str, *, zip_only: bool = False) ->
         run("codesign", "--verify", "--deep", "--strict", extracted / DISPLAY_NAME)
         if not (extracted / "Applications").is_symlink():
             raise ValueError("ZIP did not preserve the Applications symlink")
+        if source_archive is not None and sha256(extracted / source_archive.name) != sha256(source_archive):
+            raise ValueError("ZIP did not preserve the corresponding source archive")
         artifacts = [zip_path, *([] if zip_only else [dmg_path]), guide]
         manifest = work / "SHA256SUMS"
         manifest.write_text(
@@ -208,11 +252,13 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True, help="Release artifact directory")
     parser.add_argument("--version", required=True, help="Exact CFBundleShortVersionString, e.g. 1.0.0")
     parser.add_argument("--zip-only", action="store_true", help="Create the verified Sparkle/install ZIP without a DMG (for hosts without disk-image services)")
+    parser.add_argument("--source-archive", type=Path, help="Embed this corresponding source ZIP alongside the app in both packages")
     args = parser.parse_args()
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?", args.version):
         parser.error("--version must be a dotted semantic version such as 1.0.0")
     try:
-        package(args.app.expanduser().resolve(), args.output.expanduser().resolve(), args.version, zip_only=args.zip_only)
+        package(args.app.expanduser().resolve(), args.output.expanduser().resolve(), args.version, zip_only=args.zip_only,
+                source_archive=args.source_archive.expanduser().resolve() if args.source_archive else None)
     except subprocess.CalledProcessError as error:
         print(f"Packaging failed: {error.cmd[0]} exited {error.returncode}", file=sys.stderr)
         if error.stdout:

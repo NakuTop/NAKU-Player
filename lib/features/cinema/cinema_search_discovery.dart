@@ -158,6 +158,8 @@ class CinemaSearchDiscoveryRepository {
   final DateTime Function() _now;
   final _cache = <String, (DateTime, CinemaSearchDiscovery)>{};
   final _workCache = <String, (DateTime, CinemaSearchDiscovery)>{};
+  final _identityCache = <String, (DateTime, CinemaSearchDiscovery)>{};
+  final _identityPending = <String, Future<CinemaSearchDiscovery>>{};
   final _people = <String, CinemaDiscoveryPerson>{};
   // Actor failures share a short cooldown by verified identity, independently
   // of punctuation-sensitive movie query caching. An explicit actor retry may
@@ -200,8 +202,9 @@ class CinemaSearchDiscoveryRepository {
   Future<dynamic> _get(
     String url,
     Map<String, dynamic> query,
-    CancelToken? cancel,
-  ) async {
+    CancelToken? cancel, {
+    bool allowSubjectRedirect = true,
+  }) async {
     _checkCancellation(cancel);
     final uri = Uri.parse(url);
     final response = await _dio.get<Object?>(
@@ -222,8 +225,20 @@ class CinemaSearchDiscoveryRepository {
       ),
     );
     final status = response.statusCode ?? 0;
+    if (allowSubjectRedirect &&
+        query.isEmpty &&
+        [301, 302, 307, 308].contains(status)) {
+      final target = CinemaDoubanAccess.subjectRedirect(
+        uri,
+        response.headers.value('location'),
+      );
+      if (target != null) {
+        return _get(target.toString(), {}, cancel, allowSubjectRedirect: false);
+      }
+    }
     final isSubject =
-        uri.host == 'm.douban.com' && uri.path.contains('/movie/');
+        uri.host == 'm.douban.com' &&
+        RegExp(r'^/rexxar/api/v2/(?:movie|tv)/[0-9]+$').hasMatch(uri.path);
     if (isSubject) {
       CinemaDoubanAccess.noteResponse(status, response.data, now: _now());
     }
@@ -325,8 +340,43 @@ class CinemaSearchDiscoveryRepository {
   /// Unverified suggestions remain suggestions; a restricted subject endpoint
   /// may use the existing explicit Wikidata identity crosswalk instead.
   Future<CinemaSearchDiscovery> searchForIdentity(String keyword) async {
+    final key = keyword.trim().toLowerCase();
+    final cached = _identityCache[key];
+    if (cached != null) {
+      final age = _now().difference(cached.$1);
+      final ttl = cached.$2.titles.any((t) => t.identityVerified)
+          ? const Duration(minutes: 15)
+          : const Duration(seconds: 30);
+      if (!age.isNegative && age < ttl) return cached.$2;
+    }
+    return _identityPending.putIfAbsent(
+      key,
+      () => _searchVerifiedIdentity(keyword)
+          .then((result) {
+            _identityCache.remove(key);
+            _identityCache[key] = (_now(), result);
+            while (_identityCache.length > 40) {
+              _identityCache.remove(_identityCache.keys.first);
+            }
+            return result;
+          })
+          .whenComplete(() {
+            _identityPending.remove(key);
+          }),
+    );
+  }
+
+  Future<CinemaSearchDiscovery> _searchVerifiedIdentity(String keyword) async {
     final result = await search(keyword);
-    final hydrated = await _hydrate(result.titles, null, limit: 2);
+    final updates = await _hydrate(
+      result.titles.where((title) => !title.identityVerified).toList(),
+      null,
+      limit: 2,
+    );
+    final byId = {for (final title in updates) title.id: title};
+    final hydrated = [
+      for (final title in result.titles) byId[title.id] ?? title,
+    ];
     if (hydrated.any((title) => title.identityVerified)) {
       return CinemaSearchDiscovery(titles: hydrated);
     }
@@ -513,7 +563,11 @@ class CinemaSearchDiscoveryRepository {
       if (subjectIds.length != 1 || name.isEmpty) continue;
       final subjectId = subjectIds.single;
       final dates =
-          _claims(entity, 'P577')
+          [
+                ..._claims(entity, 'P577'),
+                if (_kindFromInstances(instances) == 'tv')
+                  ..._claims(entity, 'P580'),
+              ]
               .whereType<Map>()
               .map(
                 (d) =>
@@ -544,7 +598,9 @@ class CinemaSearchDiscoveryRepository {
   static String _kindFromInstances(Iterable<String> instances) {
     final ids = instances.toSet();
     final movie = ids.contains('Q11424');
-    final tv = ids.any({'Q5398426', 'Q15416', 'Q3464665'}.contains);
+    final tv = ids.any(
+      {'Q5398426', 'Q15416', 'Q3464665', 'Q1259759', 'Q581714'}.contains,
+    );
     return movie == tv ? '' : (tv ? 'tv' : 'movie');
   }
 
@@ -733,7 +789,7 @@ class CinemaSearchDiscoveryRepository {
         '''SELECT ?work ?douban ?date ?original ?types ?workLabel WHERE {
  { SELECT ?work (SAMPLE(?subject) AS ?douban) (MIN(?released) AS ?date) (SAMPLE(?originalTitle) AS ?original) (GROUP_CONCAT(DISTINCT ?instance; separator="|") AS ?types) WHERE {
    ?work wdt:P161 wd:$entityId; wdt:P4529 ?subject.
-   OPTIONAL { ?work wdt:P577 ?released } OPTIONAL { ?work wdt:P1476 ?originalTitle } OPTIONAL { ?work wdt:P31 ?instance }
+   OPTIONAL { ?work (wdt:P577|wdt:P580) ?released } OPTIONAL { ?work wdt:P1476 ?originalTitle } OPTIONAL { ?work wdt:P31 ?instance }
  } GROUP BY ?work HAVING(COUNT(DISTINCT ?subject) = 1) ORDER BY DESC(?date) ?work LIMIT 13 OFFSET $start }
  SERVICE wikibase:label { bd:serviceParam wikibase:language "zh-hans,zh-cn,zh,en". }
 } ORDER BY DESC(?date) ?work''';

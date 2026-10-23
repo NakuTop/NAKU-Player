@@ -2,8 +2,11 @@ import Cocoa
 import FlutterMacOS
 import window_manager
 import CFNetwork
+import SystemConfiguration
+import CryptoKit
 import Sparkle
 import Security
+import LocalAuthentication
 
 // Decoration must never become the target of a mouse event. Flutter handles
 // activation clicks itself, including when the app has just regained focus.
@@ -241,6 +244,7 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    NakuSubtitleTools.register(with: flutterViewController.engine.binaryMessenger)
     let nasChannel = FlutterMethodChannel(name: "naku/nas-movies", binaryMessenger: flutterViewController.engine.binaryMessenger)
     nasChannel.setMethodCallHandler { [weak self] call, result in
       guard let self else { result(nil); return }
@@ -294,41 +298,61 @@ class MainFlutterWindow: NSWindow {
       appMenu.insertItem(toggle, at: min(3, appMenu.items.count))
     }
 
+    for (channelName, service) in [
+      ("naku/danmaku-credentials", "com.shenminghao.yingchuan.dandanplay"),
+      ("naku/logvar-credentials", "com.shenminghao.yingchuan.logvar"),
+    ] {
     let danmakuChannel = FlutterMethodChannel(
-      name: "naku/danmaku-credentials", binaryMessenger: flutterViewController.engine.binaryMessenger)
+      name: channelName, binaryMessenger: flutterViewController.engine.binaryMessenger)
+    let credentialQueue = DispatchQueue(label: "naku.credentials.\(service)", qos: .userInitiated)
     danmakuChannel.setMethodCallHandler { call, result in
-      let query: [String: Any] = [
+      let respond: FlutterResult = { value in
+        DispatchQueue.main.async { result(value) }
+      }
+      let handle = {
+      var query: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,
-        kSecAttrService as String: "com.shenminghao.yingchuan.dandanplay",
-        kSecAttrAccount as String: "client",
+        kSecAttrService as String: service,
+        kSecAttrAccount as String: channelName == "naku/logvar-credentials" ? "nas-v1" : "client",
         kSecAttrSynchronizable as String: false,
       ]
+      if channelName == "naku/logvar-credentials",
+         let args = call.arguments as? [String: String], args["nonInteractive"] == "true" {
+        let authentication = LAContext()
+        authentication.interactionNotAllowed = true
+        query[kSecUseAuthenticationContext as String] = authentication
+      }
       func failure(_ status: OSStatus) {
-        result(FlutterError(code: "keychain", message: "无法访问本机钥匙串 (\(status))", details: nil))
+        respond(FlutterError(code: "keychain", message: "无法访问本机钥匙串 (\(status))", details: nil))
       }
       switch call.method {
       case "read":
         var request = query
+        if channelName == "naku/logvar-credentials" {
+          let authentication = LAContext()
+          authentication.interactionNotAllowed = true
+          request[kSecUseAuthenticationContext as String] = authentication
+        }
         request[kSecReturnData as String] = true
         request[kSecMatchLimit as String] = kSecMatchLimitOne
         var value: CFTypeRef?
         let status = SecItemCopyMatching(request as CFDictionary, &value)
-        if status == errSecItemNotFound { result(nil); return }
+        if status == errSecItemNotFound { respond(nil); return }
         guard status == errSecSuccess else { failure(status); return }
         guard let data = value as? Data,
               let credentials = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
-          result(FlutterError(code: "keychain_data", message: "弹幕凭据无法读取，请重新填写", details: nil))
+          respond(FlutterError(code: "keychain_data", message: "弹幕凭据无法读取，请重新填写", details: nil))
           return
         }
-        result(credentials)
+        respond(credentials)
       case "save":
         guard let args = call.arguments as? [String: String],
               let id = args["id"], let secret = args["secret"],
-              !id.isEmpty, !secret.isEmpty, id.count <= 256, secret.count <= 1024,
+              !id.isEmpty, !secret.isEmpty, id.count <= (channelName == "naku/logvar-credentials" ? 1024 : 256), secret.count <= 1024,
               !id.contains("\n"), !id.contains("\r"),
               !secret.contains("\n"), !secret.contains("\r"),
               let data = try? JSONSerialization.data(withJSONObject: ["id": id, "secret": secret]) else {
-          result(FlutterError(code: "invalid", message: "请填写有效的弹幕凭据", details: nil)); return
+          respond(FlutterError(code: "invalid", message: "请填写有效的弹幕凭据", details: nil)); return
         }
         let updates = [kSecValueData as String: data] as CFDictionary
         var status = SecItemUpdate(query as CFDictionary, updates)
@@ -338,12 +362,18 @@ class MainFlutterWindow: NSWindow {
           item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
           status = SecItemAdd(item as CFDictionary, nil)
         }
-        if status == errSecSuccess { result(nil) } else { failure(status) }
+        if status == errSecSuccess { respond(nil) } else { failure(status) }
       case "clear":
         let status = SecItemDelete(query as CFDictionary)
-        if status == errSecSuccess || status == errSecItemNotFound { result(nil) } else { failure(status) }
-      default: result(FlutterMethodNotImplemented)
+        if status == errSecSuccess || status == errSecItemNotFound { respond(nil) } else { failure(status) }
+      default: respond(FlutterMethodNotImplemented)
       }
+      }
+      if channelName == "naku/logvar-credentials" {
+        credentialQueue.async(execute: handle)
+      } else { handle() }
+    }
+
     }
 
     let appearanceChannel = FlutterMethodChannel(
@@ -378,6 +408,33 @@ class MainFlutterWindow: NSWindow {
                   "ExceptionsList", "ExcludeSimpleHostnames", "ProxyAutoConfigEnable"]
       var snapshot: [String: Any] = [:]
       for key in keys { if let value = settings[key] { snapshot[key] = value } }
+      // Include a local-only network signature even when a hotel's HTTP proxy
+      // configuration is identical to the home network. No Wi-Fi location
+      // permission, network name, or address is sent to a remote service.
+      if let store = SCDynamicStoreCreate(nil, "NAKU.RouteIdentity" as CFString, nil, nil) {
+        let patterns = ["State:/Network/Global/IPv[46]", "State:/Network/Global/DNS",
+                        "State:/Network/Service/.*/IPv[46]", "State:/Network/Service/.*/DHCP"]
+        var state: [String: Any] = [:]
+        func jsonValue(_ value: Any) -> Any {
+          if let data = value as? Data { return data.base64EncodedString() }
+          if let date = value as? Date { return date.timeIntervalSince1970 }
+          if let values = value as? [String: Any] { return values.mapValues { jsonValue($0) } }
+          if let values = value as? [Any] { return values.map { jsonValue($0) } }
+          if value is String || value is NSNumber { return value }
+          return String(describing: value)
+        }
+        for pattern in patterns {
+          let keys = SCDynamicStoreCopyKeyList(store, pattern as CFString) as? [String] ?? []
+          for key in keys {
+            if let value = SCDynamicStoreCopyValue(store, key as CFString) {
+              state[key] = jsonValue(value)
+            }
+          }
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: state, options: [.sortedKeys]) {
+          snapshot["NAKUNetworkSignature"] = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+      }
       result(snapshot)
     }
 

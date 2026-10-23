@@ -27,6 +27,7 @@ import 'package:kazumi/services/player/history_playback_service.dart';
 import 'package:kazumi/services/plugin/rule_engine_models.dart'
     show RuleCancelToken;
 import 'cinema_filters.dart';
+import 'cinema_media_identity.dart';
 import 'cinema_aggregate_catalog.dart';
 import 'cinema_discovery_resolver.dart';
 import 'cinema_search_discovery.dart';
@@ -46,6 +47,8 @@ import 'cinema_sync_session.dart';
 import 'cinema_sync_sheet.dart';
 import 'cinema_watch_together.dart';
 import 'cinema_work_sources.dart';
+import 'cinema_resource_availability.dart';
+import 'cinema_resource_badge.dart';
 import 'douban/douban_page.dart';
 import 'douban/douban_themes.dart';
 import 'douban/douban_repository.dart';
@@ -86,6 +89,7 @@ class _CatalogState {
   final searchMore = <String>{};
   String activeKeyword = '';
   CinemaFilters filters = const CinemaFilters();
+  bool yearWasChosen = false;
   CinemaSearchDiscovery discovery = const CinemaSearchDiscovery();
   CancelToken? discoveryCancel;
   String discoveryMessage = '';
@@ -144,6 +148,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   final _nasPageCache = CinemaNASPageCache();
   late final CinemaRepository _repository =
       widget.repository ?? CinemaRepository(health: _health);
+  late final _resources = CinemaResourceAvailabilityService(_repository);
   late final _discoveryRepository =
       widget.searchDiscovery ?? CinemaSearchDiscoveryRepository();
   late final _ratings =
@@ -172,21 +177,15 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   bool _animeOpened = false;
   String _applicationVersion = '正在读取版本';
   final _catalogs = {
-    for (final section in _Section.values)
-      section: _CatalogState()
-        ..filters = CinemaFilters(
-          year: section == _Section.movies || section == _Section.series
-              ? '${DateTime.now().year}'
-              : '',
-        ),
+    for (final section in _Section.values) section: _CatalogState(),
   };
   final _doubanSession = DoubanBrowseSession();
   final _knownCategories = <String, List<CinemaCategory>>{};
   final _aggregateControllers = <_Section, CinemaAggregateCatalogController>{};
   String _sourceConfiguration = '';
   final Map<_Section, CinemaCatalogSort> _catalogSort = {
-    _Section.movies: CinemaCatalogSort.rating,
-    _Section.series: CinemaCatalogSort.rating,
+    _Section.movies: CinemaCatalogSort.popular,
+    _Section.series: CinemaCatalogSort.popular,
   };
   _CatalogState get _catalog => _catalogs[_section]!;
   TextEditingController get _search => _catalog.search;
@@ -363,8 +362,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     unawaited(_initialize());
   }
 
-  void _openDouban() {
-    Navigator.of(context).push(
+  Future<void> _openDouban() async {
+    await Navigator.of(context).push(
       PageRouteBuilder<void>(
         transitionDuration: Duration.zero,
         reverseTransitionDuration: Duration.zero,
@@ -391,6 +390,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         ),
       ),
     );
+    if (mounted && _isCatalog && !_catalog.initialized && !_catalog.loading) {
+      await _browse();
+    }
   }
 
   void _openLibrary(bool history) {
@@ -804,7 +806,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       );
       if (!mounted) return;
       setState(() {});
-      await _browse();
+      if (widget.initialStartup.section != CinemaStartupSection.douban) {
+        await _browse();
+      }
     } catch (e) {
       if (mounted) {
         if (_isCatalog) {
@@ -821,6 +825,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   @override
   void dispose() {
+    _resources.dispose();
     if (Platform.isAndroid) unawaited(CinemaLanCast.instance.stop());
     _nasSync?.dispose();
     _animeLibrary?.dispose();
@@ -871,6 +876,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       _catalogSort[_section] ?? CinemaCatalogSort.latest;
 
   String get _catalogSortExplanation {
+    if (_currentCatalogSort == CinemaCatalogSort.popular && !_searching) {
+      return '按豆瓣近期热门顺序展示，卡片会自动检查片源；同片优先选择标记为 4K 的版本。';
+    }
     if (_currentCatalogSort == CinemaCatalogSort.rating) {
       final works = [
         ..._catalogView.representatives,
@@ -1010,9 +1018,10 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       });
       await _aggregateFor(section).load(
         sources: _activeSources,
-        kind: section == _Section.movies
-            ? CinemaAggregateKind.movies
-            : CinemaAggregateKind.series,
+        kind: switch (section) {
+          _Section.movies => CinemaAggregateKind.movies,
+          _ => CinemaAggregateKind.series,
+        },
         filters: state.filters,
         sort: _catalogSort[section] ?? CinemaCatalogSort.latest,
         refresh: refresh,
@@ -1399,6 +1408,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   }
 
   void _changeCatalogueFilters(CinemaFilters value) {
+    if (value.year != _catalog.filters.year) _catalog.yearWasChosen = true;
     if (_aggregates(_section) && !_searching) {
       _changed(_catalog, () => _catalog.filters = value);
       unawaited(_browse());
@@ -1661,12 +1671,15 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     }
     if (title.sourceId == 'douban-discovery' ||
         _findSource(title.sourceId) == null) {
-      final found = await resolveCinemaDiscoverySources(
-        context,
-        anchor: title,
-        sources: _activeSources,
-        repository: _repository,
-      );
+      final cached = _resources.peek(title, _activeSources);
+      final found = cached?.variants.isNotEmpty == true
+          ? cached!.variants
+          : await resolveCinemaDiscoverySources(
+              context,
+              anchor: title,
+              sources: _activeSources,
+              repository: _repository,
+            );
       if (!mounted || found == null || found.isEmpty) return;
       final available = found
           .where((t) => _findSource(t.sourceId)?.enabled == true)
@@ -2211,7 +2224,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               ChoiceChip(
                 key: ValueKey('catalog-sort-${sort.name}'),
                 label: Text(switch (sort) {
-                  CinemaCatalogSort.popular => '热门',
+                  CinemaCatalogSort.popular => _searching ? '热度' : '近期热门',
                   CinemaCatalogSort.latest => '最新',
                   CinemaCatalogSort.rating => '评分',
                 }),
@@ -2224,7 +2237,13 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 ),
                 onSelected: (_) {
                   if (_currentCatalogSort == sort) return;
-                  setState(() => _catalogSort[_section] = sort);
+                  setState(() {
+                    _catalogSort[_section] = sort;
+                    if (sort == CinemaCatalogSort.popular &&
+                        !_catalog.yearWasChosen) {
+                      _catalog.filters = _catalog.filters.copyWith(year: '');
+                    }
+                  });
                   if (_aggregates(_section) && !_searching) {
                     unawaited(_browse());
                   } else {
@@ -2258,7 +2277,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               padding: const EdgeInsets.only(left: 4),
               child: Text(
                 switch (_currentCatalogSort) {
-                  CinemaCatalogSort.popular => '已加载作品 · 片源热度',
+                  CinemaCatalogSort.popular =>
+                    _searching ? '已加载资源 · 片源热度' : '豆瓣 · 近期热门',
                   CinemaCatalogSort.latest => '已加载作品 · 片源更新时间',
                   CinemaCatalogSort.rating => '已加载作品 · 评分从高到低',
                 },
@@ -2285,7 +2305,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     filters: _catalog.filters,
     grouped: _searching || _aggregates(_section),
     sourcePriority: _store.enabledSources.map((s) => s.id).toList(),
-    sort: _showsCatalogSort ? _currentCatalogSort : null,
+    sort:
+        _showsCatalogSort &&
+            !(!_searching && _currentCatalogSort == CinemaCatalogSort.popular)
+        ? _currentCatalogSort
+        : null,
     provider: _scoreProvider,
     ratingRevision: _ratingRevision,
     scoreOf: (title) => _ratings.scoreFor(title, _scoreProvider),
@@ -2295,6 +2319,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     if (_section == _Section.settings) {
       if (_showSourceManager) return _sourceManager(wide);
       return CinemaSettingsPage(
+        platform: Platform.isAndroid
+            ? TargetPlatform.android
+            : Platform.isMacOS
+            ? TargetPlatform.macOS
+            : TargetPlatform.windows,
         enabledSourceCount: _store.enabledSources
             .where((source) => source.kind == CinemaSourceKind.maccms)
             .length,
@@ -2807,6 +2836,20 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 fit: StackFit.expand,
                 children: [
                   _poster(title, null, null),
+                  if (title.sourceId == 'douban-discovery')
+                    Positioned(
+                      top: 8,
+                      left: 8,
+                      right: 8,
+                      child: Align(
+                        alignment: Alignment.topLeft,
+                        child: CinemaResourceBadge(
+                          title: title,
+                          sources: _activeSources,
+                          service: _resources,
+                        ),
+                      ),
+                    ),
                   if (title.remarks.isNotEmpty)
                     Positioned(
                       bottom: 8,
@@ -2840,7 +2883,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             ),
             const SizedBox(height: 10),
             Text(
-              title.title,
+              cinemaMediaBaseTitle(title.title),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
@@ -3460,10 +3503,12 @@ class _TitleDetailsState extends State<_TitleDetails> {
       setState(() => _variants = orderCinemaVariants(variants, priority));
       if (!_variantChosen && widget.resume == null && _variants.isNotEmpty) {
         final preferred = _variants.first;
-        final preferredRank = priority.indexOf(preferred.sourceId);
-        final currentRank = priority.indexOf(_selectedTitle.sourceId);
-        if (preferredRank >= 0 &&
-            (currentRank < 0 || preferredRank < currentRank)) {
+        if (preferred.key != _selectedTitle.key &&
+            orderCinemaVariants([
+                  preferred,
+                  _selectedTitle,
+                ], priority).first.key ==
+                preferred.key) {
           _selectVariant(preferred, automatic: true);
         }
       }
@@ -3813,6 +3858,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
                           label: Text(title.routes[r].name),
                           selected: _road == r,
                           onSelected: (_) => setState(() {
+                            _variantChosen = true;
                             _road = r;
                           }),
                         ),

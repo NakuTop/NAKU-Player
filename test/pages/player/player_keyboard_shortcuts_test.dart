@@ -41,17 +41,24 @@ void main() {
   });
 
   void playerTest(String description, WidgetTesterCallback body) {
-    testWidgets(description, (tester) async {
-      try {
-        await body(tester);
-      } finally {
-        await tester.pumpWidget(const SizedBox());
-        await tester.pumpAndSettle();
-      }
-    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+    testWidgets(
+      description,
+      (tester) async {
+        try {
+          await body(tester);
+        } finally {
+          await tester.pumpWidget(const SizedBox());
+          await tester.pumpAndSettle();
+        }
+      },
+      variant: TargetPlatformVariant({
+        TargetPlatform.windows,
+        TargetPlatform.macOS,
+      }),
+    );
   }
 
-  Future<void> mount(WidgetTester tester) async {
+  Future<void> mount(WidgetTester tester, {Duration? holdDelay}) async {
     const shortcuts = {
       'play': [' '],
       'forward': ['Arrow Right'],
@@ -86,6 +93,7 @@ void main() {
                     },
                     longPressActions: {
                       'forward': PlayerLongPressShortcutActions(
+                        holdDelay: holdDelay,
                         onRepeat: () => repeats++,
                         onRelease: () => releases++,
                       ),
@@ -248,4 +256,23 @@ void main() {
     await tester.pump();
     expect(releases, 1);
   });
+  playerTest(
+    'timed holds work without OS repeat and restore on app focus loss',
+    (tester) async {
+      await mount(tester, holdDelay: const Duration(milliseconds: 400));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump(const Duration(milliseconds: 399));
+      expect(repeats, 0);
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(repeats, 1);
+      await tester.sendKeyRepeatEvent(LogicalKeyboardKey.arrowRight);
+      expect(repeats, 1);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(releases, 1);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowRight);
+      expect(releases, 1);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    },
+  );
 }

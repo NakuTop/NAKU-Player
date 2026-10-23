@@ -7,6 +7,7 @@ import 'package:ffi/ffi.dart';
 import 'package:crypto/crypto.dart';
 import 'cinema_subtitle_catalogs.dart';
 import 'cinema_subtitle_fallbacks.dart';
+import 'cinema_media_identity.dart';
 import 'cinema_subtitle_network.dart';
 import 'cinema_external_subtitles.dart';
 import 'package:dio/dio.dart';
@@ -49,15 +50,34 @@ class CinemaSubtitleQuery {
     final episode = RegExp(
       r'第\s*([零一二两三四五六七八九十\d]+)\s*[集话話]',
     ).firstMatch(episodeName.isEmpty ? title : episodeName);
+    final englishEpisode = RegExp(
+      r'(?:^|[^a-z0-9])(?:episode\s*|e)(\d{1,4})(?!\d)',
+      caseSensitive: false,
+    ).firstMatch(episodeName);
+    final crossed = RegExp(
+      r'(?:^|[^a-z0-9])(\d{1,3})x(\d{1,4})(?!\d)',
+      caseSensitive: false,
+    ).firstMatch(combined);
     final englishSeason = RegExp(
       r'\b(?:Season\s*|S)(\d{1,2})(?!\d)',
       caseSensitive: false,
     ).firstMatch(combined);
+    // Genre labels such as 剧情片/喜剧片 contain 剧, but describe films.
+    final movieCategory = RegExp(
+      r'电影|電影|片|\bmovie\b|\bfilm\b',
+      caseSensitive: false,
+    ).hasMatch(category);
     final series =
         code != null ||
+        crossed != null ||
+        episode != null ||
         season != null ||
         englishSeason != null ||
-        RegExp('剧|劇|动漫|動畫|series|tv', caseSensitive: false).hasMatch(category);
+        (!movieCategory &&
+            RegExp(
+              '剧|劇|动漫|動畫|series|tv',
+              caseSensitive: false,
+            ).hasMatch(category));
     final release = RegExp(
       r'[ ._-]+S\d{1,2}[ ._-]*E\d{1,3}(?!\d).*',
       caseSensitive: false,
@@ -81,6 +101,8 @@ class CinemaSubtitleQuery {
       series ? 'series' : 'movie',
       code != null
           ? int.parse(code[1]!)
+          : crossed != null
+          ? int.parse(crossed[1]!)
           : season != null
           ? _number(season[1]!)
           : englishSeason != null
@@ -88,8 +110,12 @@ class CinemaSubtitleQuery {
           : 1,
       code != null
           ? int.parse(code[2]!)
+          : crossed != null
+          ? int.parse(crossed[2]!)
           : episode != null
           ? _number(episode[1]!)
+          : englishEpisode != null
+          ? int.parse(englishEpisode[1]!)
           : int.tryParse(episodeName.trim()) ?? fallbackEpisode ?? 1,
     );
   }
@@ -255,6 +281,47 @@ Map<String, dynamic>? _verifiedDialogueLanguage(
 }
 
 /// Public catalogs receive only the query / IMDb ID, never NAS credentials.
+/// File parsing/language checks do not establish which work a subtitle belongs
+/// to. Automatic loading also needs a matching title or scoped metadata proof.
+bool cinemaSubtitleCandidateMatches(
+  Map<String, dynamic> row,
+  CinemaSubtitleQuery query, {
+  String imdbId = '',
+}) {
+  final file =
+      '${row['archiveEntry'] ?? row['subtitleFileName'] ?? row['movieReleaseName'] ?? ''}';
+  if (query.type == 'movie' && cinemaExplicitSubtitleEpisode(file)) {
+    return false;
+  }
+  if (row['identityVerified'] == true &&
+      row['matchedQuery'] == cinemaMediaTitleKey(query.title) &&
+      row['matchedWorkType'] == query.type) {
+    return true;
+  }
+  final aliases = cinemaSubtitleAliases(
+    query.title,
+    imdbId: imdbId,
+  ).map(cinemaMediaTitleKey).where((v) => v.isNotEmpty).toSet();
+  for (final field in [file, '${row['releaseFormat'] ?? ''}']) {
+    var name = field
+        .split(RegExp(r'[/\\]'))
+        .last
+        .replaceFirst(RegExp(r'\.(srt|ass|ssa|vtt)$', caseSensitive: false), '')
+        .replaceFirst(RegExp(r'^\s*[\[【][^\]】]{1,60}[\]】]\s*'), '');
+    name = name
+        .split(
+          RegExp(
+            r'(?:[ ._-]+|(?<=\p{Script=Han}))(?:S\d{1,2}[ ._-]*E\d{1,4}|(?:19|20)\d{2}|\d{3,4}p|2160|1080|720|BluRay|BDRip|WEB(?:[ ._-]?DL|Rip)?|HDTV|DVDRip)(?:\b|[ ._-])|第\s*[零一二两三四五六七八九十百\d]+\s*[季集话話]',
+            caseSensitive: false,
+            unicode: true,
+          ),
+        )
+        .first;
+    if (aliases.contains(cinemaMediaTitleKey(name))) return true;
+  }
+  return false;
+}
+
 class CinemaOnlineSubtitles {
   CinemaOnlineSubtitles({Dio? dio, this.useFallbackCatalog = true})
     : _dio = dio ?? _createDio();
@@ -294,10 +361,102 @@ class CinemaOnlineSubtitles {
   final _verified = <String, String>{};
   final _archives = <String, Future<List<int>>>{};
 
+  /// A selected season archive is a better source for its other episodes than
+  /// a fresh web search. List only; never extract archive paths onto disk.
+  Future<List<Map<String, dynamic>>> seasonFiles(
+    Map<String, dynamic> selected,
+  ) async {
+    if (selected['archiveEntry'] is! String) return const [];
+    final url = selected['url'];
+    if (url is! String) return const [];
+    final bytes = await _archives.putIfAbsent(url, () => _downloadBytes(url));
+    final names = await listArchiveSubtitles(bytes);
+    return [
+      for (final name in names)
+        {
+          ...selected,
+          'archiveEntry': name,
+          'subtitleFileName': name,
+          'verified': false,
+        },
+    ];
+  }
+
+  Future<Map<String, dynamic>?> verifyFile(
+    Map<String, dynamic> row, {
+    required String language,
+  }) async {
+    final text = await download(
+      '${row['url']}',
+      archiveEntry: row['archiveEntry'] as String?,
+    );
+    final identified = _verifiedDialogueLanguage(text, row);
+    if (identified == null ||
+        !cinemaSubtitleLanguageMatches('${identified['lang']}', language)) {
+      return null;
+    }
+    return {...identified, 'verified': true};
+  }
+
+  static Future<List<String>> listArchiveSubtitles(List<int> bytes) async {
+    if ((!Platform.isMacOS && !Platform.isWindows) ||
+        bytes.length > 8 * 1024 * 1024) {
+      throw const FormatException('该字幕压缩格式暂不可读取');
+    }
+    final folder = await Directory.systemTemp.createTemp('naku-subtitle-');
+    Process? process;
+    Timer? timer;
+    try {
+      final file = File('${folder.path}/subtitle.archive');
+      await file.writeAsBytes(bytes, flush: true);
+      process = await Process.start(
+        Platform.isMacOS
+            ? '/usr/bin/tar'
+            : '${Platform.environment['SystemRoot'] ?? r'C:\Windows'}\\System32\\tar.exe',
+        ['-tf', file.path],
+      );
+      timer = Timer(const Duration(seconds: 15), () => process?.kill());
+      final errors = process.stderr.drain<void>();
+      final output = BytesBuilder(copy: false);
+      await for (final part in process.stdout) {
+        if (output.length + part.length > 256 * 1024) {
+          throw const FormatException('字幕包文件目录过大');
+        }
+        output.add(part);
+      }
+      await errors;
+      if (await process.exitCode != 0) throw const FormatException('字幕包目录无法读取');
+      return utf8
+          .decode(output.takeBytes())
+          .split('\n')
+          .map((s) => s.trim())
+          .where(
+            (name) =>
+                name.isNotEmpty &&
+                name.length <= 1024 &&
+                !name.startsWith('/') &&
+                !name.contains('..') &&
+                !name.contains(':') &&
+                !name.contains('\u0000') &&
+                RegExp(
+                  r'\.(srt|ass|ssa|vtt)$',
+                  caseSensitive: false,
+                ).hasMatch(name),
+          )
+          .take(1000)
+          .toList();
+    } finally {
+      timer?.cancel();
+      process?.kill();
+      await folder.delete(recursive: true);
+    }
+  }
+
   Future<CinemaSubtitleCatalogResult> aggregate(
     String query,
     String type, {
     String imdbId = '',
+    String year = '',
     int season = 1,
     int episode = 1,
     String language = 'zh-eng',
@@ -324,6 +483,13 @@ class CinemaOnlineSubtitles {
       final lang = '${row['lang']}';
       if (!cinemaSubtitleLanguageMatches(lang, language) &&
           !['all', '', 'null', 'und'].contains(lang)) {
+        return false;
+      }
+      if (!cinemaSubtitleCandidateMatches(
+        row,
+        CinemaSubtitleQuery(query, resolvedType, season, episode),
+        imdbId: imdbId,
+      )) {
         return false;
       }
       if (resolvedType != 'series') return true;
@@ -401,19 +567,36 @@ class CinemaOnlineSubtitles {
         }
       } else {
         works = await search(query, resolvedType);
-        if (works.isEmpty) {
-          final other = resolvedType == 'movie' ? 'series' : 'movie';
-          works = await search(query, other);
-          works = [
-            for (final work in works) {...work, 'type': other},
-          ];
-        }
       }
     } catch (_) {
       status['作品匹配'] = '目录暂不可用，继续检索字幕网站';
     }
-    if (works.isNotEmpty && ['movie', 'series'].contains(works.first['type'])) {
-      resolvedType = '${works.first['type']}';
+    final aliases = fallbackNames.map(cinemaMediaTitleKey).toSet();
+    final explicitId = RegExp(r'^tt\d+$').hasMatch(imdbId)
+        ? imdbId
+        : RegExp(r'^tt\d+$').hasMatch(query)
+        ? query
+        : '';
+    works = works.where((work) {
+      if (work['type'] != null && work['type'] != resolvedType) return false;
+      final workYear = RegExp(
+        r'(?:19|20)\d{2}',
+      ).firstMatch('${work['year'] ?? work['releaseInfo'] ?? ''}')?.group(0);
+      if (year.isNotEmpty && workYear != year) return false;
+      if (explicitId.isNotEmpty) return work['id'] == explicitId;
+      final names = [
+        work['name'],
+        work['original_name'],
+        work['originalTitle'],
+        if (work['aliases'] is List) ...(work['aliases'] as List),
+      ];
+      return names.whereType<String>().any(
+        (name) => aliases.contains(cinemaMediaTitleKey(name)),
+      );
+    }).toList();
+    if (works.map((w) => w['id']).toSet().length > 1) {
+      works = []; // An ambiguous same-title remake needs a year or an IMDb ID.
+      status['作品匹配'] = '存在同名作品，未自动选择不确定的作品编号';
     }
     final names = <String>{
       ...fallbackNames,
@@ -459,7 +642,15 @@ class CinemaOnlineSubtitles {
             episode: episode,
           );
           candidates.addAll([
-            for (final row in found) {...row, 'provider': 'OpenSubtitles'},
+            for (final row in found)
+              {
+                ...row,
+                'provider': 'OpenSubtitles',
+                'identityVerified': true,
+                'matchedQuery': cinemaMediaTitleKey(query),
+                'matchedWorkType': resolvedType,
+                'matchedWorkId': selected,
+              },
           ]);
           status['OpenSubtitles'] = '${found.length} 条候选';
         } catch (_) {
@@ -651,6 +842,19 @@ class CinemaOnlineSubtitles {
     }
     final text = decodeSubtitle(bytes);
     _verified[key] = text;
+    // Season prefetch reuses this client across many episodes. Keep complete
+    // season archives reusable without retaining every verified file in RAM.
+    while (_archives.length > 2) {
+      _archives.remove(_archives.keys.first);
+    }
+    var characters = _verified.values.fold(
+      0,
+      (int total, text) => total + text.length,
+    );
+    while (_verified.length > 16 || characters > 4 * 1024 * 1024) {
+      final first = _verified.keys.first;
+      characters -= _verified.remove(first)!.length;
+    }
     return text;
   }
 
@@ -683,7 +887,7 @@ class CinemaOnlineSubtitles {
     List<int> bytes,
     String entry,
   ) async {
-    if (!Platform.isWindows ||
+    if ((!Platform.isWindows && !Platform.isMacOS) ||
         entry.startsWith('/') ||
         entry.contains(':') ||
         entry.contains('\u0000') ||
@@ -705,7 +909,9 @@ class CinemaOnlineSubtitles {
           .replaceAll('*', '[*]')
           .replaceAll('?', '[?]');
       process = await Process.start(
-        '${Platform.environment['SystemRoot'] ?? r'C:\Windows'}\\System32\\tar.exe',
+        Platform.isMacOS
+            ? '/usr/bin/tar'
+            : '${Platform.environment['SystemRoot'] ?? r'C:\Windows'}\\System32\\tar.exe',
         ['-xOf', file.path, '--', pattern],
       );
       timer = Timer(const Duration(seconds: 20), () => process?.kill());
@@ -736,7 +942,63 @@ class CinemaOnlineSubtitles {
     }
   }
 
+  static String _decodeMacChinese(List<int> bytes) {
+    final core = ffi.DynamicLibrary.open(
+      '/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation',
+    );
+    final create = core
+        .lookupFunction<
+          ffi.Pointer<ffi.Void> Function(
+            ffi.Pointer<ffi.Void>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.IntPtr,
+            ffi.Uint32,
+            ffi.Uint8,
+          ),
+          ffi.Pointer<ffi.Void> Function(
+            ffi.Pointer<ffi.Void>,
+            ffi.Pointer<ffi.Uint8>,
+            int,
+            int,
+            int,
+          )
+        >('CFStringCreateWithBytes');
+    final length = core
+        .lookupFunction<
+          ffi.IntPtr Function(ffi.Pointer<ffi.Void>),
+          int Function(ffi.Pointer<ffi.Void>)
+        >('CFStringGetLength');
+    final character = core
+        .lookupFunction<
+          ffi.Uint16 Function(ffi.Pointer<ffi.Void>, ffi.IntPtr),
+          int Function(ffi.Pointer<ffi.Void>, int)
+        >('CFStringGetCharacterAtIndex');
+    final release = core
+        .lookupFunction<
+          ffi.Void Function(ffi.Pointer<ffi.Void>),
+          void Function(ffi.Pointer<ffi.Void>)
+        >('CFRelease');
+    final input = calloc<ffi.Uint8>(bytes.length);
+    try {
+      input.asTypedList(bytes.length).setAll(0, bytes);
+      // kCFStringEncodingGB_18030_2000; strict conversion returns NULL for
+      // malformed bytes instead of silently replacing subtitle dialogue.
+      final value = create(ffi.nullptr, input, bytes.length, 0x80000632, 0);
+      if (value == ffi.nullptr) throw const FormatException('字幕编码无法读取');
+      try {
+        return String.fromCharCodes(
+          List.generate(length(value), (index) => character(value, index)),
+        );
+      } finally {
+        release(value);
+      }
+    } finally {
+      calloc.free(input);
+    }
+  }
+
   static String _decodeLegacyChinese(List<int> bytes) {
+    if (Platform.isMacOS) return _decodeMacChinese(bytes);
     if (!Platform.isWindows) {
       throw const FormatException('字幕编码不是 UTF-8 / UTF-16');
     }
@@ -1140,7 +1402,7 @@ class _CinemaOnlineSubtitlesPanelState
             onChanged: _applying
                 ? null
                 : (value) => setState(() => _applyToSeason = value ?? true),
-            title: const Text('后续同季剧集自动加载同语言字幕并继承对齐'),
+            title: const Text('后台下载本季字幕，后续剧集自动加载并沿用匹配的对齐设置'),
           ),
         const SizedBox(height: 12),
         FilledButton.icon(

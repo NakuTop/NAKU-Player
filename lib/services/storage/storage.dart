@@ -13,6 +13,7 @@ import 'package:kazumi/modules/collect/collect_sync_merger.dart';
 import 'package:kazumi/modules/search/search_history_module.dart';
 import 'package:kazumi/modules/download/download_module.dart';
 import 'package:kazumi/services/storage/history_storage_coordinator.dart';
+import 'package:kazumi/services/storage/local_storage_guard.dart';
 
 import 'package:kazumi/services/storage/settings_keys.dart';
 export 'package:kazumi/services/storage/settings_keys.dart';
@@ -30,6 +31,7 @@ class GStorage {
 
   /// Hive directory path, initialized during init()
   static String? _hivePath;
+  static LocalStorageGuard? _guard;
 
   /// Queue to serialize write operations
   static Future<void> _collectChangesWriteQueue = Future.value();
@@ -173,75 +175,30 @@ class GStorage {
   static Future init() async {
     _hivePath = '${(await getApplicationSupportDirectory()).path}/hive';
 
+    _guard = LocalStorageGuard(_hivePath!);
+    await _guard!.acquire();
     Hive.registerAdapters();
 
-    // Open each box with automatic recovery on corruption
-    favorites = await _openBoxSafe<BangumiItem>('favorites');
-    collectibles = await _openBoxSafe<CollectedBangumi>('collectibles');
-    histories = await _openBoxSafe<History>('histories');
-    _setting = await _openBoxSafe<dynamic>('setting');
-    collectChanges = await _openBoxSafe<CollectedBangumiChange>(
-      'collectchanges',
-    );
-    shieldList = await _openBoxSafe<String>('shieldList');
-    searchHistory = await _openBoxSafe<SearchHistory>('searchHistory');
-    downloads = await _openBoxSafe<DownloadRecord>('downloads');
-  }
-
-  /// Open a Hive box with automatic recovery on corruption.
-  /// If the box is corrupted, delete it and create a new empty one.
-  static Future<Box<T>> _openBoxSafe<T>(String boxName) async {
     try {
-      return await Hive.openBox<T>(boxName);
-    } catch (e) {
-      KazumiLogger().e(
-        'GStorage: Box "$boxName" corrupted, attempting recovery',
-        error: e,
+      favorites = await _openBoxSafe<BangumiItem>('favorites');
+      collectibles = await _openBoxSafe<CollectedBangumi>('collectibles');
+      histories = await _openBoxSafe<History>('histories');
+      _setting = await _openBoxSafe<dynamic>('setting');
+      collectChanges = await _openBoxSafe<CollectedBangumiChange>(
+        'collectchanges',
       );
-
-      // Delete the corrupted box files
-      await _deleteBoxFiles(boxName);
-
-      // Try to open again (will create a new empty box)
-      try {
-        final box = await Hive.openBox<T>(boxName);
-        KazumiLogger().i(
-          'GStorage: Box "$boxName" recovered successfully (data lost)',
-        );
-        return box;
-      } catch (e2) {
-        KazumiLogger().e(
-          'GStorage: Failed to recover box "$boxName"',
-          error: e2,
-        );
-        rethrow;
-      }
+      shieldList = await _openBoxSafe<String>('shieldList');
+      searchHistory = await _openBoxSafe<SearchHistory>('searchHistory');
+      downloads = await _openBoxSafe<DownloadRecord>('downloads');
+    } catch (_) {
+      await Hive.close();
+      await _guard!.release();
+      rethrow;
     }
   }
 
-  /// Delete Hive box files for a given box name
-  static Future<void> _deleteBoxFiles(String boxName) async {
-    if (_hivePath == null) return;
-
-    final boxFile = File('$_hivePath/$boxName.hive');
-    final lockFile = File('$_hivePath/$boxName.lock');
-
-    try {
-      if (await boxFile.exists()) {
-        await boxFile.delete();
-        KazumiLogger().i('GStorage: Deleted corrupted box file: $boxName.hive');
-      }
-      if (await lockFile.exists()) {
-        await lockFile.delete();
-        KazumiLogger().i('GStorage: Deleted lock file: $boxName.lock');
-      }
-    } catch (e) {
-      KazumiLogger().e(
-        'GStorage: Failed to delete box files for "$boxName"',
-        error: e,
-      );
-    }
-  }
+  static Future<Box<T>> _openBoxSafe<T>(String boxName) =>
+      _guard!.openBox<T>(boxName);
 
   static Future<void> backupBox(String boxName, String backupFilePath) async {
     final appDocumentDir = await getApplicationSupportDirectory();

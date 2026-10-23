@@ -7,6 +7,7 @@ import 'package:kazumi/features/cinema/cinema_external_subtitles.dart';
 import 'package:kazumi/features/cinema/cinema_online_subtitles.dart';
 import 'package:kazumi/features/cinema/cinema_season_subtitle_controller.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
+import 'package:kazumi/features/cinema/cinema_saved_subtitle.dart';
 import 'package:kazumi/features/cinema/cinema_subtitle_catalogs.dart';
 import 'package:kazumi/features/cinema/cinema_subtitle_timing.dart';
 
@@ -22,6 +23,8 @@ class _Player implements Player {
   PlayerState _state;
   int pauses = 0, plays = 0;
   Completer<void>? pauseGate;
+  Completer<void>? playObserved;
+  Completer<void>? pauseObserved;
   @override
   PlatformPlayer? get platform => null;
   @override
@@ -29,6 +32,7 @@ class _Player implements Player {
   @override
   Future<void> pause() async {
     pauses++;
+    if (pauseObserved?.isCompleted == false) pauseObserved!.complete();
     await pauseGate?.future;
     _state = _state.copyWith(playing: false);
   }
@@ -36,6 +40,7 @@ class _Player implements Player {
   @override
   Future<void> play() async {
     plays++;
+    if (playObserved?.isCompleted == false) playObserved!.complete();
     _state = _state.copyWith(playing: true);
   }
 
@@ -60,6 +65,7 @@ class _Client extends CinemaOnlineSubtitles {
   List<Map<String, dynamic>> rows = [];
   List<Map<String, dynamic>>? earlyRows;
   Completer<void>? aggregateGate, downloadGate;
+  final downloadStarted = Completer<void>();
   bool emitEarly = false;
   int closes = 0;
   void Function()? onAggregate;
@@ -74,6 +80,7 @@ class _Client extends CinemaOnlineSubtitles {
     String query,
     String type, {
     String imdbId = '',
+    String year = '',
     int season = 1,
     int episode = 1,
     String language = 'zh-eng',
@@ -97,6 +104,7 @@ class _Client extends CinemaOnlineSubtitles {
   @override
   Future<String> download(String url, {String? archiveEntry}) async {
     downloads.add(url);
+    if (!downloadStarted.isCompleted) downloadStarted.complete();
     await downloadGate?.future;
     return url.contains('E02') ? _line2 : _line3;
   }
@@ -152,12 +160,14 @@ void main() {
     int season = 10,
     String series = 'private-nas-library::AHS',
     bool playing = false,
+    bool automateMissing = false,
     bool Function()? canResume,
   }) {
     final player = _Player(playing: playing);
     players.add(player);
     final result = CinemaSeasonSubtitleController(
       player: player,
+      automateMissing: automateMissing,
       store: store,
       seriesIdentity: series,
       mediaIdentity: 'private-media-S${season}E$episode?token=DO_NOT_SAVE',
@@ -220,11 +230,169 @@ void main() {
     players.clear();
     await store.flush();
     store.dispose();
-    for (final file in directory.listSync().whereType<File>()) {
-      await file.delete();
-    }
-    await directory.delete();
+    await directory.delete(recursive: true);
   });
+
+  test(
+    'first playback makes no subtitle searches until a manual choice',
+    () async {
+      final client = _Client()..rows = [_row(3)];
+      final first = controller(3, client: client);
+      await first.load();
+      expect(client.requests, isEmpty);
+      expect(client.downloads, isEmpty);
+      expect(applied, isEmpty);
+      expect(first.status.value, contains('手动搜索'));
+    },
+  );
+
+  test(
+    'film ignores an unrelated legacy subtitle and a stale series profile',
+    () async {
+      final original = await seed();
+      await original.preferences.remember(
+        seriesIdentity: 'private-nas-library::AHS',
+        season: 1,
+        fromEpisode: 1,
+        queryTitle: 'Shakugan no Shana',
+        imdbId: 'tt0000001',
+        row: {
+          'verified': true,
+          'subtitleFileName': 'Shakugan no Shana 01.srt',
+          'lang': 'eng',
+          'provider': 'legacy',
+        },
+        timing: const CinemaSubtitleTiming(),
+      );
+      final saved = CinemaSavedSubtitleStore(store, 'titanic-dubbed');
+      await saved.save(
+        const CinemaSavedSubtitle(
+          text: _line2,
+          title: 'Shakugan no Shana 01.srt',
+          language: 'eng',
+          inheritToSeason: true,
+        ),
+      );
+      final player = _Player();
+      players.add(player);
+      final client = _Client()..rows = [_row(3)];
+      final movie = CinemaSeasonSubtitleController(
+        player: player,
+        store: store,
+        seriesIdentity: 'private-nas-library::AHS',
+        mediaIdentity: 'titanic-dubbed',
+        query: const CinemaSubtitleQuery('泰坦尼克号（普通话版）', 'movie', 1, 1),
+        client: client,
+        apply: apply,
+      );
+      controllers.add(movie);
+      applied.clear();
+      await movie.load();
+      expect(applied, isEmpty);
+      expect(client.requests, isEmpty);
+      expect(client.downloads, isEmpty);
+      expect(
+        await saved.read(),
+        isNotNull,
+        reason: 'Keep the old file available for recovery',
+      );
+    },
+  );
+
+  test(
+    'reopening the same video restores its calibrated file without network',
+    () async {
+      final first = await seed();
+      // Exit immediately after a new calibration: no direct save callback or
+      // artificial wait is allowed to make persistence pass.
+      cinemaExternalSubtitleState(first.player).setTiming(
+        const CinemaSubtitleTiming(scale: 1.025, offsetSeconds: 6.793222),
+      );
+      first.close();
+      await closeCinemaExternalSubtitles(first.player);
+      await store.flush();
+      store.dispose();
+      store = CinemaStore(
+        file: File('${directory.path}/library.json'),
+        defaults: const [],
+      );
+      await store.load();
+      applied.clear();
+      final unavailable = _Client();
+      final reopened = controller(2, client: unavailable);
+      await reopened.load();
+      expect(applied, hasLength(1));
+      expect(applied.single.text, cinemaSubtitleSrt(_line2));
+      expect(unavailable.requests, isEmpty);
+      final session = cinemaExternalSubtitleState(reopened.player);
+      expect(session.timing.value.scale, 1.025);
+      expect(session.delay, 6.793222);
+      expect(session.sourceLabel.value, contains('手动搜索'));
+    },
+  );
+
+  test(
+    'first use automatically chooses Chinese before a better-matched English release',
+    () async {
+      final client = _Client()..rows = [_row(3, lang: 'eng'), _row(3)];
+      final selected = controller(3, client: client, automateMissing: true);
+      await selected.load();
+      expect(applied.single.language, 'zh');
+      expect(selected.status.value, contains('中文字幕'));
+      expect((selected.player as _Player).pauses, 0);
+      selected.close();
+      await closeCinemaExternalSubtitles(selected.player);
+      applied.clear();
+      final offline = _Client();
+      await controller(3, client: offline, automateMissing: true).load();
+      expect(applied, hasLength(1));
+      expect(offline.requests, isEmpty);
+    },
+  );
+
+  test(
+    'first use ignores an unverified candidate and another episode',
+    () async {
+      final client = _Client()
+        ..rows = [
+          _row(2),
+          {..._row(3), 'verified': false},
+        ];
+      final selected = controller(3, client: client, automateMissing: true);
+      await selected.load();
+      expect(applied, isEmpty);
+      expect(client.downloads, isEmpty);
+    },
+  );
+
+  test('manual selection cancels a pending first-use search', () async {
+    final gate = Completer<void>();
+    final client = _Client()
+      ..rows = [_row(3)]
+      ..aggregateGate = gate;
+    final selected = controller(3, client: client, automateMissing: true);
+    final loading = selected.load();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    selected.beginManualSelection();
+    gate.complete();
+    await loading;
+    expect(applied, isEmpty);
+  });
+
+  test(
+    'explicitly disabling subtitles does not resurrect the saved file',
+    () async {
+      final first = await seed();
+      await cinemaExternalSubtitleState(first.player).disableSavedSelection!();
+      first.close();
+      await closeCinemaExternalSubtitles(first.player);
+      applied.clear();
+      final client = _Client()..rows = [_row(2)];
+      await controller(2, client: client).load();
+      expect(applied, isEmpty);
+      expect(client.requests, isEmpty);
+    },
+  );
 
   test(
     'the next episode searches its own file and inherits timing after reload',
@@ -345,9 +513,7 @@ void main() {
         ..downloadGate = gate;
       final next = controller(3, client: client);
       final pending = next.load();
-      for (var index = 0; index < 8; index++) {
-        await Future<void>.delayed(Duration.zero);
-      }
+      await client.downloadStarted.future.timeout(const Duration(seconds: 5));
       expect(client.downloads, hasLength(1));
       next.beginManualSelection();
       gate.complete();
@@ -364,9 +530,7 @@ void main() {
       ..downloadGate = gate;
     final next = controller(3, client: client);
     final pending = next.load();
-    for (var index = 0; index < 8; index++) {
-      await Future<void>.delayed(Duration.zero);
-    }
+    await client.downloadStarted.future.timeout(const Duration(seconds: 5));
     expect(client.downloads, hasLength(1));
     next.close();
     next.close();
@@ -508,14 +672,13 @@ void main() {
       final next = controller(3, client: client, playing: true);
       final player = next.player as _Player;
       player.pauseGate = gate;
+      player.pauseObserved = Completer<void>();
       client.onAggregate = () {
         expect(player.state.playing, false);
         expect(player.pauses, 1);
       };
       final pending = next.load();
-      for (var index = 0; index < 8; index++) {
-        await Future<void>.delayed(Duration.zero);
-      }
+      await player.pauseObserved!.future.timeout(const Duration(seconds: 3));
       expect(player.pauses, 1);
       expect(client.requests, isEmpty);
       gate.complete();
@@ -537,10 +700,9 @@ void main() {
         ..aggregateGate = gate;
       final next = controller(3, client: client, playing: true);
       final player = next.player as _Player;
+      player.playObserved = Completer<void>();
       final pending = next.load();
-      for (var index = 0; index < 8; index++) {
-        await Future<void>.delayed(Duration.zero);
-      }
+      await player.playObserved!.future.timeout(const Duration(seconds: 3));
       expect(applied, hasLength(1));
       expect(player.pauses, 1);
       expect(player.plays, 1);

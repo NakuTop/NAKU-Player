@@ -1,6 +1,9 @@
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:kazumi/modules/download/download_module.dart';
 import 'package:kazumi/services/logging/logger.dart';
+import 'package:kazumi/services/download/download_catalog.dart';
+import 'package:kazumi/utils/file_system.dart';
+import 'package:kazumi/services/platform/secure_bookmark_service.dart';
 
 abstract class IDownloadRepository {
   /// Emits when a record or an episode status is persisted. Progress ticks stay
@@ -12,7 +15,10 @@ abstract class IDownloadRepository {
   Future<void> putRecord(DownloadRecord record);
   Future<void> deleteRecord(String key);
   Future<void> updateEpisode(
-      String recordKey, int episodeNumber, DownloadEpisode episode);
+    String recordKey,
+    int episodeNumber,
+    DownloadEpisode episode,
+  );
   Future<void> deleteEpisode(String recordKey, int episodeNumber);
   bool getForceAdBlocker();
 
@@ -28,7 +34,10 @@ abstract class IDownloadRepository {
   /// [pluginName] 插件名称
   /// [episodeNumber] 集数编号
   DownloadEpisode? getEpisode(
-      int bangumiId, String pluginName, int episodeNumber);
+    int bangumiId,
+    String pluginName,
+    int episodeNumber,
+  );
 
   /// 获取已完成下载的集数列表
   ///
@@ -44,11 +53,56 @@ abstract class IDownloadRepository {
   /// [episodePageUrl] 集数页面 URL
   /// 当 URL 为空时返回 null（兼容旧数据）
   DownloadEpisode? getEpisodeByUrl(
-      int bangumiId, String pluginName, String episodePageUrl);
+    int bangumiId,
+    String pluginName,
+    String episodePageUrl,
+  );
 }
 
-class DownloadRepository implements IDownloadRepository {
+class DownloadRepository
+    implements IDownloadRepository, DownloadRecordRecovery {
   final _downloadsBox = GStorage.downloads;
+  final _catalog = DownloadCatalog.application();
+
+  Future<void> _saveCatalog(DownloadRecord record) async {
+    try {
+      await (await _catalog).save(record);
+    } catch (e) {
+      KazumiLogger().w('Download catalog backup failed', error: e);
+    }
+  }
+
+  @override
+  Future<int> recoverLocalRecords() async {
+    final roots = <String>[await getDefaultDownloadDirectory()];
+    final custom = GStorage.getSetting(SettingsKeys.downloadDirectory).trim();
+    if (custom.isNotEmpty) {
+      final restored = await SecureBookmarkService.restore(custom);
+      if (restored != null) roots.add(restored);
+    }
+    final catalog = await _catalog;
+    final recovered = await catalog.recover(roots);
+    var count = 0;
+    for (final record in recovered) {
+      final existing = _downloadsBox.get(record.key);
+      if (existing == null) {
+        await putRecord(record);
+        count += record.episodes.length;
+      } else {
+        for (final entry in record.episodes.entries) {
+          if (!existing.episodes.containsKey(entry.key)) {
+            existing.episodes[entry.key] = entry.value;
+            count++;
+          }
+        }
+        await putRecord(existing);
+      }
+    }
+    for (final record in getAllRecords()) {
+      await _saveCatalog(record);
+    }
+    return count;
+  }
 
   @override
   Stream<void> get changes => _downloadsBox.watch();
@@ -73,8 +127,9 @@ class DownloadRepository implements IDownloadRepository {
         } catch (e) {
           // 单条记录读取失败，跳过该记录并记录日志
           KazumiLogger().w(
-              'DownloadRepository: failed to read record key=$key, skipping',
-              error: e);
+            'DownloadRepository: failed to read record key=$key, skipping',
+            error: e,
+          );
         }
       }
     } catch (e) {
@@ -98,8 +153,10 @@ class DownloadRepository implements IDownloadRepository {
       }
       return record;
     } catch (e) {
-      KazumiLogger()
-          .w('DownloadRepository: get record failed. key=$key', error: e);
+      KazumiLogger().w(
+        'DownloadRepository: get record failed. key=$key',
+        error: e,
+      );
       return null;
     }
   }
@@ -109,6 +166,7 @@ class DownloadRepository implements IDownloadRepository {
     try {
       await _downloadsBox.put(record.key, record);
       await _downloadsBox.flush();
+      await _saveCatalog(record);
     } catch (e, stackTrace) {
       KazumiLogger().e(
         'DownloadRepository: put record failed. key=${record.key}',
@@ -122,6 +180,7 @@ class DownloadRepository implements IDownloadRepository {
   @override
   Future<void> deleteRecord(String key) async {
     try {
+      await (await _catalog).remove(key);
       await _downloadsBox.delete(key);
       await _downloadsBox.flush();
       _progressCache.remove(key);
@@ -144,7 +203,10 @@ class DownloadRepository implements IDownloadRepository {
 
   @override
   Future<void> updateEpisode(
-      String recordKey, int episodeNumber, DownloadEpisode episode) async {
+    String recordKey,
+    int episodeNumber,
+    DownloadEpisode episode,
+  ) async {
     try {
       // Update in-memory cache
       _progressCache.putIfAbsent(recordKey, () => {});
@@ -162,6 +224,7 @@ class DownloadRepository implements IDownloadRepository {
         record.episodes[episodeNumber] = episode;
         await _downloadsBox.put(recordKey, record);
         await _downloadsBox.flush();
+        await _saveCatalog(record);
         _lastPersistedStatus[statusKey] = episode.status;
       }
     } catch (e, stackTrace) {
@@ -197,16 +260,19 @@ class DownloadRepository implements IDownloadRepository {
       if (record == null) return;
       record.episodes.remove(episodeNumber);
       if (record.episodes.isEmpty) {
+        await (await _catalog).remove(recordKey);
         await _downloadsBox.delete(recordKey);
         _progressCache.remove(recordKey);
-        _lastPersistedStatus
-            .removeWhere((k, v) => k.startsWith('${recordKey}_'));
+        _lastPersistedStatus.removeWhere(
+          (k, v) => k.startsWith('${recordKey}_'),
+        );
       } else {
         await _downloadsBox.put(recordKey, record);
         _progressCache[recordKey]?.remove(episodeNumber);
         _lastPersistedStatus.remove('${recordKey}_$episodeNumber');
       }
       await _downloadsBox.flush();
+      if (record.episodes.isNotEmpty) await _saveCatalog(record);
     } catch (e, stackTrace) {
       KazumiLogger().e(
         'DownloadRepository: delete episode failed. key=$recordKey, ep=$episodeNumber',
@@ -225,7 +291,10 @@ class DownloadRepository implements IDownloadRepository {
 
   @override
   DownloadEpisode? getEpisode(
-      int bangumiId, String pluginName, int episodeNumber) {
+    int bangumiId,
+    String pluginName,
+    int episodeNumber,
+  ) {
     final record = getRecordByBangumiId(bangumiId, pluginName);
     return record?.episodes[episodeNumber];
   }
@@ -243,7 +312,10 @@ class DownloadRepository implements IDownloadRepository {
 
   @override
   DownloadEpisode? getEpisodeByUrl(
-      int bangumiId, String pluginName, String episodePageUrl) {
+    int bangumiId,
+    String pluginName,
+    String episodePageUrl,
+  ) {
     if (episodePageUrl.isEmpty) return null;
     final record = getRecordByBangumiId(bangumiId, pluginName);
     if (record == null) return null;

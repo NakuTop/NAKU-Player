@@ -455,6 +455,11 @@ class SettingsKeys {
     false,
     group: SettingGroup.player,
   );
+  static const mediaAutoRouting = SettingKey<bool>(
+    'mediaAutoRouting',
+    true,
+    group: SettingGroup.proxy,
+  );
   static const mediaDirectConnection = SettingKey<bool>(
     'mediaDirectConnection',
     false,
@@ -692,6 +697,7 @@ class SettingsKeys {
     forceAdBlocker,
     backgroundPlayback,
     mediaDirectConnection,
+    mediaAutoRouting,
     proxyEnable,
     proxyConfigured,
     proxyUrl,

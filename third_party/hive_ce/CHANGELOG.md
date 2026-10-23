@@ -1,0 +1,184 @@
+## 2.19.3
+
+- IsolatedHive: Handles stale send ports on hot restart
+
+## 2.19.2
+
+- Updates `isolate_channel` to `0.6.0`
+
+## 2.19.1
+
+- Updates `isolate_channel` to `0.4.0`
+
+## 2.19.0
+
+- Adds box search to the inspector (by [@ElNgatia](https://github.com/ElNgatia) in [#280](https://github.com/IO-Design-Team/hive_ce/pull/280))
+
+## 2.18.0
+
+- Fixes an issue with IsolatedHive encryption
+- Automatically disables the unsafe isolate warning when running in a test
+
+## 2.17.0
+
+- Fixes WASM int decoding (by [@flrnsbt](https://github.com/flrnsbt) in [#262](https://github.com/IO-Design-Team/hive_ce/pull/262))
+- Adds nested primitive support to `CollectionBox`
+- Adds more options to the logger to ignore specific warnings
+
+## 2.16.0
+
+- Implements a proper logging system
+- Adds `hive_ce.dart` to make the publish action happy
+
+## 2.15.1
+
+- Moves most of the documentation to the new [documentation site](https://docs.hive.isar.community)
+
+## 2.15.0
+
+- Adds `ignoredFields` parameter to `AdapterSpec` for excluding specific fields from type adapter generation (by [@rezam92](https://github.com/rezam92) in [#229](https://github.com/IO-Design-Team/hive_ce/pull/229))
+
+## 2.14.0
+
+- Adds the ability to override type adapters by type (by [@sportismygame](https://github.com/sportismygame) in [#217](https://github.com/IO-Design-Team/hive_ce/pull/217))
+- Fixes some `Future` handling issues
+
+## 2.13.3
+
+- Adds copy to clipboard functionality to the inspector
+
+## 2.13.2
+
+- Removes the print statement from the inspector
+
+## 2.13.1
+
+- Fixes the first column header not showing in the inspector
+
+## 2.13.0
+
+- Adds the Hive CE Inspector DevTools extension
+
+## 2.12.0
+
+- Notify with the value of a deleted frame instead of `null`
+- Improves adapter of same type warning
+
+## 2.11.4
+
+- Handles exception thrown during compaction on some platforms
+- Updates documentation for `IsolatedHive`
+
+## 2.11.3
+
+- Prints warning when writing integers greater than 2^53
+
+## 2.11.2
+
+- Fixes web compatibility check
+- Fixes `deleteFromDisk` not completing on web
+
+## 2.11.1
+
+- Allows boxes of primitive iterables
+
+## 2.11.0
+
+- Isolate support through `IsolatedHive`
+- Warning messages for potentially unsafe isolate usage
+- Updates suggested placement of `GenerateAdapters` annotation
+- Fixes custom objects in `BoxCollection`. Custom objects must now be json serializable.
+- Adds much more information to the unknown typeId error message
+- Supports `freezed` default values
+- Enforces that boxes of type `Map` _must_ be `Map<dynamic, dynamic>`
+- Enforces that boxes of type `Iterable` _must_ be `Iterable<dynamic>`
+- Adds `reservedTypeIds` to `GenerateAdapters` annotation
+
+## 2.10.1
+
+- Fixes `HiveObject` disposal in lazy boxes
+
+## 2.10.0
+
+- Raises the maximum type ID from 223 to 65439
+
+## 2.9.0
+
+- Prints a warning when writing `int` or `List<int>` types in a WASM environment
+- Only emits print statements when assertions are enabled (aka debug mode)
+
+## 2.8.0+3
+
+- Updates the commit hash for the transitive Hive dependencies workaround
+
+## 2.8.0+2
+
+- Adds workaround for transitive Hive dependencies to README
+
+## 2.8.0+1
+
+- Adds tutorial link to README
+
+## 2.8.0
+
+- Adds `GenerateAdapters` annotation and relevant documentation
+
+## 2.7.0+1
+
+- Adds a storage benchmark to compare Hive CE with Hive v4
+
+## 2.7.0
+
+- No longer reinitializes `Hive` when opening a `BoxCollection`
+
+## 2.6.0
+
+- Adds `TargetKind.parameter` to `HiveField` to support `freezed`
+
+## 2.5.0+2
+
+- Adds documentation for adding new fields (@vizakenjack)
+- Updates README badges
+
+## 2.5.0+1
+
+- Documentation updates for `HiveField` in support of `hive_ce_generator` changes
+
+## 2.5.0
+
+- Adds `Target` annotations to `HiveField` and `HiveType` to prevent invalid usage
+- Bumps `analyzer` to `^6.5.0` to deal with deprecations
+- Bumps `meta` to `^1.14.0` for `TargetKind.enumValue`
+
+## 2.4.4
+
+- Loosens constraint on `web`
+
+## 2.4.3
+
+- Loosens constraint on `meta`
+
+## 2.4.2
+
+- Only shows the adapter with same type warning if the adapters have different type ids
+
+## 2.4.1
+
+- Upgrades `package:web` to `1.0.0`
+
+## 2.4.0+1
+
+- Adds a guide to migrate from `hive`
+- Adds documentation for the new `HiveRegistrar` extension created by `hive_ce_generator`
+
+## 2.4.0
+
+- Adds support for Sets
+- Adds a built in `DurationAdapter`
+- Adds a warning if attempting to register multiple adapters for the same type
+
+## 2.3.0
+
+- The first release of Hive Community Edition
+- Supports Flutter web WASM compilation
+- Fixes analysis issues

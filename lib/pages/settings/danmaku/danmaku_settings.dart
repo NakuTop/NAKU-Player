@@ -47,35 +47,45 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
     defaultDanmakuArea = GStorage.getSetting(SettingsKeys.danmakuArea);
     defaultDanmakuOpacity = GStorage.getSetting(SettingsKeys.danmakuOpacity);
     defaultDanmakuFontSize = GStorage.getSetting<double>(
-        SettingsKeys.danmakuFontSize,
-        context: settingContext);
-    defaultDanmakuFontWeight =
-        GStorage.getSetting(SettingsKeys.danmakuFontWeight);
+      SettingsKeys.danmakuFontSize,
+      context: settingContext,
+    );
+    defaultDanmakuFontWeight = GStorage.getSetting(
+      SettingsKeys.danmakuFontWeight,
+    );
     defaultDanmakuDuration = GStorage.getSetting(SettingsKeys.danmakuDuration);
-    defaultDanmakuLineHeight =
-        GStorage.getSetting(SettingsKeys.danmakuLineHeight);
+    defaultDanmakuLineHeight = GStorage.getSetting(
+      SettingsKeys.danmakuLineHeight,
+    );
     danmakuBorder = GStorage.getSetting(SettingsKeys.danmakuBorder);
-    defaultdanmakuBorderSize =
-        GStorage.getSetting(SettingsKeys.danmakuBorderSize);
+    defaultdanmakuBorderSize = GStorage.getSetting(
+      SettingsKeys.danmakuBorderSize,
+    );
     danmakuTop = GStorage.getSetting(SettingsKeys.danmakuTop);
     danmakuBottom = GStorage.getSetting(SettingsKeys.danmakuBottom);
     danmakuScroll = GStorage.getSetting(SettingsKeys.danmakuScroll);
     danmakuColor = GStorage.getSetting(SettingsKeys.danmakuColor);
     danmakuMassive = GStorage.getSetting(SettingsKeys.danmakuMassive);
-    danmakuDeduplication =
-        GStorage.getSetting<bool>(SettingsKeys.danmakuDeduplication);
-    danmakuBiliBiliSource =
-        GStorage.getSetting<bool>(SettingsKeys.danmakuBiliBiliSource);
-    danmakuGamerSource =
-        GStorage.getSetting<bool>(SettingsKeys.danmakuGamerSource);
-    danmakuDanDanSource =
-        GStorage.getSetting<bool>(SettingsKeys.danmakuDanDanSource);
-    danmakuFollowSpeed =
-        GStorage.getSetting<bool>(SettingsKeys.danmakuFollowSpeed);
+    danmakuDeduplication = GStorage.getSetting<bool>(
+      SettingsKeys.danmakuDeduplication,
+    );
+    danmakuBiliBiliSource = GStorage.getSetting<bool>(
+      SettingsKeys.danmakuBiliBiliSource,
+    );
+    danmakuGamerSource = GStorage.getSetting<bool>(
+      SettingsKeys.danmakuGamerSource,
+    );
+    danmakuDanDanSource = GStorage.getSetting<bool>(
+      SettingsKeys.danmakuDanDanSource,
+    );
+    danmakuFollowSpeed = GStorage.getSetting<bool>(
+      SettingsKeys.danmakuFollowSpeed,
+    );
   }
 
   Future<void> resetDanmakuSettings() async {
-    final bool shouldReset = await KazumiDialog.show<bool>(
+    final bool shouldReset =
+        await KazumiDialog.show<bool>(
           builder: (context) => AlertDialog(
             title: const Text('恢复默认弹幕设置'),
             content: const Text('弹幕来源、显示和样式设置将恢复为默认值，关键词屏蔽列表不会被清空。'),
@@ -157,7 +167,10 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
         sections: [
           const SettingsSection(
             title: Text('服务状态'),
-            tiles: [DanmakuServiceStatusTile()],
+            tiles: [
+              DirectDanmakuServiceStatusTile(),
+              DanmakuServiceStatusTile(),
+            ],
           ),
           SettingsSection(
             title: Text('弹幕来源'),
@@ -167,8 +180,9 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
                 onToggle: (value) async {
                   danmakuBiliBiliSource = value ?? !danmakuBiliBiliSource;
                   await GStorage.putSetting<bool>(
-                      SettingsKeys.danmakuBiliBiliSource,
-                      danmakuBiliBiliSource);
+                    SettingsKeys.danmakuBiliBiliSource,
+                    danmakuBiliBiliSource,
+                  );
                   setState(() {});
                 },
                 title: Text('BiliBili'),
@@ -179,7 +193,9 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
                 onToggle: (value) async {
                   danmakuGamerSource = value ?? !danmakuGamerSource;
                   await GStorage.putSetting<bool>(
-                      SettingsKeys.danmakuGamerSource, danmakuGamerSource);
+                    SettingsKeys.danmakuGamerSource,
+                    danmakuGamerSource,
+                  );
                   setState(() {});
                 },
                 title: Text('Gamer'),
@@ -190,7 +206,9 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
                 onToggle: (value) async {
                   danmakuDanDanSource = value ?? !danmakuDanDanSource;
                   await GStorage.putSetting<bool>(
-                      SettingsKeys.danmakuDanDanSource, danmakuDanDanSource);
+                    SettingsKeys.danmakuDanDanSource,
+                    danmakuDanDanSource,
+                  );
                   setState(() {});
                 },
                 title: Text('弹弹play'),
@@ -244,14 +262,17 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
                 divisions: 30,
                 valueLabel: defaultDanmakuLineHeight.toStringAsFixed(1),
                 onChanged: (value) => updateDanmakuLineHeight(
-                    double.parse(value.toStringAsFixed(1))),
+                  double.parse(value.toStringAsFixed(1)),
+                ),
               ),
               SettingsTile.switchTile(
                 leading: Icons.speed_rounded,
                 onToggle: (value) async {
                   danmakuFollowSpeed = value ?? !danmakuFollowSpeed;
                   await GStorage.putSetting<bool>(
-                      SettingsKeys.danmakuFollowSpeed, danmakuFollowSpeed);
+                    SettingsKeys.danmakuFollowSpeed,
+                    danmakuFollowSpeed,
+                  );
                   setState(() {});
                 },
                 title: Text('弹幕跟随视频倍速'),
@@ -263,7 +284,9 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
                 onToggle: (value) async {
                   danmakuTop = value ?? !danmakuTop;
                   await GStorage.putSetting<bool>(
-                      SettingsKeys.danmakuTop, danmakuTop);
+                    SettingsKeys.danmakuTop,
+                    danmakuTop,
+                  );
                   setState(() {});
                 },
                 title: Text('顶部弹幕'),
@@ -274,7 +297,9 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
                 onToggle: (value) async {
                   danmakuBottom = value ?? !danmakuBottom;
                   await GStorage.putSetting<bool>(
-                      SettingsKeys.danmakuBottom, danmakuBottom);
+                    SettingsKeys.danmakuBottom,
+                    danmakuBottom,
+                  );
                   setState(() {});
                 },
                 title: Text('底部弹幕'),
@@ -285,7 +310,9 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
                 onToggle: (value) async {
                   danmakuScroll = value ?? !danmakuScroll;
                   await GStorage.putSetting<bool>(
-                      SettingsKeys.danmakuScroll, danmakuScroll);
+                    SettingsKeys.danmakuScroll,
+                    danmakuScroll,
+                  );
                   setState(() {});
                 },
                 title: Text('滚动弹幕'),
@@ -296,7 +323,9 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
                 onToggle: (value) async {
                   danmakuMassive = value ?? !danmakuMassive;
                   await GStorage.putSetting<bool>(
-                      SettingsKeys.danmakuMassive, danmakuMassive);
+                    SettingsKeys.danmakuMassive,
+                    danmakuMassive,
+                  );
                   setState(() {});
                 },
                 title: Text('海量弹幕'),
@@ -308,7 +337,9 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
                 onToggle: (value) async {
                   danmakuDeduplication = value ?? !danmakuDeduplication;
                   await GStorage.putSetting<bool>(
-                      SettingsKeys.danmakuDeduplication, danmakuDeduplication);
+                    SettingsKeys.danmakuDeduplication,
+                    danmakuDeduplication,
+                  );
                   setState(() {});
                 },
                 title: Text('弹幕去重'),
@@ -325,7 +356,9 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
                 onToggle: (value) async {
                   danmakuBorder = value ?? !danmakuBorder;
                   await GStorage.putSetting<bool>(
-                      SettingsKeys.danmakuBorder, danmakuBorder);
+                    SettingsKeys.danmakuBorder,
+                    danmakuBorder,
+                  );
                   setState(() {});
                 },
                 title: Text('弹幕描边'),
@@ -340,14 +373,17 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
                 divisions: 29,
                 valueLabel: defaultdanmakuBorderSize.toStringAsFixed(1),
                 onChanged: (value) => updateDanmakuBorderSize(
-                    double.parse(value.toStringAsFixed(1))),
+                  double.parse(value.toStringAsFixed(1)),
+                ),
               ),
               SettingsTile.switchTile(
                 leading: Icons.palette_rounded,
                 onToggle: (value) async {
                   danmakuColor = value ?? !danmakuColor;
                   await GStorage.putSetting<bool>(
-                      SettingsKeys.danmakuColor, danmakuColor);
+                    SettingsKeys.danmakuColor,
+                    danmakuColor,
+                  );
                   setState(() {});
                 },
                 title: Text('弹幕颜色'),
@@ -381,7 +417,8 @@ class _DanmakuSettingsPageState extends State<DanmakuSettingsPage> {
                 max: 1,
                 valueLabel: '${(defaultDanmakuOpacity * 100).round()}%',
                 onChanged: (value) => updateDanmakuOpacity(
-                    double.parse(value.toStringAsFixed(2))),
+                  double.parse(value.toStringAsFixed(2)),
+                ),
               ),
             ],
           ),

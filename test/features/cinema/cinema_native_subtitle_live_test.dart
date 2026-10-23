@@ -24,6 +24,7 @@ class _SeasonClient extends CinemaOnlineSubtitles {
     String query,
     String type, {
     String imdbId = '',
+    String year = '',
     int season = 1,
     int episode = 1,
     String language = 'zh-eng',

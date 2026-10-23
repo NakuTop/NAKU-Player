@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'cinema_models.dart';
+import 'cinema_media_identity.dart';
 import 'cinema_repository.dart';
 import 'cinema_rating_identity_search.dart';
 
@@ -50,7 +51,10 @@ class CinemaRatingTitleResolver {
     final cached = _cache.remove(key);
     if (cached != null &&
         !_now().isBefore(cached.$1) &&
-        _now().difference(cached.$1) < const Duration(minutes: 30)) {
+        _now().difference(cached.$1) <
+            ((cached.$2?.doubanId ?? '').isEmpty
+                ? const Duration(seconds: 30)
+                : const Duration(minutes: 30))) {
       _cache[key] = cached;
       return Future.value(_merge(title, cached.$2));
     }
@@ -164,7 +168,7 @@ class CinemaRatingTitleResolver {
       ...title.aliases.split(RegExp(r'[/／|,，;；\n]')),
     ])
       if (name.trim().isNotEmpty)
-        cleanCinemaText(name)
+        cinemaMediaBaseTitle(cleanCinemaText(name))
             .toLowerCase()
             .replaceFirst(
               RegExp(
@@ -189,6 +193,7 @@ class CinemaRatingTitleResolver {
       detail == null
       ? title
       : title.copyWith(
+          year: title.year.trim().isEmpty ? detail.year : title.year,
           doubanId: title.doubanId.isEmpty ? detail.doubanId : title.doubanId,
           imdbId: title.imdbId.isEmpty ? detail.imdbId : title.imdbId,
           rottenTomatoesId: title.rottenTomatoesId.isEmpty

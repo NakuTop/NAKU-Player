@@ -71,6 +71,20 @@ void main() {
   });
 
   test(
+    'a failed calibration save is visible and does not block closing',
+    () async {
+      final session = select(_mediaA, _subtitleA);
+      session.saveTiming = (_, _) =>
+          Future<void>.error(const FileSystemException('fixture disk failure'));
+      session.setDelay(4);
+      await session.flush();
+      expect(session.delay, 4);
+      expect(session.saveError.value, contains('保存失败'));
+      await session.close();
+    },
+  );
+
+  test(
     'the same media and caption content restore calibration after a store reload',
     () async {
       final first = select(_mediaA, _subtitleA);

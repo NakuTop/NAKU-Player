@@ -1,7 +1,9 @@
+import 'cinema_media_identity.dart';
+
 /// A small identity alias table is also useful when public metadata lookup is
 /// temporarily unavailable. It contains titles only, never private paths.
 List<String> cinemaSubtitleAliases(String title, {String imdbId = ''}) {
-  final clean = title
+  final clean = cinemaMediaBaseTitle(title)
       .replaceAll(RegExp(r'第\s*[零一二两三四五六七八九十\d]+\s*[季集话話]'), '')
       .replaceAll(
         RegExp(
@@ -16,6 +18,10 @@ List<String> cinemaSubtitleAliases(String title, {String imdbId = ''}) {
     RegExp(r'[^a-z\u4e00-\u9fff]'),
     '',
   );
+  if ((imdbId.isEmpty || imdbId == 'tt0120338') &&
+      (key == '泰坦尼克号' || key == 'titanic')) {
+    return ['Titanic', '泰坦尼克号'];
+  }
   final knownId = imdbId == 'tt1844624';
   final otherId = RegExp(r'^tt\d+$').hasMatch(imdbId) && !knownId;
   final knownName = {
@@ -29,7 +35,7 @@ List<String> cinemaSubtitleAliases(String title, {String imdbId = ''}) {
     'americanhorrorstorydoublefeature',
   }.contains(key);
   if (knownId || (!otherId && knownName)) {
-    return ['American Horror Story', '美国恐怖故事'];
+    return ['American Horror Story', '美国恐怖故事', 'AHS'];
   }
   return [if (clean.isNotEmpty && !RegExp(r'^tt\d+$').hasMatch(clean)) clean];
 }

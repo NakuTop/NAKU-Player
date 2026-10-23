@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'package:dio/dio.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 import 'package:kazumi/modules/download/download_module.dart';
 import 'package:kazumi/request/clients/download_http_client.dart';
@@ -15,6 +16,8 @@ import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/platform/secure_bookmark_service.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:path/path.dart' as path;
+import 'package:kazumi/services/download/download_integrity.dart';
+import 'package:kazumi/services/download/download_catalog.dart';
 
 class _NotM3u8Exception implements Exception {
   final String message;
@@ -147,6 +150,41 @@ class _SpeedTracker {
 }
 
 class DownloadManager implements IDownloadManager {
+  final Map<String, int> _resolvedOwners = {};
+
+  bool _reserveSource(DownloadRequest request) {
+    final identity = '${request.recordKey}\u0000${request.m3u8Url}';
+    int? owner = _resolvedOwners[identity];
+    final record = GStorage.downloads.get(request.recordKey);
+    for (final other in record?.episodes.values ?? <DownloadEpisode>[]) {
+      if (other.episodeNumber != request.episodeNumber &&
+          other.networkM3u8Url == request.m3u8Url &&
+          {
+            DownloadStatus.completed,
+            DownloadStatus.downloading,
+            DownloadStatus.pending,
+          }.contains(other.status)) {
+        owner = other.episodeNumber;
+        break;
+      }
+    }
+    if (owner != null && owner != request.episodeNumber) {
+      request.episode.status = DownloadStatus.failed;
+      request.episode.errorMessage = DuplicateDownloadException(
+        '$owner',
+      ).toString();
+      request.episode.networkM3u8Url = '';
+      _notifyProgress(
+        request.recordKey,
+        request.episodeNumber,
+        request.episode,
+      );
+      return false;
+    }
+    _resolvedOwners[identity] = request.episodeNumber;
+    return true;
+  }
+
   DownloadManager() {
     _loadSettings();
   }
@@ -315,6 +353,7 @@ class DownloadManager implements IDownloadManager {
     }
     final old = _activeTasks[key];
     if (old != null && !old.cancelToken.isCancelled) return;
+    if (!_reserveSource(request)) return;
     _activeTasks.remove(key);
     _queue.removeWhere(
       (r) =>
@@ -350,6 +389,7 @@ class DownloadManager implements IDownloadManager {
   Future<void> enqueuePriority(DownloadRequest request) async {
     final key = _taskKey(request.recordKey, request.episodeNumber);
     if (_runningTasks.containsKey(key)) return;
+    if (!_reserveSource(request)) return;
     _queue.removeWhere(
       (r) =>
           r.recordKey == request.recordKey &&
@@ -567,17 +607,6 @@ class DownloadManager implements IDownloadManager {
       episode.totalSegments = segments.length;
       episode.downloadedSegments = 0;
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
-      final episodeDirObj = Directory(episodeDir);
-      if (await episodeDirObj.exists()) {
-        await for (final entity in episodeDirObj.list()) {
-          if (entity.path.endsWith('.tmp')) {
-            try {
-              await entity.delete();
-            } catch (_) {}
-          }
-        }
-      }
-
       final existingSegments = <int>{};
       var existingBytes = 0;
       for (int i = 0; i < segments.length; i++) {
@@ -694,6 +723,8 @@ class DownloadManager implements IDownloadManager {
       }
       if (task.isPaused || task.cancelToken.isCancelled) return;
 
+      await DownloadIntegrity.verifyHls(Directory(episodeDir));
+      if (task.isPaused || task.cancelToken.isCancelled) return;
       episode.status = DownloadStatus.completed;
       episode.localM3u8Path = localPath;
       episode.progressPercent = 1.0;
@@ -731,6 +762,7 @@ class DownloadManager implements IDownloadManager {
       }
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
     } catch (e) {
+      if (e is DuplicateDownloadException) episode.networkM3u8Url = '';
       episode.status = task.isPaused
           ? DownloadStatus.paused
           : DownloadStatus.failed;
@@ -778,6 +810,35 @@ class DownloadManager implements IDownloadManager {
           : '.mp4';
       final filePath = path.join(episodeDir, 'video$extension');
       final tmpPath = '$filePath.tmp';
+      final transfer = File(path.join(episodeDir, '.naku-transfer.json'));
+      final identity = sha256
+          .convert(
+            utf8.encode(
+              isNASMediaReference(episode.episodePageUrl)
+                  ? episode.episodePageUrl
+                  : videoUrl,
+            ),
+          )
+          .toString();
+      Map<String, dynamic> previousTransfer = {};
+      try {
+        previousTransfer =
+            jsonDecode(await transfer.readAsString()) as Map<String, dynamic>;
+      } catch (_) {
+        /* Legacy partial downloads have no transfer metadata. */
+      }
+      if (previousTransfer['identity'] != null &&
+          previousTransfer['identity'] != identity &&
+          await File(tmpPath).exists()) {
+        // Never append bytes from a changed source to an earlier partial file.
+        await File(tmpPath).rename(
+          path.join(
+            episodeDir,
+            '.preserved-transfer-${DateTime.now().microsecondsSinceEpoch}.tmp',
+          ),
+        );
+        previousTransfer = {};
+      }
 
       int existingBytes = 0;
       final tmpFile = File(tmpPath);
@@ -793,6 +854,11 @@ class DownloadManager implements IDownloadManager {
       bool useRange = existingBytes > 0;
       if (useRange) {
         requestHeaders['Range'] = 'bytes=$existingBytes-';
+        final validator =
+            previousTransfer['etag'] ?? previousTransfer['lastModified'];
+        if (validator is String && validator.isNotEmpty) {
+          requestHeaders['If-Range'] = validator;
+        }
       }
 
       Response<ResponseBody> response;
@@ -823,6 +889,18 @@ class DownloadManager implements IDownloadManager {
       }
 
       final contentRange = response.headers.value('content-range');
+      final transferPending = File('${transfer.path}.pending');
+      await transferPending.writeAsString(
+        jsonEncode({
+          'identity': identity,
+          if (response.headers.value('etag') case final String value)
+            'etag': value,
+          if (response.headers.value('last-modified') case final String value)
+            'lastModified': value,
+        }),
+        flush: true,
+      );
+      await transferPending.rename(transfer.path);
       if (response.statusCode == 200 && existingBytes > 0) {
         // Some servers ignore Range. Restart instead of appending a complete
         // response to a partial file and silently corrupting the video.
@@ -900,7 +978,7 @@ class DownloadManager implements IDownloadManager {
       if (received == 0 || (totalSize > 0 && received != totalSize)) {
         throw const FormatException('视频传输不完整，请继续下载');
       }
-      await File(tmpPath).rename(filePath);
+      await DownloadIntegrity.commitFile(File(tmpPath), File(filePath));
 
       episode.status = DownloadStatus.completed;
       episode.localM3u8Path = filePath;
@@ -936,6 +1014,7 @@ class DownloadManager implements IDownloadManager {
       }
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
     } catch (e) {
+      if (e is DuplicateDownloadException) episode.networkM3u8Url = '';
       episode.status = task.isPaused
           ? DownloadStatus.paused
           : DownloadStatus.failed;
@@ -1040,17 +1119,50 @@ class DownloadManager implements IDownloadManager {
           )
           .toList(),
     );
-    if (!await file.exists() || await file.readAsString() != plan) {
-      await for (final entry in Directory(directory).list(followLinks: false)) {
-        if (entry is File &&
-            RegExp(
-              r'^(seg_\d+\.ts|init_\d+\.mp4|key_\d+\.key)(\.tmp)?$',
-            ).hasMatch(path.basename(entry.path))) {
-          await entry.delete();
-        }
-      }
-      await file.writeAsString(plan, flush: true);
+    if (await FileSystemEntity.isLink(file.path)) {
+      throw const FileSystemException('下载计划是符号链接，已保留原文件');
     }
+    if (await file.exists() && await file.readAsString() == plan) return;
+
+    final retained = <FileSystemEntity>[];
+    await for (final entry in Directory(directory).list(followLinks: false)) {
+      final name = path.basename(entry.path);
+      if ((entry is File &&
+              (RegExp(
+                    r'^(seg_\d+\.ts|init_\d+\.mp4|key_\d+\.key)(\.tmp)?$',
+                  ).hasMatch(name) ||
+                  {
+                    'playlist.m3u8',
+                    'master.m3u8',
+                    'download-plan.json',
+                    '.naku-content.json',
+                  }.contains(name))) ||
+          (entry is Directory && name == 'audio')) {
+        retained.add(entry);
+      }
+    }
+    if (retained.isNotEmpty) {
+      final complete = await DownloadCatalog.findVideo(Directory(directory));
+      if (complete != null && complete.path.endsWith('.m3u8')) {
+        throw const FileSystemException('此集已有完整视频，已保留原文件，未更换下载线路');
+      }
+      // A changed playlist must never reuse old numbered segments or destroy
+      // them. Keep the entire previous HLS attempt available for recovery.
+      final preserved = await Directory(
+        path.join(
+          directory,
+          '.preserved-hls-${DateTime.now().microsecondsSinceEpoch}',
+        ),
+      ).create();
+      for (final entry in retained) {
+        await entry.rename(
+          path.join(preserved.path, path.basename(entry.path)),
+        );
+      }
+    }
+    final pending = File('${file.path}.pending');
+    await pending.writeAsString(plan, flush: true);
+    await pending.rename(file.path);
   }
 
   Future<Map<String, String>> _cacheInitializations(
@@ -1252,6 +1364,10 @@ class DownloadManager implements IDownloadManager {
     if (await dir.exists()) {
       await dir.delete(recursive: true);
     }
+    _resolvedOwners.removeWhere(
+      (source, owner) =>
+          source.startsWith('$recordKey\u0000') && owner == episodeNumber,
+    );
   }
 
   @override
@@ -1281,6 +1397,9 @@ class DownloadManager implements IDownloadManager {
       if (await dir.exists()) {
         await dir.delete(recursive: true);
       }
+      _resolvedOwners.removeWhere(
+        (source, _) => source.startsWith('$recordKey\u0000'),
+      );
       return;
     }
 
@@ -1308,6 +1427,9 @@ class DownloadManager implements IDownloadManager {
         // Parent is missing or still holds other files; leave it.
       }
     }
+    _resolvedOwners.removeWhere(
+      (source, _) => source.startsWith('$recordKey\u0000'),
+    );
   }
 
   @override

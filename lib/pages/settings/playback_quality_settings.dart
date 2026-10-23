@@ -63,8 +63,10 @@ class _PlaybackQualitySettingsState extends State<PlaybackQualitySettings> {
             ),
             SettingsDropdownTile<int>(
               leading: Icons.memory_rounded,
-              title: const Text('影视缓冲上限'),
-              description: const Text('较大缓冲适合高码率4K；低内存模式优先。下次打开播放器生效。'),
+              title: const Text('影视向前缓冲上限'),
+              description: const Text(
+                '暂停与播放时持续预读，达到此容量或片尾后停止；另保留最多16 MB用于回退。低内存模式优先，下次打开播放器生效。',
+              ),
               value: _settings.bufferMegabytes,
               options: const {
                 32: '32 MB',

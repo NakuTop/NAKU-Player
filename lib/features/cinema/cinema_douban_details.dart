@@ -43,6 +43,7 @@ class DoubanSubjectDetails {
     this.title = '',
     this.year = '',
     this.originalTitle = '',
+    this.imdbId = '',
     this.releaseDates = const [],
     this.durations = const [],
     this.aliases = const [],
@@ -56,7 +57,7 @@ class DoubanSubjectDetails {
     this.note = '',
     this.stale = false,
   });
-  final String doubanId, title, year, originalTitle, note;
+  final String doubanId, title, year, originalTitle, imdbId, note;
   final List<String> releaseDates, durations, aliases;
 
   /// Descending 5 → 1 stars. Empty means unavailable, never five zero bars.
@@ -77,11 +78,13 @@ class DoubanSubjectDetails {
     bool? stale,
     DateTime? starsFetchedAt,
     DateTime? recommendationsFetchedAt,
+    DateTime? fetchedAt,
   }) => DoubanSubjectDetails(
     doubanId: doubanId,
     title: title,
     year: year,
     originalTitle: originalTitle,
+    imdbId: imdbId,
     releaseDates: releaseDates,
     durations: durations,
     aliases: aliases,
@@ -89,7 +92,7 @@ class DoubanSubjectDetails {
     recommendations: recommendations ?? this.recommendations,
     score: score,
     ratingCount: ratingCount,
-    fetchedAt: fetchedAt,
+    fetchedAt: fetchedAt ?? this.fetchedAt,
     starsFetchedAt: starsFetchedAt ?? this.starsFetchedAt,
     recommendationsFetchedAt:
         recommendationsFetchedAt ?? this.recommendationsFetchedAt,
@@ -102,6 +105,7 @@ class DoubanSubjectDetails {
     'title': title,
     'year': year,
     'originalTitle': originalTitle,
+    'imdbId': imdbId,
     'releaseDates': releaseDates,
     'durations': durations,
     'aliases': aliases,
@@ -132,6 +136,7 @@ class DoubanSubjectDetails {
       title: json['title'] as String? ?? '',
       year: json['year'] as String? ?? '',
       originalTitle: json['originalTitle'] as String? ?? '',
+      imdbId: _imdbId(json['imdbId']),
       releaseDates: _strings(json['releaseDates']),
       durations: _strings(json['durations']),
       aliases: _strings(json['aliases']),
@@ -190,6 +195,7 @@ DoubanSubjectDetails parseDoubanSubjectJson(
     title: title,
     year: _text(data['year']),
     originalTitle: _text(data['original_title']),
+    imdbId: _imdbId(data['imdb_id']),
     releaseDates: _strings(data['pubdate']),
     durations: _strings(data['durations']),
     aliases: _strings(data['aka']),
@@ -368,6 +374,23 @@ DoubanSubjectDetails parseDoubanSubjectHtml(String expectedId, String body) {
       : (text('[property="v:itemreviewed"]').isNotEmpty
             ? text('[property="v:itemreviewed"]')
             : _text(ld?['name']));
+  // This block is the current subject's metadata; recommendation links and
+  // review text elsewhere on the page must never supply another film's ID.
+  final info = document.querySelector('#info');
+  final imdbIds = <String>{};
+  for (final anchor in info?.querySelectorAll('a[href]') ?? <Element>[]) {
+    final uri = Uri.tryParse(anchor.attributes['href'] ?? '');
+    if (uri != null && ['www.imdb.com', 'imdb.com'].contains(uri.host)) {
+      final id = RegExp(
+        r'^/title/(tt[0-9]{7,10})/?$',
+      ).firstMatch(uri.path)?.group(1);
+      if (id != null) imdbIds.add(id);
+    }
+  }
+  final plainId = RegExp(
+    r'IMDb\s*[:：]\s*(tt[0-9]{7,10})\b',
+  ).firstMatch(info?.text ?? '')?.group(1);
+  if (plainId != null) imdbIds.add(plainId);
   return DoubanSubjectDetails(
     doubanId: expectedId,
     title: title,
@@ -376,6 +399,7 @@ DoubanSubjectDetails parseDoubanSubjectHtml(String expectedId, String body) {
         RegExp(r'\d{4}').firstMatch(text('.year'))?.group(0) ??
         '',
     originalTitle: original.replaceFirst(RegExp(r'\s*[（(]\d{4}[）)]\s*$'), ''),
+    imdbId: imdbIds.length == 1 ? imdbIds.single : '',
     releaseDates: releases.toSet().toList(),
     durations: durations.toSet().toList(),
     aliases: aliases,
@@ -386,6 +410,11 @@ DoubanSubjectDetails parseDoubanSubjectHtml(String expectedId, String body) {
     fetchedAt: DateTime.now(),
     note: '豆瓣官网公开页面',
   );
+}
+
+String _imdbId(Object? value) {
+  final id = value?.toString() ?? '';
+  return RegExp(r'^tt[0-9]{7,10}$').hasMatch(id) ? id : '';
 }
 
 Iterable<Map> _jsonNodes(Object? value) sync* {

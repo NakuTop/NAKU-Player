@@ -119,10 +119,24 @@ void main() {
 
   void expectPairingForm() {
     expect(find.byType(AlertDialog), findsOneWidget);
-    expect(find.text('Syncplay 服务器'), findsOneWidget);
-    expect(find.text('房间名'), findsOneWidget);
-    expect(find.text('昵称'), findsOneWidget);
-    expect(find.text('创建 / 加入房间'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('NAS 用户配对'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('配对码（留空自动生成）'), findsOneWidget);
+    expect(find.text('开始配对'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextField),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Syncplay 服务器'), findsNothing);
+    expect(find.text('房间名'), findsNothing);
     expect(find.byType(CinemaPlayerPage), findsNothing);
     expect(together.isPaired, isFalse);
     expect(together.session.connected, isFalse);

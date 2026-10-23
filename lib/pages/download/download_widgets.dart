@@ -40,6 +40,12 @@ class DownloadRecordCard extends StatelessWidget {
     final completedCount = episodes
         .where((e) => e.status == DownloadStatus.completed)
         .length;
+    final reviewCount = episodes
+        .where(
+          (e) =>
+              e.status == DownloadStatus.completed && e.errorMessage.isNotEmpty,
+        )
+        .length;
     final activeCount = episodes
         .where(
           (e) =>
@@ -61,7 +67,9 @@ class DownloadRecordCard extends StatelessWidget {
               totalCount;
     final allCompleted = completedCount >= totalCount;
 
-    var meta = '$completedCount/$totalCount 已完成';
+    var meta = reviewCount > 0
+        ? '$completedCount/$totalCount 本地可播放 · $reviewCount 项待核对'
+        : '$completedCount/$totalCount 已完成';
     if (activeCount > 0) {
       meta += ' · $activeCount 项进行中';
       if (totalSpeed > 0) {
@@ -236,7 +244,7 @@ class DownloadEpisodeTile extends StatelessWidget {
                           ? colorScheme.error
                           : colorScheme.onSurfaceVariant,
                     ),
-                    maxLines: 1,
+                    maxLines: episode.errorMessage.isEmpty ? 1 : 2,
                     overflow: TextOverflow.ellipsis,
                   ),
                   if (showProgress) ...[
@@ -270,7 +278,9 @@ class _EpisodeStatusBadge extends StatelessWidget {
       case DownloadStatus.completed:
         background = colorScheme.secondaryContainer;
         child = Icon(
-          Icons.check_rounded,
+          episode.errorMessage.isEmpty
+              ? Icons.check_rounded
+              : Icons.warning_amber_rounded,
           size: 18,
           color: colorScheme.onSecondaryContainer,
         );

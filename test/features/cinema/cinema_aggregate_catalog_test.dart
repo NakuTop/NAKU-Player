@@ -42,6 +42,19 @@ class _Repo extends CinemaRepository {
     CinemaCategory(id: '3', name: '电视剧'),
   ];
   final calls = <(String, String?, String, int)>[];
+  final searchCalls = <(String, String, int)>[];
+  Future<CinemaPage> Function(CinemaSource, String, int)? searchReply;
+  @override
+  Future<CinemaPage> search(
+    CinemaSource source,
+    String keyword, {
+    int page = 1,
+  }) async {
+    searchCalls.add((source.id, keyword, page));
+    return searchReply?.call(source, keyword, page) ??
+        const CinemaPage(items: []);
+  }
+
   Future<CinemaPage> Function(CinemaSource, String?, String, int)? respond;
   @override
   Future<List<CinemaCategory>> categories(CinemaSource source) async =>
@@ -107,6 +120,123 @@ DoubanResultPage metadataPage({
 );
 
 void main() {
+  test(
+    '4K catalogue searches every source and includes its explicit 4K categories',
+    () async {
+      final repo = _Repo()
+        ..categoryData = const [
+          CinemaCategory(id: '1', name: '电影'),
+          CinemaCategory(id: '40', name: '4K电影'),
+        ];
+      repo.searchReply = (s, k, p) async => CinemaPage(
+        items: [
+          movie(s.id, 'titanic', name: '泰坦尼克号国语4K', year: '1997'),
+          movie(s.id, 'ordinary', name: '普通画质电影', year: '1997'),
+        ],
+      );
+      repo.respond = (s, c, y, p) async =>
+          CinemaPage(
+            items: [
+              movie(
+                s.id,
+                'avatar',
+                name: '阿凡达',
+                category: '4K电影',
+                categoryId: '40',
+                year: '2009',
+              ),
+            ],
+          );
+      final discovery = _Discovery();
+      final controller = CinemaAggregateCatalogController(
+        repository: repo,
+        discoveryRepository: discovery,
+      );
+      addTearDown(controller.dispose);
+      await controller.load(
+        sources: [source('a'), source('b')],
+        kind: CinemaAggregateKind.ultraHd,
+      );
+      expect(repo.searchCalls, [('a', '4K', 1), ('b', '4K', 1)]);
+      expect(
+        controller.snapshot.items.where((t) => t.id == 'titanic'),
+        hasLength(2),
+      );
+      expect(
+        controller.snapshot.items.where((t) => t.id == 'avatar'),
+        hasLength(2),
+      );
+      expect(controller.snapshot.items.any((t) => t.id == 'ordinary'), isFalse);
+      expect(discovery.calls, isEmpty);
+      await controller.load(
+        sources: [source('a')],
+        kind: CinemaAggregateKind.ultraHd,
+        filters: const CinemaFilters(year: '1997'),
+      );
+      expect(controller.snapshot.items.every((t) => t.year == '1997'), isTrue);
+      expect(controller.snapshot.sources.single.yearUnsupported, isFalse);
+    },
+  );
+
+  test(
+    'recent popularity is the official feed order, with no source-hit sorting',
+    () async {
+      final repo = _Repo();
+      final discovery = _Discovery()
+        ..respond = (kind, filters, start) async => DoubanResultPage(
+          items: [
+            DoubanTitle(
+              id: '10001',
+              title: '近期热门第一部',
+              kind: kind,
+              year: '2025',
+              score: 6,
+            ),
+            DoubanTitle(
+              id: '10002',
+              title: '近期热门第二部',
+              kind: kind,
+              year: '2026',
+              score: 9.9,
+            ),
+          ],
+          start: start,
+          nextStart: start + 2,
+          hasMore: false,
+        );
+      final controller = CinemaAggregateCatalogController(
+        repository: repo,
+        discoveryRepository: discovery,
+      );
+      addTearDown(controller.dispose);
+      await controller.load(
+        sources: [source('a')],
+        kind: CinemaAggregateKind.movies,
+      );
+      await controller.load(
+        sources: [source('a')],
+        kind: CinemaAggregateKind.movies,
+        sort: CinemaCatalogSort.popular,
+      );
+      expect(discovery.calls.last.$4, 'U');
+      expect(controller.snapshot.items.map((t) => t.title), [
+        '近期热门第一部',
+        '近期热门第二部',
+      ]);
+      expect(controller.snapshot.groups.map((g) => g.representative.title), [
+        '近期热门第一部',
+        '近期热门第二部',
+      ]);
+      expect(
+        controller.snapshot.items.every(
+          (t) => t.sourceId == 'douban-discovery',
+        ),
+        isTrue,
+      );
+      expect(repo.calls, hasLength(1));
+    },
+  );
+
   TestWidgetsFlutterBinding.ensureInitialized();
   test(
     'all enabled sources stream progressively with at most three in flight',
@@ -174,7 +304,7 @@ void main() {
       await controller.load(
         sources: sources,
         kind: CinemaAggregateKind.movies,
-        sort: CinemaCatalogSort.popular,
+        sort: CinemaCatalogSort.rating,
       );
       expect(repo.calls, hasLength(3));
       await controller.loadMore();

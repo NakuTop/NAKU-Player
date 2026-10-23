@@ -9,7 +9,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 
 import 'cinema_models.dart';
+import 'cinema_media_identity.dart';
 import 'cinema_rating_identity_search.dart';
+import 'cinema_rating_lookup.dart';
 import 'cinema_douban_access.dart';
 import 'cinema_douban_details.dart';
 export 'cinema_douban_details.dart';
@@ -22,9 +24,10 @@ class RatingIdentity {
     this.label = '',
     this.wikidataId = '',
     this.confirmed = false,
+    this.imdbIsSeries = false,
   });
   final String doubanId, imdbId, rottenTomatoesId, label, wikidataId;
-  final bool confirmed;
+  final bool confirmed, imdbIsSeries;
   void validate() {
     if (doubanId.isNotEmpty &&
         !RegExp(r'^[1-9][0-9]{1,11}$').hasMatch(doubanId)) {
@@ -48,6 +51,7 @@ class RatingIdentity {
     'label': label,
     'wikidataId': wikidataId,
     'confirmed': confirmed,
+    'imdbIsSeries': imdbIsSeries,
   };
   factory RatingIdentity.fromJson(Map<String, dynamic> json) => RatingIdentity(
     doubanId: json['doubanId'] as String? ?? '',
@@ -56,6 +60,7 @@ class RatingIdentity {
     label: json['label'] as String? ?? '',
     wikidataId: json['wikidataId'] as String? ?? '',
     confirmed: json['confirmed'] == true,
+    imdbIsSeries: json['imdbIsSeries'] == true,
   )..validate();
 }
 
@@ -69,8 +74,9 @@ class CinemaRating {
     required this.note,
     this.verified = false,
     this.fetchedAt,
+    this.scope = '',
   });
-  final String provider, url, note;
+  final String provider, url, note, scope;
   final double? value;
   final double scale;
   final int? count;
@@ -85,6 +91,7 @@ class CinemaRating {
     'note': note,
     'verified': verified,
     'fetchedAt': fetchedAt?.toIso8601String(),
+    'scope': scope,
   };
   factory CinemaRating.fromJson(Map<String, dynamic> json) => CinemaRating(
     provider: json['provider'] as String,
@@ -95,6 +102,7 @@ class CinemaRating {
     note: json['note'] as String,
     verified: json['verified'] == true,
     fetchedAt: DateTime.tryParse(json['fetchedAt']?.toString() ?? ''),
+    scope: json['scope'] as String? ?? '',
   );
 }
 
@@ -178,6 +186,61 @@ Future<void> _validateImdbInBackground(List<int> bytes) => Isolate.run(() {
   }
 });
 
+final _htmlParsingWork = _RatingsWorkPool(2);
+
+Future<CinemaRating> _parseRatingOffscreen(
+  String provider,
+  String url,
+  String body,
+) => _htmlParsingWork.run(
+  () => Isolate.run(
+    () => CinemaRatingsRepository.parseRatingPage(provider, url, body),
+  ),
+);
+
+Future<(bool, CinemaRating?)> _verifyRtOffscreen(
+  String id,
+  String body,
+  String year,
+  String kind,
+) => _htmlParsingWork.run(
+  () => Isolate.run(() {
+    if (!cinemaRtPageMatches(id, body, year: year, kind: kind)) {
+      return (false, null);
+    }
+    try {
+      return (
+        true,
+        CinemaRatingsRepository.parseRatingPage(
+          '烂番茄',
+          'https://www.rottentomatoes.com/$id',
+          body,
+        ),
+      );
+    } catch (_) {
+      return (true, null);
+    }
+  }),
+);
+
+Future<Map<String, String>> _searchRtOffscreen(
+  String body,
+  Set<String> names,
+  String year,
+  String kind,
+  String season,
+) => _htmlParsingWork.run(
+  () => Isolate.run(
+    () => cinemaRtSearchCandidates(
+      body,
+      names: names,
+      year: year,
+      kind: kind,
+      season: season,
+    ),
+  ),
+);
+
 /// On-demand, exact-ID lookups. Ratings never affect catalogue/playback success.
 class CinemaRatingsRepository {
   CinemaRatingsRepository({
@@ -185,7 +248,7 @@ class CinemaRatingsRepository {
     RatingsFetch? fetch,
     RatingsCacheWriter? cacheWriter,
   }) : _directory = directory,
-       _rawFetch = fetch ?? _networkFetch,
+       _rawFetch = fetch ?? fetchOfficial,
        _cacheWriter = cacheWriter;
   static final instance = CinemaRatingsRepository();
   Directory? _directory;
@@ -201,13 +264,39 @@ class CinemaRatingsRepository {
   int get bindingRevision => _bindingRevision;
   static bool _isSubjectApi(Uri uri) =>
       uri.host == 'm.douban.com' &&
-      RegExp(r'^/rexxar/api/v2/movie/[0-9]+/?$').hasMatch(uri.path);
+      RegExp(r'^/rexxar/api/v2/(?:movie|tv)/[0-9]+/?$').hasMatch(uri.path);
   Future<List<int>> _fetch(Uri uri, int maxBytes) {
-    Future<List<int>> run() => _networkWork.run(() {
+    Future<List<int>> run() => _networkWork.run(() async {
       if (_isSubjectApi(uri) && !CinemaDoubanAccess.canRequestSubject()) {
         throw const HttpException('豆瓣资料接口暂时限流，稍后自动重试；可在官网查看');
       }
-      return _rawFetch(uri, maxBytes);
+      try {
+        return await _rawFetch(uri, maxBytes);
+      } catch (error) {
+        // A transient provider connection must not leave an otherwise exact
+        // match empty until the user refreshes. One retry stays inside the
+        // existing queue; challenges, rate limits and missing scores never loop.
+        final provider = const {
+          'm.douban.com',
+          'movie.douban.com',
+          'www.imdb.com',
+          'v3.sg.media-imdb.com',
+          'www.rottentomatoes.com',
+          'www.wikidata.org',
+        }.contains(uri.host);
+        final transient =
+            error is TimeoutException ||
+            error is SocketException ||
+            error is HandshakeException ||
+            error is HttpException &&
+                RegExp(r'HTTP (500|502|503|504)\)').hasMatch(error.message);
+        if (!provider || !transient) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        if (_isSubjectApi(uri) && !CinemaDoubanAccess.canRequestSubject()) {
+          rethrow;
+        }
+        return _rawFetch(uri, maxBytes);
+      }
     });
     // Reserve capacity for primary Douban requests. Two slow RT/crosswalk
     // connections cannot occupy all three HTTP slots; the one coalesced IMDb
@@ -248,6 +337,8 @@ class CinemaRatingsRepository {
   final _cardConsumers = <String, List<bool Function()>>{};
   final _providerPending = <String, Future<CinemaRating>>{};
   final _resolutionPending = <String, Future<RatingIdentity>>{};
+  final _completionPending = <String, Future<RatingIdentity>>{};
+  final _completionObservers = <String, List<void Function(RatingIdentity)>>{};
   String? _storageWarning;
 
   Future<Directory> get _dir async => _directory ??= Directory(
@@ -506,7 +597,7 @@ class CinemaRatingsRepository {
                 old.value == null ||
                 old.fetchedAt == null ||
                 (candidate.fetchedAt?.isAfter(old.fetchedAt!) ?? false))) {
-          return candidate;
+          return _scopedRating(identity, candidate);
         }
       }
     } catch (_) {
@@ -555,8 +646,9 @@ class CinemaRatingsRepository {
         ? 'movie'
         : category;
     if (kind(a.category) != kind(b.category)) return false;
-    String normalized(String value) =>
-        value.toLowerCase().replaceAll(RegExp(r'[\s\p{P}]', unicode: true), '');
+    String normalized(String value) => cinemaMediaBaseTitle(
+      value,
+    ).toLowerCase().replaceAll(RegExp(r'[\s\p{P}]', unicode: true), '');
     final aNames = [
       a.title,
       ...a.aliases.split(RegExp(r'[/／|,，;；\n]')),
@@ -618,6 +710,7 @@ class CinemaRatingsRepository {
     label: fresh.label.isEmpty ? old.label : fresh.label,
     wikidataId: fresh.wikidataId.isEmpty ? old.wikidataId : fresh.wikidataId,
     confirmed: fresh.confirmed,
+    imdbIsSeries: fresh.imdbId.isEmpty ? old.imdbIsSeries : fresh.imdbIsSeries,
   );
 
   RatingIdentity _identityFor(CinemaTitle title) {
@@ -758,9 +851,10 @@ class CinemaRatingsRepository {
     if (completed != null &&
         memory != null &&
         DateTime.now().difference(completed) <
-            (memory.identity.doubanId.isEmpty &&
-                    !memory.identity.confirmed &&
-                    resolveTitle != null
+            (memory.ratings.any((r) => r.value == null) ||
+                    memory.identity.doubanId.isEmpty &&
+                        !memory.identity.confirmed &&
+                        resolveTitle != null
                 ? const Duration(seconds: 30)
                 : const Duration(minutes: 30))) {
       return Future.value(memory);
@@ -912,8 +1006,8 @@ class CinemaRatingsRepository {
       identity: identity,
       ratings: [
         douban,
-        secondary('IMDb', identity.imdbId),
-        secondary('烂番茄', identity.rottenTomatoesId),
+        _scopedRating(identity, secondary('IMDb', identity.imdbId)),
+        _scopedRating(identity, secondary('烂番茄', identity.rottenTomatoesId)),
       ],
       message: '已显示可用评分，其他平台在后台补充',
     );
@@ -950,12 +1044,15 @@ class CinemaRatingsRepository {
       message: message,
       ratings: [
         for (final provider in ['豆瓣', 'IMDb', '烂番茄'])
-          results[provider] ??
-              CinemaRating(
-                provider: provider,
-                scale: provider == '烂番茄' ? 100 : 10,
-                note: '正在后台读取官网评分',
-              ),
+          _scopedRating(
+            identity,
+            results[provider] ??
+                CinemaRating(
+                  provider: provider,
+                  scale: provider == '烂番茄' ? 100 : 10,
+                  note: '正在后台读取官网评分',
+                ),
+          ),
       ],
     );
     Future<void> start(String provider, String id) =>
@@ -982,25 +1079,46 @@ class CinemaRatingsRepository {
         });
     // Already-known provider IDs run immediately; an unrelated missing ID must
     // never hold their scores behind the Wikidata timeout or another provider.
-    start('豆瓣', identity.doubanId);
+    if (identity.doubanId.isNotEmpty) start('豆瓣', identity.doubanId);
     if (identity.imdbId.isNotEmpty) start('IMDb', identity.imdbId);
     if (identity.rottenTomatoesId.isNotEmpty) {
       start('烂番茄', identity.rottenTomatoesId);
     }
-    if (identity.doubanId.isNotEmpty &&
-        (identity.imdbId.isEmpty || identity.rottenTomatoesId.isEmpty)) {
+    if ((identity.doubanId.isNotEmpty ||
+            RegExp(r'^\d{4}$').hasMatch(title.year.trim()) &&
+                (identity.imdbId.isNotEmpty ||
+                    identity.rottenTomatoesId.isNotEmpty)) &&
+        (identity.doubanId.isEmpty ||
+            identity.imdbId.isEmpty ||
+            identity.rottenTomatoesId.isEmpty)) {
       try {
         identity = await _identityWork.run(
-          () => _resolve(title, identity, force),
+          () => _completeIdentity(
+            title,
+            identity,
+            force,
+            onIdentity: (updated) {
+              identity = updated;
+              if (identity.doubanId.isNotEmpty) start('豆瓣', identity.doubanId);
+              if (identity.imdbId.isNotEmpty) start('IMDb', identity.imdbId);
+              if (identity.rottenTomatoesId.isNotEmpty) {
+                start('烂番茄', identity.rottenTomatoesId);
+              }
+            },
+          ),
         );
         if (identity.wikidataId.isNotEmpty) {
-          message = '按豆瓣 ID 精确关联 Wikidata · 片名与年份已核对';
+          message = '跨站条目已核对 · 片名、年份及电影／剧集类型一致';
           if (identity.confirmed) message = '按你确认的豆瓣 ID 关联 Wikidata';
+        } else if (identity.imdbId.isNotEmpty ||
+            identity.rottenTomatoesId.isNotEmpty) {
+          message = '通过官网检索补充条目 · 片名、年份及电影／剧集类型已核对';
         }
       } catch (error) {
         message = _readable(error);
       }
     }
+    start('豆瓣', identity.doubanId);
     start('IMDb', identity.imdbId);
     start('烂番茄', identity.rottenTomatoesId);
     await Future.wait(pending.values);
@@ -1013,6 +1131,649 @@ class CinemaRatingsRepository {
     return snapshot();
   }
 
+  CinemaRating _scopedRating(RatingIdentity identity, CinemaRating rating) {
+    final subjectSeason = rating.provider == '豆瓣'
+        ? CinemaRatingIdentitySearch.seasonForLabel(
+            _verifiedSubject(identity.doubanId)?.title ?? '',
+          )
+        : '';
+    final season = RegExp(
+      r'/s([0-9]+)$',
+    ).firstMatch(identity.rottenTomatoesId)?.group(1);
+    final scope = rating.provider == 'IMDb' && identity.imdbIsSeries
+        ? '整剧'
+        : rating.provider == '烂番茄' && season != null
+        ? '第${int.parse(season)}季'
+        : rating.provider == '豆瓣' && subjectSeason.isNotEmpty
+        ? '第$subjectSeason季'
+        : rating.scope;
+    if (scope == rating.scope) return rating;
+    return CinemaRating(
+      provider: rating.provider,
+      value: rating.value,
+      scale: rating.scale,
+      count: rating.count,
+      url: rating.url,
+      note: rating.note,
+      verified: rating.verified,
+      fetchedAt: rating.fetchedAt,
+      scope: scope,
+    );
+  }
+
+  String _mappingKey(RatingIdentity identity) => identity.doubanId.isNotEmpty
+      ? identity.doubanId
+      : identity.imdbId.isNotEmpty
+      ? 'imdb:${identity.imdbId}'
+      : 'rt:${identity.rottenTomatoesId}';
+
+  Future<RatingIdentity> _completeIdentity(
+    CinemaTitle title,
+    RatingIdentity original,
+    bool force, {
+    void Function(RatingIdentity)? onIdentity,
+  }) async {
+    final lookupKey =
+        'lookup:${jsonEncode([original.toJson(), title.title, title.year, title.category])}';
+    final pendingKey = '$lookupKey:$force';
+    if (onIdentity != null) {
+      _completionObservers.putIfAbsent(pendingKey, () => []).add(onIdentity);
+    }
+    try {
+      return await _completionPending.putIfAbsent(
+        pendingKey,
+        () =>
+            _completeIdentityUncached(
+              title,
+              original,
+              force,
+              lookupKey: lookupKey,
+              onIdentity: (identity) {
+                for (final observer in [...?_completionObservers[pendingKey]]) {
+                  observer(identity);
+                }
+              },
+            ).whenComplete(() {
+              _completionPending.remove(pendingKey);
+            }),
+      );
+    } finally {
+      _completionObservers[pendingKey]?.remove(onIdentity);
+      if (_completionObservers[pendingKey]?.isEmpty ?? false) {
+        _completionObservers.remove(pendingKey);
+      }
+    }
+  }
+
+  Future<RatingIdentity> _completeIdentityUncached(
+    CinemaTitle title,
+    RatingIdentity original,
+    bool force, {
+    required String lookupKey,
+    void Function(RatingIdentity)? onIdentity,
+  }) async {
+    final lookup = _mappings[lookupKey];
+    if (!force &&
+        lookup is Map &&
+        lookup['lookupSchema'] == 1 &&
+        _fresh(
+          lookup,
+          lookup['complete'] == true
+              ? const Duration(hours: 24)
+              : const Duration(seconds: 30),
+        )) {
+      try {
+        final identity = RatingIdentity.fromJson(
+          Map<String, dynamic>.from(lookup['identity']),
+        );
+        if (!_conflictingIdentity(original, identity)) {
+          onIdentity?.call(identity);
+          return identity;
+        }
+      } catch (_) {
+        /* Recompute a malformed optional lookup cache. */
+      }
+    }
+    var current = original;
+    Object? problem;
+    Future<void> accept(RatingIdentity candidate) async {
+      if (_conflictingIdentity(current, candidate)) return;
+      var updated = _mergeIdentity(candidate, current);
+      // A derived RT season path must exist with its own canonical identity and
+      // release year before it can replace the empty score slot.
+      if (updated.rottenTomatoesId != original.rottenTomatoesId &&
+          RegExp(r'/s[0-9]+$').hasMatch(updated.rottenTomatoesId)) {
+        // Publish a new IMDb series identity before waiting for RT validation.
+        if (updated.imdbId.isNotEmpty && current.imdbId.isEmpty) {
+          current = RatingIdentity(
+            doubanId: updated.doubanId,
+            imdbId: updated.imdbId,
+            rottenTomatoesId: current.rottenTomatoesId,
+            label: updated.label,
+            wikidataId: updated.wikidataId,
+            confirmed: updated.confirmed,
+            imdbIsSeries: updated.imdbIsSeries,
+          );
+          onIdentity?.call(current);
+        }
+        final official = _verifiedSubject(updated.doubanId);
+        final year = title.year.trim().isEmpty
+            ? official?.year ?? ''
+            : title.year.trim();
+        if (!await _verifyRtCandidate(updated.rottenTomatoesId, year, 'tv')) {
+          updated = RatingIdentity(
+            doubanId: updated.doubanId,
+            imdbId: updated.imdbId,
+            label: updated.label,
+            wikidataId: updated.wikidataId,
+            confirmed: updated.confirmed,
+            imdbIsSeries: updated.imdbIsSeries,
+          );
+        }
+      }
+      current = updated;
+      onIdentity?.call(current);
+    }
+
+    try {
+      await accept(await _resolve(title, original, force));
+    } catch (error) {
+      problem = error;
+    }
+    if (current.doubanId.isEmpty ||
+        current.imdbId.isEmpty ||
+        current.rottenTomatoesId.isEmpty) {
+      DoubanSubjectDetails? official = _verifiedSubject(current.doubanId);
+      if (current.doubanId.isNotEmpty && official == null) {
+        try {
+          official = await _subject(current.doubanId, force);
+        } catch (_) {
+          try {
+            official = await _mobileSubject(current.doubanId, force);
+          } catch (_) {
+            /* Keep other providers independent. */
+          }
+        }
+      }
+      final kind = _subjectKinds[current.doubanId] ?? '';
+      final exactOfficial =
+          official != null &&
+          official.doubanId == current.doubanId &&
+          (title.year.trim().isEmpty || official.year == title.year.trim()) &&
+          cinemaOfficialTitleMatches(
+            title.title,
+            {official.title, official.originalTitle, ...official.aliases},
+            kind: kind,
+            sourceSeason: CinemaRatingIdentitySearch.seasonForLabel(
+              title.title,
+            ),
+            officialSeason: CinemaRatingIdentitySearch.seasonForLabel(
+              official.title,
+            ),
+            exactId: true,
+          );
+      final season =
+          CinemaRatingIdentitySearch.seasonForLabel(title.title).isNotEmpty
+          ? CinemaRatingIdentitySearch.seasonForLabel(title.title)
+          : exactOfficial
+          ? CinemaRatingIdentitySearch.seasonForLabel(official.originalTitle)
+          : '';
+      final names = exactOfficial
+          ? {official.title, official.originalTitle, ...official.aliases}
+                .where((n) => n.trim().isNotEmpty)
+                .map((n) => kind == 'tv' ? cinemaRatingSeriesName(n) : n)
+                .toSet()
+          : <String>{};
+      final queries = exactOfficial
+          ? [official.originalTitle, official.title]
+                .where((n) => n.trim().isNotEmpty)
+                .map((n) => kind == 'tv' ? cinemaRatingSeriesName(n) : n)
+                .toSet()
+                .take(2)
+                .toList()
+          : <String>[];
+      if (exactOfficial &&
+          ['movie', 'tv'].contains(kind) &&
+          current.wikidataId.isEmpty &&
+          (current.imdbId.isEmpty || current.rottenTomatoesId.isEmpty)) {
+        try {
+          await accept(
+            await _officialNameIdentity(
+              title,
+              current,
+              official,
+              kind,
+              queries,
+            ),
+          );
+        } catch (_) {
+          /* Ambiguous or unavailable candidates stay unbound. */
+        }
+      }
+      if (exactOfficial &&
+          ['movie', 'tv'].contains(kind) &&
+          current.imdbId.isEmpty) {
+        var id = official.imdbId;
+        // A known later-season year is not the IMDb series premiere year.
+        // Without an explicit cross-reference, leave that lookup to the exact
+        // Wikidata parent relation rather than searching the wrong year.
+        if (id.isEmpty && (season.isEmpty || season == '1')) {
+          for (final query in queries) {
+            try {
+              final data = await _json(
+                Uri.https('v3.sg.media-imdb.com', '/suggestion/x/$query.json'),
+              );
+              id = cinemaImdbSuggestionId(
+                data,
+                names: names,
+                year: official.year,
+                kind: kind,
+              );
+              if (id.isNotEmpty) break;
+            } catch (_) {
+              /* The second exact official alias is a bounded fallback. */
+            }
+          }
+        }
+        if (id.isNotEmpty) {
+          await accept(
+            RatingIdentity(
+              doubanId: current.doubanId,
+              imdbId: id,
+              rottenTomatoesId: current.rottenTomatoesId,
+              label: current.label,
+              wikidataId: current.wikidataId,
+              confirmed: current.confirmed,
+              imdbIsSeries: kind == 'tv',
+            ),
+          );
+        }
+      }
+      // A season's explicit P179/P361 relation can supply the parent IMDb ID.
+      if (season.isNotEmpty && current.imdbId.isEmpty && exactOfficial) {
+        try {
+          await accept(await _seasonParentIdentity(title, current, official));
+        } catch (_) {
+          /* Continue independent website lookup. */
+        }
+      }
+      if (current.imdbId.isNotEmpty &&
+          (current.rottenTomatoesId.isEmpty || current.doubanId.isEmpty) &&
+          !(original.doubanId.isEmpty && original.imdbId.isNotEmpty)) {
+        try {
+          final qid = await _crosswalkEntityId(
+            current.imdbId,
+            property: 'P345',
+          );
+          final entity = await _wikidataEntity(qid);
+          await accept(
+            identityFromEntity(
+              title,
+              current,
+              qid,
+              entity,
+              verifiedSubject: official,
+              verifiedSubjectKind: kind,
+              anchorImdb: true,
+            ),
+          );
+        } catch (_) {
+          /* Missing cross-site indexing must not stop official search. */
+        }
+      }
+      if (current.rottenTomatoesId.isEmpty &&
+          exactOfficial &&
+          ['movie', 'tv'].contains(kind)) {
+        final officialYear = official.year;
+        for (final query in queries) {
+          try {
+            final body = utf8.decode(
+              await _fetch(
+                Uri.https('www.rottentomatoes.com', '/search', {
+                  'search': query,
+                }),
+                3 * 1024 * 1024,
+              ),
+            );
+            final candidates = await _searchRtOffscreen(
+              body,
+              names,
+              official.year,
+              kind,
+              season,
+            );
+            if (candidates.isEmpty || candidates.length > 4) continue;
+            final verified = await Future.wait(
+              candidates.entries.map((candidate) async {
+                final id = kind == 'tv' && season.isNotEmpty
+                    ? '${candidate.key}/s${season.padLeft(2, '0')}'
+                    : candidate.key;
+                return await _verifyRtCandidate(id, officialYear, kind)
+                    ? (id, candidate)
+                    : null;
+              }),
+            );
+            final matches = verified.nonNulls.toList();
+            if (matches.length != 1) continue;
+            final id = matches.single.$1;
+            await accept(
+              RatingIdentity(
+                doubanId: current.doubanId,
+                imdbId: current.imdbId,
+                rottenTomatoesId: id,
+                label: current.label,
+                wikidataId: current.wikidataId,
+                confirmed: current.confirmed,
+                imdbIsSeries: current.imdbIsSeries,
+              ),
+            );
+            // The verified season and parent premiere resolve same-name TV
+            // remakes before using the parent's IMDb series score.
+            final parent = matches.single.$2;
+            if (kind == 'tv' &&
+                season.isNotEmpty &&
+                current.imdbId.isEmpty &&
+                await _verifyRtCandidate(parent.key, parent.value, 'tv')) {
+              for (final parentQuery in queries) {
+                try {
+                  final suggestion = await _json(
+                    Uri.https(
+                      'v3.sg.media-imdb.com',
+                      '/suggestion/x/$parentQuery.json',
+                    ),
+                  );
+                  final imdb = cinemaImdbSuggestionId(
+                    suggestion,
+                    names: names,
+                    year: parent.value,
+                    kind: 'tv',
+                  );
+                  if (imdb.isEmpty) continue;
+                  await accept(
+                    RatingIdentity(
+                      doubanId: current.doubanId,
+                      imdbId: imdb,
+                      rottenTomatoesId: current.rottenTomatoesId,
+                      label: current.label,
+                      wikidataId: current.wikidataId,
+                      confirmed: current.confirmed,
+                      imdbIsSeries: true,
+                    ),
+                  );
+                  break;
+                } catch (_) {
+                  /* Preserve the independently verified season. */
+                }
+              }
+            }
+            break;
+          } catch (_) {
+            /* Public website may be temporarily unavailable. */
+          }
+        }
+      }
+      if (current.imdbId.isEmpty &&
+          exactOfficial &&
+          kind == 'tv' &&
+          RegExp(
+            r'^tv/[a-zA-Z0-9_-]+/s[0-9]+$',
+          ).hasMatch(current.rottenTomatoesId)) {
+        try {
+          final root = current.rottenTomatoesId.replaceFirst(
+            RegExp(r'/s[0-9]+$'),
+            '',
+          );
+          final qid = await _crosswalkEntityId(root, property: 'P1258');
+          final parent = await _wikidataEntity(qid);
+          List<dynamic> claims(String property) =>
+              ((parent['claims'] as Map?)?[property] as List? ?? [])
+                  .where((c) => c['rank'] != 'deprecated')
+                  .map((c) => c['mainsnak']?['datavalue']?['value'])
+                  .where((v) => v != null)
+                  .toList();
+          final isSeries = claims('P31').whereType<Map>().any(
+            (v) => ['Q5398426', 'Q1259759', 'Q581714'].contains(v['id']),
+          );
+          final parentNames = [
+            ...(parent['labels'] as Map? ?? {}).values.map(
+              (v) => v['value'].toString(),
+            ),
+            ...(parent['aliases'] as Map? ?? {}).values
+                .expand((v) => v as List)
+                .map((v) => v['value'].toString()),
+          ].map(cinemaRatingName).toSet();
+          final imdb = claims('P345').map((v) => v.toString()).toSet();
+          if (isSeries &&
+              claims('P1258').contains(root) &&
+              parentNames
+                  .intersection(names.map(cinemaRatingName).toSet())
+                  .isNotEmpty &&
+              imdb.length == 1) {
+            await accept(
+              RatingIdentity(
+                doubanId: current.doubanId,
+                imdbId: imdb.single,
+                rottenTomatoesId: current.rottenTomatoesId,
+                label: current.label,
+                wikidataId: current.wikidataId,
+                confirmed: current.confirmed,
+                imdbIsSeries: true,
+              )..validate(),
+            );
+          }
+        } catch (_) {
+          /* Keep the verified season score even without a parent crosswalk. */
+        }
+      }
+    }
+    _mappings[lookupKey] = {
+      'at': DateTime.now().toIso8601String(),
+      'lookupSchema': 1,
+      'complete':
+          current.doubanId.isNotEmpty &&
+          current.imdbId.isNotEmpty &&
+          current.rottenTomatoesId.isNotEmpty,
+      'identity': current.toJson(),
+    };
+    // Keep the optional lookup cache bounded independently of entity mappings.
+    final lookups = _mappings.keys
+        .where((k) => k.startsWith('lookup:'))
+        .toList();
+    for (final key in lookups.take((lookups.length - 160).clamp(0, 160))) {
+      _mappings.remove(key);
+    }
+    _cacheChanged();
+    if (current.toJson().toString() == original.toJson().toString() &&
+        problem != null) {
+      throw problem;
+    }
+    return current;
+  }
+
+  Future<Map<String, dynamic>> _wikidataEntity(String qid) async {
+    final data = await _json(
+      Uri.https('www.wikidata.org', '/w/api.php', {
+        'action': 'wbgetentities',
+        'ids': qid,
+        'props': 'labels|aliases|claims',
+        'languages': 'zh|zh-hans|zh-hant|en',
+        'format': 'json',
+      }),
+    );
+    return Map<String, dynamic>.from(data['entities'][qid]);
+  }
+
+  Future<RatingIdentity> _officialNameIdentity(
+    CinemaTitle title,
+    RatingIdentity original,
+    DoubanSubjectDetails official,
+    String kind,
+    List<String> queries,
+  ) async {
+    final ids = <String>{};
+    for (final query in queries.take(2)) {
+      final data = await _json(
+        Uri.https('www.wikidata.org', '/w/api.php', {
+          'action': 'wbsearchentities',
+          'search': query,
+          'language': RegExp(r'[\u4e00-\u9fff]').hasMatch(query) ? 'zh' : 'en',
+          'uselang': 'zh',
+          'type': 'item',
+          'limit': '5',
+          'format': 'json',
+        }),
+      );
+      ids.addAll(
+        (data['search'] as List? ?? [])
+            .whereType<Map>()
+            .map((r) => r['id']?.toString() ?? '')
+            .where((id) => RegExp(r'^Q[1-9][0-9]*$').hasMatch(id)),
+      );
+    }
+    if (ids.isEmpty) return original;
+    final data = await _json(
+      Uri.https('www.wikidata.org', '/w/api.php', {
+        'action': 'wbgetentities',
+        'ids': ids.take(10).join('|'),
+        'props': 'labels|aliases|claims',
+        'languages': 'zh|zh-hans|zh-hant|en',
+        'format': 'json',
+      }),
+    );
+    final matches = <(RatingIdentity, Map<String, dynamic>)>[];
+    for (final qid in ids.take(10)) {
+      try {
+        final entity = Map<String, dynamic>.from(data['entities'][qid]);
+        final candidate = identityFromEntity(
+          title,
+          original,
+          qid,
+          entity,
+          verifiedSubject: official,
+          verifiedSubjectKind: kind,
+          officialNameSearch: true,
+        );
+        matches.add((candidate, entity));
+      } catch (_) {
+        /* Reject another year, type, season or conflicting ID. */
+      }
+    }
+    if (matches.length != 1) return original;
+    final match = matches.single;
+    _mappings[_mappingKey(original)] = {
+      'at': DateTime.now().toIso8601String(),
+      'qid': match.$1.wikidataId,
+      'entity': match.$2,
+    };
+    _cacheChanged();
+    return match.$1;
+  }
+
+  Future<bool> _verifyRtCandidate(String id, String year, String kind) async {
+    final key = '烂番茄:$id';
+    final previous = _cache[key];
+    if (previous is Map &&
+        previous['identityYear'] == year &&
+        _fresh(previous, const Duration(hours: 24), field: 'attemptedAt')) {
+      return true;
+    }
+    try {
+      final url = 'https://www.rottentomatoes.com/$id';
+      final body = utf8.decode(await _fetch(Uri.parse(url), 5 * 1024 * 1024));
+      final parsed = await _verifyRtOffscreen(id, body, year, kind);
+      if (!parsed.$1) return false;
+      final rating = parsed.$2;
+      if (rating != null) {
+        _cache[key] = {
+          ...rating.toJson(),
+          'schema': 2,
+          'identityYear': year,
+          'attemptedAt': DateTime.now().toIso8601String(),
+        };
+        _cacheChanged();
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<RatingIdentity> _seasonParentIdentity(
+    CinemaTitle title,
+    RatingIdentity current,
+    DoubanSubjectDetails official,
+  ) async {
+    final mapped = _mappings[_mappingKey(current)];
+    if (mapped is! Map || mapped['entity'] is! Map) return current;
+    final entity = Map<String, dynamic>.from(mapped['entity']);
+    List<dynamic> claims(Map<String, dynamic> e, String property) =>
+        ((e['claims'] as Map?)?[property] as List? ?? [])
+            .where((c) => c['rank'] != 'deprecated')
+            .map((c) => c['mainsnak']?['datavalue']?['value'])
+            .where((v) => v != null)
+            .toList();
+    if (!claims(
+      entity,
+      'P31',
+    ).whereType<Map>().any((v) => v['id'] == 'Q3464665')) {
+      return current;
+    }
+    final parentIds = [...claims(entity, 'P179'), ...claims(entity, 'P361')]
+        .whereType<Map>()
+        .map((v) => v['id']?.toString() ?? '')
+        .where((id) => RegExp(r'^Q[1-9][0-9]*$').hasMatch(id))
+        .toSet();
+    if (parentIds.length != 1) return current;
+    final parent = await _wikidataEntity(parentIds.single);
+    if (!claims(parent, 'P31').whereType<Map>().any(
+      (v) => ['Q5398426', 'Q1259759', 'Q581714'].contains(v['id']),
+    )) {
+      return current;
+    }
+    final officialNames = [
+      official.title,
+      official.originalTitle,
+      ...official.aliases,
+    ].map(cinemaRatingSeriesName).map(cinemaRatingName).toSet();
+    final parentNames = [
+      ...(parent['labels'] as Map? ?? {}).values.map(
+        (v) => v['value'].toString(),
+      ),
+      ...(parent['aliases'] as Map? ?? {}).values
+          .expand((v) => v as List)
+          .map((v) => v['value'].toString()),
+    ].map(cinemaRatingName).toSet();
+    if (officialNames.intersection(parentNames).isEmpty) return current;
+    final imdb = claims(parent, 'P345').map((v) => v.toString()).toSet();
+    final rt = claims(parent, 'P1258')
+        .map((v) => v.toString())
+        .where((v) => RegExp(r'^tv/[a-zA-Z0-9_-]+$').hasMatch(v))
+        .toSet();
+    final season =
+        CinemaRatingIdentitySearch.seasonForLabel(
+          official.originalTitle,
+        ).isNotEmpty
+        ? CinemaRatingIdentitySearch.seasonForLabel(official.originalTitle)
+        : CinemaRatingIdentitySearch.seasonForLabel(title.title);
+    return RatingIdentity(
+      doubanId: current.doubanId,
+      imdbId: current.imdbId.isNotEmpty
+          ? current.imdbId
+          : imdb.length == 1
+          ? imdb.single
+          : '',
+      rottenTomatoesId: current.rottenTomatoesId.isNotEmpty
+          ? current.rottenTomatoesId
+          : rt.length == 1
+          ? '${rt.single}/s${season.padLeft(2, '0')}'
+          : '',
+      label: current.label,
+      wikidataId: current.wikidataId,
+      confirmed: current.confirmed,
+      imdbIsSeries: true,
+    )..validate();
+  }
+
   Future<RatingIdentity> _resolve(
     CinemaTitle title,
     RatingIdentity original,
@@ -1021,24 +1782,24 @@ class CinemaRatingsRepository {
     final key = jsonEncode([original.toJson(), title.title, title.year, force]);
     return _resolutionPending.putIfAbsent(key, () async {
       try {
-        final cached = _mappings[original.doubanId];
+        final cached = _mappings[_mappingKey(original)];
         if (!force &&
             cached is Map &&
-            cached['failureSchema'] == 2 &&
-            _fresh(cached, const Duration(minutes: 30), field: 'failedAt')) {
+            cached['failureSchema'] == 4 &&
+            _fresh(cached, const Duration(seconds: 30), field: 'failedAt')) {
           throw FormatException(cached['failure']?.toString() ?? '跨站条目暂未关联');
         }
         return await _resolveUncached(title, original, force);
       } catch (error) {
-        final existing = _mappings[original.doubanId];
+        final existing = _mappings[_mappingKey(original)];
         if (force ||
             existing is! Map ||
-            existing['failureSchema'] != 2 ||
-            !_fresh(existing, const Duration(minutes: 30), field: 'failedAt')) {
-          _mappings[original.doubanId] = {
+            existing['failureSchema'] != 4 ||
+            !_fresh(existing, const Duration(seconds: 30), field: 'failedAt')) {
+          _mappings[_mappingKey(original)] = {
             if (existing is Map) ...Map<String, dynamic>.from(existing),
             'failedAt': DateTime.now().toIso8601String(),
-            'failureSchema': 2,
+            'failureSchema': 4,
             'failure': _readable(error),
           };
           _cacheChanged();
@@ -1055,7 +1816,7 @@ class CinemaRatingsRepository {
     RatingIdentity original,
     bool force,
   ) async {
-    final id = original.doubanId;
+    final id = _mappingKey(original);
     Map<String, dynamic> entity;
     String qid;
     final cached = _mappings[id];
@@ -1063,29 +1824,22 @@ class CinemaRatingsRepository {
         cached is Map &&
         cached['entity'] is Map &&
         cached['qid'] is String &&
-        _fresh(cached, const Duration(days: 7))) {
+        _fresh(cached, const Duration(hours: 24))) {
       entity = Map<String, dynamic>.from(cached['entity']);
       qid = cached['qid'] as String;
     } else {
-      final query =
-          'SELECT DISTINCT ?item WHERE { ?item wdt:P4529 "$id" . } LIMIT 5';
-      final data = await _json(
-        Uri.https('query.wikidata.org', '/sparql', {
-          'query': query,
-          'format': 'json',
-        }),
+      qid = await _crosswalkEntityId(
+        original.doubanId.isNotEmpty
+            ? original.doubanId
+            : original.imdbId.isNotEmpty
+            ? original.imdbId
+            : original.rottenTomatoesId,
+        property: original.doubanId.isNotEmpty
+            ? 'P4529'
+            : original.imdbId.isNotEmpty
+            ? 'P345'
+            : 'P1258',
       );
-      final bindings = (data['results'] as Map?)?['bindings'];
-      final ids = <String>{};
-      if (bindings is List) {
-        for (final row in bindings) {
-          final value = row['item']?['value']?.toString() ?? '';
-          final q = Uri.tryParse(value)?.pathSegments.lastOrNull ?? '';
-          if (RegExp(r'^Q[1-9][0-9]*$').hasMatch(q)) ids.add(q);
-        }
-      }
-      if (ids.length != 1) throw const FormatException('未找到唯一的跨站条目，请手动关联 ID');
-      qid = ids.single;
       final details = await _json(
         Uri.https('www.wikidata.org', '/w/api.php', {
           'action': 'wbgetentities',
@@ -1115,7 +1869,8 @@ class CinemaRatingsRepository {
     } on FormatException {
       // An exact official subject can supply its original name when Wikidata
       // has no Chinese label. Reuse the score lookup/cache; never search names.
-      if (_verifiedSubject(id) == null || (_subjectKinds[id] ?? '').isEmpty) {
+      if (original.doubanId.isNotEmpty &&
+          (_verifiedSubject(id) == null || (_subjectKinds[id] ?? '').isEmpty)) {
         try {
           try {
             await _subject(id, false);
@@ -1140,6 +1895,57 @@ class CinemaRatingsRepository {
     }
   }
 
+  Future<String> _crosswalkEntityId(
+    String id, {
+    String property = 'P4529',
+  }) async {
+    Set<String> ids = {};
+    try {
+      final data = await _json(
+        Uri.https('query.wikidata.org', '/sparql', {
+          'query':
+              'SELECT DISTINCT ?item WHERE { ?item wdt:$property "$id" . } LIMIT 5',
+          'format': 'json',
+        }),
+      );
+      final bindings = (data['results'] as Map?)?['bindings'];
+      if (bindings is List) {
+        for (final row in bindings) {
+          final value = row['item']?['value']?.toString() ?? '';
+          final q = Uri.tryParse(value)?.pathSegments.lastOrNull ?? '';
+          if (RegExp(r'^Q[1-9][0-9]*$').hasMatch(q)) ids.add(q);
+        }
+      }
+    } catch (_) {
+      // The independent Action API property index is an exact-ID fallback;
+      // no title guesses or scores are borrowed from search snippets.
+    }
+    if (ids.length > 1) throw const FormatException('跨站 ID 有冲突，请手动关联');
+    if (ids.length == 1) return ids.single;
+    final data = await _json(
+      Uri.https('www.wikidata.org', '/w/api.php', {
+        'action': 'query',
+        'list': 'search',
+        'srnamespace': '0',
+        'srsearch': 'haswbstatement:$property=$id',
+        'srlimit': '5',
+        'format': 'json',
+      }),
+    );
+    final rows = (data['query'] as Map?)?['search'];
+    if (rows is List) {
+      ids = rows
+          .whereType<Map>()
+          .map((r) => r['title']?.toString() ?? '')
+          .where((q) => RegExp(r'^Q[1-9][0-9]*$').hasMatch(q))
+          .toSet();
+    }
+    if (ids.length != 1) throw const FormatException('未找到唯一的跨站条目，请手动关联 ID');
+    // identityFromEntity subsequently rechecks the actual P4529 claim,
+    // name, year and type. An index result alone is never accepted.
+    return ids.single;
+  }
+
   static RatingIdentity identityFromEntity(
     CinemaTitle title,
     RatingIdentity original,
@@ -1147,6 +1953,8 @@ class CinemaRatingsRepository {
     Map<String, dynamic> entity, {
     DoubanSubjectDetails? verifiedSubject,
     String verifiedSubjectKind = '',
+    bool anchorImdb = false,
+    bool officialNameSearch = false,
   }) {
     List<dynamic> claims(String property) =>
         ((entity['claims'] as Map?)?[property] as List? ?? [])
@@ -1155,7 +1963,21 @@ class CinemaRatingsRepository {
             .where((v) => v != null)
             .toList();
     final douban = claims('P4529').map((e) => e.toString()).toSet();
-    if (!douban.contains(original.doubanId)) {
+    final imdbClaims = claims('P345').map((e) => e.toString()).toSet();
+    final rtClaims = claims('P1258').map((e) => e.toString()).toSet();
+    if (officialNameSearch && douban.isEmpty && original.doubanId.isNotEmpty
+        ? false
+        : anchorImdb
+        ? !imdbClaims.contains(original.imdbId) ||
+              douban.isNotEmpty &&
+                  original.doubanId.isNotEmpty &&
+                  !douban.contains(original.doubanId)
+        : original.doubanId.isNotEmpty
+        ? !douban.contains(original.doubanId)
+        : original.imdbId.isNotEmpty
+        ? !imdbClaims.contains(original.imdbId)
+        : original.rottenTomatoesId.isEmpty ||
+              !rtClaims.contains(original.rottenTomatoesId)) {
       throw const FormatException('跨站条目的豆瓣 ID 不一致，请检查关联');
     }
     final labels = (entity['labels'] as Map? ?? {}).values
@@ -1164,12 +1986,23 @@ class CinemaRatingsRepository {
     final aliases = (entity['aliases'] as Map? ?? {}).values
         .expand((v) => v as List)
         .map((v) => v['value'].toString());
-    String normalize(String value) => value
-        .toLowerCase()
-        .replaceFirst(RegExp(r'\s*[（(](原声版|普通话版|国语版|英语版)[）)]\s*$'), '')
-        .replaceAll(RegExp(r'[\s\p{P}]', unicode: true), '');
+    String normalize(String value) => cinemaRatingName(value);
     final names = [...labels, ...aliases].map(normalize).toSet();
-    final years = claims('P577')
+    final instanceIds = claims(
+      'P31',
+    ).whereType<Map>().map((v) => v['id']).toSet();
+    final entityKind =
+        instanceIds.contains('Q11424') || instanceIds.contains('Q202866')
+        ? 'movie'
+        : instanceIds.intersection({
+            'Q5398426',
+            'Q3464665',
+            'Q1259759',
+            'Q581714',
+          }).isNotEmpty
+        ? 'tv'
+        : '';
+    final years = [...claims('P577'), if (entityKind == 'tv') ...claims('P580')]
         .whereType<Map>()
         .map(
           (v) => RegExp(
@@ -1178,14 +2011,6 @@ class CinemaRatingsRepository {
         )
         .whereType<String>()
         .toSet();
-    final instanceIds = claims(
-      'P31',
-    ).whereType<Map>().map((v) => v['id']).toSet();
-    final entityKind = instanceIds.contains('Q11424')
-        ? 'movie'
-        : instanceIds.contains('Q5398426') || instanceIds.contains('Q3464665')
-        ? 'tv'
-        : '';
     final sourceKind = RegExp(r'电影|電影|片$').hasMatch(title.category)
         ? 'movie'
         : RegExp(r'电视剧|连续剧|国产剧|欧美剧|韩剧|日剧|泰剧|港剧|台剧|海外剧').hasMatch(title.category)
@@ -1201,13 +2026,97 @@ class CinemaRatingsRepository {
     final sameOfficialSubject =
         verifiedSubject != null &&
         verifiedSubject.doubanId == original.doubanId &&
-        verifiedSubject.year.trim() == title.year.trim() &&
-        officialNames.contains(normalize(title.title));
+        (title.year.trim().isEmpty ||
+            verifiedSubject.year.trim() == title.year.trim()) &&
+        cinemaOfficialTitleMatches(
+          title.title,
+          {
+            verifiedSubject.title,
+            verifiedSubject.originalTitle,
+            ...verifiedSubject.aliases,
+          },
+          kind: verifiedSubjectKind,
+          sourceSeason: CinemaRatingIdentitySearch.seasonForLabel(title.title),
+          officialSeason: CinemaRatingIdentitySearch.seasonForLabel(
+            verifiedSubject.title,
+          ),
+          exactId: true,
+        );
+    final expectedYear = title.year.trim().isNotEmpty
+        ? title.year.trim()
+        : sameOfficialSubject
+        ? verifiedSubject.year.trim()
+        : '';
     final aliasMatch =
         sameOfficialSubject &&
         ['movie', 'tv'].contains(verifiedSubjectKind) &&
         entityKind == verifiedSubjectKind &&
         officialNames.intersection(names).isNotEmpty;
+    final officialIdAnchor =
+        sameOfficialSubject &&
+        original.doubanId.isNotEmpty &&
+        douban.contains(original.doubanId) &&
+        verifiedSubject.originalTitle.isEmpty &&
+        entityKind == verifiedSubjectKind &&
+        years.contains(expectedYear);
+    if (officialNameSearch &&
+        !(sameOfficialSubject &&
+            entityKind == verifiedSubjectKind &&
+            years.contains(expectedYear) &&
+            officialNames.intersection(names).isNotEmpty)) {
+      throw const FormatException('官网片名检索尚未核对唯一的同名、同年、同类型条目');
+    }
+    final seasonNumbers =
+        [
+              title.title,
+              if (sameOfficialSubject) verifiedSubject.title,
+              if (sameOfficialSubject) verifiedSubject.originalTitle,
+            ]
+            .map(CinemaRatingIdentitySearch.seasonForLabel)
+            .where((n) => n.isNotEmpty)
+            .toSet();
+    if (seasonNumbers.length > 1 && !original.confirmed) {
+      throw const FormatException('季度条目存在季数冲突，请手动核对');
+    }
+    final targetSeason = seasonNumbers.firstOrNull ?? '';
+    final entityIsSeason = instanceIds.contains('Q3464665');
+    final seriesNames = [
+      ...labels,
+      ...aliases,
+    ].map(cinemaRatingSeriesName).map(normalize).toSet();
+    final exactSeriesForSeason =
+        sameOfficialSubject &&
+        verifiedSubjectKind == 'tv' &&
+        entityKind == 'tv' &&
+        !entityIsSeason &&
+        ![
+          ...labels,
+          ...aliases,
+        ].any((n) => CinemaRatingIdentitySearch.seasonForLabel(n).isNotEmpty) &&
+        (officialIdAnchor && targetSeason == '1' ||
+            [
+                  verifiedSubject.title,
+                  verifiedSubject.originalTitle,
+                  ...verifiedSubject.aliases,
+                ]
+                .map(cinemaRatingSeriesName)
+                .map(normalize)
+                .toSet()
+                .intersection(seriesNames)
+                .isNotEmpty);
+    final entitySeasons = [...labels, ...aliases]
+        .map(CinemaRatingIdentitySearch.seasonForLabel)
+        .where((n) => n.isNotEmpty)
+        .toSet();
+    if (!original.confirmed &&
+        (targetSeason.isNotEmpty || entityIsSeason) &&
+        !(entityIsSeason &&
+                targetSeason.isNotEmpty &&
+                entitySeasons.length == 1 &&
+                entitySeasons.single == targetSeason ||
+            targetSeason.isNotEmpty && exactSeriesForSeason)) {
+      throw const FormatException('季度条目需手动确认：尚未核对同一剧集和季数，避免将整剧评分当作本季评分');
+    }
     if (!original.confirmed &&
         entityKind.isNotEmpty &&
         ((sourceKind.isNotEmpty && sourceKind != entityKind) ||
@@ -1220,8 +2129,20 @@ class CinemaRatingsRepository {
     // source title, year and film/series kind. Provider-supplied aliases alone
     // never relax these checks, and a season still cannot inherit its series.
     if (!original.confirmed &&
-        ((!names.contains(normalize(title.title)) && !aliasMatch) ||
-            !years.contains(title.year.trim()) ||
+        ((!names.contains(normalize(title.title)) &&
+                !aliasMatch &&
+                !officialIdAnchor &&
+                !exactSeriesForSeason) ||
+            !(years.contains(expectedYear) ||
+                years.isEmpty &&
+                    sameOfficialSubject &&
+                    entityKind == verifiedSubjectKind ||
+                targetSeason.isNotEmpty &&
+                    exactSeriesForSeason &&
+                    years.isNotEmpty &&
+                    years.every(
+                      (y) => int.parse(y) <= (int.tryParse(expectedYear) ?? 0),
+                    )) ||
             claims('P31').isEmpty)) {
       throw FormatException(
         '关联待确认：${labels.firstOrNull ?? qid} '
@@ -1234,14 +2155,26 @@ class CinemaRatingsRepository {
       return values.firstOrNull ?? '';
     }
 
-    final mappedImdb = unique('P345'), mappedRt = unique('P1258');
-    final isSeason =
-        claims('P31').whereType<Map>().any((v) => v['id'] == 'Q3464665') ||
-        RegExp(r'第.{1,8}季|season\s*\d', caseSensitive: false).hasMatch(
-          [title.title, if (sameOfficialSubject) ...officialNames].join(' '),
-        );
-    if (isSeason && !original.confirmed) {
-      throw const FormatException('季度条目需手动确认，避免将整剧评分当作本季评分');
+    // IMDb publishes one series score rather than independent season scores.
+    // A season entity's arbitrary IMDb ID may name an episode, so obtain the
+    // parent series through its explicit relationship instead.
+    final mappedImdb = entityIsSeason && !original.confirmed
+        ? ''
+        : unique('P345');
+    var mappedRt = unique('P1258');
+    if (entityKind == 'tv' && mappedRt.startsWith('m/') ||
+        entityKind == 'movie' && mappedRt.startsWith('tv/')) {
+      mappedRt = '';
+    }
+    if (targetSeason.isNotEmpty && mappedRt.isNotEmpty) {
+      final pathSeason = RegExp(r'/s([0-9]+)$').firstMatch(mappedRt)?.group(1);
+      if (pathSeason != null &&
+          int.parse(pathSeason) != int.parse(targetSeason)) {
+        throw const FormatException('烂番茄条目季数不一致，请核对关联');
+      }
+      if (RegExp(r'^tv/[a-zA-Z0-9_-]+$').hasMatch(mappedRt)) {
+        mappedRt = '$mappedRt/s${targetSeason.padLeft(2, '0')}';
+      }
     }
     if ((original.imdbId.isNotEmpty &&
             mappedImdb.isNotEmpty &&
@@ -1252,7 +2185,11 @@ class CinemaRatingsRepository {
       throw const FormatException('片源与跨站 ID 不一致；保留原 ID，请手动核对');
     }
     return RatingIdentity(
-      doubanId: original.doubanId,
+      doubanId: original.doubanId.isNotEmpty
+          ? original.doubanId
+          : douban.length == 1
+          ? douban.single
+          : '',
       imdbId: original.imdbId.isEmpty ? mappedImdb : original.imdbId,
       rottenTomatoesId: original.rottenTomatoesId.isEmpty
           ? mappedRt
@@ -1264,18 +2201,16 @@ class CinemaRatingsRepository {
               .toString(),
       wikidataId: qid,
       confirmed: original.confirmed,
+      imdbIsSeries:
+          original.imdbIsSeries || entityKind == 'tv' && !entityIsSeason,
     )..validate();
   }
 
   DoubanSubjectDetails? _verifiedSubject(String id) {
     final memory = _subjectMemory[id];
-    if (memory != null &&
-        _fresh(
-          memory.toJson(),
-          const Duration(hours: 24),
-          field: 'fetchedAt',
-        )) {
-      return memory;
+    if (memory?.fetchedAt != null) {
+      final age = DateTime.now().difference(memory!.fetchedAt!);
+      if (!age.isNegative && age < const Duration(hours: 24)) return memory;
     }
     final cached = _details[id];
     if (cached is Map) {
@@ -1289,6 +2224,7 @@ class CinemaRatingsRepository {
               const Duration(hours: 24),
               field: 'fetchedAt',
             )) {
+          _subjectMemory[id] = subject;
           return subject;
         }
       } catch (_) {
@@ -1357,8 +2293,8 @@ class CinemaRatingsRepository {
         cached != null &&
         _fresh(
           cached.toJson(),
-          cached.score == null
-              ? const Duration(minutes: 30)
+          cached.score == null || cached.note.contains('榜单')
+              ? const Duration(seconds: 30)
               : const Duration(hours: 24),
           field: 'fetchedAt',
         )) {
@@ -1367,12 +2303,26 @@ class CinemaRatingsRepository {
     final key = '$id:$force';
     return _subjectPending.putIfAbsent(key, () async {
       try {
-        final data = await _json(
-          Uri.https('m.douban.com', '/rexxar/api/v2/movie/$id'),
-        );
-        final result = parseDoubanSubjectJson(id, data);
-        _rememberSubject(result, kind: data['type']?.toString() ?? '');
-        return result;
+        try {
+          final data = await _json(
+            Uri.https(
+              'm.douban.com',
+              '/rexxar/api/v2/${_subjectKinds[id] == 'tv' || CinemaDoubanAccess.feedSubject(id)?.$2['type'] == 'tv' ? 'tv' : 'movie'}/$id',
+            ),
+          );
+          final result = parseDoubanSubjectJson(id, data);
+          _rememberSubject(result, kind: data['type']?.toString() ?? '');
+          return result;
+        } catch (_) {
+          final feed = CinemaDoubanAccess.feedSubject(id);
+          if (feed == null) rethrow;
+          final result = parseDoubanSubjectJson(
+            id,
+            feed.$2,
+          ).copyWith(fetchedAt: feed.$1, note: '豆瓣官网榜单公开条目；详情接口暂不可用');
+          _rememberSubject(result, kind: feed.$2['type']?.toString() ?? '');
+          return result;
+        }
       } finally {
         _subjectPending.remove(key);
       }
@@ -1526,6 +2476,9 @@ class CinemaRatingsRepository {
                   : subject == null
                   ? previous?.originalTitle ?? ''
                   : ''),
+        imdbId: primary.imdbId.isNotEmpty
+            ? primary.imdbId
+            : page?.imdbId ?? previous?.imdbId ?? '',
         releaseDates: {
           ...primary.releaseDates,
           ...?page?.releaseDates,
@@ -1585,7 +2538,6 @@ class CinemaRatingsRepository {
   }
 
   static CinemaRating _doubanRating(DoubanSubjectDetails subject) {
-    if (subject.score == null) throw const FormatException('豆瓣官网暂未公布评分');
     return CinemaRating(
       provider: '豆瓣',
       value: subject.score,
@@ -1593,7 +2545,11 @@ class CinemaRatingsRepository {
       url: subject.url,
       verified: true,
       fetchedAt: subject.fetchedAt,
-      note: '豆瓣官网公开条目',
+      note: subject.score == null
+          ? '豆瓣官网暂未公布评分'
+          : subject.note.contains('榜单')
+          ? subject.note
+          : '豆瓣官网公开条目',
     );
   }
 
@@ -1635,11 +2591,17 @@ class CinemaRatingsRepository {
             cached['value'] != null ||
             cached['schema'] == 2) &&
         (cardOnly || cached['cardOnlyFailure'] != true) &&
-        (_fresh(cached, const Duration(minutes: 30), field: 'attemptedAt') ||
+        (_fresh(
+              cached,
+              cached['value'] == null
+                  ? const Duration(seconds: 30)
+                  : const Duration(minutes: 30),
+              field: 'attemptedAt',
+            ) ||
             _fresh(
               cached,
               cached['value'] == null
-                  ? const Duration(minutes: 30)
+                  ? const Duration(seconds: 30)
                   : const Duration(hours: 24),
               field: 'fetchedAt',
             ))) {
@@ -1658,32 +2620,53 @@ class CinemaRatingsRepository {
     CinemaRating result;
     try {
       if (provider == 'IMDb') {
-        await (_dataset ??= _prepareDataset(
-          force: force,
-          retryFailure: force,
-        ).whenComplete(() => _dataset = null));
-        final path = '${(await _dir).path}/title.ratings.tsv.gz';
-        (double, int)? values;
         try {
-          values = await _imdbWork.run(() => _readImdbInBackground(path, id));
-        } catch (_) {
-          // One bounded repair for a corrupt/truncated local dataset.
-          await (_dataset ??= _prepareDataset(force: true, retryFailure: force)
-              .whenComplete(() {
-                _dataset = null;
-              }));
-          values = await _imdbWork.run(() => _readImdbInBackground(path, id));
+          final path = '${(await _dir).path}/title.ratings.tsv.gz';
+          var warning = '';
+          try {
+            await (_dataset ??= _prepareDataset(
+              force: force,
+              retryFailure: force,
+            ).whenComplete(() => _dataset = null));
+          } catch (error) {
+            if (!await File(path).exists()) rethrow;
+            // The previous official dataset remains useful offline. Its original
+            // timestamp is retained and the read below still validates the gzip.
+            warning = ' · 更新失败，使用上次官方数据；${_readable(error)}';
+          }
+          (double, int)? values;
+          try {
+            values = await _imdbWork.run(() => _readImdbInBackground(path, id));
+          } catch (_) {
+            // One bounded repair for a corrupt/truncated local dataset.
+            await (_dataset ??=
+                _prepareDataset(force: true, retryFailure: force).whenComplete(
+                  () {
+                    _dataset = null;
+                  },
+                ));
+            values = await _imdbWork.run(() => _readImdbInBackground(path, id));
+          }
+          if (values == null) throw const FormatException('IMDb 数据集暂未收录评分');
+          result = CinemaRating(
+            provider: provider,
+            value: values.$1,
+            count: values.$2,
+            url: url,
+            verified: true,
+            note: 'IMDb 官方每日数据 · 个人非商业使用$warning',
+            fetchedAt: (await File(path).lastModified()),
+          );
+        } catch (datasetError) {
+          try {
+            final body = utf8.decode(
+              await _fetch(Uri.parse(url), 5 * 1024 * 1024),
+            );
+            result = await _parseRatingOffscreen('IMDb', url, body);
+          } catch (_) {
+            throw datasetError;
+          }
         }
-        if (values == null) throw const FormatException('IMDb 数据集暂未收录评分');
-        result = CinemaRating(
-          provider: provider,
-          value: values.$1,
-          count: values.$2,
-          url: url,
-          verified: true,
-          note: 'IMDb 官方每日数据 · 个人非商业使用',
-          fetchedAt: (await File(path).lastModified()),
-        );
       } else if (provider == '豆瓣') {
         // The official mobile page uses metadata instead of JSON-LD, and its
         // subject_header.js loads this public JSON. No cookies or private keys.
@@ -1697,7 +2680,7 @@ class CinemaRatingsRepository {
               final body = utf8.decode(
                 await _fetch(Uri.parse(url), 2 * 1024 * 1024),
               );
-              result = parseRatingPage(provider, url, body);
+              result = await _parseRatingOffscreen(provider, url, body);
             } catch (_) {
               result = _doubanRating(await _mobileSubject(id, force));
             }
@@ -1705,7 +2688,7 @@ class CinemaRatingsRepository {
         }
       } else {
         final body = utf8.decode(await _fetch(Uri.parse(url), 5 * 1024 * 1024));
-        result = parseRatingPage(provider, url, body);
+        result = await _parseRatingOffscreen(provider, url, body);
       }
     } catch (error) {
       CinemaRating? previous;
@@ -1749,7 +2732,7 @@ class CinemaRatingsRepository {
     if (!retryFailure &&
         _datasetFailedAt != null &&
         DateTime.now().difference(_datasetFailedAt!) <
-            const Duration(minutes: 30)) {
+            const Duration(seconds: 30)) {
       throw FormatException(_datasetFailure);
     }
     try {
@@ -1875,11 +2858,67 @@ class CinemaRatingsRepository {
           url: url,
           verified: true,
           fetchedAt: DateTime.now(),
-          note: provider == '烂番茄' ? '官网 Tomatometer · 影评人新鲜度' : '豆瓣官网公开条目',
+          note: provider == '烂番茄' ? '官网 Tomatometer · 影评人新鲜度' : 'IMDb 官网公开条目',
         );
       }
     }
-    throw FormatException(provider == '豆瓣' ? '官网未返回评分，可能需要验证' : '官网未返回影评人评分');
+    if (provider == '烂番茄') {
+      // RT's current scorecard can precede its JSON-LD aggregateRating. Require
+      // both the canonical link and the current media object's exact path;
+      // audienceScore and recommendations are deliberately ignored.
+      final canonical = Uri.tryParse(
+        document.querySelector('link[rel="canonical"]')?.attributes['href'] ??
+            '',
+      );
+      final expected = Uri.parse(url);
+      final vanityScript = document.querySelector('script[data-json="vanity"]');
+      final scoreScript = document.querySelector(
+        'script[data-json="mediaScorecard"]',
+      );
+      if (canonical?.host == expected.host &&
+          canonical?.path.replaceFirst(RegExp(r'/$'), '') ==
+              expected.path.replaceFirst(RegExp(r'/$'), '') &&
+          vanityScript != null &&
+          scoreScript != null) {
+        try {
+          final vanity = jsonDecode(vanityScript.text) as Map;
+          final score =
+              (jsonDecode(scoreScript.text) as Map)['criticsScore'] as Map;
+          final value = double.tryParse(score['score']?.toString() ?? '');
+          final count = int.tryParse(
+            (score['ratingCount'] ?? score['reviewCount'])?.toString() ?? '',
+          );
+          if (vanity['href'] == expected.path &&
+              [
+                'movie',
+                'tvSeries',
+                'tvSeason',
+                'tvEpisode',
+              ].contains(vanity['type']) &&
+              score['title'] == 'Tomatometer' &&
+              value != null &&
+              value.isFinite &&
+              value >= 0 &&
+              value <= 100 &&
+              count != null &&
+              count > 0) {
+            return CinemaRating(
+              provider: provider,
+              value: value,
+              scale: 100,
+              count: count,
+              url: url,
+              verified: true,
+              fetchedAt: DateTime.now(),
+              note: '官网 Tomatometer · 影评人新鲜度',
+            );
+          }
+        } catch (_) {
+          /* Keep an unavailable score explicit. */
+        }
+      }
+    }
+    throw FormatException(provider == 'IMDb' ? 'IMDb 官网暂未返回评分' : '官网未返回影评人评分');
   }
 
   Future<Map<String, dynamic>> _json(Uri uri) async {
@@ -1910,29 +2949,45 @@ class CinemaRatingsRepository {
     return '暂时无法获取，可稍后刷新或手动关联';
   }
 
-  static Future<List<int>> _networkFetch(Uri uri, int maxBytes) async {
+  @visibleForTesting
+  static Future<List<int>> fetchOfficial(Uri uri, int maxBytes) async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 12);
     client.findProxy = Platform.isMacOS
         ? MacOSSystemProxy.findProxy
         : HttpClient.findProxyFromEnvironment;
-    Future<List<int>> request() async {
-      final req = await client.getUrl(uri);
-      final douban = ['m.douban.com', 'movie.douban.com'].contains(uri.host);
+    Future<List<int>> request(
+      Uri target, {
+      bool allowSubjectRedirect = true,
+    }) async {
+      final req = await client.getUrl(target);
+      final douban = ['m.douban.com', 'movie.douban.com'].contains(target.host);
       if (douban) req.followRedirects = false;
       req.headers.set(
         'User-Agent',
-        uri.host == 'm.douban.com' && uri.path.startsWith('/movie/subject/')
+        target.host == 'm.douban.com' &&
+                target.path.startsWith('/movie/subject/')
             ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1 NAKUPlayer/1.5.0'
             : 'NAKUPlayer/1.5.0 (https://github.com/NakuTop/NAKU-Player)',
       );
       req.headers.set('Accept', 'application/json,text/html,*/*');
-      if (uri.host == 'm.douban.com' &&
-          uri.path.startsWith('/rexxar/api/v2/movie/')) {
-        final id = uri.pathSegments[4];
+      if (_isSubjectApi(target)) {
+        final id = target.pathSegments[4];
         req.headers.set('Referer', 'https://m.douban.com/movie/subject/$id/');
       }
       final response = await req.close();
+      if (allowSubjectRedirect &&
+          [301, 302, 307, 308].contains(response.statusCode)) {
+        final redirect = CinemaDoubanAccess.subjectRedirect(
+          target,
+          response.headers.value(HttpHeaders.locationHeader),
+          resource: target.path.endsWith('/rating') ? 'rating' : '',
+        );
+        if (redirect != null) {
+          await response.drain<void>();
+          return request(redirect, allowSubjectRedirect: false);
+        }
+      }
       if (response.statusCode != 200) {
         if (_isSubjectApi(uri) && response.statusCode == 400) {
           final errorBytes = <int>[];
@@ -1980,7 +3035,7 @@ class CinemaRatingsRepository {
     }
 
     try {
-      return await request().timeout(
+      return await request(uri).timeout(
         Duration(
           seconds: uri.host == 'datasets.imdbws.com'
               ? 40

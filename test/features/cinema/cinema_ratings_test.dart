@@ -104,6 +104,190 @@ void main() {
     expect(result.rottenTomatoesId, 'm/interstellar_2014');
     expect(result.label, '星际穿越');
   });
+  test('technical editions share the exact ratings crosswalk', () {
+    for (final label in ['星际穿越4K', '星际穿越国语4K', '星际穿越（普通话版）', '星际穿越 UHD HDR']) {
+      final result = CinemaRatingsRepository.identityFromEntity(
+        CinemaTitle(
+          id: 'edition',
+          sourceId: 'fixture',
+          title: label,
+          year: '2014',
+          category: '4K电影',
+        ),
+        const RatingIdentity(doubanId: '1889243'),
+        'Q13417189',
+        entity(),
+      );
+      expect(result.imdbId, 'tt0816692');
+      expect(result.rottenTomatoesId, 'm/interstellar_2014');
+    }
+  });
+  test(
+    'missing source year may use only the verified exact official subject year',
+    () {
+      final sample = CinemaTitle(
+        id: 'empty-year',
+        sourceId: 'fixture',
+        title: '星际穿越国语4K',
+        category: '4K电影',
+      );
+      expect(
+        () => CinemaRatingsRepository.identityFromEntity(
+          sample,
+          const RatingIdentity(doubanId: '1889243'),
+          'Q13417189',
+          entity(),
+        ),
+        throwsFormatException,
+      );
+      final result = CinemaRatingsRepository.identityFromEntity(
+        sample,
+        const RatingIdentity(doubanId: '1889243'),
+        'Q13417189',
+        entity(),
+        verifiedSubject: const DoubanSubjectDetails(
+          doubanId: '1889243',
+          title: '星际穿越',
+          year: '2014',
+        ),
+        verifiedSubjectKind: 'movie',
+      );
+      expect(result.imdbId, 'tt0816692');
+    },
+  );
+  test('transient empty provider cache retries after 30 seconds', () async {
+    final before = DateTime.now().subtract(const Duration(seconds: 40));
+    await File('${directory.path}/ratings-v1.json').writeAsString(
+      jsonEncode({
+        'version': 1,
+        'cache': {
+          '烂番茄:m/interstellar_2014': {
+            ...CinemaRating(
+              provider: '烂番茄',
+              scale: 100,
+              note: '请求超时',
+              fetchedAt: before,
+            ).toJson(),
+            'attemptedAt': before.toIso8601String(),
+            'schema': 2,
+          },
+        },
+        'bindings': {},
+        'mappings': {},
+      }),
+    );
+    var calls = 0;
+    final repository = CinemaRatingsRepository(
+      directory: directory,
+      fetch: (uri, maxBytes) async {
+        calls++;
+        return utf8.encode(page());
+      },
+    );
+    final result = await repository.load(
+      const CinemaTitle(
+        id: 'rt-only',
+        sourceId: 'fixture',
+        title: '星际穿越',
+        rottenTomatoesId: 'm/interstellar_2014',
+      ),
+    );
+    expect(result.ratings.last.value, 89);
+    expect(calls, 1);
+  });
+  test(
+    'official IMDb dataset remains usable when daily refresh fails',
+    () async {
+      final file = File('${directory.path}/title.ratings.tsv.gz');
+      await file.writeAsBytes(
+        gzip.encode(
+          utf8.encode(
+            'tconst\taverageRating\tnumVotes\ntt0816692\t8.7\t12345\n',
+          ),
+        ),
+      );
+      final old = DateTime.now().subtract(const Duration(days: 2));
+      await file.setLastModified(old);
+      final repository = CinemaRatingsRepository(
+        directory: directory,
+        fetch: (_, _) async => throw const SocketException('offline'),
+      );
+      final result = await repository.load(
+        const CinemaTitle(
+          id: 'imdb-only',
+          sourceId: 'fixture',
+          title: '星际穿越',
+          imdbId: 'tt0816692',
+        ),
+      );
+      final rating = result.ratings[1];
+      expect(rating.value, 8.7);
+      expect(rating.verified, isTrue);
+      expect(rating.note, contains('更新失败'));
+      expect(rating.fetchedAt!.difference(old).inSeconds.abs(), lessThan(2));
+    },
+  );
+  test(
+    'crosswalk timeout uses exact property index and still verifies the entity claim',
+    () async {
+      for (final wrongClaim in [false, true]) {
+        final folder = Directory('${directory.path}/fallback-$wrongClaim');
+        await folder.create();
+        await File('${folder.path}/title.ratings.tsv.gz').writeAsBytes(
+          gzip.encode(
+            utf8.encode(
+              'tconst\taverageRating\tnumVotes\ntt0816692\t8.7\t12345\n',
+            ),
+          ),
+        );
+        var indexCalls = 0;
+        final repository = CinemaRatingsRepository(
+          directory: folder,
+          fetch: (uri, maxBytes) async {
+            if (uri.host == 'query.wikidata.org') {
+              throw const HttpException('SPARQL unavailable');
+            }
+            if (uri.queryParameters['action'] == 'query') {
+              indexCalls++;
+              expect(
+                uri.queryParameters['srsearch'],
+                'haswbstatement:P4529=1889243',
+              );
+              return utf8.encode(
+                jsonEncode({
+                  'query': {
+                    'search': [
+                      {'title': 'Q13417189'},
+                    ],
+                  },
+                }),
+              );
+            }
+            if (uri.queryParameters['action'] == 'wbgetentities') {
+              final value = entity();
+              if (wrongClaim) {
+                value['claims']['P4529'][0]['mainsnak']['datavalue']['value'] =
+                    '1292722';
+              }
+              return utf8.encode(
+                jsonEncode({
+                  'entities': {'Q13417189': value},
+                }),
+              );
+            }
+            if (uri.host == 'www.rottentomatoes.com') {
+              return utf8.encode(page());
+            }
+            throw const HttpException('fixture offline');
+          },
+        );
+        final result = await repository.load(title);
+        expect(indexCalls, 1);
+        expect(result.identity.imdbId, wrongClaim ? '' : 'tt0816692');
+        expect(result.ratings[1].value, wrongClaim ? isNull : 8.7);
+      }
+    },
+  );
   test('same-name remake and season mismatch are not silently bound', () {
     for (final sample in [
       const CinemaTitle(
