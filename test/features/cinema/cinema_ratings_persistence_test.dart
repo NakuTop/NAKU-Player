@@ -39,7 +39,7 @@ void main() {
   tearDown(() async => directory.delete(recursive: true));
 
   test(
-    'restored provider and subject cache hits do not rewrite the file',
+    'provider cache migrates a card once and subsequent cache hits do not rewrite',
     () async {
       final now = DateTime.now();
       final stored = _cacheFile(
@@ -79,6 +79,9 @@ void main() {
         },
       );
       final item = _title('cached', rt: 'm/test_movie');
+      await repository.loadForCard(item);
+      final migrationWrites = writes;
+      expect(migrationWrites, inInclusiveRange(1, 2));
       for (var i = 0; i < 8; i++) {
         expect((await repository.load(item)).ratings.last.value, 83);
         expect((await repository.loadForCard(item)).ratings.last.value, 83);
@@ -86,7 +89,7 @@ void main() {
       expect(requests, 0);
       expect(
         writes,
-        0,
+        migrationWrites,
         reason: 'Scrolling back over cached cards is read-only',
       );
       expect(await file.readAsString(), original);

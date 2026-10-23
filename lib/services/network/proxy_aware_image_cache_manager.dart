@@ -12,21 +12,40 @@ import 'package:kazumi/services/network/proxy_utils.dart';
 import 'package:kazumi/services/network/system_proxy_service.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 import 'package:kazumi/services/storage/storage.dart';
+import 'cinema_poster_file_system.dart';
 
 class ProxyAwareImageCacheManager extends CacheManager with ImageCacheManager {
   static final ProxyAwareImageCacheManager instance =
-      ProxyAwareImageCacheManager._(
-        ImageFileService(
-          acceleration: () => ImageAcceleration.fromSetting(
-            GStorage.getSetting(SettingsKeys.imageAcceleration),
-          ),
-          clientFactory: _createHttpClient,
-          echService: BangumiEchImageService(proxyForUrl: _currentEchProxy),
-        ),
-      );
+      ProxyAwareImageCacheManager._(_createFileService());
 
-  ProxyAwareImageCacheManager._(this._fileService)
-    : super(Config(DefaultCacheManager.key, fileService: _fileService));
+  static const cinemaKey = 'nakuCinemaPosters';
+  static final cinemaInstance = ProxyAwareImageCacheManager._(
+    _createFileService(),
+    persistentPosters: true,
+  );
+
+  static ImageFileService _createFileService() => ImageFileService(
+    acceleration: () => ImageAcceleration.fromSetting(
+      GStorage.getSetting(SettingsKeys.imageAcceleration),
+    ),
+    clientFactory: _createHttpClient,
+    echService: BangumiEchImageService(proxyForUrl: _currentEchProxy),
+  );
+
+  ProxyAwareImageCacheManager._(
+    this._fileService, {
+    bool persistentPosters = false,
+  }) : super(
+         persistentPosters
+             ? Config(
+                 cinemaKey,
+                 fileService: _fileService,
+                 fileSystem: CinemaPosterFileSystem(),
+                 stalePeriod: const Duration(days: 90),
+                 maxNrOfCacheObjects: 1200,
+               )
+             : Config(DefaultCacheManager.key, fileService: _fileService),
+       );
 
   final ImageFileService _fileService;
 

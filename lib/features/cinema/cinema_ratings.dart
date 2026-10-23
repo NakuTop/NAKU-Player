@@ -335,6 +335,7 @@ class CinemaRatingsRepository {
   final _cardPending = <String, Future<CinemaRatings>>{};
   final _cardCompleted = <String, DateTime>{};
   final _cardConsumers = <String, List<bool Function()>>{};
+  final _cardDiskEntries = <String, dynamic>{};
   final _providerPending = <String, Future<CinemaRating>>{};
   final _resolutionPending = <String, Future<RatingIdentity>>{};
   final _completionPending = <String, Future<RatingIdentity>>{};
@@ -346,11 +347,17 @@ class CinemaRatingsRepository {
   );
 
   Future<void> _ready() => _loading ??= _read();
+
+  /// Restore saved card identities and scores before the homepage first paint.
+  Future<void> restore() => _ready();
   Future<void> _read() async {
     final file = File('${(await _dir).path}/ratings-v1.json');
     if (!await file.exists()) return;
     try {
-      final data = jsonDecode(await file.readAsString()) as Map;
+      final path = file.path;
+      final data = await Isolate.run(
+        () => jsonDecode(File(path).readAsStringSync()) as Map,
+      );
       if (data['version'] != 1 ||
           data['bindings'] is! Map ||
           data['cache'] is! Map ||
@@ -385,6 +392,51 @@ class CinemaRatingsRepository {
           _details.remove(_details.keys.first);
         }
       }
+      for (final entry
+          in (data['cards'] is Map ? data['cards'] as Map : const {}).entries) {
+        try {
+          final saved = Map<String, dynamic>.from(entry.value);
+          final title = CinemaTitle.fromJson(
+            Map<String, dynamic>.from(saved['title']),
+          );
+          if (jsonEncode(saved['binding']) !=
+              jsonEncode(_bindings[title.key])) {
+            continue;
+          }
+          final identity = RatingIdentity.fromJson(
+            Map<String, dynamic>.from(saved['identity']),
+          );
+          if (_conflictingIdentity(_identityFor(title), identity)) continue;
+          final ratings = jsonMaps(
+            saved['ratings'],
+          ).map(CinemaRating.fromJson).toList();
+          if (ratings.length != 3 ||
+              ratings.any(
+                (r) =>
+                    r.value != null &&
+                    (!r.value!.isFinite || r.value! < 0 || r.value! > r.scale),
+              )) {
+            continue;
+          }
+          final key = _memoryKey(title);
+          _rememberProfile(key, title);
+          _memory[key] = CinemaRatings(
+            identity: identity,
+            ratings: ratings,
+            message: saved['message'] as String? ?? '本地已保存的评分',
+          );
+          _providerCompleted[key] = (saved['completed'] as List? ?? [])
+              .whereType<String>()
+              .toSet();
+          _cardCompleted[key] = DateTime.parse(saved['at'] as String);
+          _cardDiskEntries[entry.key.toString()] = saved;
+        } catch (_) {
+          // One invalid optional card must not invalidate provider caches/bindings.
+        }
+      }
+      while (_cardDiskEntries.length > 256) {
+        _cardDiskEntries.remove(_cardDiskEntries.keys.first);
+      }
       _savedSnapshot = _cacheSnapshot();
     } catch (_) {
       // Keep a malformed file intact; never silently replace user bindings.
@@ -403,6 +455,7 @@ class CinemaRatingsRepository {
     'mappings': Map<String, dynamic>.from(_mappings),
     'doubanDetails': Map<String, dynamic>.from(_details),
     'doubanSubjects': Map<String, dynamic>.from(_subjectDiskEntries),
+    'cards': Map<String, dynamic>.from(_cardDiskEntries),
   };
 
   Future<void> _save() {
@@ -489,6 +542,11 @@ class CinemaRatingsRepository {
     if (_storageWarning != null) throw StateError(_storageWarning!);
     final previous = _bindings[title.key];
     _bindings[title.key] = identity.toJson();
+    _cardDiskEntries.removeWhere((_, saved) {
+      final profile = saved['title'] as Map?;
+      return profile != null &&
+          '${profile['sourceId']}::${profile['id']}' == title.key;
+    });
     _cacheChanged();
     _bindingRevision++;
     _memory.clear();
@@ -796,6 +854,44 @@ class CinemaRatingsRepository {
     _changes.changed();
   }
 
+  void _rememberCard(CinemaTitle title, CinemaRatings result) {
+    final profile = <String, dynamic>{
+      'id': title.id,
+      'sourceId': title.sourceId,
+      'title': title.title,
+      'year': title.year,
+      'category': title.category,
+      'aliases': title.aliases,
+      'doubanId': title.doubanId,
+      'imdbId': title.imdbId,
+      'rottenTomatoesId': title.rottenTomatoesId,
+      'sourceDoubanScore': title.sourceDoubanScore,
+    };
+    final id = jsonEncode(profile);
+    final value = <String, dynamic>{
+      'title': profile,
+      'identity': result.identity.toJson(),
+      'ratings': result.ratings.map((r) => r.toJson()).toList(),
+      'message': result.message,
+      'binding': _bindings[title.key],
+      'completed':
+          (_providerCompleted[_memoryKey(title)] ?? <String>{}).toList()
+            ..sort(),
+    };
+    final previous = _cardDiskEntries[id] as Map?;
+    if (previous != null &&
+        jsonEncode({...previous}..remove('at')) == jsonEncode(value)) {
+      return;
+    }
+    _cardDiskEntries.remove(id);
+    _cardDiskEntries[id] = {...value, 'at': DateTime.now().toIso8601String()};
+    while (_cardDiskEntries.length > 256) {
+      _cardDiskEntries.remove(_cardDiskEntries.keys.first);
+    }
+    _cacheChanged();
+    unawaited(_save().catchError((Object _) {}));
+  }
+
   /// Sorting can advance once its chosen provider has been attempted. Slower
   /// unrelated providers continue to enrich cards through [changes]. Calling
   /// the virtual card method also keeps injected/offline repositories isolated.
@@ -856,7 +952,7 @@ class CinemaRatingsRepository {
                         !memory.identity.confirmed &&
                         resolveTitle != null
                 ? const Duration(seconds: 30)
-                : const Duration(minutes: 30))) {
+                : const Duration(hours: 24))) {
       return Future.value(memory);
     }
     _cardConsumers.putIfAbsent(key, () => []).add(isCurrent ?? () => true);
@@ -867,10 +963,27 @@ class CinemaRatingsRepository {
           final revision = _bindingRevision;
           if (!current()) throw StateError('Card no longer displayed');
           await _ready();
+          final restored = peek(title);
+          final restoredAt = _cardCompleted[key];
+          if (restored != null) {
+            _changes.changed();
+            final ttl =
+                restored.ratings.any((r) => r.value == null) ||
+                    restored.identity.doubanId.isEmpty &&
+                        !restored.identity.confirmed &&
+                        resolveTitle != null
+                ? const Duration(seconds: 30)
+                : const Duration(hours: 24);
+            if (restoredAt != null &&
+                DateTime.now().difference(restoredAt) < ttl) {
+              return restored;
+            }
+          }
           var effective = title;
           final needsHydration =
               _bindings[title.key] is! Map &&
               title.doubanId.isEmpty &&
+              (restored?.identity.doubanId.isEmpty ?? true) &&
               resolveTitle != null;
           final knownSecondary = <String>{
             if (title.imdbId.isNotEmpty) 'IMDb',
@@ -920,6 +1033,7 @@ class CinemaRatingsRepository {
             final result = await _loadCard(effective);
             if (revision == _bindingRevision) {
               _publish(title, result, completed: {'豆瓣'});
+              _rememberCard(title, peek(title) ?? result);
             }
             return result;
           });
@@ -932,6 +1046,7 @@ class CinemaRatingsRepository {
               onProgress: (result, completed) {
                 if (revision == _bindingRevision) {
                   _publish(title, result, completed: completed);
+                  _rememberCard(title, peek(title) ?? result);
                 }
               },
             );
@@ -943,6 +1058,12 @@ class CinemaRatingsRepository {
           if (revision != _bindingRevision) continue;
           _publish(title, result, completed: {'豆瓣', 'IMDb', '烂番茄'});
           _cardCompleted[_memoryKey(title)] = DateTime.now();
+          _rememberCard(title, peek(title) ?? result);
+          try {
+            await _save();
+          } catch (_) {
+            // Scores remain visible if optional caching is temporarily unavailable.
+          }
           return peek(title) ?? result;
         }
       }

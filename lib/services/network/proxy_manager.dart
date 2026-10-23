@@ -21,6 +21,7 @@ class ProxyManager {
 
   static void _applyImageCacheManager() {
     ProxyAwareImageCacheManager.instance.resetNetworkClients();
+    ProxyAwareImageCacheManager.cinemaInstance.resetNetworkClients();
     CachedNetworkImageProvider.defaultCacheManager =
         ProxyAwareImageCacheManager.instance;
   }

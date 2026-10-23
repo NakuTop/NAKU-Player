@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import 'cinema_filters.dart';
 import 'cinema_grouping.dart';
+import 'cinema_home_cache.dart';
 import 'cinema_models.dart';
 import 'cinema_media_identity.dart';
 import 'cinema_repository.dart';
@@ -78,13 +79,16 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
     required CinemaRepository repository,
     DoubanRepository? discoveryRepository,
     DateTime Function()? now,
+    CinemaHomeCache? cache,
   }) : _repository = repository,
        _discovery = discoveryRepository ?? DoubanRepository(),
+       _cache = cache,
        _now = now ?? DateTime.now;
 
   final CinemaRepository _repository;
   final DoubanRepository _discovery;
   final DateTime Function() _now;
+  final CinemaHomeCache? _cache;
   final _sessions = <String, _Session>{};
   // Capability evidence is scoped to the complete configuration, not a host
   // allowlist. Only an observed nonmatching year establishes ignored filtering.
@@ -131,9 +135,21 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
     if (_active != null) _active!.loading = false;
     final generation = ++_generation;
     var session = _sessions.remove(key);
+    if (session == null && _cache != null) {
+      await _cache.load();
+      if (_disposed || generation != _generation) return;
+      final stored = _cache.get('catalog', key);
+      if (stored != null) {
+        try {
+          session = _Session.restore(key, kind, filters, sort, enabled, stored);
+        } catch (_) {
+          // A malformed optional snapshot falls back to normal discovery.
+        }
+      }
+    }
     final cachedFresh =
         session?.fetchedAt != null &&
-        _now().difference(session!.fetchedAt!) < const Duration(minutes: 5);
+        _now().difference(session!.fetchedAt!) < const Duration(minutes: 30);
     if (refresh || !cachedFresh) {
       final oldItems = session == null
           ? const <CinemaTitle>[]
@@ -146,9 +162,20 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
           _ignoredYear.remove(_sourceKey(source));
         }
       }
+      final previous = session;
       session = _Session(key, kind, filters, sort, enabled);
       // A refresh leaves cards visible while the first new round is fetched.
       if (oldItems.isNotEmpty) session.staleItems = oldItems;
+      session.initialized = previous?.initialized ?? false;
+      session.fetchedAt = previous?.fetchedAt;
+      if (previous != null && session.recentPopular && !refresh) {
+        // Only revalidate the head of the hot list. Already loaded later pages
+        // keep their data and cursor instead of being downloaded a second time.
+        session.retainedItems = oldItems
+            .where((item) => !previous.headKeys.contains(item.key))
+            .toList();
+        session.retainedDiscoveryPages = previous.discoveryPages;
+      }
       if (session.metadataOnly && !session.recentPopular) {
         for (final cached in _sessions.values.where((s) => s.kind == kind)) {
           for (final item in cached.items.values.where(
@@ -229,13 +256,34 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
     if (!_valid(session, generation)) return;
     session.loading = false;
     session.initialized = true;
-    session.fetchedAt = _now();
+    final succeeded =
+        session.discoveryError == null &&
+        session.sources.every((source) => source.error == null);
+    if (succeeded) session.fetchedAt = _now();
+    if (succeeded &&
+        session.items.isNotEmpty &&
+        session.retainedItems.isNotEmpty) {
+      for (final item in session.retainedItems) {
+        if (session.items.length >= 800) break;
+        session.items.putIfAbsent(item.key, () => item);
+      }
+      for (final old in session.retainedDiscoveryPages) {
+        for (final cursor in session.discoveryPages) {
+          if (cursor.year == old.year && old.start > cursor.start) {
+            cursor.start = old.start;
+          }
+        }
+      }
+      session.retainedItems = const [];
+      session.retainedDiscoveryPages = const [];
+    }
     if (session.items.isNotEmpty ||
         (session.discoveryError == null &&
             session.sources.every((source) => source.error == null))) {
       session.staleItems = const [];
     }
     _publish(session);
+    if (succeeded) await _cache?.put('catalog', session.key, session.toJson());
   }
 
   Future<void> _fetchSource(
@@ -362,6 +410,7 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
         cancelToken: session.cancel,
       );
       if (!_valid(session, generation)) return;
+      if (cursor.start == 0) session.headKeys.clear();
       for (final title in page.items) {
         if (session.items.length >= 800) break;
         final metadata = CinemaTitle(
@@ -388,7 +437,15 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
         // returned metadata; never silently show the wrong year or region.
         if (cinemaOrdinaryCategory(metadata.genres) &&
             filters.matches(metadata)) {
-          session.items[metadata.key] = metadata;
+          final previous = session.staleItems
+              .where((item) => item.key == metadata.key)
+              .firstOrNull;
+          session.items[metadata.key] =
+              previous != null &&
+                  jsonEncode(previous.toJson()) == jsonEncode(metadata.toJson())
+              ? previous
+              : metadata;
+          if (cursor.start == 0) session.headKeys.add(metadata.key);
         }
       }
       if (page.hasMore) {
@@ -411,7 +468,13 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
     if (_disposed || _active != session) return;
     final raw = session.items.isEmpty
         ? session.staleItems
-        : session.items.values.toList();
+        : [
+            ...session.items.values,
+            if (session.loading)
+              ...session.staleItems.where(
+                (item) => !session.items.containsKey(item.key),
+              ),
+          ];
     // Real-source variants come first, so an unplayable metadata card never
     // supplants an already available source when the default source is absent.
     final ordered = [
@@ -587,6 +650,104 @@ class _Session {
                   : [filters.year])
               .map(_DiscoveryCursor.new)
               .toList();
+  factory _Session.restore(
+    String key,
+    CinemaAggregateKind kind,
+    CinemaFilters filters,
+    CinemaCatalogSort sort,
+    List<CinemaSource> sources,
+    Map<String, dynamic> data,
+  ) {
+    final session = _Session(key, kind, filters, sort, sources);
+    session.fetchedAt = DateTime.parse(data['at'] as String);
+    session.initialized = true;
+    for (final raw in jsonMaps(data['items']).take(800)) {
+      final item = CinemaTitle.fromJson(raw);
+      if (item.id.isNotEmpty &&
+          item.title.isNotEmpty &&
+          (item.sourceId == 'douban-discovery' ||
+              sources.any((s) => s.id == item.sourceId))) {
+        session.items[item.key] = item;
+      }
+    }
+    session.headKeys.addAll(
+      (data['headKeys'] as List? ?? []).whereType<String>(),
+    );
+    session.discoveryPages
+      ..clear()
+      ..addAll(
+        jsonMaps(data['discoveryPages']).map(
+          (raw) =>
+              _DiscoveryCursor(raw['year'] as String)
+                ..start = raw['start'] as int,
+        ),
+      );
+    session.discoveryHasMore = session.discoveryPages.isNotEmpty;
+    for (final raw in jsonMaps(data['sources'])) {
+      final cursor = session.sources
+          .where((s) => s.source.id == raw['id'])
+          .firstOrNull;
+      if (cursor == null) continue;
+      cursor.categories = jsonMaps(raw['categories'])
+          .map(
+            (category) => CinemaCategory(
+              id: category['id'] as String,
+              name: category['name'] as String,
+              parentId: category['parentId'] as String,
+            ),
+          )
+          .toList();
+      cursor.pages.addAll(
+        jsonMaps(raw['pages']).map(
+          (page) =>
+              _CategoryCursor(page['id'] as String)..page = page['page'] as int,
+        ),
+      );
+      cursor.exhausted = raw['exhausted'] == true;
+      cursor.yearUnsupported = raw['yearUnsupported'] == true;
+      for (final (target, field) in [
+        (cursor.keys, 'keys'),
+        (cursor.fingerprints, 'fingerprints'),
+        (cursor.blockedIds, 'blockedIds'),
+        (cursor.allowedIds, 'allowedIds'),
+      ]) {
+        target.addAll((raw[field] as List? ?? []).whereType<String>());
+      }
+    }
+    return session;
+  }
+
+  Map<String, dynamic> toJson() => {
+    'at': fetchedAt?.toIso8601String(),
+    'items': items.values.map((t) => t.toJson()).toList(),
+    'headKeys': headKeys.toList(),
+    'discoveryPages': [
+      for (final c in discoveryPages) {'year': c.year, 'start': c.start},
+    ],
+    'sources': [
+      for (final c in sources)
+        {
+          'id': c.source.id,
+          'categories': [
+            for (final category in c.categories ?? <CinemaCategory>[])
+              {
+                'id': category.id,
+                'name': category.name,
+                'parentId': category.parentId,
+              },
+          ],
+          'pages': [
+            for (final page in c.pages) {'id': page.id, 'page': page.page},
+          ],
+          'exhausted': c.exhausted,
+          'yearUnsupported': c.yearUnsupported,
+          'keys': c.keys.toList(),
+          'fingerprints': c.fingerprints.toList(),
+          'blockedIds': c.blockedIds.toList(),
+          'allowedIds': c.allowedIds.toList(),
+        },
+    ],
+  };
   final String key;
   final CinemaAggregateKind kind;
   final CinemaFilters filters;
@@ -594,6 +755,9 @@ class _Session {
   final List<_SourceCursor> sources;
   final items = <String, CinemaTitle>{};
   List<CinemaTitle> staleItems = const [];
+  List<CinemaTitle> retainedItems = const [];
+  List<_DiscoveryCursor> retainedDiscoveryPages = const [];
+  final headKeys = <String>{};
   bool loading = false, initialized = false, discoveryHasMore = true;
   final List<_DiscoveryCursor> discoveryPages;
   String? discoveryError;

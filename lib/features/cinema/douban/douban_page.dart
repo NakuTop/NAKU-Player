@@ -5,6 +5,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:kazumi/services/network/proxy_aware_image_cache_manager.dart';
 import '../cinema_theme.dart';
 import 'douban_models.dart';
 import 'douban_repository.dart';
@@ -964,6 +965,7 @@ class _DoubanPageState extends State<DoubanPage> {
               child: item.poster.isEmpty
                   ? _posterFallback()
                   : CachedNetworkImage(
+                      cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
                       memCacheWidth: 480,
                       imageUrl: item.poster,
                       httpHeaders: doubanImageHeaders,

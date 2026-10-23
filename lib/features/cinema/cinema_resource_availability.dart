@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import 'cinema_grouping.dart';
+import 'cinema_home_cache.dart';
 import 'cinema_media_identity.dart';
 import 'cinema_models.dart';
 import 'cinema_repository.dart';
@@ -42,6 +43,7 @@ class CinemaResourceAvailability {
 class CinemaResourceEntry extends ValueNotifier<CinemaResourceAvailability> {
   CinemaResourceEntry() : super(const CinemaResourceAvailability());
   DateTime? completedAt;
+  DateTime? retryAfter;
   Future<CinemaResourceAvailability>? pending;
   final consumers = <bool Function()>[];
   bool get observed => hasListeners;
@@ -51,10 +53,15 @@ class CinemaResourceEntry extends ValueNotifier<CinemaResourceAvailability> {
 /// discovery routine limiting each to three providers. Cache keys include the
 /// entire enabled-source configuration, so a new URL cannot reuse old results.
 class CinemaResourceAvailabilityService {
-  CinemaResourceAvailabilityService(this.repository, {DateTime Function()? now})
-    : _now = now ?? DateTime.now;
+  CinemaResourceAvailabilityService(
+    this.repository, {
+    DateTime Function()? now,
+    CinemaHomeCache? cache,
+  }) : _now = now ?? DateTime.now,
+       _cache = cache;
   final CinemaRepository repository;
   final DateTime Function() _now;
+  final CinemaHomeCache? _cache;
   final _entries = <String, CinemaResourceEntry>{};
   final _queue = <Future<void> Function()>[];
   int _active = 0;
@@ -84,13 +91,56 @@ class CinemaResourceAvailabilityService {
         _entries.remove(key)?.dispose();
       }
     }
-    return _entries.putIfAbsent(key, CinemaResourceEntry.new);
+    return _entries.putIfAbsent(key, () {
+      final entry = CinemaResourceEntry();
+      final stored = _cache?.get('resource', key);
+      if (stored != null) {
+        try {
+          final state = CinemaResourceState.values.byName(
+            stored['state'] as String,
+          );
+          if (state != CinemaResourceState.found &&
+              state != CinemaResourceState.missing &&
+              state != CinemaResourceState.incomplete &&
+              state != CinemaResourceState.noSources) {
+            return entry;
+          }
+          final allowedIds = _sources(sources).map((s) => s.id).toSet();
+          final variants = jsonMaps(stored['variants'])
+              .map(CinemaTitle.fromJson)
+              .where(
+                (t) =>
+                    allowedIds.contains(t.sourceId) &&
+                    t.routes.any(
+                      (r) => r.episodes.any((e) => e.url.isNotEmpty),
+                    ),
+              )
+              .toList();
+          if (state == CinemaResourceState.found && variants.isEmpty) {
+            return entry;
+          }
+          entry.completedAt = DateTime.parse(stored['at'] as String);
+          entry.retryAfter = DateTime.tryParse(
+            stored['retryAfter']?.toString() ?? '',
+          );
+          entry.value = CinemaResourceAvailability(
+            state: state,
+            variants: variants,
+            checked: stored['checked'] as int,
+            total: allowedIds.length,
+          );
+        } catch (_) {
+          // Ignore just this optional entry, without clearing other results.
+        }
+      }
+      return entry;
+    });
   }
 
   CinemaResourceAvailability? peek(
     CinemaTitle title,
     Iterable<CinemaSource> sources,
-  ) => _entries[_key(title, sources)]?.value;
+  ) => entry(title, sources).value;
 
   Future<CinemaResourceAvailability> check(
     CinemaTitle title,
@@ -103,10 +153,13 @@ class CinemaResourceAvailabilityService {
     final target = entry(title, selected);
     final ttl = target.value.state == CinemaResourceState.incomplete
         ? const Duration(seconds: 30)
+        : target.value.state == CinemaResourceState.found
+        ? const Duration(hours: 6)
         : const Duration(minutes: 10);
     if (!force &&
-        target.completedAt != null &&
-        _now().difference(target.completedAt!) < ttl) {
+        ((target.retryAfter?.isAfter(_now()) ?? false) ||
+            target.completedAt != null &&
+                _now().difference(target.completedAt!) < ttl)) {
       return Future.value(target.value);
     }
     target.consumers.add(isCurrent ?? () => true);
@@ -115,11 +168,25 @@ class CinemaResourceAvailabilityService {
     target.pending = done.future;
     bool current() => !_disposed && target.consumers.any((f) => f());
     _queue.add(() async {
+      final previous = target.value;
       var checked = 0;
       var failed = false;
       var variants = <CinemaTitle>[];
       void publish(CinemaResourceState state) {
         if (_disposed) return;
+        // Revalidation must not turn a saved badge into a loading placeholder.
+        if (state == CinemaResourceState.checking &&
+            (previous.state == CinemaResourceState.found ||
+                previous.state == CinemaResourceState.missing)) {
+          return;
+        }
+        if (state == CinemaResourceState.incomplete &&
+            (previous.state == CinemaResourceState.found ||
+                previous.state == CinemaResourceState.missing)) {
+          target.value = previous;
+          target.retryAfter = _now().add(const Duration(seconds: 30));
+          return;
+        }
         target.value = CinemaResourceAvailability(
           state: state,
           variants: List.unmodifiable(variants),
@@ -187,6 +254,12 @@ class CinemaResourceAvailabilityService {
           if (variants.isNotEmpty) break;
         }
         if (!current()) {
+          if (variants.isEmpty &&
+              (previous.state == CinemaResourceState.found ||
+                  previous.state == CinemaResourceState.missing)) {
+            target.value = previous;
+            return;
+          }
           publish(
             variants.isEmpty
                 ? CinemaResourceState.waiting
@@ -201,15 +274,36 @@ class CinemaResourceAvailabilityService {
               ? CinemaResourceState.incomplete
               : CinemaResourceState.missing,
         );
-        target.completedAt = _now();
+        if (!failed ||
+            variants.isNotEmpty ||
+            previous.state != CinemaResourceState.found &&
+                previous.state != CinemaResourceState.missing) {
+          target.completedAt = _now();
+          target.retryAfter = null;
+        }
       } catch (_) {
         publish(
           variants.isEmpty
               ? CinemaResourceState.incomplete
               : CinemaResourceState.found,
         );
-        target.completedAt = _now();
+        if (previous.state != CinemaResourceState.found &&
+            previous.state != CinemaResourceState.missing) {
+          target.completedAt = _now();
+        }
       } finally {
+        if (!_disposed && target.completedAt != null) {
+          await _cache?.put('resource', _key(title, selected), {
+            'at': target.completedAt!.toIso8601String(),
+            'retryAfter': target.retryAfter?.toIso8601String(),
+            'state': target.value.state.name,
+            'checked': target.value.checked,
+            'variants': target.value.variants
+                .take(6)
+                .map((t) => t.toJson())
+                .toList(),
+          });
+        }
         target.pending = null;
         target.consumers.clear();
         done.complete(target.value);

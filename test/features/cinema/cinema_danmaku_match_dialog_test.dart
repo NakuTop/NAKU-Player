@@ -206,12 +206,17 @@ void main() {
         await tester.runAsync(() async {
           await tester.tap(find.byKey(const ValueKey('danmaku-match-submit')));
           final deadline = DateTime.now().add(const Duration(seconds: 3));
-          while (queries.isEmpty && DateTime.now().isBefore(deadline)) {
+          // The matcher records its query before the controller persists the
+          // result. Allow that real I/O to finish outside the fake frame clock.
+          while ((queries.isEmpty || c.matching) &&
+              DateTime.now().isBefore(deadline)) {
             await Future<void>.delayed(const Duration(milliseconds: 10));
           }
+          expect(c.matching, isFalse);
         });
         await tester.pumpAndSettle();
         expect(queries.single.title, 'Titanic');
+        expect(c.entries.single.message, '自写测试弹幕');
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox());
       },

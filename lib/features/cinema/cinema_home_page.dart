@@ -29,6 +29,7 @@ import 'package:kazumi/services/plugin/rule_engine_models.dart'
 import 'cinema_filters.dart';
 import 'cinema_media_identity.dart';
 import 'cinema_aggregate_catalog.dart';
+import 'cinema_home_cache.dart';
 import 'cinema_discovery_resolver.dart';
 import 'cinema_search_discovery.dart';
 
@@ -40,6 +41,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
+import 'package:kazumi/services/network/proxy_aware_image_cache_manager.dart';
 
 import 'cinema_models.dart';
 import 'cinema_follow_resolver.dart';
@@ -108,6 +110,7 @@ class CinemaHomePage extends StatefulWidget {
     this.store,
     this.repository,
     this.ratingsRepository,
+    this.homeCache,
     this.watchTogether,
     this.enableWatchTogether = true,
     this.enableSearchDiscovery = true,
@@ -125,6 +128,7 @@ class CinemaHomePage extends StatefulWidget {
   final CinemaStore? store;
   final CinemaRepository? repository;
   final CinemaRatingsRepository? ratingsRepository;
+  final CinemaHomeCache? homeCache;
   final CinemaWatchTogether? watchTogether;
   final bool enableWatchTogether;
   final bool enableSearchDiscovery;
@@ -148,7 +152,13 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   final _nasPageCache = CinemaNASPageCache();
   late final CinemaRepository _repository =
       widget.repository ?? CinemaRepository(health: _health);
-  late final _resources = CinemaResourceAvailabilityService(_repository);
+  late final _homeCache =
+      widget.homeCache ??
+      (widget.store == null ? CinemaHomeCache.instance : null);
+  late final _resources = CinemaResourceAvailabilityService(
+    _repository,
+    cache: _homeCache,
+  );
   late final _discoveryRepository =
       widget.searchDiscovery ?? CinemaSearchDiscoveryRepository();
   late final _ratings =
@@ -218,6 +228,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         final controller = CinemaAggregateCatalogController(
           repository: _repository,
           discoveryRepository: widget.catalogDiscovery,
+          cache: _homeCache,
         );
         controller.addListener(() {
           final state = _catalogs[section]!;
@@ -786,6 +797,10 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   Future<void> _initialize() async {
     try {
       await _store.load();
+      await Future.wait([
+        if (_homeCache != null) _homeCache.load(),
+        if (_homeCache != null) _ratings.restore(),
+      ]);
       if (widget.store == null) {
         if (NakuDevice.hasNAS) {
           _nasSync ??= CinemaNASSync(_store);
@@ -2763,6 +2778,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       child: title.poster.isEmpty
           ? _posterFallback(title.title)
           : CachedNetworkImage(
+              cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
               memCacheWidth: 480,
               fadeInDuration: Duration.zero,
               fadeOutDuration: Duration.zero,
@@ -3561,6 +3577,8 @@ class _TitleDetailsState extends State<_TitleDetails> {
                       ClipRRect(
                         borderRadius: BorderRadius.circular(12),
                         child: CachedNetworkImage(
+                          cacheManager:
+                              ProxyAwareImageCacheManager.cinemaInstance,
                           memCacheWidth: 480,
                           imageUrl: title.poster,
                           httpHeaders: title.sourceId == 'douban-discovery'
