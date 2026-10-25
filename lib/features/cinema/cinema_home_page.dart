@@ -83,6 +83,7 @@ import 'cinema_header_frost.dart';
 import 'cinema_artwork_backdrop.dart';
 import 'cinema_route_motion.dart';
 import 'cinema_websites_page.dart';
+import 'cinema_home_display_page.dart';
 
 enum _Section { movies, series, anime, favorites, history, settings }
 
@@ -749,8 +750,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     }
   }
 
-  void _openNAS() {
-    Navigator.of(context).push(
+  Future<void> _openNAS() async {
+    await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => Theme(
           data: CinemaTheme.of(context),
@@ -762,6 +763,17 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             onRecommendationSelected: (recommendation) =>
                 unawaited(_openDoubanRecommendation(recommendation)),
           ),
+        ),
+      ),
+    );
+  }
+
+  void _openHomeDisplay() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => CinemaHomeDisplayPage(
+          client: _nasPageCache.client,
+          onOpenNAS: _openNAS,
         ),
       ),
     );
@@ -2210,6 +2222,13 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         icon: const Icon(Icons.dns_outlined, size: 16),
                         label: const Text('NAS 影视'),
                       ),
+                      if (Theme.of(context).platform == TargetPlatform.macOS)
+                        IconButton(
+                          key: const ValueKey('cinema-home-display-entry'),
+                          tooltip: 'Home Display',
+                          onPressed: _openHomeDisplay,
+                          icon: const Icon(Icons.public_rounded, size: 19),
+                        ),
                       if (NakuDevice.canDownload)
                         IconButton(
                           tooltip: '下载管理',
@@ -2508,6 +2527,19 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             },
           ),
         ),
+        if (Theme.of(context).platform == TargetPlatform.macOS)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+            child: ListTile(
+              dense: true,
+              leading: const Icon(Icons.public_rounded, size: 20),
+              title: const Text('Home Display', style: TextStyle(fontSize: 14)),
+              onTap: () {
+                if (closeDrawer) Navigator.pop(context);
+                _openHomeDisplay();
+              },
+            ),
+          ),
         if (NakuDevice.canDownload)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),

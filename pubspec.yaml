@@ -1,7 +1,7 @@
 name: kazumi
 description: "NAKU播放器：电影、剧集与动漫客户端。"
 publish_to: "none"
-version: 3.0.0+76
+version: 3.0.1+77
 
 environment:
   sdk: ">=3.10.0 <4.0.0"
