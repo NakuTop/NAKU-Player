@@ -98,9 +98,12 @@ canvas; private/write requests returned 403 and context-only access returned
 401. This live probe preceded the final placeholder-readiness regression fix,
 which is covered by the focused bridge harness.
 
-No player release/feed publication or installed app replacement has been
-performed for this change. The final player release build and packaging remain
-separate from the completed live website/NAS verification.
+The 3.0.1+77 source tag and formal GitHub release are published. All seven public
+assets passed complete anonymous download/SHA-256 verification, and the final
+ZIP signature and unchanged legacy update key were independently verified. The
+signed appcast activates 3.0.1 while retaining previous versions. Installation
+and final local application state are recorded separately from the live NAS
+verification.
 
 ## Focused checks
 
