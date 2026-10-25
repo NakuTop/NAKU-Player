@@ -188,6 +188,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   final _ratingLoadedContexts = <(_Section, String), String>{};
   Timer? _ratingRefresh;
   int _ratingRevision = 0;
+  String? _displayedRatingFingerprint;
   final _scrollActivity = CinemaScrollActivity();
   bool _ratingsChangedWhileScrolling = false;
   late final _together = widget.watchTogether ?? CinemaWatchTogether.instance;
@@ -456,6 +457,30 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   String get _scoreProvider => _scoreProviders[_section] ?? '豆瓣';
 
+  String _ratingSortFingerprint() {
+    final view = _catalogView;
+    return jsonEncode([
+      _section.name,
+      _scoreProvider,
+      _catalogViewportKey,
+      _catalog.filters.year,
+      _catalog.filters.region,
+      _catalog.filters.genre,
+      // Use the filtered, grouped representatives that the wall actually sorts.
+      // Keep all scores, including changes that preserve the current order.
+      for (final title in view.representatives)
+        [title.key, _ratings.scoreFor(title, _scoreProvider)],
+      if (_searching)
+        [
+          for (final title in _visibleDiscoveryTitles(_catalog, _section))
+            [
+              title.metadata.key,
+              _ratings.scoreFor(title.metadata, _scoreProvider),
+            ],
+        ],
+    ]);
+  }
+
   void _onRatingsChanged() {
     if (_scrollActivity.value) {
       _ratingsChangedWhileScrolling = true;
@@ -469,11 +494,17 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     }
     _ratingRefresh ??= Timer(const Duration(milliseconds: 350), () {
       _ratingRefresh = null;
-      _ratingRevision++;
       if (mounted &&
           _showsCatalogSort &&
           _currentCatalogSort == CinemaCatalogSort.rating) {
-        setState(() {});
+        final fingerprint = _ratingSortFingerprint();
+        if (fingerprint == _displayedRatingFingerprint) return;
+        _displayedRatingFingerprint = fingerprint;
+        setState(() => _ratingRevision++);
+      } else {
+        // Another destination/provider can reuse its view later. Preserve cache
+        // invalidation without rebuilding the inactive rating catalogue.
+        _ratingRevision++;
       }
     });
   }
@@ -1893,6 +1924,16 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   @override
   Widget build(BuildContext context) {
+    if (_showsCatalogSort &&
+        _currentCatalogSort == CinemaCatalogSort.rating &&
+        !_scrollActivity.value &&
+        _ratingRefresh == null &&
+        !_ratingsChangedWhileScrolling) {
+      // A regular tab/query/provider/data change establishes a fresh baseline.
+      // Do not absorb pending score changes during an unrelated rebuild: the
+      // scheduled refresh still owns their eventual re-sort after scrolling.
+      _displayedRatingFingerprint = _ratingSortFingerprint();
+    }
     return Theme(
       data: CinemaTheme.of(context),
       child: Builder(
@@ -2862,6 +2903,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 topInset: topInset,
                 titles: featured,
                 artworkRepository: widget.artworkRepository,
+                artworkChanges: _ratings.changes,
                 artworkIdentity: (title) =>
                     _ratings.peek(title)?.identity ?? const RatingIdentity(),
                 onOpen: (title) => _openTitle(

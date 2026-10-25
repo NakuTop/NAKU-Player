@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 
 /// Native coarse-to-fine rendering driven by real detail resource readiness.
 ///
@@ -38,23 +39,24 @@ class CinemaNeonDecode extends StatefulWidget {
 }
 
 class CinemaNeonDecodeState extends State<CinemaNeonDecode>
-    with WidgetsBindingObserver {
-  static const _frameDuration = Duration(milliseconds: 42);
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   static const _revealSeconds = 8.0;
   final _signal = _DecodeFrame();
-  Timer? _frameTimer;
+  late final Ticker _ticker;
+  Duration _lastFrame = Duration.zero;
   Timer? _settleTimer;
   bool _visible = false;
   bool _motionAllowed = true;
   bool _foreground = true;
   bool _hasRevealSession = false;
   static const _settleDuration = Duration(milliseconds: 520);
-  int _settleFrames = 0;
+  double _settleElapsed = 0;
   int _generation = 0;
 
   @override
   void initState() {
     super.initState();
+    _ticker = createTicker(_tick);
     WidgetsBinding.instance.addObserver(this);
     _signal.requestFrames = _ensureFrames;
     final lifecycle = WidgetsBinding.instance.lifecycleState;
@@ -141,7 +143,7 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
   })
   get debugSnapshot => (
     visible: _visible,
-    running: _frameTimer?.isActive ?? false,
+    running: _ticker.isActive,
     settling: _signal.settling,
     sourceProgress: _signal.progress,
     visualReveal: _signal.reveal,
@@ -155,10 +157,10 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
   );
 
   void _begin() {
-    _frameTimer?.cancel();
+    _pauseFrames();
     _settleTimer?.cancel();
     _settleTimer = null;
-    _settleFrames = 0;
+    _settleElapsed = 0;
     if (!_hasRevealSession) {
       _generation++;
       _signal
@@ -186,8 +188,8 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
       _signal.clock + .000001 < _signal.animateUntil;
 
   void _pauseFrames() {
-    _frameTimer?.cancel();
-    _frameTimer = null;
+    _ticker.stop();
+    _lastFrame = Duration.zero;
   }
 
   void _ensureFrames() {
@@ -199,35 +201,41 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
       _pauseFrames();
       return;
     }
-    if (_frameTimer?.isActive ?? false) return;
-    _frameTimer = Timer.periodic(_frameDuration, (_) {
-      if (!mounted || !_foreground || !_motionAllowed || !_signal.enabled) {
-        _pauseFrames();
-        return;
-      }
-      _signal.clock += .042;
-      if (_signal.settling) {
-        _settleFrames++;
-        final t = (_settleFrames * 42 / _settleDuration.inMilliseconds).clamp(
-          0.0,
-          1.0,
-        );
-        _signal.assembly = t;
-        _signal.opacity = 1 - t * t * (3 - 2 * t);
-      } else {
-        _signal.elapsed = math.min(_revealSeconds, _signal.elapsed + .042);
-        _advanceReveal();
-      }
-      _signal.redraw();
-      if (!_needsFrames) _pauseFrames();
-    });
+    if (_ticker.isActive) return;
+    _lastFrame = Duration.zero;
+    _ticker.start();
+  }
+
+  void _tick(Duration elapsed) {
+    if (!mounted || !_foreground || !_motionAllowed || !_signal.enabled) {
+      _pauseFrames();
+      return;
+    }
+    // Follow actual display frames, including 120 Hz panels. A delayed frame
+    // advances once by its elapsed time instead of queueing 42 ms timer work.
+    // Each resumed ticker starts a fresh time base, excluding hidden time.
+    final dt = (elapsed - _lastFrame).inMicroseconds / 1000000;
+    _lastFrame = elapsed;
+    _signal.clock += dt;
+    if (_signal.settling) {
+      _settleElapsed += dt;
+      final t = (_settleElapsed / (_settleDuration.inMicroseconds / 1000000))
+          .clamp(0.0, 1.0);
+      _signal.assembly = t;
+      _signal.opacity = 1 - t * t * (3 - 2 * t);
+    } else {
+      _signal.elapsed = math.min(_revealSeconds, _signal.elapsed + dt);
+      _advanceReveal();
+    }
+    _signal.redraw();
+    if (!_needsFrames) _pauseFrames();
   }
 
   void _finish() {
     // Only the parent's real resource gate permits the last pixels to assemble.
     // The data is already usable: this non-blocking 520 ms material finish never
     // extends the underlying request, disables controls, or replays the wait.
-    _settleFrames = 0;
+    _settleElapsed = 0;
     _signal
       ..assemblyFromPixelSize = _signal.pixelSize
       ..assemblyFromBlurSigma = _signal.blurSigma
@@ -256,7 +264,7 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _frameTimer?.cancel();
+    _ticker.dispose();
     _settleTimer?.cancel();
     _signal.requestFrames = null;
     _signal.dispose();

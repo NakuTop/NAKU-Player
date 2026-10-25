@@ -45,6 +45,51 @@ void main() {
   });
 
   testWidgets(
+    'refinement follows every display frame without rebuilding live content',
+    (tester) async {
+      var builds = 0;
+      var pending = true;
+      final content = Builder(
+        builder: (_) {
+          builds++;
+          return const Text('真实内容');
+        },
+      );
+      Widget sample() => MaterialApp(
+        home: CinemaNeonDecode(loading: pending, child: content),
+      );
+      await tester.pumpWidget(sample());
+      final state = decodeState(tester);
+      final initialBuilds = builds;
+      var previous = state.debugSnapshot;
+      // Exercise 120 Hz frame intervals, below the former 42 ms timer period.
+      for (var i = 0; i < 24; i++) {
+        await tester.pump(const Duration(microseconds: 8333));
+        final current = state.debugSnapshot;
+        expect(current.elapsed - previous.elapsed, closeTo(.008333, .000001));
+        expect(current.pixelSize, lessThan(previous.pixelSize));
+        previous = current;
+      }
+      expect(builds, initialBuilds);
+      // A delayed display frame advances once by the actual elapsed time.
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(
+        state.debugSnapshot.elapsed - previous.elapsed,
+        closeTo(.4, .000001),
+      );
+      expect(builds, initialBuilds);
+      pending = false;
+      await tester.pumpWidget(sample());
+      await tester.pump(const Duration(milliseconds: 520));
+      expect(state.debugSnapshot.running, isFalse);
+      expect(state.debugSnapshot.filtersEnabled, isFalse);
+      await tester.pump();
+      expect(tester.binding.transientCallbackCount, 0);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'only real loading enables the field and child stays actionable',
     (tester) async {
       await tester.pumpWidget(host());

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
@@ -8,6 +9,7 @@ import 'package:kazumi/features/cinema/cinema_ratings.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
 import 'package:kazumi/features/cinema/cinema_scroll_activity.dart';
+import 'package:kazumi/features/cinema/cinema_search_discovery.dart';
 
 const _source = CinemaSource(
   id: 'rating-source',
@@ -87,9 +89,10 @@ class _Ratings extends CinemaRatingsRepository {
     String id,
     Map<String, double?> scores, {
     bool notify = false,
+    RatingIdentity? identity,
   }) {
     cache[id] = CinemaRatings(
-      identity: const RatingIdentity(),
+      identity: identity ?? cache[id]?.identity ?? const RatingIdentity(),
       ratings: [
         for (final entry in scores.entries)
           CinemaRating(
@@ -132,6 +135,24 @@ class _Ratings extends CinemaRatingsRepository {
   }
 }
 
+class _Discovery extends CinemaSearchDiscoveryRepository {
+  @override
+  Future<CinemaSearchDiscovery> search(
+    String keyword, {
+    CancelToken? cancelToken,
+  }) async => CinemaSearchDiscovery(
+    titles: [
+      for (final id in ['1291546', '1292052'])
+        CinemaDiscoveryTitle(
+          id: id,
+          title: '相关作品$id',
+          year: '${DateTime.now().year}',
+          kind: 'movie',
+        ),
+    ],
+  );
+}
+
 class _NavigationObserver extends NavigatorObserver {
   final pushed = <Route<dynamic>>[];
   @override
@@ -171,7 +192,10 @@ void main() {
     await directory.delete(recursive: true);
   });
 
-  Future<void> mount(WidgetTester tester) async {
+  Future<void> mount(
+    WidgetTester tester, {
+    CinemaSearchDiscoveryRepository? discovery,
+  }) async {
     tester.view.physicalSize = const Size(1280, 1000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -185,7 +209,8 @@ void main() {
           repository: catalogue,
           ratingsRepository: ratings,
           enableWatchTogether: false,
-          enableSearchDiscovery: false,
+          searchDiscovery: discovery,
+          enableSearchDiscovery: discovery != null,
         ),
       ),
     );
@@ -275,6 +300,100 @@ void main() {
       expect(catalogue.detailKeys, resourceHydration);
       expect(catalogue.detailCalls, resourceHydration.length);
       expect(ratings.detailCalls, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'unrelated scores and identity notifications keep the home viewport intact',
+    (tester) async {
+      ratings.setScores('A', {'豆瓣': 8.5, 'IMDb': 7.0});
+      ratings.setScores('B', {'豆瓣': 7.0});
+      ratings.setScores('C', {'豆瓣': null});
+      ratings.setScores('D', {'豆瓣': 6.0});
+      await mount(tester);
+      await selectRatingSort(tester);
+      CustomScrollView viewport() =>
+          tester.widget<CustomScrollView>(find.byType(CustomScrollView));
+      final original = viewport();
+
+      ratings.setScores('not-displayed', {'豆瓣': 10.0}, notify: true);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(identical(viewport(), original), isTrue);
+
+      ratings.setScores('A', {'豆瓣': 8.5, 'IMDb': 9.5}, notify: true);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(identical(viewport(), original), isTrue);
+      expect(
+        find.descendant(of: card('A'), matching: find.textContaining('9.5')),
+        findsOneWidget,
+        reason: 'The card keeps its own shared-cache subscription.',
+      );
+
+      ratings.setScores(
+        'A',
+        {'豆瓣': 8.5, 'IMDb': 9.5},
+        identity: const RatingIdentity(imdbId: 'tt0120338'),
+        notify: true,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      expect(identical(viewport(), original), isTrue);
+
+      ratings.setScores('A', {'豆瓣': 8.7, 'IMDb': 9.5}, notify: true);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      expect(identical(viewport(), original), isFalse);
+      expect(visualOrder(tester, ['A', 'B', 'C', 'D']), ['A', 'B', 'D', 'C']);
+      expect(
+        find.descendant(of: card('A'), matching: find.textContaining('8.7')),
+        findsOneWidget,
+        reason: 'A score change matters even when it keeps the same order.',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'discovery metadata scores independently reorder the related works row',
+    (tester) async {
+      ratings.setScores('1291546', {'豆瓣': 8.0});
+      ratings.setScores('1292052', {'豆瓣': 6.0});
+      await mount(tester, discovery: _Discovery());
+      await selectRatingSort(tester);
+      await tester.enterText(find.byType(TextField).first, '相关作品');
+      await tester.testTextInput.receiveAction(TextInputAction.search);
+      await tester.pumpAndSettle();
+      final first = find.byKey(const ValueKey('discovery-title:1291546'));
+      final second = find.byKey(const ValueKey('discovery-title:1292052'));
+      await Scrollable.ensureVisible(tester.element(first), alignment: .35);
+      await tester.pumpAndSettle();
+      expect(
+        tester.getTopLeft(first).dx,
+        lessThan(tester.getTopLeft(second).dx),
+      );
+      final viewport = tester.widget<CustomScrollView>(
+        find.byType(CustomScrollView),
+      );
+      ratings.setScores('1292052', {'豆瓣': 9.0}, notify: true);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      expect(
+        identical(
+          tester.widget<CustomScrollView>(find.byType(CustomScrollView)),
+          viewport,
+        ),
+        isFalse,
+      );
+      expect(
+        tester.getTopLeft(second).dx,
+        lessThan(tester.getTopLeft(first).dx),
+      );
       expect(tester.takeException(), isNull);
     },
   );

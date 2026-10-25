@@ -12,14 +12,20 @@ class _Counter extends StatefulWidget {
 }
 
 class _CounterState extends State<_Counter> {
-  int value = 0;
+  int value = 0, builds = 0;
   @override
-  Widget build(BuildContext context) => Center(
-    child: TextButton(
-      onPressed: () => setState(() => value++),
-      child: Text('播放器操作 $value'),
-    ),
-  );
+  Widget build(BuildContext context) {
+    builds++;
+    return ColoredBox(
+      color: const Color(0xFF8090A0),
+      child: Center(
+        child: TextButton(
+          onPressed: () => setState(() => value++),
+          child: Text('播放器操作 $value'),
+        ),
+      ),
+    );
+  }
 }
 
 void main() {
@@ -105,7 +111,7 @@ void main() {
     });
   }
 
-  testWidgets('only real loading milestones extend the dark waiting tube', (
+  testWidgets('real observations extend the waiting tube continuously', (
     tester,
   ) async {
     await mount(tester);
@@ -115,31 +121,144 @@ void main() {
     expect(surface.debugPhase, 'waiting');
     expect(surface.debugLoadStage, CinemaPlayerLoadStage.connecting);
     final initialExtent = surface.debugLampExtent;
-    final frames = surface.debugFrameCount;
+    final idleFrames = surface.debugFrameCount;
     await tester.pump(const Duration(seconds: 5));
     expect(surface.debugLampExtent, initialExtent);
-    expect(surface.debugFrameCount, frames);
+    expect(surface.debugFrameCount, idleFrames);
     expect(surface.debugIsAnimating, isFalse);
+
     loadStage = CinemaPlayerLoadStage.opening;
     await tester.pumpWidget(host());
-    final openingExtent = surface.debugLampExtent;
-    expect(openingExtent, greaterThan(initialExtent));
+    expect(surface.debugLampExtent, initialExtent);
+    expect(surface.debugLampTarget, greaterThan(initialExtent));
+    expect(surface.debugIsAnimating, isTrue);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    final interruptedExtent = surface.debugLampExtent;
+    final interruptedVelocity = surface.debugLampVelocity;
+    expect(interruptedExtent, greaterThan(initialExtent));
+    expect(interruptedExtent, lessThan(surface.debugLampTarget));
+    expect(interruptedVelocity, greaterThan(0));
+    await expectDarkWithTopLamp(tester);
+
     loadStage = CinemaPlayerLoadStage.waitingForFrame;
     await tester.pumpWidget(host());
-    expect(surface.debugLampExtent, greaterThan(openingExtent));
+    // A new observation changes the destination without snapping position or
+    // restarting from zero velocity, even in the middle of the previous curve.
+    expect(surface.debugLampExtent, interruptedExtent);
+    expect(surface.debugLampVelocity, closeTo(interruptedVelocity, .00001));
+    expect(surface.debugLampExtent, lessThan(surface.debugLampTarget));
+    await tester.pump();
+    var previous = interruptedExtent;
+    for (var i = 0; i < 40; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      final extent = surface.debugLampExtent;
+      expect(extent, greaterThanOrEqualTo(previous));
+      expect(extent - previous, lessThan(.055));
+      expect(extent, lessThanOrEqualTo(surface.debugLampTarget));
+      previous = extent;
+    }
+    expect(surface.debugLampExtent, surface.debugLampTarget);
     expect(surface.debugLampExtent, lessThan(1));
     expect(surface.debugPhase, 'waiting');
-    expect(surface.debugFrameCount, frames);
+    expect(surface.debugIsAnimating, isFalse);
     expect(reveals, 0);
     await expectDarkWithTopLamp(tester);
+    final settledFrames = surface.debugFrameCount;
+    await tester.pump(const Duration(seconds: 20));
+    expect(surface.debugFrameCount, settledFrames);
+    expect(surface.debugLampExtent, previous);
+
+    // Lower transient milestones cannot make the same source's tube retreat.
+    loadStage = CinemaPlayerLoadStage.connecting;
+    await tester.pumpWidget(host());
+    expect(surface.debugLampExtent, previous);
+    expect(surface.debugIsAnimating, isFalse);
     ready = true;
     await tester.pumpWidget(host());
     expect(surface.debugPhase, 'lighting');
+    expect(surface.debugLampExtent, previous);
     expect(reveals, 1);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 1551));
     expect(surface.debugPhase, 'complete');
     expect(childKey.currentState, same(child));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'a fast first frame continues the painted lamp and only repaints its light',
+    (tester) async {
+      await mount(tester);
+      await tester.pump(const Duration(milliseconds: 501));
+      final surface = state(tester);
+      loadStage = CinemaPlayerLoadStage.opening;
+      await tester.pumpWidget(host());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+      final paintedExtent = surface.debugLampExtent;
+      expect(paintedExtent, lessThan(surface.debugLampTarget));
+      ready = true;
+      loadStage = CinemaPlayerLoadStage.waitingForFrame;
+      await tester.pumpWidget(host());
+      expect(surface.debugPhase, 'lighting');
+      expect(surface.debugLampExtent, closeTo(paintedExtent, 1e-9));
+      expect(reveals, 1);
+      final content = tester.widget<Transform>(
+        find.byKey(const ValueKey('cinema-player-entrance-content')),
+      );
+      final builds = childKey.currentState!.builds;
+      await tester.pump();
+      var previous = paintedExtent;
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        final extent = surface.debugLampExtent;
+        expect(extent, greaterThan(previous));
+        expect(extent - previous, lessThan(.055));
+        previous = extent;
+        expect(
+          tester.widget<Transform>(
+            find.byKey(const ValueKey('cinema-player-entrance-content')),
+          ),
+          same(content),
+        );
+        expect(childKey.currentState!.builds, builds);
+      }
+      expect(surface.debugPhase, 'lighting');
+      await tester.pump(const Duration(milliseconds: 551));
+      expect(surface.debugPhase, 'complete');
+      expect(reveals, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('backgrounding stops a warming filament without a late tick', (
+    tester,
+  ) async {
+    await mount(tester);
+    await tester.pump(const Duration(milliseconds: 501));
+    final surface = state(tester);
+    loadStage = CinemaPlayerLoadStage.opening;
+    await tester.pumpWidget(host());
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    expect(surface.debugIsAnimating, isTrue);
+    surface.didChangeAppLifecycleState(AppLifecycleState.hidden);
+    await tester.pump();
+    expect(surface.debugIsAnimating, isFalse);
+    final frames = surface.debugFrameCount;
+    surface.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    await tester.pump(const Duration(seconds: 4));
+    expect(surface.debugFrameCount, frames);
+    expect(surface.debugPhase, 'cancelled');
+    expect(reveals, 0);
+    generation++;
+    loadStage = CinemaPlayerLoadStage.connecting;
+    await tester.pumpWidget(host());
+    await tester.pump(const Duration(milliseconds: 501));
+    expect(surface.debugPhase, 'waiting');
+    expect(surface.debugLampExtent, closeTo(.10, .0001));
+    expect(surface.debugIsAnimating, isFalse);
     expect(tester.takeException(), isNull);
   });
 

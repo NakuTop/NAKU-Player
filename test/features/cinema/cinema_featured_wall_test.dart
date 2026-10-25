@@ -2,8 +2,26 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:dio/dio.dart';
+import 'package:kazumi/features/cinema/cinema_detail_artwork.dart';
 import 'package:kazumi/features/cinema/cinema_featured_wall.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
+import 'package:kazumi/features/cinema/cinema_ratings.dart';
+
+class _Artwork extends CinemaDetailArtworkRepository {
+  final identities = <String>[];
+  @override
+  Future<CinemaDetailArtwork> resolve(
+    CinemaTitle title, {
+    RatingIdentity identity = const RatingIdentity(),
+    CancelToken? cancelToken,
+    bool Function()? isCurrent,
+    bool force = false,
+  }) async {
+    identities.add(identity.imdbId);
+    return const CinemaDetailArtwork(url: '');
+  }
+}
 
 const _titles = [
   CinemaTitle(id: 'titanic', sourceId: 'fixture', title: '泰坦尼克号', year: '1997'),
@@ -28,6 +46,10 @@ void main() {
     ScrollController? scrollController,
     double height = 860,
     double topInset = 0,
+    CinemaDetailArtworkRepository? artworkRepository,
+    Listenable? artworkChanges,
+    RatingIdentity Function(CinemaTitle)? artworkIdentity,
+    Widget Function(CinemaTitle)? statusBuilder,
   }) async {
     tester.view.physicalSize = Size(1280, height);
     tester.view.devicePixelRatio = 1;
@@ -51,6 +73,10 @@ void main() {
                     titles: titles,
                     onOpen: onOpen ?? (_) {},
                     topInset: topInset,
+                    artworkRepository: artworkRepository,
+                    artworkChanges: artworkChanges,
+                    artworkIdentity: artworkIdentity,
+                    statusBuilder: statusBuilder,
                   ),
                   const SizedBox(height: 1000),
                 ],
@@ -66,6 +92,57 @@ void main() {
   PageController pages(WidgetTester tester) => tester
       .widget<PageView>(find.byKey(const ValueKey('cinema-featured-pages')))
       .controller!;
+
+  testWidgets(
+    'late identity events upgrade artwork without unrelated hero rebuilds',
+    (tester) async {
+      final artwork = _Artwork();
+      final first = ChangeNotifier(), second = ChangeNotifier();
+      addTearDown(first.dispose);
+      addTearDown(second.dispose);
+      var imdb = '';
+      var builds = 0;
+      Future<void> install(Listenable changes) => mount(
+        tester,
+        artworkRepository: artwork,
+        artworkChanges: changes,
+        artworkIdentity: (_) => RatingIdentity(imdbId: imdb),
+        statusBuilder: (_) {
+          builds++;
+          return const SizedBox.shrink();
+        },
+      );
+      await install(first);
+      await tester.pumpAndSettle();
+      expect(artwork.identities, ['', '']);
+      imdb = 'tt0120338';
+      first.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(artwork.identities, ['', '', 'tt0120338', 'tt0120338']);
+      final settledBuilds = builds;
+      first.notifyListeners();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        builds,
+        settledBuilds,
+        reason: 'An unchanged identity does not repaint the hero.',
+      );
+      expect(artwork.identities, hasLength(4));
+      await install(second);
+      await tester.pumpAndSettle();
+      imdb = 'tt0903747';
+      first.notifyListeners();
+      await tester.pump();
+      expect(artwork.identities, hasLength(4));
+      second.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(artwork.identities.skip(4), ['tt0903747', 'tt0903747']);
+      await tester.pumpWidget(const SizedBox());
+      second.notifyListeners();
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'hero fills most of the first screen and adapts to short windows',

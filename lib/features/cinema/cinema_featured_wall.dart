@@ -25,6 +25,7 @@ class CinemaFeaturedWall extends StatefulWidget {
     this.topInset = 0,
     this.artworkRepository,
     this.artworkIdentity,
+    this.artworkChanges,
   });
 
   final List<CinemaTitle> titles;
@@ -33,6 +34,7 @@ class CinemaFeaturedWall extends StatefulWidget {
   final double topInset;
   final CinemaDetailArtworkRepository? artworkRepository;
   final CinemaArtworkIdentity? artworkIdentity;
+  final Listenable? artworkChanges;
 
   @override
   State<CinemaFeaturedWall> createState() => _CinemaFeaturedWallState();
@@ -60,6 +62,7 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
     _artworkWindow = CinemaFeaturedArtworkWindow(
       repository: widget.artworkRepository,
     )..addListener(_artworkChanged);
+    widget.artworkChanges?.addListener(_updateArtworkWindow);
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -89,6 +92,10 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
   @override
   void didUpdateWidget(CinemaFeaturedWall oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.artworkChanges != widget.artworkChanges) {
+      oldWidget.artworkChanges?.removeListener(_updateArtworkWindow);
+      widget.artworkChanges?.addListener(_updateArtworkWindow);
+    }
     final oldKeys = oldWidget.titles.map((title) => title.key).toList();
     final newKeys = widget.titles.map((title) => title.key).toList();
     if (!listEquals(oldKeys, newKeys)) {
@@ -230,6 +237,7 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
   void dispose() {
     _timer?.cancel();
     _wheelEnd?.cancel();
+    widget.artworkChanges?.removeListener(_updateArtworkWindow);
     _artworkWindow.dispose();
     _pages.dispose();
     WidgetsBinding.instance.removeObserver(this);
@@ -376,38 +384,33 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
             httpHeaders: artwork.headers.isEmpty ? null : artwork.headers,
             memCacheWidth: decodeWidth,
             fadeInDuration: Duration.zero,
-            fit: BoxFit.cover,
-            alignment: const Alignment(.4, -.65),
             imageBuilder: (_, provider) => CinemaArtworkBackdrop(
               image: provider,
-              alignment: const Alignment(.4, -.65),
+              alignment: const Alignment(.4, 0),
               featherSides: true,
+              contentInsets: EdgeInsets.fromLTRB(
+                24,
+                widget.topInset + 12,
+                24,
+                40,
+              ),
             ),
             errorWidget: (_, _, _) => const SizedBox.shrink(),
           ),
-        IgnorePointer(
-          child: ShaderMask(
-            blendMode: BlendMode.dstIn,
-            shaderCallback: (bounds) => const LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Colors.transparent,
-                Colors.white,
-                Colors.white,
-                Colors.transparent,
-              ],
-              stops: [0, .18, .72, 1],
-            ).createShader(bounds),
-            child: const DecoratedBox(
+        // Keep contrast local to the title/action area. A page-wide shadow
+        // must not become a second mask over the full poster composition.
+        Positioned(
+          left: 0,
+          bottom: 0,
+          width: MediaQuery.sizeOf(context).width * .54,
+          height: compactHeight ? 215 : 285,
+          child: IgnorePointer(
+            child: DecoratedBox(
               decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    Color(0xA609090B),
-                    Color(0x2009090B),
-                    Color(0x0009090B),
-                  ],
-                  stops: [0, .5, 1],
+                gradient: RadialGradient(
+                  center: Alignment.bottomLeft,
+                  radius: 1.1,
+                  colors: const [Color(0xA609090B), Color(0x0009090B)],
                 ),
               ),
             ),
