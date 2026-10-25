@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
 import 'package:kazumi/features/cinema/cinema_featured_wall.dart';
+import 'package:kazumi/features/cinema/cinema_resource_badge.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
@@ -92,6 +93,10 @@ class _Repository extends CinemaRepository {
       <({String source, String? category, String year, int page})>[];
   final failedSources = <String>{};
   bool blockedEntry = false;
+
+  @override
+  Future<CinemaTitle> detail(CinemaSource source, CinemaTitle title) async =>
+      title;
 
   @override
   Future<List<CinemaCategory>> categories(CinemaSource source) async =>
@@ -437,6 +442,11 @@ void main() {
         await section('电影');
       }
       repository.searched.clear();
+      await Scrollable.ensureVisible(
+        tester.element(find.byKey(const ValueKey('catalog-sort-latest'))),
+        alignment: .35,
+      );
+      await tester.pumpAndSettle();
     }
   }
 
@@ -558,6 +568,80 @@ void main() {
     },
   );
   testWidgets(
+    'movie and series latest and rating keep the shared cinematic hero and resource badges',
+    (tester) async {
+      repository.manyItems = true;
+      List<DoubanTitle> selected(DoubanKind kind) => List.generate(
+        12,
+        (i) => DoubanTitle(
+          id: '${30000000 + i}',
+          title: '${kind.name}精选$i',
+          kind: kind,
+          year: '2026',
+        ),
+      );
+      catalogDiscovery.featuredFixtures = selected(DoubanKind.movie);
+      await mount(tester, recentHot: true, prepareSeries: false);
+      for (final section in ['电影', '剧集']) {
+        if (section == '剧集') {
+          catalogDiscovery.featuredFixtures = selected(DoubanKind.tv);
+          await tester.tap(find.text('剧集').first);
+          await tester.pumpAndSettle();
+        }
+        for (final sort in CinemaCatalogSort.values) {
+          final control = find.byKey(ValueKey('catalog-sort-${sort.name}'));
+          await Scrollable.ensureVisible(
+            tester.element(control),
+            alignment: .35,
+          );
+          await tester.tap(control);
+          await tester.pumpAndSettle();
+          final heroFinder = find.byType(
+            CinemaFeaturedWall,
+            skipOffstage: false,
+          );
+          expect(
+            heroFinder,
+            findsOneWidget,
+            reason:
+                '$section/${sort.name}; selected=${tester.widget<ChoiceChip>(control).selected}; '
+                'catalogue=${find.byWidgetPredicate((w) => w is Text && (w.data?.contains("部作品") ?? false)).evaluate().map((e) => (e.widget as Text).data).join("|")}; '
+                'requests=${repository.filteredRequests}',
+          );
+          final hero = tester.widget<CinemaFeaturedWall>(heroFinder);
+          expect(hero.titles, hasLength(4), reason: '$section/$sort');
+          expect(tester.getSize(heroFinder).height, closeTo(860 * .76, .01));
+          final status = hero.statusBuilder!(hero.titles.first) as Align;
+          expect(status.child, isA<CinemaResourceBadge>());
+          for (final title in hero.titles) {
+            expect(
+              find.byKey(ValueKey('title-card:${title.key}')),
+              findsNothing,
+            );
+          }
+          final cards = find.byWidgetPredicate(
+            (widget) =>
+                widget is InkWell &&
+                widget.key is ValueKey<String> &&
+                (widget.key as ValueKey<String>).value.startsWith(
+                  'title-card:',
+                ),
+          );
+          expect(cards, findsWidgets);
+          expect(
+            find.descendant(
+              of: cards.first,
+              matching: find.byType(CinemaResourceBadge),
+            ),
+            findsOneWidget,
+          );
+        }
+      }
+      await tester.pumpWidget(const SizedBox());
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets(
     'TV has a remote navigation rail and no downloads; phone keeps downloads',
     (tester) async {
       NakuDevice.isTV = true;
@@ -670,6 +754,21 @@ void main() {
   }
 
   void expectBefore(WidgetTester tester, String first, String second) {
+    final hero = find.byType(CinemaFeaturedWall, skipOffstage: false);
+    if (hero.evaluate().isNotEmpty) {
+      final titles = tester.widget<CinemaFeaturedWall>(hero).titles;
+      final firstHero = titles.indexWhere((title) => title.title == first);
+      final secondHero = titles.indexWhere((title) => title.title == second);
+      if (firstHero >= 0 || secondHero >= 0) {
+        expect(
+          firstHero >= 0,
+          isTrue,
+          reason: 'Hero works precede all works in the wall.',
+        );
+        if (secondHero >= 0) expect(firstHero, lessThan(secondHero));
+        return;
+      }
+    }
     // Card title text is after its poster fallback text in the widget tree.
     expect(
       tester.getTopLeft(find.text(first).last).dx,
@@ -907,7 +1006,16 @@ void main() {
     expect(find.byType(LinearProgressIndicator), findsNothing);
     await tester.pumpAndSettle();
     expect(repository.browsed, hasLength(calls));
-    expect(find.text('电影最近更新第3页'), findsWidgets);
+    expect(
+      find.text('电影最近更新第3页').evaluate().isNotEmpty ||
+          tester
+              .widget<CinemaFeaturedWall>(
+                find.byType(CinemaFeaturedWall, skipOffstage: false),
+              )
+              .titles
+              .any((title) => title.title == '电影最近更新第3页'),
+      isTrue,
+    );
     // Returning uses the exact loaded aggregate, verified by the request delta above.
   });
 

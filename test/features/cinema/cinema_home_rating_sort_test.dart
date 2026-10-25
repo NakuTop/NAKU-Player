@@ -29,6 +29,7 @@ class _Catalogue extends CinemaRepository {
   _Catalogue(this.items);
   final List<CinemaTitle> items;
   int detailCalls = 0, browseCalls = 0;
+  final detailKeys = <String>[];
   Future<CinemaPage> Function(int page)? onBrowse;
 
   @override
@@ -65,6 +66,7 @@ class _Catalogue extends CinemaRepository {
   @override
   Future<CinemaTitle> detail(CinemaSource source, CinemaTitle title) async {
     detailCalls++;
+    detailKeys.add(title.key);
     return title;
   }
 }
@@ -256,12 +258,22 @@ void main() {
       ratings.setScores('D', {'豆瓣': 6.0, 'IMDb': 7.5, '烂番茄': 0});
       await mount(tester);
       await selectRatingSort(tester);
+      // Resource badges hydrate these four route-less source cards once.
+      // Changing rating providers must not trigger additional detail work.
+      final resourceHydration = List<String>.of(catalogue.detailKeys);
+      expect(
+        resourceHydration,
+        unorderedEquals(catalogue.items.map((title) => title.key)),
+      );
+      expect(catalogue.detailCalls, 4);
+      expect(ratings.detailCalls, 0);
       expect(visualOrder(tester, ['A', 'B', 'C', 'D']), ['A', 'B', 'D', 'C']);
       await selectProvider(tester, 'IMDb');
       expect(visualOrder(tester, ['A', 'B', 'C', 'D']), ['B', 'D', 'A', 'C']);
       await selectProvider(tester, '烂番茄');
       expect(visualOrder(tester, ['A', 'B', 'C', 'D']), ['A', 'C', 'D', 'B']);
-      expect(catalogue.detailCalls, 0);
+      expect(catalogue.detailKeys, resourceHydration);
+      expect(catalogue.detailCalls, resourceHydration.length);
       expect(ratings.detailCalls, 0);
       expect(tester.takeException(), isNull);
     },
@@ -276,6 +288,13 @@ void main() {
       ratings.setScores('D', {'豆瓣': 6.0});
       await mount(tester);
       await selectRatingSort(tester);
+      final resourceHydration = List<String>.of(catalogue.detailKeys);
+      expect(
+        resourceHydration,
+        unorderedEquals(catalogue.items.map((title) => title.key)),
+      );
+      expect(catalogue.detailCalls, 4);
+      expect(ratings.detailCalls, 0);
       expect(visualOrder(tester, ['A', 'B', 'C', 'D']), ['A', 'B', 'D', 'C']);
       ratings.setScores('C', {'豆瓣': 9.6}, notify: true);
       await tester.pump();
@@ -286,7 +305,8 @@ void main() {
         find.descendant(of: card('C'), matching: find.textContaining('9.6')),
         findsOneWidget,
       );
-      expect(catalogue.detailCalls, 0);
+      expect(catalogue.detailKeys, resourceHydration);
+      expect(catalogue.detailCalls, resourceHydration.length);
       expect(ratings.detailCalls, 0);
       expect(tester.takeException(), isNull);
     },

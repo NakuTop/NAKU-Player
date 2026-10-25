@@ -172,6 +172,11 @@ class CinemaResourceAvailabilityService {
       var checked = 0;
       var failed = false;
       var variants = <CinemaTitle>[];
+      final checkedSources = <String>{};
+      void sourceChecked(CinemaSource source) {
+        if (checkedSources.add(source.id)) checked++;
+      }
+
       void publish(CinemaResourceState state) {
         if (_disposed) return;
         // Revalidation must not turn a saved badge into a loading placeholder.
@@ -203,6 +208,46 @@ class CinemaResourceAvailabilityService {
           return;
         }
         publish(CinemaResourceState.checking);
+        bool playable(CinemaTitle item) => item.routes.any(
+          (route) => route.episodes.any((episode) => episode.url.isNotEmpty),
+        );
+        final ownSource = selected
+            .where((source) => source.id == title.sourceId)
+            .firstOrNull;
+        var hydratedAnchor = false;
+        if (ownSource != null) {
+          // A source-native card already identifies an exact catalogue entry.
+          // Confirm that entry before paying for a name search across sources.
+          var ownTitle = title;
+          sourceChecked(ownSource);
+          if (!playable(ownTitle)) {
+            hydratedAnchor = true;
+            try {
+              ownTitle = await repository
+                  .detail(ownSource, ownTitle)
+                  .timeout(const Duration(seconds: 8));
+            } catch (_) {
+              failed = true;
+            }
+          }
+          if (!current()) {
+            if (previous.state == CinemaResourceState.found ||
+                previous.state == CinemaResourceState.missing) {
+              target.value = previous;
+            } else {
+              publish(CinemaResourceState.waiting);
+            }
+            return;
+          }
+          if (ownTitle.key == title.key && playable(ownTitle)) {
+            variants = [ownTitle];
+            publish(CinemaResourceState.found);
+            target.completedAt = _now();
+            target.retryAfter = null;
+            return;
+          }
+          if (ownTitle.key != title.key) failed = true;
+        }
         await for (final found in discoverCinemaWorkSources(
           anchor: title,
           known: const [],
@@ -210,7 +255,7 @@ class CinemaResourceAvailabilityService {
           repository: repository,
           isCurrent: current,
           maxDuration: const Duration(seconds: 25),
-          onSourceChecked: (_) => checked++,
+          onSourceChecked: sourceChecked,
           onSourceError: (_, _) {
             failed = true;
           },
@@ -220,9 +265,12 @@ class CinemaResourceAvailabilityService {
           // before claiming that a resource exists. Never probe a video here.
           final playable = <CinemaTitle>[];
           for (var item in found.where(
-            (t) => t.sourceId != 'douban-discovery',
+            (t) => selected.any((source) => source.id == t.sourceId),
           )) {
             if (item.routes.isEmpty) {
+              // The discovery stream also includes its anchor. Do not repeat
+              // an empty or failed exact-entry lookup during the same check.
+              if (hydratedAnchor && item.key == title.key) continue;
               final source = selected
                   .where((s) => s.id == item.sourceId)
                   .firstOrNull;
@@ -236,12 +284,14 @@ class CinemaResourceAvailabilityService {
                 continue;
               }
             }
+            if (!current()) break;
             if (item.routes.any(
               (r) => r.episodes.any((e) => e.url.isNotEmpty),
             )) {
               playable.add(item);
             }
           }
+          if (!current()) break;
           variants = orderCinemaVariants(playable, selected.map((s) => s.id));
           publish(
             variants.isEmpty

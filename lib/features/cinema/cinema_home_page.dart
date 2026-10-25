@@ -118,6 +118,7 @@ class CinemaHomePage extends StatefulWidget {
     this.store,
     this.repository,
     this.ratingsRepository,
+    this.artworkRepository,
     this.homeCache,
     this.watchTogether,
     this.enableWatchTogether = true,
@@ -136,6 +137,7 @@ class CinemaHomePage extends StatefulWidget {
   final CinemaStore? store;
   final CinemaRepository? repository;
   final CinemaRatingsRepository? ratingsRepository;
+  final CinemaDetailArtworkRepository? artworkRepository;
   final CinemaHomeCache? homeCache;
   final CinemaWatchTogether? watchTogether;
   final bool enableWatchTogether;
@@ -1797,6 +1799,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           .where((v) => v.sourceId != 'douban-discovery')
           .toList(),
       ratingsRepository: widget.ratingsRepository,
+      artworkRepository: widget.artworkRepository,
       repository: _repository,
       store: _store,
       resume: resume,
@@ -2832,11 +2835,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     final visibleItems = view.visible;
     final variantsByKey = view.variants;
     final immersive = wide && Platform.isMacOS && !NakuDevice.isTV;
-    final featured =
-        immersive &&
-            aggregated &&
-            _currentCatalogSort == CinemaCatalogSort.popular &&
-            visibleItems.length >= 8
+    final featured = immersive && aggregated && visibleItems.length >= 8
         ? visibleItems.take(4).toList()
         : <CinemaTitle>[];
     final featuredKeys = featured.map((title) => title.key).toSet();
@@ -2862,20 +2861,21 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 key: ValueKey('cinema-featured-${_section.name}'),
                 topInset: topInset,
                 titles: featured,
+                artworkRepository: widget.artworkRepository,
+                artworkIdentity: (title) =>
+                    _ratings.peek(title)?.identity ?? const RatingIdentity(),
                 onOpen: (title) => _openTitle(
                   title,
                   variants: variantsByKey[title.key] ?? const [],
                 ),
-                statusBuilder: (title) => title.sourceId == 'douban-discovery'
-                    ? Align(
-                        alignment: Alignment.centerLeft,
-                        child: CinemaResourceBadge(
-                          title: title,
-                          sources: _activeSources,
-                          service: _resources,
-                        ),
-                      )
-                    : const SizedBox.shrink(),
+                statusBuilder: (title) => Align(
+                  alignment: Alignment.centerLeft,
+                  child: CinemaResourceBadge(
+                    title: title,
+                    sources: _activeSources,
+                    service: _resources,
+                  ),
+                ),
               ),
             ),
           ),
@@ -3433,7 +3433,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 fit: StackFit.expand,
                 children: [
                   _poster(title, null, null),
-                  if (title.sourceId == 'douban-discovery')
+                  if (title.sourceId == 'douban-discovery' ||
+                      (_isCatalog && !_searching))
                     Positioned(
                       top: 8,
                       left: 8,
@@ -4049,6 +4050,7 @@ class _TitleDetails extends StatefulWidget {
     required this.source,
     this.variants = const [],
     this.ratingsRepository,
+    this.artworkRepository,
     required this.repository,
     required this.store,
     required this.onPlay,
@@ -4059,6 +4061,7 @@ class _TitleDetails extends StatefulWidget {
   final CinemaSource source;
   final List<CinemaTitle> variants;
   final CinemaRatingsRepository? ratingsRepository;
+  final CinemaDetailArtworkRepository? artworkRepository;
   final CinemaRepository repository;
   final CinemaStore store;
   final CinemaHistory? resume;
@@ -4093,6 +4096,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
   String? _posterIdentity;
   CancelToken? _artworkCancel;
   bool _posterTerminal = false, _posterFailed = false, _attachingPoster = false;
+  bool _posterLimited = false;
   bool _ratingsTerminal = false, _presentationReady = false, _disposing = false;
   bool _scoresTerminal = false, _informationTerminal = false;
   CinemaTitle? _ratingsTitle;
@@ -4100,6 +4104,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
   @override
   void initState() {
     super.initState();
+    _artworkRatings.changes.addListener(_onArtworkIdentityChanged);
     _variants = orderCinemaVariants(
       _variants,
       widget.store.enabledSources.map((source) => source.id),
@@ -4163,30 +4168,46 @@ class _TitleDetailsState extends State<_TitleDetails> {
     _posterStream = null;
   }
 
-  void _watchPoster(CinemaTitle title) {
+  CinemaRatingsRepository get _artworkRatings =>
+      widget.ratingsRepository ?? CinemaRatingsRepository.instance;
+
+  void _onArtworkIdentityChanged() {
+    if (!mounted || _disposing) return;
+    final title = _ratingsTitle ?? _selectedTitle;
+    final identity =
+        _artworkRatings.peek(title)?.identity ?? const RatingIdentity();
+    if (CinemaDetailArtworkRepository.identityKey(title, identity) !=
+        _posterIdentity) {
+      setState(() {});
+    }
+  }
+
+  void _watchPoster(CinemaTitle title, {bool force = false}) {
     final identity =
         (widget.ratingsRepository ?? CinemaRatingsRepository.instance)
             .peek(title)
             ?.identity ??
         const RatingIdentity();
     final key = CinemaDetailArtworkRepository.identityKey(title, identity);
-    if (_posterIdentity == key) return;
+    if (!force && _posterIdentity == key) return;
     _artworkCancel?.cancel('Selected artwork changed');
     _detachPoster();
     _posterIdentity = key;
     final ticket = ++_posterTicket;
     _posterTerminal = false;
     _posterFailed = false;
+    _posterLimited = false;
     _presentationReady = false;
     _posterProvider = null;
     final cancel = _artworkCancel = CancelToken();
     bool current() => mounted && !_disposing && ticket == _posterTicket;
-    CinemaDetailArtworkRepository.instance
+    (widget.artworkRepository ?? CinemaDetailArtworkRepository.instance)
         .resolve(
           title,
           identity: identity,
           cancelToken: cancel,
           isCurrent: current,
+          force: force,
         )
         .then(
           (artwork) {
@@ -4215,6 +4236,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
     if (artwork.url.isEmpty) {
       _posterProvider = null;
       _posterTerminal = true;
+      _posterLimited = true;
       return;
     }
     // The file's original dimensions were checked before selecting HD. Fit
@@ -4225,7 +4247,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
         cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
         headers: artwork.headers.isEmpty ? null : artwork.headers,
       ),
-      width: 1600,
+      width: 3200,
       height: 2400,
       policy: ResizeImagePolicy.fit,
     );
@@ -4241,6 +4263,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
       }
       _posterTerminal = true;
       _posterFailed = failed;
+      _posterLimited = !failed && !artwork.highResolution;
       _detachPoster();
       if (!_attachingPoster) setState(() {});
     }
@@ -4260,6 +4283,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
   @override
   void dispose() {
     _disposing = true;
+    _artworkRatings.changes.removeListener(_onArtworkIdentityChanged);
     _ratingTicket++;
     _posterTicket++;
     _artworkCancel?.cancel('Detail disposed');
@@ -4832,7 +4856,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
             _ratingsTerminal,
             _posterTerminal,
           ].where((value) => value).length;
-          if (completed == 4) _presentationReady = true;
+          // Readiness belongs to the current requests and decoded frame. A
+          // prior source/identity finishing cannot latch later work as ready.
+          _presentationReady = completed == 4;
           return CinemaNeonDecode(
             loading: !_presentationReady,
             progress: completed / 4,
@@ -4843,11 +4869,8 @@ class _TitleDetailsState extends State<_TitleDetails> {
                 children: [
                   const Positioned.fill(
                     child: IgnorePointer(
-                      child: CinemaGlass(
+                      child: CinemaDetailFrost(
                         key: ValueKey('cinema-detail-frost'),
-                        radius: 0,
-                        interactive: false,
-                        child: SizedBox.expand(),
                       ),
                     ),
                   ),
@@ -4909,15 +4932,23 @@ class _TitleDetailsState extends State<_TitleDetails> {
                       icon: const Icon(Icons.close_rounded),
                     ),
                   ),
-                  if (_posterFailed)
-                    const Positioned(
-                      top: 18,
-                      left: 22,
-                      child: Text(
-                        '海报暂未加载',
-                        style: TextStyle(
-                          color: CinemaTheme.muted,
-                          fontSize: 11,
+                  if (_posterTerminal &&
+                      (_posterFailed || _posterLimited) &&
+                      _ratingsTerminal)
+                    Positioned(
+                      top: 12,
+                      left: 18,
+                      child: TextButton.icon(
+                        key: const ValueKey('cinema-detail-artwork-retry'),
+                        onPressed: () =>
+                            setState(() => _watchPoster(title, force: true)),
+                        icon: const Icon(Icons.refresh_rounded, size: 14),
+                        label: Text(
+                          _posterFailed ? '海报暂未加载' : '高清海报暂不可用',
+                          style: const TextStyle(
+                            color: CinemaTheme.muted,
+                            fontSize: 11,
+                          ),
                         ),
                       ),
                     ),

@@ -2,6 +2,53 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import 'cinema_theme.dart';
+
+/// An intentionally quiet charcoal glass floor. The artwork fades into this
+/// material rather than into whatever desktop happens to be behind the window.
+class CinemaDetailFrost extends StatelessWidget {
+  const CinemaDetailFrost({super.key});
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: CinemaAppearanceScope.of(context),
+    builder: (context, _) {
+      final reduced = CinemaAppearanceScope.of(context).reduceTransparency;
+      final tint = DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            stops: const [0, .48, 1],
+            colors: reduced
+                ? const [
+                    Color(0xFF202024),
+                    Color(0xFF1B1B1F),
+                    Color(0xFF19191D),
+                  ]
+                : const [
+                    Color(0xE8202024),
+                    Color(0xF21B1B1F),
+                    Color(0xF719191D),
+                  ],
+          ),
+        ),
+        child: const SizedBox.expand(),
+      );
+      return IgnorePointer(
+        child: ClipRect(
+          child: reduced
+              ? tint
+              : BackdropFilter(
+                  filter: ui.ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+                  child: tint,
+                ),
+        ),
+      );
+    },
+  );
+}
+
 /// Sharp artwork and its diffuse dark field have independent feathering. The
 /// ambient layer survives beyond the sharp image, then meets the window glass.
 class CinemaArtworkBackdrop extends StatelessWidget {
@@ -75,7 +122,7 @@ class CinemaArtworkBackdrop extends StatelessWidget {
                 image: image,
                 fit: BoxFit.cover,
                 alignment: alignment,
-                filterQuality: FilterQuality.medium,
+                filterQuality: FilterQuality.high,
                 errorBuilder: (_, _, _) => const SizedBox.shrink(),
               ),
               if (shadeLeading)

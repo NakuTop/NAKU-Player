@@ -101,6 +101,7 @@ void main() {
       final repository = CinemaDetailArtworkRepository(
         fetch: (uri, headers, limit, cancel) async =>
             fail('No name-based network lookup permitted'),
+        inspect: (url, headers, cancel) async => (450, 675),
       );
       const title = CinemaTitle(
         id: 'no-id',
@@ -124,11 +125,11 @@ void main() {
     test(
       'provider identity/type mismatch cannot select unrelated artwork: $data',
       () async {
-        var inspected = 0;
+        final inspected = <String>[];
         final repository = CinemaDetailArtworkRepository(
           fetch: (uri, headers, limit, cancel) async => _bytes(data),
           inspect: (url, headers, cancel) async {
-            inspected++;
+            inspected.add(url);
             return (320, 480);
           },
         );
@@ -137,7 +138,12 @@ void main() {
         expect(result.url, _movie.poster);
         if ((data['meta'] as Map)['id'] != 'tt0120338' ||
             (data['meta'] as Map)['type'] != 'movie') {
-          expect(inspected, 0);
+          expect(
+            inspected,
+            [_movie.poster],
+            reason:
+                'Only the source original may be checked after invalid metadata.',
+          );
         }
       },
     );
@@ -152,7 +158,8 @@ void main() {
           uris.add(uri);
           return _bytes(_meta(type: 'series'));
         },
-        inspect: (url, headers, cancel) async => (1920, 1080),
+        inspect: (url, headers, cancel) async =>
+            url == _background ? (1920, 1080) : (320, 480),
       );
       const series = CinemaTitle(
         id: 'series',
@@ -199,6 +206,13 @@ void main() {
       final repository = CinemaDetailArtworkRepository(
         fetch: (uri, headers, limit, cancel) async {
           urls.add(uri.toString());
+          if (uri.host == 'm.douban.com') {
+            return _bytes({
+              'id': '1292722',
+              'type': 'movie',
+              'pic': {'large': large},
+            });
+          }
           return Uint8List.fromList(
             utf8.encode(
               '<link rel="canonical" href="https://movie.douban.com/photos/photo/457760035/"><img src="$original"><img src="https://img9.doubanio.com/view/photo/l/public/p999999.jpg">',
@@ -221,7 +235,10 @@ void main() {
       final result = await repository.resolve(title);
       expect(result.url, original);
       expect(result.width, 2000);
-      expect(urls, ['https://movie.douban.com/photos/photo/457760035/']);
+      expect(urls, [
+        'https://m.douban.com/rexxar/api/v2/movie/1292722',
+        'https://movie.douban.com/photos/photo/457760035/',
+      ]);
     },
   );
 
@@ -230,11 +247,11 @@ void main() {
     () async {
       final pending = Completer<Uint8List>();
       var current = true;
-      var inspected = 0;
+      final inspected = <String>[];
       final repository = CinemaDetailArtworkRepository(
         fetch: (uri, headers, limit, cancel) => pending.future,
         inspect: (url, headers, cancel) async {
-          inspected++;
+          inspected.add(url);
           return (1920, 1080);
         },
       );
@@ -243,7 +260,7 @@ void main() {
       current = false;
       pending.complete(_bytes(_meta()));
       await check;
-      expect(inspected, 0);
+      expect(inspected, isEmpty);
     },
   );
 
@@ -261,6 +278,147 @@ void main() {
       await check.timeout(const Duration(seconds: 1));
     },
   );
+
+  test(
+    'one slow optional provider cannot discard another verified HD result',
+    () async {
+      final pending = Completer<Uint8List>();
+      final repository = CinemaDetailArtworkRepository(
+        deadline: const Duration(milliseconds: 100),
+        fetch: (uri, headers, limit, cancel) => uri.host == 'm.douban.com'
+            ? pending.future
+            : Future.value(_bytes(_meta())),
+        inspect: (url, headers, cancel) async => (1920, 1080),
+      );
+      const title = CinemaTitle(
+        id: 'both',
+        sourceId: 'fixture',
+        title: '电影',
+        category: '电影',
+        imdbId: 'tt0120338',
+        doubanId: '1292722',
+        poster: 'https://thumb.invalid/card.jpg',
+      );
+      final result = await repository.resolve(title);
+      expect(result.url, _background);
+      expect(result.highResolution, isTrue);
+      expect(pending.isCompleted, isFalse);
+    },
+  );
+
+  for (final category in ['纪录片', '动画片']) {
+    test(
+      'exact TV feed type wins over a genre-only $category category',
+      () async {
+        const image = 'https://images.invalid/series-original.jpg';
+        CinemaDoubanAccess.rememberFeedSubject({
+          'id': '1234567',
+          'type': 'tv',
+          'pic': {'large': image},
+        });
+        final paths = <String>[];
+        final repository = CinemaDetailArtworkRepository(
+          fetch: (uri, headers, limit, cancel) async {
+            paths.add(uri.path);
+            return _bytes({
+              'id': '1234567',
+              'type': 'tv',
+              'pic': {'large': image},
+            });
+          },
+          inspect: (url, headers, cancel) async => (1920, 1080),
+        );
+        final result = await repository.resolve(
+          CinemaTitle(
+            id: 'series',
+            sourceId: 'fixture',
+            title: '剧集',
+            category: category,
+            doubanId: '1234567',
+          ),
+        );
+        expect(result.url, image);
+        expect(paths, ['/rexxar/api/v2/tv/1234567']);
+      },
+    );
+  }
+
+  test(
+    'a small catalogue feed does not suppress full exact-ID HD metadata',
+    () async {
+      const small = 'https://images.invalid/card.jpg';
+      const original = 'https://images.invalid/original.jpg';
+      CinemaDoubanAccess.rememberFeedSubject({
+        'id': '1292722',
+        'type': 'movie',
+        'pic': {'large': small},
+      });
+      final repository = CinemaDetailArtworkRepository(
+        fetch: (uri, headers, limit, cancel) async => _bytes({
+          'id': '1292722',
+          'type': 'movie',
+          'pic': {'original': original, 'large': small},
+        }),
+        inspect: (url, headers, cancel) async =>
+            url == original ? (2400, 1600) : (450, 675),
+      );
+      final result = await repository.resolve(
+        const CinemaTitle(
+          id: 'movie',
+          sourceId: 'fixture',
+          title: '电影',
+          category: '电影',
+          doubanId: '1292722',
+          poster: small,
+        ),
+      );
+      expect(result.url, original);
+      expect(result.highResolution, isTrue);
+    },
+  );
+
+  test(
+    'an existing original without external IDs is verified by its encoded size',
+    () async {
+      const original = 'https://images.invalid/already-original.jpg';
+      final repository = CinemaDetailArtworkRepository(
+        fetch: (uri, headers, limit, cancel) async =>
+            fail('No title search is needed.'),
+        inspect: (url, headers, cancel) async {
+          expect(url, original);
+          return (3840, 2160);
+        },
+      );
+      final result = await repository.resolve(
+        const CinemaTitle(
+          id: 'original',
+          sourceId: 'fixture',
+          title: '本身高清',
+          poster: original,
+        ),
+      );
+      expect(
+        (result.width, result.height, result.highResolution),
+        (3840, 2160, true),
+      );
+    },
+  );
+
+  test('force retry bypasses a terminal low-resolution result', () async {
+    var fullSize = false;
+    final repository = CinemaDetailArtworkRepository(
+      fetch: (uri, headers, limit, cancel) async => _bytes(_meta()),
+      inspect: (url, headers, cancel) async =>
+          fullSize ? (1920, 1080) : (450, 675),
+    );
+    expect((await repository.resolve(_movie)).highResolution, isFalse);
+    fullSize = true;
+    expect((await repository.resolve(_movie)).highResolution, isFalse);
+    expect(
+      (await repository.resolve(_movie, force: true)).highResolution,
+      isTrue,
+    );
+  });
 
   test(
     'deadline is a terminal lookup failure with the existing poster retained',

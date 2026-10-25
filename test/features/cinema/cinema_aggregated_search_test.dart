@@ -306,6 +306,10 @@ void main() {
         find.byKey(const ValueKey('title-card:source-a::a1')),
         findsNothing,
       );
+      final cardProof = List<String>.of(repository.details);
+      expect(cardProof, [
+        modu.id,
+      ], reason: 'The catalogue badge hydrated this exact source entry once.');
       await tester.tap(card());
       await tester.pumpAndSettle();
       expect(find.text('非凡影视的详情'), findsOneWidget);
@@ -338,7 +342,12 @@ void main() {
       );
       expect(find.text('备用源专属线路'), findsOneWidget);
       expect(find.text('非凡影视专属线路'), findsNothing);
-      expect(repository.details, [modu.id, sourceA.id]);
+      expect(
+        repository.details.skip(cardProof.length),
+        [modu.id, sourceA.id],
+        reason:
+            'Opening details and switching source each load their own route.',
+      );
       expect(tester.takeException(), isNull);
     },
   );

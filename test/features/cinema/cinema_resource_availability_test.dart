@@ -89,7 +89,208 @@ class _Repository extends CinemaRepository {
   }
 }
 
+class _NativeRepository extends _Repository {
+  CinemaTitle? hydrated;
+  bool detailFails = false;
+  Completer<CinemaTitle>? detailGate;
+  final detailKeys = <String>[];
+
+  @override
+  Future<CinemaTitle> detail(CinemaSource source, CinemaTitle title) async {
+    details++;
+    detailKeys.add('${source.id}:${title.key}');
+    active++;
+    if (active > peak) peak = active;
+    try {
+      if (detailFails) throw StateError('detail offline');
+      if (detailGate != null) return await detailGate!.future;
+      return hydrated ?? title;
+    } finally {
+      active--;
+    }
+  }
+}
+
 void main() {
+  test(
+    'a playable native card confirms its actual quality without search',
+    () async {
+      final repo = _NativeRepository();
+      final service = CinemaResourceAvailabilityService(repo);
+      addTearDown(service.dispose);
+      final native = _edition('native', '泰坦尼克号国语4K');
+      final result = await service.check(native, [_source]);
+      expect(result.state, CinemaResourceState.found);
+      expect(result.variants, [native]);
+      expect(result.has4K, isTrue);
+      expect((result.checked, result.total), (1, 1));
+      expect((repo.calls, repo.details), (0, 0));
+    },
+  );
+
+  test(
+    'native exact detail supplies playback lines before any name search',
+    () async {
+      final native = _edition('native', '泰坦尼克号', routes: false);
+      final hydrated = _edition('native', '泰坦尼克号国语4K');
+      final repo = _NativeRepository()..hydrated = hydrated;
+      final service = CinemaResourceAvailabilityService(repo);
+      addTearDown(service.dispose);
+      final result = await service.check(native, [_source]);
+      expect(result.state, CinemaResourceState.found);
+      expect(result.variants, [hydrated]);
+      expect(result.has4K, isTrue);
+      expect(repo.calls, 0);
+      expect(repo.detailKeys, ['one:one::native']);
+    },
+  );
+
+  for (final fails in [false, true]) {
+    test(
+      'an ${fails ? 'failed' : 'empty'} native detail falls back without a false positive',
+      () async {
+        final native = _edition('native', '泰坦尼克号', routes: false);
+        final repo = _NativeRepository()
+          ..empty = true
+          ..detailFails = fails;
+        final service = CinemaResourceAvailabilityService(repo);
+        addTearDown(service.dispose);
+        final result = await service.check(native, [_source]);
+        expect(
+          result.state,
+          fails ? CinemaResourceState.incomplete : CinemaResourceState.missing,
+        );
+        expect(result.variants, isEmpty);
+        expect(repo.calls, greaterThan(0));
+        expect(repo.details, 1);
+        expect((result.checked, result.total), (1, 1));
+      },
+    );
+  }
+
+  test('discovery can recover after a failed native detail', () async {
+    final repo = _NativeRepository()..detailFails = true;
+    final service = CinemaResourceAvailabilityService(repo);
+    addTearDown(service.dispose);
+    final result = await service.check(
+      _edition('native', '泰坦尼克号', routes: false),
+      [_source],
+    );
+    expect(result.state, CinemaResourceState.found);
+    expect(result.variants.map((title) => title.id), ['2', '1']);
+    expect(result.has4K, isTrue);
+    expect(repo.calls, greaterThan(0));
+    expect(repo.details, 1);
+  });
+
+  for (final sourceId in ['disabled', 'unrelated']) {
+    test('a $sourceId native anchor cannot grant availability', () async {
+      final repo = _NativeRepository()..empty = true;
+      final service = CinemaResourceAvailabilityService(repo);
+      addTearDown(service.dispose);
+      final result = await service
+          .check(_edition('native', '泰坦尼克号4K', source: sourceId), [
+            _source,
+            if (sourceId == 'disabled')
+              _source.copyWith(id: 'disabled', enabled: false),
+          ]);
+      expect(result.state, CinemaResourceState.missing);
+      expect(result.variants, isEmpty);
+      expect(repo.details, 0);
+      expect(repo.calls, greaterThan(0));
+    });
+  }
+
+  test(
+    'a native detail response for another source cannot grant availability',
+    () async {
+      final repo = _NativeRepository()
+        ..empty = true
+        ..hydrated = _edition('native', '泰坦尼克号', source: 'unrelated');
+      final service = CinemaResourceAvailabilityService(repo);
+      addTearDown(service.dispose);
+      final result = await service.check(
+        _edition('native', '泰坦尼克号', routes: false),
+        [_source],
+      );
+      expect(result.state, CinemaResourceState.incomplete);
+      expect(result.variants, isEmpty);
+      expect(repo.calls, greaterThan(0));
+    },
+  );
+
+  test(
+    'a stale native-detail consumer cannot publish a positive badge',
+    () async {
+      final repo = _NativeRepository()..detailGate = Completer<CinemaTitle>();
+      final service = CinemaResourceAvailabilityService(repo);
+      addTearDown(service.dispose);
+      final native = _edition('native', '泰坦尼克号', routes: false);
+      var current = true;
+      final states = <CinemaResourceState>[];
+      final entry = service.entry(native, [_source]);
+      entry.addListener(() => states.add(entry.value.state));
+      final pending = service.check(native, [
+        _source,
+      ], isCurrent: () => current);
+      expect(repo.details, 1);
+      current = false;
+      repo.detailGate!.complete(_edition('native', '泰坦尼克号4K'));
+      final result = await pending;
+      expect(states, isNot(contains(CinemaResourceState.found)));
+      expect(result.state, CinemaResourceState.waiting);
+      expect(entry.completedAt, isNull);
+      expect(repo.calls, 0);
+    },
+  );
+
+  test('native detail hydration shares the maximum-two lookup queue', () async {
+    final gate = Completer<CinemaTitle>();
+    final repo = _NativeRepository()..detailGate = gate;
+    final service = CinemaResourceAvailabilityService(repo);
+    addTearDown(service.dispose);
+    var current = true;
+    final pending = [
+      for (var index = 0; index < 5; index++)
+        service.check(_edition('native-$index', '影片$index', routes: false), [
+          _source,
+        ], isCurrent: () => current),
+    ];
+    expect(repo.peak, 2);
+    expect(repo.details, 2);
+    current = false;
+    gate.complete(_edition('ignored', '影片'));
+    await Future.wait(pending);
+    expect(repo.peak, 2);
+    expect(repo.details, 2);
+    expect(repo.calls, 0);
+  });
+
+  test(
+    'cancelled native revalidation preserves the saved positive badge',
+    () async {
+      final repo = _NativeRepository();
+      final service = CinemaResourceAvailabilityService(repo);
+      addTearDown(service.dispose);
+      final native = _edition('native', '泰坦尼克号4K');
+      final saved = await service.check(native, [_source]);
+      repo.detailGate = Completer<CinemaTitle>();
+      var current = true;
+      final pending = service.check(
+        native.copyWith(routes: const []),
+        [_source],
+        isCurrent: () => current,
+        force: true,
+      );
+      expect(service.peek(native, [_source]), same(saved));
+      current = false;
+      repo.detailGate!.complete(native);
+      expect(await pending, same(saved));
+      expect(service.peek(native, [_source]), same(saved));
+      expect(repo.calls, 0);
+    },
+  );
+
   test(
     'lookup time limit reports an incomplete check, not a successful empty result',
     () async {

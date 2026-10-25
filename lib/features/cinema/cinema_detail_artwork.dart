@@ -86,6 +86,7 @@ class CinemaDetailArtworkRepository {
     RatingIdentity identity = const RatingIdentity(),
     CancelToken? cancelToken,
     bool Function()? isCurrent,
+    bool force = false,
   }) async {
     final fallback = CinemaDetailArtwork(url: title.poster);
     if ((title.doubanId.isNotEmpty &&
@@ -102,8 +103,16 @@ class CinemaDetailArtworkRepository {
     final imdb = title.imdbId.isNotEmpty ? title.imdbId : identity.imdbId;
     final validDouban = RegExp(r'^[1-9][0-9]{1,11}$').hasMatch(douban);
     final validImdb = RegExp(r'^tt[0-9]{7,10}$').hasMatch(imdb);
-    final type = kind(title);
-    if (!validDouban && !(validImdb && type.isNotEmpty)) return fallback;
+    final feed = validDouban
+        ? CinemaDoubanAccess.feedSubject(douban)?.$2
+        : null;
+    // A catalogue's genre can say "动画片" or "纪录片" for TV too. The
+    // accepted exact-ID feed carries the actual movie/series distinction.
+    final type =
+        feed?['id']?.toString() == douban &&
+            const ['movie', 'tv'].contains(feed?['type'])
+        ? (feed!['type'] == 'tv' ? 'series' : 'movie')
+        : kind(title);
     void current() {
       _checkCancel(cancelToken);
       if (isCurrent?.call() == false) {
@@ -112,7 +121,10 @@ class CinemaDetailArtworkRepository {
     }
 
     current();
-    final key = '$douban|$imdb|$type';
+    final key = validDouban || validImdb
+        ? '$douban|$imdb|$type'
+        : 'poster|${title.poster}';
+    if (force) _cache.remove(key);
     final cached = _cache[key];
     if (cached != null && _now().isBefore(cached.$1)) {
       return cached.$2 ?? fallback;
@@ -124,9 +136,29 @@ class CinemaDetailArtworkRepository {
       () => cancel.cancel('Artwork lookup deadline'),
     );
     try {
-      final candidates = <String>[];
-      String doubanPoster = '';
-      await Future.wait([
+      final candidates = <String>{};
+      final doubanPosters = <String>{};
+      List<String> subjectImages(Map<String, dynamic> data) {
+        if (data['id']?.toString() != douban ||
+            !['movie', 'tv'].contains(data['type']) ||
+            (data['url'] != null &&
+                doubanIdFromUrl('${data['url']}') != douban) ||
+            (type.isNotEmpty &&
+                data['type'] != (type == 'series' ? 'tv' : 'movie'))) {
+          return const [];
+        }
+        final pic = data['pic'];
+        return [
+          if (pic is Map)
+            for (final field in ['original', 'raw', 'large'])
+              if (_imageUrl(pic[field]).isNotEmpty) _imageUrl(pic[field]),
+          if (_imageUrl(data['cover_url']).isNotEmpty)
+            _imageUrl(data['cover_url']),
+        ];
+      }
+
+      final jobs = <Future<List<String>>>[
+        if (feed != null) Future.value(subjectImages(feed)),
         if (validImdb && type.isNotEmpty)
           (() async {
             try {
@@ -136,68 +168,76 @@ class CinemaDetailArtworkRepository {
               );
               final meta = data['meta'];
               if (meta is! Map || meta['id'] != imdb || meta['type'] != type) {
-                return;
+                return <String>[];
               }
               // Only literal provider URLs; never rewrite a thumbnail's size.
+              final urls = <String>[];
               for (final field in ['background', 'poster']) {
                 final image = _imageUrl(meta[field]);
                 final advertisedId = RegExp(
                   r'/((?:tt)[0-9]{7,10})/',
                 ).firstMatch(Uri.tryParse(image)?.path ?? '')?.group(1);
                 if (advertisedId != null && advertisedId != imdb) continue;
-                if (image.isNotEmpty) candidates.add(image);
+                if (image.isNotEmpty) urls.add(image);
               }
+              return urls;
             } catch (_) {
-              /* A second exact-ID provider may still have artwork. */
+              return <String>[];
             }
           })(),
-        if (validDouban)
+        if (validDouban && CinemaDoubanAccess.canRequestSubject())
           (() async {
             try {
-              final feed = CinemaDoubanAccess.feedSubject(douban)?.$2;
-              final data =
-                  feed ??
-                  (CinemaDoubanAccess.canRequestSubject()
-                      ? await _json(
-                          Uri.https(
-                            'm.douban.com',
-                            '/rexxar/api/v2/${type == 'series' ? 'tv' : 'movie'}/$douban',
-                          ),
-                          cancel,
-                        )
-                      : <String, dynamic>{});
-              if (data['id']?.toString() != douban ||
-                  !['movie', 'tv'].contains(data['type']) ||
-                  (data['url'] != null &&
-                      doubanIdFromUrl('${data['url']}') != douban) ||
-                  (type.isNotEmpty &&
-                      data['type'] != (type == 'series' ? 'tv' : 'movie'))) {
-                return;
-              }
-              final pic = data['pic'];
-              if (pic is Map) doubanPoster = _imageUrl(pic['large']);
+              final data = await _json(
+                Uri.https(
+                  'm.douban.com',
+                  '/rexxar/api/v2/${type == 'series' ? 'tv' : 'movie'}/$douban',
+                ),
+                cancel,
+              );
+              return subjectImages(data);
             } catch (_) {
-              /* Missing/limited official metadata keeps the fallback. */
+              return <String>[];
             }
           })(),
-      ]);
-      current();
-      _checkCancel(cancel);
-      // A landscape image is tried before portrait posters, regardless of which
-      // concurrent metadata request finished first.
-      if (doubanPoster.isNotEmpty) candidates.add(doubanPoster);
-      for (final url in candidates.toSet().take(3)) {
-        final result = await _verified(url, cancel);
+      ];
+      final pending = {
+        for (final (i, job) in jobs.indexed) i: job.then((urls) => (i, urls)),
+      };
+      // Consume each exact-ID provider as it completes. A slow optional
+      // provider must not discard another provider's already available HD art.
+      while (pending.isNotEmpty) {
+        final (i, urls) = await _race(Future.any(pending.values), cancel);
+        pending.remove(i);
+        current();
+        for (final url in urls) {
+          if (_doubanPhotoId(url).isNotEmpty) doubanPosters.add(url);
+          if (!candidates.add(url)) continue;
+          final result = await _verified(url, cancel);
+          current();
+          if (result != null) {
+            _remember(key, result);
+            return result;
+          }
+        }
+      }
+      // A source may already publish a true original without external IDs.
+      // Verify its encoded dimensions too; do not guess larger URL variants.
+      if (_imageUrl(title.poster).isNotEmpty && candidates.add(title.poster)) {
+        final result = await _verified(title.poster, cancel);
         current();
         if (result != null) {
           _remember(key, result);
           return result;
         }
+        if (_doubanPhotoId(title.poster).isNotEmpty) {
+          doubanPosters.add(title.poster);
+        }
       }
       // Douban's subject API often supplies a 450px image as "large". Its own
       // photo page may publish a real original for that exact same photo ID.
-      final photo = _doubanPhotoId(doubanPoster);
-      if (photo.isNotEmpty) {
+      final photos = doubanPosters.map(_doubanPhotoId).toSet().take(2);
+      for (final photo in photos) {
         try {
           final page = await _race(
             _fetch(
@@ -217,11 +257,13 @@ class CinemaDetailArtworkRepository {
               canonicalUri?.host == 'movie.douban.com' &&
               canonicalUri?.path == '/photos/photo/$photo/') {
             final images = document.querySelectorAll(
-              'img[src],meta[property="og:image"]',
+              'img[src],meta[property="og:image"],a[href]',
             );
             for (final image in images) {
               final url = _imageUrl(
-                image.attributes['src'] ?? image.attributes['content'],
+                image.attributes['src'] ??
+                    image.attributes['content'] ??
+                    image.attributes['href'],
               );
               if (_doubanPhotoId(url) != photo || candidates.contains(url)) {
                 continue;
@@ -244,6 +286,7 @@ class CinemaDetailArtworkRepository {
       current();
     } finally {
       timer.cancel();
+      cancel.cancel('Artwork lookup finished');
     }
     _remember(key, null);
     return fallback;
@@ -349,6 +392,20 @@ class CinemaDetailArtworkRepository {
       ),
     );
     if (data is! Map) throw const FormatException('Artwork metadata invalid');
+    if (uri.host == 'm.douban.com') {
+      CinemaDoubanAccess.noteResponse(200, data);
+      if (data['id']?.toString() != uri.pathSegments.last ||
+          !const ['movie', 'tv'].contains(data['type'])) {
+        throw const FormatException('Artwork subject identity invalid');
+      }
+    } else if (uri.host == 'v3-cinemeta.strem.io') {
+      final meta = data['meta'];
+      if (meta is! Map ||
+          meta['id'] != uri.pathSegments.last.replaceFirst('.json', '') ||
+          meta['type'] != uri.pathSegments[1]) {
+        throw const FormatException('Artwork provider identity invalid');
+      }
+    }
     _checkCancel(cancel);
     final result = Map<String, dynamic>.from(data);
     _metadata[uri.toString()] = (_now(), result);

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
 import 'package:kazumi/services/platform/desktop_fullscreen.dart';
+import 'package:kazumi/services/platform/desktop_window_controls.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'cinema_home_display_bridge.dart';
@@ -33,10 +34,16 @@ bool cinemaAllowsHomeDisplayNavigation(String? value, {bool mainFrame = true}) {
 /// decoding effect used by film details. Filters cannot pixelate AppKit views.
 /// Snapshots exist only during navigation, are bounded, and never touch disk.
 class CinemaHomeDisplayPage extends StatefulWidget {
-  const CinemaHomeDisplayPage({super.key, this.client, this.onOpenNAS});
+  const CinemaHomeDisplayPage({
+    super.key,
+    this.client,
+    this.onOpenNAS,
+    this.windowControls,
+  });
 
   final CinemaNASClient? client;
   final Future<void> Function()? onOpenNAS;
+  final DesktopWindowControls? windowControls;
 
   @override
   State<CinemaHomeDisplayPage> createState() => _CinemaHomeDisplayPageState();
@@ -45,11 +52,15 @@ class CinemaHomeDisplayPage extends StatefulWidget {
 class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     with WidgetsBindingObserver, WindowListener {
   late final _client = widget.client ?? CinemaNASClient();
+  late final _windowControls =
+      widget.windowControls ?? DesktopWindowControls.instance;
   PlatformInAppWebViewWidget? _webView;
   PlatformInAppWebViewController? _controller;
   Uint8List? _preview;
   Timer? _timeout, _captureTimer, _settleTimer, _renewTimer;
   bool _loading = true, _overlay = true, _hidden = false;
+  bool _occluded = false, _minimized = false;
+  bool get _suspended => _hidden || _occluded;
   bool _capturePending = false, _authorizing = false, _needsNAS = false;
   int _generation = 0, _document = 0, _captures = 0, _progress = 0;
   String? _error;
@@ -62,8 +73,21 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     windowManager.addListener(this);
-    unawaited(_open());
+    _windowControls.register(this, _nativeVisibilityChanged);
+    unawaited(_initializeVisibility());
   }
+
+  Future<void> _initializeVisibility() async {
+    await _windowControls.initialize();
+    if (!mounted) return;
+    // A route opened while already hidden must not depend on pause-on-hide
+    // playback preferences to receive its initial native visibility state.
+    _hidden = _windowControls.hidden || _minimized;
+    await _open();
+  }
+
+  Future<void> _nativeVisibilityChanged(bool hidden) =>
+      _visibility(hidden || _minimized);
 
   Future<void> _open() async {
     if (_authorizing) return;
@@ -101,7 +125,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
       }
       // A hidden page must not create a native document or start its polling.
       // Resume revalidates before constructing a fresh document below.
-      if (_hidden) return;
+      if (_suspended) return;
       _scheduleRenewal(access, generation);
       _createWebView(generation);
     } on TimeoutException {
@@ -175,7 +199,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
             handlerName: cinemaHomeDisplayBridgeHandlerName,
             callback: (args) {
               if (!_active(generation) ||
-                  _hidden ||
+                  _suspended ||
                   args.length != 1 ||
                   args.single is! Map) {
                 return false;
@@ -301,26 +325,26 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
       _error = null;
     });
     final document = _document;
-    if (!_hidden) _armTimeout(document);
+    if (!_suspended) _armTimeout(document);
   }
 
   void _armTimeout(int document) {
     _timeout?.cancel();
     _timeout = Timer(const Duration(seconds: 40), () {
-      if (mounted && !_hidden && document == _document && _loading) {
+      if (mounted && !_suspended && document == _document && _loading) {
         _showError('页面仍未准备好，请检查连接后重试');
       }
     });
   }
 
   void _startCaptures(int generation, int document) {
-    if (!_loading || _captureTimer != null || _hidden) return;
+    if (!_loading || _captureTimer != null || _suspended) return;
     unawaited(_capture(generation, document));
     _captureTimer = Timer.periodic(const Duration(milliseconds: 900), (_) {
       if (!_active(generation) ||
           document != _document ||
           !_loading ||
-          _hidden ||
+          _suspended ||
           _captures >= 24) {
         _captureTimer?.cancel();
         _captureTimer = null;
@@ -332,7 +356,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
 
   Future<void> _capture(int generation, int document) async {
     final controller = _controller;
-    if (_capturePending || controller == null || _hidden) return;
+    if (_capturePending || controller == null || _suspended) return;
     _capturePending = true;
     ++_captures;
     try {
@@ -441,17 +465,52 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     } catch (_) {}
   }
 
+  Future<void> _occlusion(bool occluded) async {
+    if (_occluded == occluded) return;
+    _occluded = occluded;
+    if (_hidden) return;
+    if (occluded) {
+      _timeout?.cancel();
+      _captureTimer?.cancel();
+      _captureTimer = null;
+    } else if (_webView == null) {
+      await _open();
+      return;
+    } else if (_loading) {
+      _armTimeout(_document);
+      _startCaptures(_generation, _document);
+    }
+    try {
+      await _controller?.evaluateJavascript(
+        source: 'window.__nakuHomeDisplay?.setVisible(${!occluded})',
+      );
+      if (!occluded) await _replayBridge();
+    } catch (_) {}
+  }
+
   @override
-  void onWindowMinimize() => unawaited(_visibility(true));
+  void onWindowMinimize() {
+    _minimized = true;
+    unawaited(_visibility(true));
+  }
+
   @override
-  void onWindowRestore() => unawaited(_visibility(false));
+  void onWindowRestore() {
+    _minimized = false;
+    unawaited(_visibility(_windowControls.hidden));
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.hidden ||
         state == AppLifecycleState.paused) {
-      unawaited(_visibility(true));
-    } else if (state == AppLifecycleState.resumed && _hidden) {
-      unawaited(_visibility(false));
+      // Flutter maps AppKit occlusion (including fullscreen Space changes) to
+      // hidden. It is not NSApp.hide. Keep the live WKWebView mounted while its
+      // loading work is paused; tearing it down here can race CVDisplayLink.
+      unawaited(_occlusion(true));
+    } else if (state == AppLifecycleState.resumed) {
+      unawaited(_occlusion(false));
+      unawaited(_windowControls.refreshVisibility());
     }
   }
 
@@ -462,6 +521,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     _renewTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     windowManager.removeListener(this);
+    _windowControls.unregister(this);
     // Disposing the native page releases its WebGL contexts and website polling.
     _webView?.dispose();
     _controller = null;
@@ -474,28 +534,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
   Widget build(BuildContext context) => Theme(
     data: CinemaTheme.of(context),
     child: Scaffold(
-      appBar: AppBar(
-        title: const Text('Home Display'),
-        actions: [
-          IconButton(
-            tooltip: '刷新',
-            onPressed: _authorizing ? null : _open,
-            icon: const Icon(Icons.refresh_rounded),
-          ),
-          IconButton(
-            tooltip: '全屏',
-            onPressed: () async {
-              try {
-                await DesktopFullscreen.setFullScreen(
-                  !await DesktopFullscreen.isFullScreen(),
-                );
-              } catch (_) {}
-            },
-            icon: const Icon(Icons.fullscreen_rounded),
-          ),
-          const SizedBox(width: 12),
-        ],
-      ),
+      backgroundColor: Colors.transparent,
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -545,8 +584,65 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
                 ),
               ),
             ),
+          Positioned(
+            key: const ValueKey('home-display-floating-controls'),
+            top: MediaQuery.paddingOf(context).top + 34,
+            left: 12,
+            right: 12,
+            child: Row(
+              children: [
+                _displayControl(
+                  tooltip: '返回',
+                  icon: Icons.chevron_left_rounded,
+                  onPressed: () => Navigator.of(context).maybePop(),
+                ),
+                const Spacer(),
+                _displayControl(
+                  tooltip: '刷新',
+                  icon: Icons.refresh_rounded,
+                  onPressed: _authorizing ? null : _open,
+                ),
+                const SizedBox(width: 4),
+                _displayControl(
+                  tooltip: '全屏',
+                  icon: Icons.fullscreen_rounded,
+                  onPressed: () async {
+                    try {
+                      await DesktopFullscreen.setFullScreen(
+                        !await DesktopFullscreen.isFullScreen(),
+                      );
+                    } catch (_) {}
+                  },
+                ),
+              ],
+            ),
+          ),
         ],
       ),
+    ),
+  );
+
+  Widget _displayControl({
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback? onPressed,
+  }) => IconButton(
+    tooltip: tooltip,
+    onPressed: onPressed,
+    style: IconButton.styleFrom(
+      foregroundColor: Colors.white.withValues(alpha: .92),
+      backgroundColor: Colors.transparent,
+      disabledForegroundColor: Colors.white.withValues(alpha: .3),
+      hoverColor: Colors.white.withValues(alpha: .1),
+      focusColor: Colors.white.withValues(alpha: .1),
+      highlightColor: Colors.white.withValues(alpha: .14),
+      minimumSize: const Size.square(40),
+      shape: const CircleBorder(),
+    ),
+    icon: Icon(
+      icon,
+      size: 23,
+      shadows: const [Shadow(color: Colors.black54, blurRadius: 8)],
     ),
   );
 }

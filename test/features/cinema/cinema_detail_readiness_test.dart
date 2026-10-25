@@ -13,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite/sqflite.dart'
     show databaseFactory, databaseFactorySqflitePlugin;
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
+import 'package:kazumi/features/cinema/cinema_detail_artwork.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_neon_decode.dart';
 import 'package:kazumi/features/cinema/cinema_ratings.dart';
@@ -112,6 +113,12 @@ class _Repository extends CinemaRepository {
 }
 
 class _Ratings extends CinemaRatingsRepository {
+  final changeNotifier = ChangeNotifier();
+  @override
+  ChangeNotifier get changes => changeNotifier;
+  final cached = <String, CinemaRatings>{};
+  @override
+  CinemaRatings? peek(CinemaTitle title) => cached[title.sourceId];
   final full = <String, Completer<CinemaRatings>>{};
   final metadata = <String, Completer<DoubanSubjectDetails>>{};
   final fetches = <String, int>{};
@@ -154,6 +161,26 @@ class _Ratings extends CinemaRatingsRepository {
   }
 }
 
+class _Artwork extends CinemaDetailArtworkRepository {
+  Completer<CinemaDetailArtwork>? upgrade;
+  @override
+  Future<CinemaDetailArtwork> resolve(
+    CinemaTitle title, {
+    RatingIdentity identity = const RatingIdentity(),
+    CancelToken? cancelToken,
+    bool Function()? isCurrent,
+    bool force = false,
+  }) async {
+    if (identity.imdbId.isNotEmpty && upgrade != null) return upgrade!.future;
+    return CinemaDetailArtwork(
+      url: title.poster,
+      width: 1600,
+      height: 900,
+      highResolution: title.poster.isNotEmpty,
+    );
+  }
+}
+
 class _Catalogue extends DoubanRepository {
   @override
   Future<DoubanResultPage> browse({
@@ -175,6 +202,7 @@ void main() {
   late CinemaStore store;
   late _Repository repository;
   late _Ratings ratings;
+  late _Artwork artwork;
   late Map<String, _Poster> posters;
   late ui.Image frame;
 
@@ -230,6 +258,7 @@ void main() {
     await store.load();
     repository = _Repository();
     ratings = _Ratings();
+    artwork = _Artwork();
     posters = {};
   });
 
@@ -274,7 +303,7 @@ void main() {
           'https://posters.invalid/${source.id}.png',
           cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
         ),
-        width: 1600,
+        width: 3200,
         height: 2400,
         policy: ResizeImagePolicy.fit,
       );
@@ -308,6 +337,7 @@ void main() {
           store: store,
           repository: repository,
           ratingsRepository: ratings,
+          artworkRepository: artwork,
           catalogDiscovery: _Catalogue(),
           enableSearchDiscovery: false,
           enableWatchTogether: false,
@@ -326,7 +356,7 @@ void main() {
   bool loading(WidgetTester tester) =>
       tester.widget<CinemaNeonDecode>(find.byType(CinemaNeonDecode)).loading;
 
-  testWidgets('below the HD artwork the real detail remains frosted glass', (
+  testWidgets('below HD artwork charcoal frost suppresses desktop clutter', (
     tester,
   ) async {
     final color = ValueNotifier(const Color(0xFFEA5030));
@@ -370,8 +400,9 @@ void main() {
     color.value = const Color(0xFF3060EA);
     await tester.pumpAndSettle();
     final cool = await sample('detail-cool');
-    expect(warm[0] - cool[0], greaterThan(20));
-    expect(cool[2] - warm[2], greaterThan(20));
+    expect((warm[0] - cool[0]).abs(), lessThanOrEqualTo(10));
+    expect((cool[2] - warm[2]).abs(), lessThanOrEqualTo(10));
+    expect(warm.every((channel) => channel >= 20 && channel <= 45), isTrue);
     expect(tester.takeException(), isNull);
   });
 
@@ -412,6 +443,67 @@ void main() {
       await frames(tester);
       expect(loading(tester), isFalse);
       expect(ratings.fetches['ready-a'], 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'late confirmed identity restarts the gate until the new HD frame is decoded',
+    (tester) async {
+      await mount(tester);
+      ratings.complete('ready-a');
+      posters['ready-a']!.complete(frame);
+      await tester.pumpAndSettle();
+      expect(loading(tester), isFalse);
+      artwork.upgrade = Completer<CinemaDetailArtwork>();
+      ratings.cached['ready-a'] = const CinemaRatings(
+        identity: RatingIdentity(imdbId: 'tt0120338'),
+        ratings: [],
+        message: '',
+      );
+      ratings.changes.notifyListeners();
+      await frames(tester);
+      expect(loading(tester), isTrue);
+      const url = 'https://posters.invalid/upgraded-hd.png';
+      final provider = ResizeImage(
+        CachedNetworkImageProvider(
+          url,
+          cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
+        ),
+        width: 3200,
+        height: 2400,
+        policy: ResizeImagePolicy.fit,
+      );
+      final hdStream = _Poster();
+      PaintingBinding.instance.imageCache.putIfAbsent(
+        await provider.obtainKey(ImageConfiguration.empty),
+        () => hdStream,
+      );
+      PaintingBinding.instance.imageCache.putIfAbsent(
+        await ResizeImage.resizeIfNeeded(
+          384,
+          null,
+          provider,
+        ).obtainKey(ImageConfiguration.empty),
+        () => hdStream,
+      );
+      artwork.upgrade!.complete(
+        const CinemaDetailArtwork(
+          url: url,
+          width: 1920,
+          height: 1080,
+          highResolution: true,
+        ),
+      );
+      await frames(tester);
+      expect(
+        loading(tester),
+        isTrue,
+        reason: 'A verified URL is not a decoded image frame.',
+      );
+      hdStream.complete(frame);
+      await frames(tester);
+      expect(loading(tester), isFalse);
       expect(tester.takeException(), isNull);
     },
   );

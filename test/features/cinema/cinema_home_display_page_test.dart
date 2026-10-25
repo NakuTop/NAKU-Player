@@ -8,8 +8,30 @@ import 'package:kazumi/features/cinema/cinema_home_display_bridge.dart';
 import 'package:kazumi/features/cinema/cinema_home_display_page.dart';
 import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'package:kazumi/features/cinema/cinema_neon_decode.dart';
+import 'package:kazumi/services/platform/desktop_window_controls.dart';
 
 void main() {
+  testWidgets('display fills the window behind transparent floating controls', (
+    tester,
+  ) async {
+    final platform = _installFakeWebView();
+    await _mountAuthorized(tester, platform);
+    expect(find.byType(AppBar), findsNothing);
+    expect(find.text('Home Display'), findsNothing);
+    final view = tester.getRect(find.byKey(_nativeViewKey));
+    final page = tester.getRect(find.byType(Scaffold));
+    expect(view, page);
+    expect(find.byTooltip('返回'), findsOneWidget);
+    expect(find.byTooltip('刷新'), findsOneWidget);
+    expect(find.byTooltip('全屏'), findsOneWidget);
+    final controls = tester.getRect(
+      find.byKey(const ValueKey('home-display-floating-controls')),
+    );
+    expect(controls.top, greaterThanOrEqualTo(28));
+    expect(controls.bottom, lessThan(page.bottom));
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'no native WebView is created before NAS authorization completes',
     (tester) async {
@@ -143,17 +165,15 @@ void main() {
     final platform = _installFakeWebView();
     await _mountAuthorized(tester, platform);
     final previous = platform.view;
-    final lifecycle =
-        tester.state(find.byType(CinemaHomeDisplayPage))
-            as WidgetsBindingObserver;
-    lifecycle.didChangeAppLifecycleState(AppLifecycleState.hidden);
+    final controls = _controls(tester);
+    controls.setHidden(true);
     await tester.pump();
     await tester.pump(const Duration(seconds: 45));
     expect(platform.view.disposed, isFalse);
     expect(_decoding(tester).loading, isTrue);
     expect(find.textContaining('页面仍未准备好'), findsNothing);
 
-    lifecycle.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    controls.setHidden(false);
     await tester.pump();
     await tester.pump(const Duration(seconds: 5));
     expect(platform.views, hasLength(2));
@@ -167,6 +187,64 @@ void main() {
       isTrue,
     );
     await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'fullscreen occlusion pauses loading and retains the native page',
+    (tester) async {
+      final platform = _installFakeWebView();
+      var authorizations = 0;
+      await _mount(
+        tester,
+        client: CinemaNASClient(
+          invoke: (_, _) async {
+            ++authorizations;
+            return {'authenticated': true};
+          },
+        ),
+      );
+      final original = platform.view;
+      original.params.onWebViewCreated!(original.controller);
+      final lifecycle =
+          tester.state(find.byType(CinemaHomeDisplayPage))
+              as WidgetsBindingObserver;
+      lifecycle.didChangeAppLifecycleState(AppLifecycleState.hidden);
+      await tester.pump(const Duration(seconds: 45));
+      expect(original.disposed, isFalse);
+      expect(find.textContaining('页面仍未准备好'), findsNothing);
+      lifecycle.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await tester.pump();
+      expect(authorizations, 1);
+      expect(platform.views, hasLength(1));
+      expect(original.disposed, isFalse);
+      expect(
+        original.controller.scripts,
+        contains('window.__nakuHomeDisplay?.setVisible(true)'),
+      );
+      original.controller.emit(_readyState);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byType(CinemaNeonDecode), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('initial native hidden state prevents creating a document', (
+    tester,
+  ) async {
+    final platform = _installFakeWebView();
+    final controls = _FakeWindowControls()..hidden = true;
+    await _mount(
+      tester,
+      client: CinemaNASClient(invoke: (_, _) async => {'authenticated': true}),
+      windowControls: controls,
+    );
+    expect(platform.views, isEmpty);
+    controls.setHidden(false);
+    await tester.pump();
+    expect(platform.views, hasLength(1));
+    await tester.pumpWidget(const SizedBox());
+    expect(controls.callbacks, isEmpty);
   });
 
   testWidgets(
@@ -188,16 +266,14 @@ void main() {
       previous.controller.emit(_readyState);
       await tester.pump();
       await tester.pump(const Duration(seconds: 1));
-      final lifecycle =
-          tester.state(find.byType(CinemaHomeDisplayPage))
-              as WidgetsBindingObserver;
-      lifecycle.didChangeAppLifecycleState(AppLifecycleState.hidden);
+      final controls = _controls(tester);
+      controls.setHidden(true);
       await tester.pump(const Duration(minutes: 6));
       final expired = {..._readyState, 'phase': 'loading', 'apiStatus': 401};
       expect(previous.controller.emit(expired), isFalse);
       expect(find.text('展示权限已失效，请重新验证 NAS'), findsNothing);
 
-      lifecycle.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      controls.setHidden(false);
       await tester.pump();
       expect(calls, 2);
       expect(previous.disposed, isTrue);
@@ -241,11 +317,9 @@ void main() {
     );
     final previous = platform.view;
     previous.params.onWebViewCreated!(previous.controller);
-    final lifecycle =
-        tester.state(find.byType(CinemaHomeDisplayPage))
-            as WidgetsBindingObserver;
-    lifecycle.didChangeAppLifecycleState(AppLifecycleState.hidden);
-    lifecycle.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    final controls = _controls(tester);
+    controls.setHidden(true);
+    controls.setHidden(false);
     await tester.pump();
     resume.complete({'authenticated': false, 'reason': 'nas_login_required'});
     await tester.pump();
@@ -271,14 +345,12 @@ void main() {
         invoke: (_, _) => ++calls == 1 ? initial.future : resume.future,
       ),
     );
-    final lifecycle =
-        tester.state(find.byType(CinemaHomeDisplayPage))
-            as WidgetsBindingObserver;
-    lifecycle.didChangeAppLifecycleState(AppLifecycleState.hidden);
+    final controls = _controls(tester);
+    controls.setHidden(true);
     initial.complete({'authenticated': true});
     await tester.pump();
     expect(platform.views, isEmpty);
-    lifecycle.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    controls.setHidden(false);
     await tester.pump();
     expect(calls, 2);
     expect(platform.views, isEmpty);
@@ -386,13 +458,46 @@ Future<void> _mount(
   WidgetTester tester, {
   required CinemaNASClient client,
   Future<void> Function()? onOpenNAS,
+  _FakeWindowControls? windowControls,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
-      home: CinemaHomeDisplayPage(client: client, onOpenNAS: onOpenNAS),
+      home: CinemaHomeDisplayPage(
+        client: client,
+        onOpenNAS: onOpenNAS,
+        windowControls: windowControls ?? _FakeWindowControls(),
+      ),
     ),
   );
   await tester.pump();
+}
+
+_FakeWindowControls _controls(WidgetTester tester) =>
+    tester
+            .widget<CinemaHomeDisplayPage>(find.byType(CinemaHomeDisplayPage))
+            .windowControls!
+        as _FakeWindowControls;
+
+class _FakeWindowControls extends DesktopWindowControls {
+  _FakeWindowControls() : super(supported: true);
+  final callbacks = <Object, WindowVisibilityCallback>{};
+  @override
+  Future<void> initialize() async {}
+  @override
+  Future<void> refreshVisibility() async {}
+  @override
+  void register(Object owner, WindowVisibilityCallback callback) {
+    callbacks[owner] = callback;
+  }
+
+  @override
+  void unregister(Object owner) => callbacks.remove(owner);
+  void setHidden(bool value) {
+    hidden = value;
+    for (final callback in callbacks.values.toList()) {
+      unawaited(callback(value));
+    }
+  }
 }
 
 Future<void> _mountAuthorized(

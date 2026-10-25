@@ -26,8 +26,10 @@ void main() {
     bool offscreen = false,
     List<CinemaTitle> titles = _titles,
     ScrollController? scrollController,
+    double height = 860,
+    double topInset = 0,
   }) async {
-    tester.view.physicalSize = const Size(1280, 860);
+    tester.view.physicalSize = Size(1280, height);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -35,7 +37,7 @@ void main() {
       MaterialApp(
         home: MediaQuery(
           data: MediaQueryData(
-            size: const Size(1280, 860),
+            size: Size(1280, height),
             disableAnimations: reduced,
           ),
           child: TickerMode(
@@ -45,7 +47,11 @@ void main() {
               child: Column(
                 children: [
                   if (offscreen) const SizedBox(height: 1000),
-                  CinemaFeaturedWall(titles: titles, onOpen: onOpen ?? (_) {}),
+                  CinemaFeaturedWall(
+                    titles: titles,
+                    onOpen: onOpen ?? (_) {},
+                    topInset: topInset,
+                  ),
                   const SizedBox(height: 1000),
                 ],
               ),
@@ -60,6 +66,26 @@ void main() {
   PageController pages(WidgetTester tester) => tester
       .widget<PageView>(find.byKey(const ValueKey('cinema-featured-pages')))
       .controller!;
+
+  testWidgets(
+    'hero fills most of the first screen and adapts to short windows',
+    (tester) async {
+      await mount(tester, topInset: 90);
+      expect(
+        tester.getSize(find.byType(CinemaFeaturedWall)).height,
+        closeTo(860 * .76, .01),
+      );
+      expect(find.text('查看影片').hitTestable(), findsOneWidget);
+      await mount(tester, height: 480, topInset: 90);
+      expect(
+        tester.getSize(find.byType(CinemaFeaturedWall)).height,
+        closeTo(480 * .76, .01),
+      );
+      expect(find.text('查看影片').hitTestable(), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets('artwork keeps the normal arrow during hover and drag', (
     tester,

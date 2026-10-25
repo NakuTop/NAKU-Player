@@ -8,10 +8,12 @@ import 'package:flutter/services.dart';
 import 'package:kazumi/services/network/proxy_aware_image_cache_manager.dart';
 
 import 'cinema_media_identity.dart';
+import 'cinema_detail_artwork.dart';
+import 'cinema_featured_artwork.dart';
 import 'cinema_models.dart';
+import 'cinema_ratings.dart';
 import 'cinema_theme.dart';
 import 'cinema_artwork_backdrop.dart';
-import 'douban/douban_image_headers.dart';
 
 /// A real catalogue selection; these titles are excluded from the wall below.
 class CinemaFeaturedWall extends StatefulWidget {
@@ -21,12 +23,16 @@ class CinemaFeaturedWall extends StatefulWidget {
     required this.onOpen,
     this.statusBuilder,
     this.topInset = 0,
+    this.artworkRepository,
+    this.artworkIdentity,
   });
 
   final List<CinemaTitle> titles;
   final ValueChanged<CinemaTitle> onOpen;
   final Widget Function(CinemaTitle)? statusBuilder;
   final double topInset;
+  final CinemaDetailArtworkRepository? artworkRepository;
+  final CinemaArtworkIdentity? artworkIdentity;
 
   @override
   State<CinemaFeaturedWall> createState() => _CinemaFeaturedWallState();
@@ -35,6 +41,7 @@ class CinemaFeaturedWall extends StatefulWidget {
 class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
     with WidgetsBindingObserver {
   final PageController _pages = PageController(keepPage: false);
+  late final CinemaFeaturedArtworkWindow _artworkWindow;
   int _index = 0;
   int _dataGeneration = 0;
   Timer? _timer;
@@ -50,8 +57,22 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
   @override
   void initState() {
     super.initState();
+    _artworkWindow = CinemaFeaturedArtworkWindow(
+      repository: widget.artworkRepository,
+    )..addListener(_artworkChanged);
     WidgetsBinding.instance.addObserver(this);
   }
+
+  void _artworkChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _updateArtworkWindow() => _artworkWindow.update(
+    widget.titles,
+    _index,
+    identityFor: widget.artworkIdentity,
+    active: _active && _tickerMode,
+  );
 
   @override
   void didChangeDependencies() {
@@ -61,6 +82,7 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
         MediaQuery.disableAnimationsOf(context) ||
         CinemaAppearanceScope.of(context).reduceMotion;
     if (!_tickerMode || _reduced) _cancelWheelAndSnap();
+    _updateArtworkWindow();
     _schedule();
   }
 
@@ -86,6 +108,7 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
         }
       });
     }
+    _updateArtworkWindow();
     _schedule();
   }
 
@@ -93,6 +116,7 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _active = state == AppLifecycleState.resumed;
     if (!_active) _cancelWheelAndSnap();
+    _updateArtworkWindow();
     _schedule();
   }
 
@@ -206,6 +230,7 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
   void dispose() {
     _timer?.cancel();
     _wheelEnd?.cancel();
+    _artworkWindow.dispose();
     _pages.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -214,7 +239,11 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
   @override
   Widget build(BuildContext context) {
     if (widget.titles.isEmpty) return const SizedBox.shrink();
-    final wide = MediaQuery.sizeOf(context).width > 1200;
+    final viewport = MediaQuery.sizeOf(context);
+    final wide = viewport.width > 1200;
+    final heroHeight = (viewport.height * .76)
+        .clamp(340.0, 900.0)
+        .clamp(0.0, viewport.height * .86);
     return MouseRegion(
       cursor: SystemMouseCursors.basic,
       onEnter: (_) {
@@ -246,7 +275,7 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
           return KeyEventResult.ignored;
         },
         child: SizedBox(
-          height: (wide ? 410 : 350) + widget.topInset,
+          height: heroHeight,
           child: Stack(
             fit: StackFit.expand,
             children: [
@@ -273,6 +302,7 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
                   itemCount: widget.titles.length,
                   onPageChanged: (index) {
                     setState(() => _index = index);
+                    _updateArtworkWindow();
                     _schedule();
                   },
                   itemBuilder: (context, index) => Listener(
@@ -325,18 +355,26 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
   }
 
   Widget _artwork(CinemaTitle title, {required bool wide}) {
+    final compactHeight = MediaQuery.sizeOf(context).height < 650;
+    final artwork = _artworkWindow.artworkFor(
+      title,
+      identity: widget.artworkIdentity?.call(title) ?? const RatingIdentity(),
+    );
+    final decodeWidth = cinemaHeroDecodeWidth(
+      artwork,
+      MediaQuery.sizeOf(context).width,
+      MediaQuery.devicePixelRatioOf(context),
+    );
     return Stack(
       key: ValueKey('cinema-featured-${title.key}'),
       fit: StackFit.expand,
       children: [
-        if (title.poster.isNotEmpty)
+        if (artwork.url.isNotEmpty)
           CachedNetworkImage(
-            imageUrl: title.poster,
+            imageUrl: artwork.url,
             cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
-            httpHeaders: title.sourceId == 'douban-discovery'
-                ? doubanImageHeaders
-                : null,
-            memCacheWidth: 1600,
+            httpHeaders: artwork.headers.isEmpty ? null : artwork.headers,
+            memCacheWidth: decodeWidth,
             fadeInDuration: Duration.zero,
             fit: BoxFit.cover,
             alignment: const Alignment(.4, -.65),
@@ -378,9 +416,9 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
         Padding(
           padding: EdgeInsets.fromLTRB(
             wide ? 38 : 26,
-            30 + widget.topInset,
+            (compactHeight ? 18 : 30) + widget.topInset,
             26,
-            31,
+            compactHeight ? 24 : 40,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -394,7 +432,7 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: wide ? 46 : 38,
+                    fontSize: compactHeight ? 32 : (wide ? 46 : 38),
                     height: 1.1,
                     fontWeight: FontWeight.w600,
                     letterSpacing: -.8,

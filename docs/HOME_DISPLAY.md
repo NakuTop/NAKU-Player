@@ -31,12 +31,13 @@ before an optional higher-resolution upgrade. Upload observations do not consume
 read pixels. The bridge creates no GL context, forces no quality preference,
 and never reads response bodies, credentials or personal trip fields.
 
-Hidden time does not exhaust the native loading deadline. Returning to the
-foreground retires the previous document, revalidates NAS access, then creates a
-fresh document after cookie installation. This resets temporary camera/selection
-state and prevents an expired-cookie response or stopped website hook from
-surviving the refresh. Hidden and retired-document bridge messages are ignored.
-Leaving releases the native WebView and its WebGL/polling resources.
+Hidden time does not exhaust the native loading deadline. Actual native app
+Hide and window minimization revalidate NAS access before restoring a document.
+Fullscreen and Space occlusion pause temporary loading work and resume the same
+native WebView; they do not tear down WebKit during AppKit's window transition.
+Hidden and retired-document bridge messages are ignored. Leaving releases the
+native WebView and its WebGL/polling resources. Controls float transparently over
+the full-height document rather than reserving a top toolbar.
 
 ## NAS authorization
 
