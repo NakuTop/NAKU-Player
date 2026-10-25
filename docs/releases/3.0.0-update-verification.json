@@ -1,0 +1,230 @@
+{
+  "version": "3.0.0+76",
+  "source_commit": "07056d77ae51c59d8a1dbcd953443eba17b65302",
+  "signed_feed_commit": "629a0cc9037d6203802dc86baa20b7086ab8e0b9",
+  "public_feed": {
+    "url": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+    "version": "3.0.0+76",
+    "signature_verified": true,
+    "bytes": 3890,
+    "archive_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.0.0/NAKUPlayer-3.0.0-macOS-universal.zip",
+    "uses_unchanged_2x_public_key": true
+  },
+  "anonymous_complete_downloads": [
+    {
+      "file": "INSTALL-zh-CN.txt",
+      "bytes": 4533,
+      "sha256": "558e40d6484f713d673eac7e2fa38053895e3daeb89e72ec627a906e52c7a62e",
+      "anonymous_full_download_verified": true
+    },
+    {
+      "file": "NAKUPlayer-3.0.0-macOS-universal.dmg",
+      "bytes": 86098836,
+      "sha256": "76d9cab9510dd1f46eefbfdc4614591ed9a65c1dc61c0de3d2f8da6c206b6d54",
+      "anonymous_full_download_verified": true
+    },
+    {
+      "file": "NAKUPlayer-3.0.0-macOS-universal.zip",
+      "bytes": 77136673,
+      "sha256": "98e4b37cfaf519f315180d3ab173cae4e0fec99567620b004abe14bf25e90a37",
+      "anonymous_full_download_verified": true
+    },
+    {
+      "file": "NAKUPlayer-3.0.0-source.zip",
+      "bytes": 18052420,
+      "sha256": "90175fc4a2f4a98302d44ff500ae6ef1a8b87f164d82becc466e0f498fed6968",
+      "anonymous_full_download_verified": true
+    },
+    {
+      "file": "RELEASE-NOTES-zh-CN.md",
+      "bytes": 2400,
+      "sha256": "227ae3da0cea2dfb57d2e7e35485a93315d4d7468bcbaaaa4605ac100e896d37",
+      "anonymous_full_download_verified": true
+    },
+    {
+      "file": "SHA256SUMS",
+      "bytes": 557,
+      "sha256": "49a43181a670e7b379f6effc593013cd0b58608d2526bedc3887d874b87a54f7",
+      "anonymous_full_download_verified": true
+    },
+    {
+      "file": "VERIFICATION.json",
+      "bytes": 1309,
+      "sha256": "a9969a42babef986e4eb4ee74995642c7f67a926194dffc5901fbd8716348cd2",
+      "anonymous_full_download_verified": true
+    }
+  ],
+  "legacy_configuration_audit": [
+    {
+      "tag": "v2.0.0",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.0.0+22",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.0.1",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.0.1+23",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.0.2",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.0.2+24",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.0.3",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.0.3+25",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.12.3",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.12.3+74",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.12.4",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.12.4+75",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.5.0",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.5.0+32",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.5.1",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.5.1+33",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.6.0",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.6.0+34",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.7.0",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.7.0+36",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.7.1",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.7.1+37",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.7.3",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.7.3+39",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.8.0",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.8.0+40",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.8.2",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.8.2+46",
+      "native_in_app_check_bridge_present": true
+    },
+    {
+      "tag": "v2.8.4",
+      "bundle_id": "com.shenminghao.yingchuan",
+      "feed": "https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/appcast.xml",
+      "require_signed_feed": true,
+      "sparkle": "- Sparkle (2.9.6)",
+      "compatible_feed_and_key": true,
+      "version": "2.8.4+50",
+      "native_in_app_check_bridge_present": true
+    }
+  ],
+  "real_legacy_installation": {
+    "old_version": "2.12.4+75",
+    "new_version": "3.0.0+76",
+    "engine": "Sparkle 2.9.6",
+    "driver": "Official Sparkle 2.9.6 command-line user driver; separately identified dormant lifecycle bundle",
+    "feed_override": false,
+    "actual_public_feed": true,
+    "actual_public_archive_download": true,
+    "process_exit": 0,
+    "seconds": 95.66,
+    "production_app_not_replaced": true,
+    "old_application_never_launched": true
+  },
+  "updated_bundle_files_identical_to_verified_release": 271,
+  "updated_bundle_strict_signature_verified": true,
+  "updater_test_source": "https://github.com/sparkle-project/Sparkle/tree/2.9.6/sparkle-cli",
+  "limits": [
+    "Installation used the official command-line user driver with the real Sparkle 2.9.6 engine and an unlaunched genuine 2.12.4 app copy. No production application or user library was downgraded.",
+    "Other 2.x versions were configuration-audited; their GUI buttons were not individually clicked.",
+    "No new actual video playback, cross-device, or legacy macOS 12 upgrade acceptance. macOS 13 is required for 3.0."
+  ]
+}
