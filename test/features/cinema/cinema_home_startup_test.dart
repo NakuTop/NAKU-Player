@@ -152,16 +152,32 @@ void main() {
     expect(tester.takeException(), isNull);
   }
 
-  bool selected(WidgetTester tester, String label) => tester
-      .widget<ListTile>(find.widgetWithText(ListTile, label).first)
-      .selected;
+  Finder destination(String label) =>
+      find.widgetWithText(TextButton, label).evaluate().isNotEmpty
+      ? find.widgetWithText(TextButton, label).first
+      : find.widgetWithText(ListTile, label).first;
+
+  bool selected(WidgetTester tester, String label) {
+    final control = tester.widget(destination(label));
+    if (control is ListTile) return control.selected;
+    final selectedSemantics = find.ancestor(
+      of: destination(label),
+      matching: find.byWidgetPredicate(
+        (widget) => widget is Semantics && widget.properties.selected != null,
+      ),
+    );
+    return tester
+        .widget<Semantics>(selectedSemantics.first)
+        .properties
+        .selected!;
+  }
 
   testWidgets(
     'real sidebar download route opens and back preserves series browsing',
     (tester) async {
       await mount(tester, '/cinema?section=series');
       final reads = repository.browsed.toList();
-      await tester.tap(find.widgetWithText(ListTile, '下载管理'));
+      await tester.tap(find.byTooltip('下载管理'));
       await tester.pumpAndSettle();
       expect(find.byType(DownloadPage), findsOneWidget);
       expect(find.text('还没有下载记录'), findsOneWidget);
@@ -196,7 +212,7 @@ void main() {
     expect(selected(tester, '设置'), isTrue);
     expect(repository.categoriesRead, 0);
     expect(repository.browsed, isEmpty);
-    await tester.tap(find.widgetWithText(ListTile, '剧集').first);
+    await tester.tap(destination('剧集'));
     await tester.pumpAndSettle();
     expect(selected(tester, '剧集'), isTrue);
     final context = tester.element(find.byType(CinemaHomePage));
@@ -223,13 +239,13 @@ void main() {
     await tester.pumpAndSettle();
     expect(repository.browsed, ['22']);
     expect(repository.browsed, isNot(contains('11')));
-    await tester.tap(find.widgetWithText(ListTile, '电影').first);
+    await tester.tap(destination('电影'));
     await tester.pumpAndSettle();
     expect(repository.browsed, ['22']);
     await tester.tap(find.byKey(const ValueKey('catalog-sort-latest')));
     await tester.pumpAndSettle();
     expect(repository.browsed, ['22', '11']);
-    await tester.tap(find.widgetWithText(ListTile, '剧集').first);
+    await tester.tap(destination('剧集'));
     await tester.pumpAndSettle();
     expect(repository.browsed, ['22', '11']);
     await tester.pumpWidget(const SizedBox());
@@ -242,7 +258,7 @@ void main() {
       expect(selected(tester, '我的收藏'), isTrue);
       expect(find.byType(CinemaUnifiedLibrary), findsOneWidget);
       expect(repository.browsed, isEmpty);
-      await tester.tap(find.widgetWithText(ListTile, '动漫').first);
+      await tester.tap(destination('动漫'));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('anime-tab-3')));
       await tester.pumpAndSettle();
@@ -277,10 +293,14 @@ void main() {
       expect(repository.browsed, isEmpty);
       await tester.tap(find.byKey(const ValueKey('anime-tab-2')));
       await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), '赛博朋克');
-      await tester.tap(find.widgetWithText(ListTile, '电影').first);
+      final animeSearch = find.descendant(
+        of: find.byType(CinemaAnimePage),
+        matching: find.byType(TextField),
+      );
+      await tester.enterText(animeSearch, '赛博朋克');
+      await tester.tap(destination('电影'));
       await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(ListTile, '动漫').first);
+      await tester.tap(destination('动漫'));
       await tester.pumpAndSettle();
       expect(
         tester
@@ -288,10 +308,7 @@ void main() {
             .selected,
         isTrue,
       );
-      expect(
-        tester.widget<TextField>(find.byType(TextField)).controller!.text,
-        '赛博朋克',
-      );
+      expect(tester.widget<TextField>(animeSearch).controller!.text, '赛博朋克');
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     });
@@ -307,7 +324,7 @@ void main() {
     Navigator.of(tester.element(find.byType(DoubanPage))).pop();
     await tester.pumpAndSettle();
     expect(find.byType(DoubanPage), findsNothing);
-    await tester.tap(find.widgetWithText(ListTile, '设置').first);
+    await tester.tap(destination('设置'));
     await tester.pumpAndSettle();
     expect(find.byType(CinemaSettingsPage), findsOneWidget);
     expect(find.byType(DoubanPage), findsNothing);

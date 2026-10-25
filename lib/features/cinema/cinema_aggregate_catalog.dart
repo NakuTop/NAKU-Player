@@ -75,6 +75,7 @@ class CinemaAggregateSnapshot {
 /// per source and at most three streams in flight. Responses publish as they
 /// arrive. Filtered discovery is metadata, never a claim of playable availability.
 class CinemaAggregateCatalogController extends ChangeNotifier {
+  static const discoveryPageSize = 40;
   CinemaAggregateCatalogController({
     required CinemaRepository repository,
     DoubanRepository? discoveryRepository,
@@ -116,6 +117,8 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
         .toList();
     final key = jsonEncode([
       kind.name,
+      // An older 20-card snapshot is not a complete 40-card head page.
+      discoveryPageSize,
       filters.year,
       filters.region,
       filters.genre,
@@ -232,14 +235,18 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
           if (!_valid(session, generation)) return;
           final firstRound = cursor.categories == null;
           await _fetchSource(session, cursor, generation);
-          // The public MacCMS t parameter is an exact category, not a recursive
-          // parent query. Sample a second distinct leaf on the first round so
-          // the initial screen isn't confined to one provider genre.
-          if (firstRound &&
+          // Public MacCMS page sizes are provider controlled. Fill the initial
+          // batch across its real cursors, including a single leaf's page two.
+          // Publish every response and bound sparse/duplicate catalogues rather
+          // than waiting indefinitely to reach forty cards.
+          var fetched = 1;
+          while (firstRound &&
               _valid(session, generation) &&
               cursor.hasMore &&
               cursor.error == null &&
-              cursor.pages.any((page) => page.page == 1)) {
+              cursor.keys.length < discoveryPageSize &&
+              fetched < 4) {
+            fetched++;
             await _fetchSource(session, cursor, generation);
           }
         } finally {
@@ -407,6 +414,7 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
           genre: filters.genre,
         ),
         start: cursor.start,
+        count: discoveryPageSize,
         cancelToken: session.cancel,
       );
       if (!_valid(session, generation)) return;

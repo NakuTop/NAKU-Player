@@ -474,20 +474,17 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets(
-    'Douban board route has no forward or reverse visual transition',
-    (tester) async {
-      await mount(tester);
-      await tester.tap(find.text('豆瓣榜单'));
-      final route = navigation.pushed.last;
-      expect(route, isA<PageRouteBuilder<void>>());
-      final page = route as PageRouteBuilder<void>;
-      expect(page.transitionDuration, Duration.zero);
-      expect(page.reverseTransitionDuration, Duration.zero);
-      navKey.currentState!.pop();
-      await tester.pumpAndSettle();
-      expect(find.byType(CinemaHomePage), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    },
-  );
+  testWidgets('Douban board uses the same themed route as ordinary pages', (
+    tester,
+  ) async {
+    await mount(tester);
+    await tester.tap(find.byTooltip('豆瓣榜单'));
+    final route = navigation.pushed.last;
+    expect(route, isA<MaterialPageRoute<void>>());
+    expect(route.settings.name, isNot('naku-native-player'));
+    navKey.currentState!.pop();
+    await tester.pumpAndSettle();
+    expect(find.byType(CinemaHomePage), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

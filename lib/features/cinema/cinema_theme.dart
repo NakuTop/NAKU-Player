@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'cinema_appearance.dart';
+import 'cinema_optical_glass.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:kazumi/utils/constants.dart';
 
@@ -20,11 +21,11 @@ abstract final class CinemaTheme {
             : appearance.effectiveBackgroundOpacity,
       );
   static Color surfaceFor(CinemaAppearance appearance) =>
-      const Color(0xFF1B1B1F).withValues(
+      const Color(0xFF1B1B1D).withValues(
         alpha: _panelAlpha(appearance.effectiveBackgroundOpacity, .38, .56),
       );
   static Color raisedFor(CinemaAppearance appearance) =>
-      const Color(0xFF2A292B).withValues(
+      const Color(0xFF242426).withValues(
         alpha: _panelAlpha(appearance.effectiveBackgroundOpacity, .30, .68),
       );
   static double _panelAlpha(double opacity, double base, double scale) =>
@@ -32,10 +33,11 @@ abstract final class CinemaTheme {
   static const copper = Color(0xFFFF9F0A);
   static const text = Color(0xFFF5F5F7);
   static const muted = Color(0xFFB3B0B5);
-  static const border = Color(0x30FFFFFF);
+  static const border = Color(0x18FFFFFF);
   static ThemeData? _cached;
   static double? _cachedOpacity;
   static String? _cachedFont;
+  static TargetPlatform? _cachedPlatform;
   static String get _fontFamily {
     try {
       return GStorage.getSetting(SettingsKeys.useSystemFont)
@@ -52,24 +54,33 @@ abstract final class CinemaTheme {
   static ThemeData dataFor(CinemaAppearance appearance) {
     final opacity = appearance.effectiveBackgroundOpacity;
     final fontFamily = _fontFamily;
+    final platform = defaultTargetPlatform;
     if (_cached != null &&
         _cachedOpacity == opacity &&
-        _cachedFont == fontFamily) {
+        _cachedFont == fontFamily &&
+        _cachedPlatform == platform) {
       return _cached!;
     }
     final background = backgroundFor(appearance),
         surface = surfaceFor(appearance);
     _cachedOpacity = opacity;
     _cachedFont = fontFamily;
+    _cachedPlatform = platform;
     return _cached = ThemeData(
       useMaterial3: true,
-      focusColor: NakuDevice.isTV ? copper.withValues(alpha: .45) : null,
+      focusColor: NakuDevice.isTV
+          ? copper.withValues(alpha: .45)
+          : const Color(0x24FFFFFF),
+      hoverColor: const Color(0x0CFFFFFF),
+      highlightColor: const Color(0x10FFFFFF),
+      splashColor: const Color(0x10FFFFFF),
       visualDensity: NakuDevice.isTV
           ? VisualDensity.comfortable
           : VisualDensity.standard,
       brightness: Brightness.dark,
       fontFamily: fontFamily,
       fontFamilyFallback: const ['MI_Sans_Regular'],
+      pageTransitionsTheme: pageTransitionsTheme2024,
       scaffoldBackgroundColor: background,
       colorScheme: ColorScheme.dark(
         primary: copper,
@@ -80,23 +91,32 @@ abstract final class CinemaTheme {
         onSecondary: Colors.black,
         tertiary: copper,
         onTertiary: Colors.black,
-        primaryContainer: const Color(0xFF493019),
-        onPrimaryContainer: const Color(0xFFFFD9AD),
-        secondaryContainer: const Color(0xFF382B20),
+        primaryContainer: const Color(0xFF323234),
+        onPrimaryContainer: text,
+        secondaryContainer: const Color(0xFF29292B),
         onSecondaryContainer: text,
-        tertiaryContainer: const Color(0xFF332B23),
+        tertiaryContainer: const Color(0xFF29292B),
         onTertiaryContainer: text,
         surfaceContainerLowest: background,
         surfaceContainerLow: surface,
         surfaceContainer: surface,
         surfaceContainerHigh: raisedFor(appearance),
-        surfaceContainerHighest: const Color(0xFF343237),
+        surfaceContainerHighest: const Color(0xFF303032),
         onSurfaceVariant: muted,
         outline: border,
-        outlineVariant: border,
+        outlineVariant: const Color(0x10FFFFFF),
         error: Color(0xFFFF9D92),
       ),
       appBarTheme: AppBarTheme(
+        toolbarHeight: platform == TargetPlatform.macOS ? 78 : null,
+        titleTextStyle: platform == TargetPlatform.macOS
+            ? TextStyle(
+                fontFamily: fontFamily,
+                fontSize: 22,
+                fontWeight: FontWeight.w600,
+                color: text,
+              )
+            : null,
         backgroundColor: background,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
@@ -105,31 +125,66 @@ abstract final class CinemaTheme {
       cardTheme: CardThemeData(
         color: surface,
         elevation: 0,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-          side: const BorderSide(color: border),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: const Color(0xF0202024),
+        backgroundColor: const Color(0xF01B1B1D),
         surfaceTintColor: Colors.transparent,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(24),
-          side: const BorderSide(color: border),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       ),
       bottomSheetTheme: const BottomSheetThemeData(
-        backgroundColor: Color(0xEA17171B),
+        backgroundColor: Color(0xEA18181A),
         surfaceTintColor: Colors.transparent,
         showDragHandle: true,
       ),
+      popupMenuTheme: PopupMenuThemeData(
+        color: const Color(0xF01B1B1D),
+        surfaceTintColor: Colors.transparent,
+        elevation: 8,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+      tabBarTheme: platform == TargetPlatform.macOS
+          ? TabBarThemeData(
+              labelColor: text,
+              unselectedLabelColor: muted,
+              dividerColor: Colors.transparent,
+              indicatorSize: TabBarIndicatorSize.label,
+              indicator: BoxDecoration(
+                color: const Color(0x16FFFFFF),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              indicatorAnimation: TabIndicatorAnimation.elastic,
+              labelStyle: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+              unselectedLabelStyle: const TextStyle(fontSize: 13),
+            )
+          : null,
+      segmentedButtonTheme: platform == TargetPlatform.macOS
+          ? SegmentedButtonThemeData(
+              style: ButtonStyle(
+                side: const WidgetStatePropertyAll(BorderSide.none),
+                foregroundColor: const WidgetStatePropertyAll(text),
+                backgroundColor: WidgetStateProperty.resolveWith(
+                  (states) => states.contains(WidgetState.selected)
+                      ? const Color(0x20FFFFFF)
+                      : Colors.transparent,
+                ),
+              ),
+            )
+          : null,
       chipTheme: ChipThemeData(
-        labelStyle: const TextStyle(color: text),
-        secondaryLabelStyle: const TextStyle(color: text),
-        checkmarkColor: copper,
-        backgroundColor: const Color(0x901C1C20),
-        selectedColor: copper.withValues(alpha: .22),
-        side: const BorderSide(color: border),
+        labelStyle: const TextStyle(color: muted, fontWeight: FontWeight.w400),
+        secondaryLabelStyle: const TextStyle(
+          color: text,
+          fontWeight: FontWeight.w600,
+        ),
+        checkmarkColor: text,
+        showCheckmark: false,
+        backgroundColor: const Color(0x08FFFFFF),
+        selectedColor: const Color(0x1FFFFFFF),
+        side: BorderSide.none,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
       filledButtonTheme: FilledButtonThemeData(
@@ -143,35 +198,47 @@ abstract final class CinemaTheme {
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
-        style: OutlinedButton.styleFrom(
-          foregroundColor: text,
-          side: const BorderSide(color: border),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
+        style:
+            OutlinedButton.styleFrom(
+              foregroundColor: text,
+              backgroundColor: const Color(0x0AFFFFFF),
+              side: BorderSide.none,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ).copyWith(
+              side: WidgetStateProperty.resolveWith(
+                (states) => states.contains(WidgetState.focused)
+                    ? const BorderSide(color: Color(0x80FFFFFF))
+                    : BorderSide.none,
+              ),
+            ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: const Color(0xA02A292D),
+        fillColor: const Color(0x10FFFFFF),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 18,
           vertical: 15,
         ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(15),
-          borderSide: const BorderSide(color: border),
+          borderSide: BorderSide.none,
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(15),
-          borderSide: const BorderSide(color: border),
+          borderSide: BorderSide.none,
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(15),
-          borderSide: const BorderSide(color: copper),
+          borderSide: const BorderSide(color: Color(0x80FFFFFF)),
         ),
       ),
-      dividerColor: border,
+      dividerColor: const Color(0x10FFFFFF),
+      dividerTheme: const DividerThemeData(
+        color: Color(0x10FFFFFF),
+        thickness: .5,
+      ),
     );
   }
 }
@@ -184,51 +251,29 @@ class CinemaGlass extends StatelessWidget {
     this.radius = 20,
     this.padding = EdgeInsets.zero,
     this.blur = true,
+    this.fluted = false,
+    this.interactive = true,
   });
   final Widget child;
   final double radius;
   final EdgeInsetsGeometry padding;
   final bool blur;
+  final bool fluted;
+  final bool interactive;
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: CinemaAppearanceScope.of(context),
     builder: (context, _) {
       final appearance = CinemaAppearanceScope.of(context);
-      final opacity = appearance.effectiveBackgroundOpacity;
-      final content = DecoratedBox(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              const Color(
-                0xFF2D2B30,
-              ).withValues(alpha: CinemaTheme._panelAlpha(opacity, .16, .50)),
-              const Color(
-                0xFF111014,
-              ).withValues(alpha: CinemaTheme._panelAlpha(opacity, .08, .44)),
-            ],
-          ),
-          borderRadius: BorderRadius.circular(radius),
-          border: Border.all(color: CinemaTheme.border),
-        ),
-        child: Material(
-          type: MaterialType.transparency,
-          child: Padding(padding: padding, child: child),
-        ),
-      );
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(radius),
-        child:
-            blur &&
-                Theme.of(context).platform != TargetPlatform.windows &&
-                opacity < .999 &&
-                !appearance.reduceTransparency
-            ? BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                child: content,
-              )
-            : content,
+      return CinemaOpticalGlass(
+        radius: radius,
+        padding: padding,
+        blur: blur,
+        interactive: interactive,
+        opacity: appearance.effectiveBackgroundOpacity,
+        reduceTransparency: appearance.reduceTransparency,
+        reduceMotion: appearance.reduceMotion,
+        child: child,
       );
     },
   );
@@ -243,7 +288,7 @@ class CinemaCanvas extends StatelessWidget {
       gradient: RadialGradient(
         center: Alignment.topLeft,
         radius: 1.5,
-        colors: [Color(0x303D2515), Color(0x1209090B)],
+        colors: [Color(0x0AFFFFFF), Color(0x0009090B)],
         stops: [0, 1],
       ),
     ),

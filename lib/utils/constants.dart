@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:kazumi/request/config/api_endpoints.dart';
+import 'package:kazumi/features/cinema/cinema_route_motion.dart';
 
 class StyleString {
   static const double cardSpace = 8;
@@ -30,12 +31,13 @@ const _pageTransitionBuilders = <TargetPlatform, PageTransitionsBuilder>{
   TargetPlatform.android: CupertinoPageTransitionsBuilder(),
   TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
   TargetPlatform.linux: FadeUpwardsPageTransitionsBuilder(),
-  TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+  TargetPlatform.macOS: CinemaPageTransitionsBuilder(),
   TargetPlatform.windows: FadeUpwardsPageTransitionsBuilder(),
 };
 
-const PageTransitionsTheme pageTransitionsTheme2024 =
-    PageTransitionsTheme(builders: _pageTransitionBuilders);
+const PageTransitionsTheme pageTransitionsTheme2024 = PageTransitionsTheme(
+  builders: _pageTransitionBuilders,
+);
 
 // Applied only to the settings navigator; fullscreen routes use the app theme.
 final PageTransitionsTheme settingsPageTransitionsTheme = PageTransitionsTheme(
@@ -89,7 +91,7 @@ Map<String, String> bangumiHTTPHeader = {
   'user-agent':
       'Predidit/Kazumi/${ApiEndpoints.version} (Android) (https://github.com/Predidit/Kazumi)',
   'referer': '',
-  'content-type': 'application/json'
+  'content-type': 'application/json',
 };
 
 /// 可选硬件解码器
@@ -136,7 +138,7 @@ const List<String> mpvAnime4KShaders = [
   'Anime4K_Upscale_CNN_x2_VL.glsl',
   'Anime4K_AutoDownscalePre_x2.glsl',
   'Anime4K_AutoDownscalePre_x4.glsl',
-  'Anime4K_Upscale_CNN_x2_M.glsl'
+  'Anime4K_Upscale_CNN_x2_M.glsl',
 ];
 
 /// 超分辨率滤镜 (轻量)
@@ -147,7 +149,7 @@ const List<String> mpvAnime4KShadersLite = [
   'Anime4K_Upscale_CNN_x2_M.glsl',
   'Anime4K_AutoDownscalePre_x2.glsl',
   'Anime4K_AutoDownscalePre_x4.glsl',
-  'Anime4K_Upscale_CNN_x2_S.glsl'
+  'Anime4K_Upscale_CNN_x2_S.glsl',
 ];
 
 /// 可选播放倍速

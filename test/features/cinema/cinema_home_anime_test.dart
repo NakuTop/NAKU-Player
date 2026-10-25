@@ -120,21 +120,24 @@ void main() {
       expect(mounts, 0);
       expect(find.text('Bangumi 动漫目录'), findsNothing);
       final initialBrowses = repository.browses;
-      await tester.tap(find.widgetWithText(ListTile, '动漫'));
+      Finder entry(String label, String section) => Platform.isMacOS
+          ? find.byKey(ValueKey('cinema-destination-$section'))
+          : find.widgetWithText(ListTile, label);
+      await tester.tap(entry('动漫', 'anime'));
       await tester.pumpAndSettle();
       expect(mounts, 1);
       expect(find.text('动漫前台'), findsOneWidget);
       expect(
         find.byType(TextField),
-        findsOneWidget,
-        reason: 'The old source search bar is removed.',
+        findsNWidgets(Platform.isMacOS ? 2 : 1),
+        reason: 'Mac keeps unified movie/series search alongside anime search.',
       );
       expect(find.text('片源目录'), findsNothing);
       await tester.enterText(
         find.byKey(const ValueKey('anime-search-probe')),
         '赛博朋克',
       );
-      await tester.tap(find.widgetWithText(ListTile, '电影'));
+      await tester.tap(entry('电影', 'movies'));
       await tester.pumpAndSettle();
       expect(disposals, 0);
       expect(find.text('动漫前台'), findsNothing);
@@ -146,7 +149,7 @@ void main() {
             .active,
         isFalse,
       );
-      await tester.tap(find.widgetWithText(ListTile, '动漫'));
+      await tester.tap(entry('动漫', 'anime'));
       await tester.pumpAndSettle();
       expect(mounts, 1);
       expect(find.text('赛博朋克'), findsOneWidget);

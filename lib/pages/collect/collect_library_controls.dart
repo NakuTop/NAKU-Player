@@ -23,18 +23,20 @@ class _CollectCategories extends StatelessWidget {
       indicatorSize: TabBarIndicatorSize.tab,
       indicatorPadding: const EdgeInsets.symmetric(horizontal: 2),
       indicator: BoxDecoration(
-        color: colors.primaryContainer,
-        borderRadius: BorderRadius.circular(24),
+        color: const Color(0x16FFFFFF),
+        borderRadius: BorderRadius.circular(10),
       ),
       indicatorAnimation: TabIndicatorAnimation.elastic,
       labelColor: colors.onPrimaryContainer,
       unselectedLabelColor: colors.onSurfaceVariant,
-      labelStyle:
-          theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
-      unselectedLabelStyle:
-          theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w500),
+      labelStyle: theme.textTheme.titleSmall?.copyWith(
+        fontWeight: FontWeight.w600,
+      ),
+      unselectedLabelStyle: theme.textTheme.titleSmall?.copyWith(
+        fontWeight: FontWeight.w500,
+      ),
       labelPadding: const EdgeInsets.symmetric(horizontal: 2),
-      splashBorderRadius: BorderRadius.circular(24),
+      splashBorderRadius: BorderRadius.circular(10),
       tabs: [
         for (final type in _collectCategories)
           Tab(
@@ -46,10 +48,7 @@ class _CollectCategories extends StatelessWidget {
                 constraints: const BoxConstraints(minWidth: 64),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    type?.label ?? '全部',
-                    textAlign: TextAlign.center,
-                  ),
+                  child: Text(type?.label ?? '全部', textAlign: TextAlign.center),
                 ),
               ),
             ),
@@ -83,34 +82,30 @@ class _CollectLayoutSwitch extends StatelessWidget {
               style: ButtonStyle(
                 minimumSize: const WidgetStatePropertyAll(Size(48, 48)),
                 visualDensity: VisualDensity.standard,
-                backgroundColor: WidgetStateProperty.resolveWith((states) =>
-                    states.contains(WidgetState.selected)
-                        ? colors.secondaryContainer
-                        : colors.surfaceContainerLow),
-                foregroundColor: WidgetStateProperty.resolveWith((states) =>
-                    states.contains(WidgetState.selected)
-                        ? colors.onSecondaryContainer
-                        : colors.onSurfaceVariant),
-                shape: WidgetStateProperty.resolveWith((states) =>
-                    RoundedRectangleBorder(
-                      borderRadius: states.contains(WidgetState.pressed)
-                          ? BorderRadius.circular(12)
-                          : states.contains(WidgetState.selected)
-                              ? BorderRadius.circular(24)
-                              : BorderRadiusDirectional.horizontal(
-                                  start: Radius.circular(
-                                      layout == CollectLayout.cards ? 24 : 8),
-                                  end: Radius.circular(
-                                      layout == CollectLayout.list ? 24 : 8),
-                                ),
-                    )),
+                backgroundColor: WidgetStateProperty.resolveWith(
+                  (states) => states.contains(WidgetState.selected)
+                      ? const Color(0x16FFFFFF)
+                      : Colors.transparent,
+                ),
+                foregroundColor: WidgetStateProperty.resolveWith(
+                  (states) => states.contains(WidgetState.selected)
+                      ? colors.onSecondaryContainer
+                      : colors.onSurfaceVariant,
+                ),
+                shape: WidgetStatePropertyAll(
+                  RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
                 animationDuration: MediaQuery.disableAnimationsOf(context)
                     ? Duration.zero
                     : const Duration(milliseconds: 200),
               ),
-              icon: Icon(layout == CollectLayout.list
-                  ? Icons.view_list_rounded
-                  : Icons.grid_view_rounded),
+              icon: Icon(
+                layout == CollectLayout.list
+                    ? Icons.view_list_rounded
+                    : Icons.grid_view_rounded,
+              ),
             ),
           ),
       ],
@@ -147,8 +142,9 @@ class _CollectSortMenu extends StatelessWidget {
               ? TextButton.icon(
                   onPressed: toggle,
                   style: TextButton.styleFrom(
-                    foregroundColor:
-                        Theme.of(context).colorScheme.onSurfaceVariant,
+                    foregroundColor: Theme.of(
+                      context,
+                    ).colorScheme.onSurfaceVariant,
                     minimumSize: const Size(48, 48),
                   ),
                   icon: const Icon(Icons.sort_rounded, size: 20),

@@ -29,6 +29,35 @@ void main() {
   });
 
   testWidgets(
+    'native Mac and Windows buttons have no misleading disable switch',
+    (tester) async {
+      await tester.runAsync(
+        () => GStorage.putSetting(SettingsKeys.showWindowButton, false),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsPaneScope(
+            embedded: true,
+            showBackButton: false,
+            onBack: () {},
+            child: const ThemeSettingsPage(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('外观与透明度'), findsOneWidget);
+      expect(find.text('使用系统字体'), findsOneWidget);
+      expect(find.text('显示系统窗口按钮'), findsNothing);
+      expect(find.text('使用系统标题栏'), findsNothing);
+      expect(find.text('窗口'), findsNothing);
+      expect(GStorage.getSetting(SettingsKeys.showWindowButton), isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+    skip: !Platform.isMacOS && !Platform.isWindows,
+  );
+
+  testWidgets(
     'font switch updates existing global theme without resetting navigation',
     (tester) async {
       await tester.runAsync(

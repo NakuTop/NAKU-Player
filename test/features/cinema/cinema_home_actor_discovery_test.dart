@@ -477,14 +477,32 @@ void main() {
       await search(tester, '演员');
       await select(tester, _firstActor);
       final initialSourceSearches = repository.searches.toList();
-      await tester.tap(find.byKey(const ValueKey('catalog-sort-rating')));
+      final sortChip = find.byKey(const ValueKey('catalog-sort-rating'));
+      await Scrollable.ensureVisible(tester.element(sortChip), alignment: .25);
+      await tester.pumpAndSettle();
+      expect(sortChip.hitTestable(), findsOneWidget);
+      await tester.tap(sortChip);
       await tester.pumpAndSettle();
       expect(
         tester.getTopLeft(metadataCard(_nextMetadata)).dx,
         lessThan(tester.getTopLeft(metadataCard(_metadata)).dx),
       );
-      expect(find.textContaining('已加载 2/2 部有豆瓣评分'), findsOneWidget);
-      expect(find.textContaining('片源结果与相关作品分别排序'), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Tooltip &&
+              (widget.message?.contains('已加载 2/2 部有豆瓣评分') ?? false),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Tooltip &&
+              (widget.message?.contains('片源结果与相关作品分别排序') ?? false),
+        ),
+        findsOneWidget,
+      );
       expect(
         ratings.providerLoads,
         containsAll([
@@ -501,14 +519,28 @@ void main() {
         tester.getTopLeft(metadataCard(_metadata)).dx,
         lessThan(tester.getTopLeft(metadataCard(_nextMetadata)).dx),
       );
-      expect(find.textContaining('已加载 2/2 部有IMDb评分'), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Tooltip &&
+              (widget.message?.contains('已加载 2/2 部有IMDb评分') ?? false),
+        ),
+        findsOneWidget,
+      );
       expect(repository.searches, initialSourceSearches);
       expect(repository.details, isEmpty);
 
       await tester.tap(find.text('更多参演作品'));
       await tester.pumpAndSettle();
       expect(discovery.requests.last, (id: _firstActor.id, start: 2));
-      expect(find.textContaining('已加载 21/22 部有IMDb评分'), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Tooltip &&
+              (widget.message?.contains('已加载 21/22 部有IMDb评分') ?? false),
+        ),
+        findsOneWidget,
+      );
       expect(
         metadataCard(nextPage.last),
         findsNothing,
@@ -609,7 +641,7 @@ void main() {
           repository.results['怒之杀'] = [_rawTitle];
         }
         await mount(tester, catalogue: catalogue);
-        await tester.tap(find.text('豆瓣榜单'));
+        await tester.tap(find.byTooltip('豆瓣榜单'));
         await tester.pumpAndSettle();
         final board = find.byType(DoubanPage);
         final view = find.descendant(
@@ -641,6 +673,12 @@ void main() {
           expect(panel.title.aliases, 'Mutiny');
           expect(panel.title.sourceDoubanScore, 5.6);
           if (recommend) {
+            final recommendationsTab = find.byKey(
+              const ValueKey('cinema-detail-tab-2'),
+            );
+            await tester.ensureVisible(recommendationsTab);
+            await tester.tap(recommendationsTab);
+            await tester.pumpAndSettle();
             final recommendedCard = find.byKey(
               const ValueKey('douban-rec-1292052'),
             );
@@ -665,7 +703,7 @@ void main() {
         await tester.tap(find.byType(BackButton));
         await tester.pumpAndSettle();
         expect(board, findsNothing);
-        await tester.tap(find.text('豆瓣榜单'));
+        await tester.tap(find.byTooltip('豆瓣榜单'));
         await tester.pumpAndSettle();
         expect(board, findsOneWidget);
         final restored = tester.widget<CustomScrollView>(view).controller!;

@@ -1,14 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/douban/douban_models.dart';
 import 'package:kazumi/features/cinema/douban/douban_page.dart';
 import 'package:kazumi/features/cinema/douban/douban_repository.dart';
 import 'package:kazumi/features/cinema/douban/douban_themes.dart';
+import 'package:kazumi/features/cinema/cinema_navigation_island.dart';
 
 const _categories = [
   DoubanCategoryGroup(name: '类型', tags: ['科幻', '喜剧']),
@@ -76,6 +77,7 @@ typedef _Request = ({
 
 class _Repository extends DoubanRepository {
   final requests = <_Request>[];
+  final counts = <int>[];
   final filterRequests = <DoubanKind>[];
   Completer<DoubanResultPage>? pending, pendingAppend;
   bool manyItems = false, failPage = false, failFilters = false;
@@ -146,6 +148,7 @@ class _Repository extends DoubanRepository {
     int count = 20,
     CancelToken? cancelToken,
   }) async {
+    counts.add(count);
     requests.add((
       kind: kind,
       filters: filters,
@@ -391,6 +394,43 @@ void main() {
         find.byKey(ValueKey('douban-filter-$group')),
       )
       .value!;
+
+  testWidgets('Mac board keeps posters prominent and filters fully operable', (
+    tester,
+  ) async {
+    final repo = _Repository();
+    DoubanTitle? picked;
+    await mount(tester, repo, width: 1280, onSelect: (item) => picked = item);
+    expect(find.byType(CinemaNavigationIsland<DoubanKind>), findsOneWidget);
+    expect(find.byKey(const ValueKey('douban-cinema-filters')), findsOneWidget);
+    expect(find.text('按豆瓣公开分类筛选，点击作品搜索可用片源。'), findsNothing);
+    expect(find.byKey(const ValueKey('douban-theme-旅行')), findsNothing);
+    expect(repo.counts.first, 40);
+    await choose(tester, 'genre', '科幻');
+    expect(repo.requests.last.filters.genre, '科幻');
+    await tester.tap(find.text('风格与主题'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('douban-theme-旅行')));
+    await tester.pumpAndSettle();
+    expect(repo.requests.last.tags, ['旅行']);
+    await tester.tap(find.byKey(const ValueKey('douban-kind-tv')));
+    await tester.pumpAndSettle();
+    await choose(tester, 'format', '电视剧');
+    await choose(tester, 'platform', 'Netflix');
+    expect(repo.requests.last.kind, DoubanKind.tv);
+    expect(repo.requests.last.filters.platform, 'Netflix');
+    await tester.tap(find.byKey(const ValueKey('douban-kind-movie')));
+    await tester.pumpAndSettle();
+    expect(selected(tester, 'genre'), '科幻');
+    await tester.tap(find.byKey(const ValueKey('douban-reset-filters')));
+    await tester.pumpAndSettle();
+    final card = find.byKey(const ValueKey('douban-11'));
+    await tester.ensureVisible(card);
+    await tester.pumpAndSettle();
+    await tester.tap(card);
+    expect(picked?.id, '11');
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant({TargetPlatform.macOS}));
 
   testWidgets(
     'stable filters combine independently and keep exploration in its own group',

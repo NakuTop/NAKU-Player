@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_filters.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
@@ -32,6 +33,58 @@ class _Adapter implements HttpClientAdapter {
 }
 
 void main() {
+  testWidgets('compact filters wrap and retain every selection callback', (
+    tester,
+  ) async {
+    var value = const CinemaFilters();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 270,
+              child: StatefulBuilder(
+                builder: (context, update) => CinemaFilterBar(
+                  compact: true,
+                  value: value,
+                  items: const [],
+                  onChanged: (next) => update(() => value = next),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(find.byType(DropdownButtonFormField<String>), findsNWidgets(3));
+    expect(find.textContaining('已加载内容 ·'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('cinema-filter-年份-')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('2025').last);
+    await tester.pumpAndSettle();
+    expect(value.year, '2025');
+    expect(find.byKey(const ValueKey('cinema-filter-年份-2025')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('cinema-filter-地区-')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('美国').last);
+    await tester.pumpAndSettle();
+    expect(value.region, '美国');
+    expect(value.year, '2025');
+
+    await tester.tap(find.byKey(const ValueKey('cinema-filter-类型-')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('科幻').last);
+    await tester.pumpAndSettle();
+    expect(value.genre, '科幻');
+    expect(value.region, '美国');
+    expect(value.year, '2025');
+    await tester.tap(find.text('重置'));
+    await tester.pumpAndSettle();
+    expect(value.isEmpty, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
   const title = CinemaTitle(
     id: '1',
     sourceId: 'test',

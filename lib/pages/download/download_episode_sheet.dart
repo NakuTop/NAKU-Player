@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:kazumi/features/cinema/cinema_theme.dart';
 import 'package:scrollview_observer/scrollview_observer.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
@@ -151,7 +152,12 @@ class _EpisodeDownloadPickerState extends State<EpisodeDownloadPicker> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => Theme(
+    data: CinemaTheme.of(context),
+    child: Builder(builder: _buildLibrary),
+  );
+
+  Widget _buildLibrary(BuildContext context) {
     if (widget.groups.isEmpty) return const Center(child: Text('暂无可下载的集数'));
     final selectable = [
       for (var i = 0; i < group.urls.length; i++)
@@ -379,29 +385,29 @@ class _EpisodeTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final backgroundColor = isDownloaded
-        ? colorScheme.surfaceContainerLow
-        : isSelected
-        ? colorScheme.secondaryContainer
-        : colorScheme.surfaceContainerLow;
+    final backgroundColor = isSelected
+        ? const Color(0x22FFFFFF)
+        : const Color(0x08FFFFFF);
     final foregroundColor = isDownloaded
-        ? colorScheme.outline
+        ? colorScheme.onSurfaceVariant
         : isSelected
         ? colorScheme.onSecondaryContainer
         : colorScheme.onSurface;
 
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 250),
+      duration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : const Duration(milliseconds: 180),
       curve: Curves.easeInOutCubic,
       decoration: BoxDecoration(
         color: backgroundColor,
-        borderRadius: BorderRadius.circular(isSelected ? 28 : 16),
+        borderRadius: BorderRadius.circular(12),
       ),
       clipBehavior: Clip.antiAlias,
       child: Material(
         type: MaterialType.transparency,
         child: InkWell(
-          borderRadius: BorderRadius.circular(isSelected ? 28 : 16),
+          borderRadius: BorderRadius.circular(12),
           onTap: onTap,
           child: Stack(
             children: [
@@ -426,7 +432,7 @@ class _EpisodeTile extends StatelessWidget {
                   child: Icon(
                     Icons.download_done_rounded,
                     size: 14,
-                    color: colorScheme.outline,
+                    color: colorScheme.onSurfaceVariant,
                   ),
                 )
               else
@@ -435,7 +441,9 @@ class _EpisodeTile extends StatelessWidget {
                   right: 4,
                   child: AnimatedScale(
                     scale: isSelected ? 1 : 0,
-                    duration: const Duration(milliseconds: 250),
+                    duration: MediaQuery.disableAnimationsOf(context)
+                        ? Duration.zero
+                        : const Duration(milliseconds: 180),
                     curve: Curves.easeInOutCubic,
                     child: Icon(
                       Icons.check_circle_rounded,

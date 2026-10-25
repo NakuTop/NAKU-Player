@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:kazumi/features/cinema/cinema_theme.dart';
 import 'package:kazumi/features/cinema/cinema_settings_host_binding.dart';
 import 'package:flutter_mobx/flutter_mobx.dart';
 import 'package:flutter_modular/flutter_modular.dart';
@@ -44,10 +45,19 @@ class _DownloadPageState extends State<DownloadPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => Theme(
+    data: CinemaTheme.of(context),
+    child: Builder(builder: _buildLibrary),
+  );
+
+  Widget _buildLibrary(BuildContext context) {
     return Scaffold(
       appBar: SysAppBar(
-        title: const Text('下载管理'),
+        title: const Text(
+          '下载管理',
+          style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
+        ),
+        toolbarHeight: 72,
         leading: IconButton(
           tooltip: '返回',
           icon: const Icon(Icons.arrow_back),
@@ -69,12 +79,13 @@ class _DownloadPageState extends State<DownloadPage> {
             );
           }
           return ListView.builder(
-            padding: const EdgeInsets.all(16),
+            key: const PageStorageKey('download-records-scroll'),
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
             itemCount: recordKeys.length,
             itemBuilder: (context, index) {
               return Center(
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1000),
+                  constraints: const BoxConstraints(maxWidth: 1120),
                   child: _buildRecordCard(recordKeys[index]),
                 ),
               );
@@ -173,7 +184,7 @@ class _DownloadPageState extends State<DownloadPage> {
     DownloadRecord record,
     DownloadEpisode episode,
   ) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final colorScheme = CinemaTheme.of(context).colorScheme;
     final buttons = <Widget>[];
 
     switch (episode.status) {

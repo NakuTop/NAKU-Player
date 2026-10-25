@@ -9,6 +9,7 @@ import 'package:kazumi/features/cinema/cinema_search_discovery.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
+import 'package:kazumi/features/cinema/cinema_featured_wall.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
@@ -32,6 +33,7 @@ const _categories = [
 
 class _CatalogDiscovery extends DoubanRepository {
   bool fail = false;
+  List<DoubanTitle>? featuredFixtures;
   final calls = <DoubanFilters>[];
   @override
   Future<DoubanResultPage> browse({
@@ -49,16 +51,18 @@ class _CatalogDiscovery extends DoubanRepository {
       final prefix = kind == DoubanKind.movie ? '电影' : '剧集';
       final suffix = start == 0 ? '' : '第2页';
       return DoubanResultPage(
-        items: [
-          for (final (i, name) in ['较早热门', '最近更新', '缺少数据'].indexed)
-            DoubanTitle(
-              id: '${kind == DoubanKind.movie ? 10000 : 20000}${start + i}',
-              title: '$prefix$name$suffix',
-              kind: kind,
-              year: '${DateTime.now().year}',
-              score: i == 0 ? 6 : 9,
-            ),
-        ],
+        items:
+            featuredFixtures ??
+            [
+              for (final (i, name) in ['较早热门', '最近更新', '缺少数据'].indexed)
+                DoubanTitle(
+                  id: '${kind == DoubanKind.movie ? 10000 : 20000}${start + i}',
+                  title: '$prefix$name$suffix',
+                  kind: kind,
+                  year: '${DateTime.now().year}',
+                  score: i == 0 ? 6 : 9,
+                ),
+            ],
         start: start,
         nextStart: start + 3,
         hasMore: start == 0,
@@ -160,6 +164,14 @@ class _Repository extends CinemaRepository {
         category: category,
         year: '${DateTime.now().year}',
       ),
+      for (var index = 3; index < 20; index++)
+        CinemaTitle(
+          id: '$categoryId-$page-$index',
+          sourceId: _source.id,
+          title: '$prefix目录作品$page-$index',
+          category: category,
+          year: '${DateTime.now().year}',
+        ),
     ];
   }
 
@@ -178,7 +190,7 @@ class _Repository extends CinemaRepository {
     if (delayedBrowse[categoryId] case final pending?) return pending.future;
     return CinemaPage(
       page: page,
-      pageCount: useMetadata ? 2 : 1,
+      pageCount: useMetadata ? 3 : 1,
       items: blockedEntry && categoryId == '22'
           ? [
               const CinemaTitle(
@@ -444,6 +456,27 @@ void main() {
     });
   }
 
+  Future<void> revealCatalogueControl(WidgetTester tester, String label) async {
+    final target = find.text(label);
+    if (target.evaluate().isEmpty) {
+      await tester.scrollUntilVisible(
+        target,
+        240,
+        scrollable: find
+            .descendant(
+              of: find.byType(CustomScrollView).first,
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+    }
+    await Scrollable.ensureVisible(tester.element(target), alignment: .25);
+    // Actor pagination can intentionally remain pending while this control is
+    // reached. The zero-duration scroll only needs a layout frame.
+    await tester.pump();
+    expect(target.hitTestable(), findsOneWidget);
+  }
+
   testWidgets('compact recent-hot cards keep readable resource states', (
     tester,
   ) async {
@@ -475,6 +508,55 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets(
+    'desktop featured selection is excluded from the real movie wall',
+    (tester) async {
+      catalogDiscovery.featuredFixtures = List.generate(
+        12,
+        (index) => DoubanTitle(
+          id: '${30000000 + index}',
+          title: '电影精选$index',
+          kind: DoubanKind.movie,
+          year: '2026',
+        ),
+      );
+      await mount(tester, recentHot: true);
+      final hero = tester.widget<CinemaFeaturedWall>(
+        find.byType(CinemaFeaturedWall),
+      );
+      expect(hero.titles, hasLength(4));
+      expect(hero.titles.map((title) => title.title), [
+        '电影精选0',
+        '电影精选1',
+        '电影精选2',
+        '电影精选3',
+      ]);
+      for (final title in hero.titles) {
+        expect(find.byKey(ValueKey('title-card:${title.key}')), findsNothing);
+      }
+      await tester.tap(find.byTooltip('查看电影精选2'));
+      await tester.pumpAndSettle();
+      expect(find.text('电影精选2'), findsOneWidget);
+      await captureHome(tester, 'home-featured-wide.png');
+      await tester.drag(
+        find.byType(CustomScrollView).first,
+        const Offset(0, -600),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('title-card:douban-discovery::30000004')),
+        findsOneWidget,
+      );
+      await revealCatalogueControl(tester, '最新');
+      await tester.tap(find.byKey(const ValueKey('catalog-sort-latest')));
+      await tester.pumpAndSettle();
+      expect(find.byType(CinemaFeaturedWall), findsNothing);
+      expect(find.text('电影测试作品'), findsWidgets);
+      await tester.pumpWidget(const SizedBox());
+      expect(tester.takeException(), isNull);
+    },
+  );
   testWidgets(
     'TV has a remote navigation rail and no downloads; phone keeps downloads',
     (tester) async {
@@ -490,7 +572,7 @@ void main() {
       await tester.pumpWidget(const SizedBox());
       NakuDevice.isTV = false;
       await mount(tester);
-      expect(find.text('下载管理'), findsOneWidget);
+      expect(find.byTooltip('下载管理'), findsOneWidget);
     },
   );
 
@@ -542,7 +624,7 @@ void main() {
     await tester.ensureVisible(find.text('更多参演作品'));
     await tester.tap(find.text('更多参演作品'));
     await tester.pump();
-    await tester.ensureVisible(find.text('加载更多搜索结果'));
+    await revealCatalogueControl(tester, '加载更多搜索结果');
     await tester.tap(find.text('加载更多搜索结果'));
     await tester.pump();
     discovery.worksPending!.complete(
@@ -601,14 +683,27 @@ void main() {
     repository.useMetadata = true;
     await mount(tester);
     expectSelected(tester, CinemaCatalogSort.latest);
-    expect(find.text('已加载作品 · 片源更新时间'), findsOneWidget);
+    expect(
+      find.byTooltip('已加载 4/40 项有更新时间，缺失项排后。按片源更新时间排序，不是影片上映时间。'),
+      findsOneWidget,
+    );
     expectBefore(tester, '电影最近更新', '电影较早热门');
-    expect(find.textContaining('已加载 2/3 项有更新时间'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Tooltip &&
+            (widget.message?.contains('已加载 4/40 项有更新时间') ?? false),
+      ),
+      findsOneWidget,
+    );
     final requests = repository.browsed.length;
     await tester.tap(sortChip(CinemaCatalogSort.popular));
     await tester.pumpAndSettle();
     expectSelected(tester, CinemaCatalogSort.popular);
-    expect(find.text('豆瓣 · 近期热门'), findsOneWidget);
+    expect(
+      find.byTooltip('按豆瓣近期热门顺序展示，卡片会自动检查片源；同片优先选择标记为 4K 的版本。'),
+      findsOneWidget,
+    );
     expectBefore(tester, '电影较早热门', '电影最近更新');
     expectBefore(tester, '电影最近更新', '电影缺少数据');
     expect(repository.browsed, hasLength(requests));
@@ -673,7 +768,7 @@ void main() {
     await mount(tester);
     await tester.tap(sortChip(CinemaCatalogSort.popular));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('加载更多作品'));
+    await revealCatalogueControl(tester, '加载更多作品');
     await tester.tap(find.text('加载更多作品'));
     await tester.pumpAndSettle();
     expect(find.text('6 部作品'), findsOneWidget);
@@ -685,11 +780,11 @@ void main() {
     'missing source metrics are explained instead of implying a chart',
     (tester) async {
       await mount(tester);
-      expect(find.text('片源未提供可用更新时间，保留目录顺序。'), findsOneWidget);
+      expect(find.byTooltip('片源未提供可用更新时间，保留目录顺序。'), findsOneWidget);
       await tester.tap(sortChip(CinemaCatalogSort.popular));
       await tester.pumpAndSettle();
       expect(
-        find.text('按豆瓣近期热门顺序展示，卡片会自动检查片源；同片优先选择标记为 4K 的版本。'),
+        find.byTooltip('按豆瓣近期热门顺序展示，卡片会自动检查片源；同片优先选择标记为 4K 的版本。'),
         findsOneWidget,
       );
       expect(find.text('电影较早热门'), findsWidgets);
@@ -704,7 +799,12 @@ void main() {
       expect(find.text('电影测试作品'), findsWidgets);
       expect(find.text('奇幻片'), findsNothing);
       expect(find.text('Netflix电影'), findsNothing);
-      expect(find.text('全部片源'), findsOneWidget);
+      expect(find.byTooltip('片源状态'), findsOneWidget);
+      await tester.tap(find.byTooltip('片源状态'));
+      await tester.pumpAndSettle();
+      expect(find.text('测试目录 · 1'), findsOneWidget);
+      await tester.tapAt(const Offset(12, 12));
+      await tester.pumpAndSettle();
       expect(
         find.byWidgetPredicate(
           (widget) =>
@@ -762,7 +862,7 @@ void main() {
     await tester.enterText(find.byType(TextField), '多页');
     await tester.testTextInput.receiveAction(TextInputAction.done);
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('加载更多搜索结果'));
+    await revealCatalogueControl(tester, '加载更多搜索结果');
     await tester.tap(find.text('加载更多搜索结果'));
     await tester.pumpAndSettle();
     expect(find.text('第1页作品'), findsWidgets);
@@ -775,20 +875,39 @@ void main() {
   ) async {
     repository.useMetadata = true;
     await mount(tester);
-    await tester.ensureVisible(find.text('加载更多作品'));
+    expect(find.text('40 部作品'), findsOneWidget);
+    await revealCatalogueControl(tester, '加载更多作品');
     await tester.tap(find.text('加载更多作品'));
     await tester.pumpAndSettle();
-    expect(find.text('6 部作品'), findsOneWidget);
+    final scroll = tester.state<ScrollableState>(
+      find.descendant(
+        of: find.byType(CustomScrollView).first,
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is Scrollable &&
+              widget.axisDirection == AxisDirection.down,
+        ),
+      ),
+    );
+    scroll.position.jumpTo(0);
+    await tester.pump();
+    expect(find.text('60 部作品'), findsOneWidget);
+    expect(
+      repository.filteredRequests
+          .where((request) => request.category == '11')
+          .map((request) => request.page),
+      [1, 2, 3],
+    );
     await tester.tap(find.text('剧集'));
     await tester.pumpAndSettle();
     final calls = repository.browsed.length;
     await tester.tap(find.text('电影'));
     await tester.pump();
-    expect(find.text('6 部作品'), findsOneWidget);
+    expect(find.text('60 部作品'), findsOneWidget);
     expect(find.byType(LinearProgressIndicator), findsNothing);
     await tester.pumpAndSettle();
     expect(repository.browsed, hasLength(calls));
-    expect(find.text('电影最近更新第2页'), findsWidgets);
+    expect(find.text('电影最近更新第3页'), findsWidgets);
     // Returning uses the exact loaded aggregate, verified by the request delta above.
   });
 
@@ -1030,9 +1149,13 @@ void main() {
       'second',
     });
     expect(find.text('1 部作品'), findsOneWidget);
+    await tester.tap(find.byTooltip('片源状态'));
+    await tester.pumpAndSettle();
     expect(find.text('测试目录 · 1'), findsOneWidget);
     expect(find.text('另一个片源 · 1'), findsOneWidget);
     expect(find.text('停用的片源'), findsNothing);
+    await tester.tapAt(const Offset(12, 12));
+    await tester.pumpAndSettle();
     expect(
       find.byWidgetPredicate(
         (widget) =>
@@ -1120,8 +1243,12 @@ void main() {
     repository.failedSources.add('offline');
     await mount(tester);
     expect(find.text('电影测试作品'), findsWidgets);
+    await tester.tap(find.byTooltip('片源状态'));
+    await tester.pumpAndSettle();
     expect(find.text('失败片源 · 暂不可用'), findsOneWidget);
     expect(find.text('1 个片源暂时不可用，已保留其他片源内容'), findsOneWidget);
+    await tester.tapAt(const Offset(12, 12));
+    await tester.pumpAndSettle();
     expect(find.text('暂时未能连接'), findsNothing);
   });
 

@@ -1,3 +1,7 @@
+import 'cinema_neon_decode.dart';
+import 'cinema_detail_artwork.dart';
+import 'cinema_featured_wall.dart';
+import 'cinema_navigation_island.dart';
 import 'cinema_tv_focus.dart';
 import 'cinema_lan_cast.dart';
 import 'package:kazumi/services/platform/naku_device.dart';
@@ -75,6 +79,9 @@ import 'cinema_media_cache.dart';
 import 'cinema_tools_settings.dart';
 import 'cinema_player_page.dart';
 import 'cinema_theme.dart';
+import 'cinema_header_frost.dart';
+import 'cinema_artwork_backdrop.dart';
+import 'cinema_route_motion.dart';
 import 'cinema_websites_page.dart';
 
 enum _Section { movies, series, anime, favorites, history, settings }
@@ -183,6 +190,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   late final _together = widget.watchTogether ?? CinemaWatchTogether.instance;
   StreamSubscription<String>? _togetherNotices;
   _Section _section = _Section.movies;
+  int _sectionRevision = 0, _desktopSearchRevision = 0;
   bool _showSourceManager = false;
   bool _animeOpened = false;
   String _applicationVersion = '正在读取版本';
@@ -298,6 +306,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         }
         await Navigator.of(context).push(
           MaterialPageRoute<void>(
+            settings: const RouteSettings(
+              name: CinemaPageTransitionsBuilder.playerRouteName,
+            ),
             builder: (_) => Theme(
               data: CinemaTheme.of(context),
               child: CinemaPlayerPage(
@@ -375,10 +386,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   Future<void> _openDouban() async {
     await Navigator.of(context).push(
-      PageRouteBuilder<void>(
-        transitionDuration: Duration.zero,
-        reverseTransitionDuration: Duration.zero,
-        pageBuilder: (_, _, _) => DoubanPage(
+      MaterialPageRoute<void>(
+        builder: (_) => DoubanPage(
           repository: widget.catalogDiscovery,
           session: _doubanSession,
           themeCatalog: widget.doubanThemeCatalog,
@@ -685,6 +694,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       Navigator.of(context)
           .push(
             MaterialPageRoute<void>(
+              settings: const RouteSettings(
+                name: CinemaPageTransitionsBuilder.playerRouteName,
+              ),
               builder: (context) => Theme(
                 data: CinemaTheme.of(context),
                 child: _buildPlayerPage(
@@ -945,6 +957,24 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   bool _ordinaryCategory(String name) => cinemaOrdinaryCategory(name);
 
+  bool _unifiedSearchSection(_Section section) =>
+      Platform.isMacOS &&
+      !NakuDevice.isTV &&
+      (section == _Section.movies || section == _Section.series);
+
+  bool _searchCategoryMatches(String name, _Section section) =>
+      _unifiedSearchSection(section)
+      ? _matchesCategory(name, _Section.movies) ||
+            _matchesCategory(name, _Section.series)
+      : _matchesCategory(name, section);
+
+  bool _sameDiscoveryKind(CinemaTitle item, CinemaDiscoveryTitle title) {
+    if (title.kind.isEmpty) return true;
+    return title.kind == 'tv'
+        ? _matchesCategory(item.category, _Section.series)
+        : _matchesCategory(item.category, _Section.movies);
+  }
+
   List<CinemaCategory> get _visibleCategories =>
       _categoryChoices(_categories, _section);
 
@@ -982,6 +1012,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   Future<void> _selectSection(_Section value) async {
     if (value == _section && !_showSourceManager) return;
+    ++_sectionRevision;
     _scrollActivity.reset();
     setState(() {
       _section = value;
@@ -1162,7 +1193,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                   (t) =>
                       cinemaMatchesKeyword(t, keyword) &&
                       (t.category.isEmpty ||
-                          _matchesCategory(t.category, section)),
+                          _searchCategoryMatches(t.category, section)),
                 )
                 .toList();
         state.discoveryCancel?.cancel();
@@ -1204,7 +1235,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                   (t) =>
                       _ordinaryCategory(t.category) &&
                       (t.category.isEmpty ||
-                          _matchesCategory(t.category, section)),
+                          _searchCategoryMatches(t.category, section)),
                 )
                 .toList();
             final existing = state.items.map((item) => item.key).toSet();
@@ -1298,7 +1329,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                   (t) =>
                       _ordinaryCategory(t.category) &&
                       (t.category.isEmpty ||
-                          _matchesCategory(t.category, section)) &&
+                          _searchCategoryMatches(t.category, section)) &&
                       keys.add(t.key),
                 )
                 .toList();
@@ -1454,15 +1485,17 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       .where(
         (title) =>
             state.filters.matches(title.metadata) &&
-            (section == _Section.anime ||
+            (_unifiedSearchSection(section) ||
+                section == _Section.anime ||
                 title.kind.isEmpty ||
                 (section == _Section.series
                     ? title.kind == 'tv'
                     : title.kind != 'tv')) &&
             !state.items.any(
               (item) =>
-                  item.doubanId == title.id ||
-                  (cinemaSearchKey(item.title) ==
+                  (title.id.isNotEmpty && item.doubanId == title.id) ||
+                  (_sameDiscoveryKind(item, title) &&
+                      cinemaSearchKey(item.title) ==
                           cinemaSearchKey(title.title) &&
                       (item.year.isEmpty ||
                           title.year.isEmpty ||
@@ -1745,50 +1778,69 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         _toast('暂时无法刷新片源，请在详情中重试继续观看。');
       }
     }
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: CinemaTheme.surface,
-      constraints: const BoxConstraints(maxWidth: 920),
-      builder: (context) => _TitleDetails(
-        title: title,
-        source: source,
-        variants: variants
-            .where((v) => v.sourceId != 'douban-discovery')
-            .toList(),
-        ratingsRepository: widget.ratingsRepository,
-        repository: _repository,
-        store: _store,
-        resume: resume,
-        onRecommendationSelected: (recommendation) {
-          Navigator.pop(context);
-          if (keepBrowseRoute) {
-            unawaited(_openDoubanRecommendation(recommendation));
-            return;
-          }
-          if (!_isCatalog) {
-            setState(
-              () => _section = _matchesCategory(title.category, _Section.series)
-                  ? _Section.series
-                  : _Section.movies,
-            );
-          }
-          _search.text = recommendation.title;
-          _runSearch();
-        },
-        onPlay: (detail, selectedSource, road, episode, allVariants) {
-          Navigator.pop(context);
-          _playTitle(
-            detail,
-            selectedSource,
-            road,
-            episode,
-            allVariants,
-            keepBrowseRoute: keepBrowseRoute,
+    Widget buildDetails(BuildContext context) => _TitleDetails(
+      title: title,
+      source: source,
+      variants: variants
+          .where((v) => v.sourceId != 'douban-discovery')
+          .toList(),
+      ratingsRepository: widget.ratingsRepository,
+      repository: _repository,
+      store: _store,
+      resume: resume,
+      onRecommendationSelected: (recommendation) {
+        Navigator.pop(context);
+        if (keepBrowseRoute) {
+          unawaited(_openDoubanRecommendation(recommendation));
+          return;
+        }
+        if (!_isCatalog) {
+          setState(
+            () => _section = _matchesCategory(title.category, _Section.series)
+                ? _Section.series
+                : _Section.movies,
           );
-        },
-      ),
+        }
+        _search.text = recommendation.title;
+        _runSearch();
+      },
+      onPlay: (detail, selectedSource, road, episode, allVariants) {
+        Navigator.pop(context);
+        _playTitle(
+          detail,
+          selectedSource,
+          road,
+          episode,
+          allVariants,
+          keepBrowseRoute: keepBrowseRoute,
+        );
+      },
     );
+    if (Platform.isMacOS && MediaQuery.sizeOf(context).width >= 900) {
+      await showDialog<void>(
+        context: context,
+        barrierColor: const Color(0x22000000),
+        builder: (context) => Dialog(
+          backgroundColor: Colors.transparent,
+          surfaceTintColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 28,
+            vertical: 24,
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: SizedBox(width: 1320, child: buildDetails(context)),
+        ),
+      );
+    } else {
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        constraints: const BoxConstraints(maxWidth: 1320),
+        showDragHandle: false,
+        builder: buildDetails,
+      );
+    }
     if (mounted) {
       setState(() {}); // Refresh poster summaries after rating edits.
     }
@@ -1832,6 +1884,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         builder: (context) {
           final wide =
               NakuDevice.isTV || MediaQuery.sizeOf(context).width >= 860;
+          if (wide && Platform.isMacOS && !NakuDevice.isTV) {
+            return _desktopCinemaScaffold();
+          }
           return Scaffold(
             backgroundColor: CinemaTheme.background,
             drawer: wide
@@ -2011,6 +2066,340 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         },
       ),
     );
+  }
+
+  Widget _desktopCinemaScaffold() {
+    final media = MediaQuery.of(context);
+    return Scaffold(
+      key: const ValueKey('cinema-mac-home-scaffold'),
+      backgroundColor: CinemaTheme.background,
+      body: CinemaCanvas(
+        child: SafeArea(
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: IndexedStack(
+                  index: _section == _Section.anime ? 1 : 0,
+                  children: [
+                    TickerMode(
+                      enabled: _section != _Section.anime,
+                      child: CinemaPaneTransition(
+                        destination: (_section, _showSourceManager),
+                        child: CinemaScrollNotifications(
+                          activity: _scrollActivity,
+                          child: _section == _Section.anime
+                              ? const SizedBox.shrink()
+                              : _content(true, topInset: 68),
+                        ),
+                      ),
+                    ),
+                    if (_animeOpened)
+                      TickerMode(
+                        enabled: _section == _Section.anime,
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 68),
+                          child:
+                              widget.animePageBuilder?.call(
+                                context,
+                                _section == _Section.anime,
+                              ) ??
+                              CinemaAnimePage(
+                                initialTab:
+                                    widget.initialStartup.animeTab.index,
+                                active: _section == _Section.anime,
+                              ),
+                        ),
+                      )
+                    else
+                      const SizedBox.shrink(),
+                  ],
+                ),
+              ),
+              const Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: CinemaHeaderFrost(),
+              ),
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: SizedBox(
+                  height: 68,
+                  child: Row(
+                    children: [
+                      if (_section == _Section.settings && _showSourceManager)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 80),
+                          child: IconButton(
+                            tooltip: '返回设置',
+                            onPressed: () =>
+                                setState(() => _showSourceManager = false),
+                            icon: const Icon(Icons.arrow_back_rounded),
+                          ),
+                        ),
+                      Expanded(
+                        child: Stack(
+                          children: [
+                            const Positioned.fill(
+                              child: DragToMoveArea(child: SizedBox.expand()),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.only(
+                                left:
+                                    _section == _Section.settings &&
+                                        _showSourceManager
+                                    ? 12
+                                    : 96,
+                              ),
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: InkWell(
+                                  onTap: _showDesktopAbout,
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: Text(
+                                    'NAKU播放器  $_applicationVersion',
+                                    key: const ValueKey('cinema-app-version'),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: CinemaTheme.muted,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      SizedBox(
+                        width: (media.size.width * .28).clamp(220, 340),
+                        child: TextField(
+                          key: const ValueKey('cinema-unified-search'),
+                          controller: _search,
+                          onSubmitted: (_) => _submitDesktopSearch(),
+                          decoration: InputDecoration(
+                            isDense: true,
+                            filled: false,
+                            hintText: '搜索电影、剧集或演员',
+                            prefixIcon: const Icon(
+                              Icons.search_rounded,
+                              size: 18,
+                            ),
+                            suffixIcon: IconButton(
+                              tooltip: '搜索',
+                              onPressed: _submitDesktopSearch,
+                              icon: const Icon(
+                                Icons.arrow_forward_rounded,
+                                size: 17,
+                              ),
+                            ),
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: const UnderlineInputBorder(
+                              borderSide: BorderSide(color: Color(0x50FFFFFF)),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      TextButton.icon(
+                        onPressed: _openNAS,
+                        icon: const Icon(Icons.dns_outlined, size: 16),
+                        label: const Text('NAS 影视'),
+                      ),
+                      if (NakuDevice.canDownload)
+                        IconButton(
+                          tooltip: '下载管理',
+                          onPressed: () =>
+                              context.pushNamed(DownloadPage.routePath),
+                          icon: const Icon(
+                            Icons.download_for_offline_outlined,
+                            size: 19,
+                          ),
+                        ),
+                      IconButton(
+                        tooltip: '网页影院',
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const CinemaWebsitesPage(),
+                          ),
+                        ),
+                        icon: const Icon(Icons.language_rounded, size: 19),
+                      ),
+                      IconButton(
+                        tooltip: '豆瓣榜单',
+                        onPressed: _openDouban,
+                        icon: const Icon(Icons.leaderboard_outlined, size: 19),
+                      ),
+                      if (widget.enableWatchTogether)
+                        ListenableBuilder(
+                          listenable: _together,
+                          builder: (context, _) => IconButton(
+                            key: const ValueKey('watch-together-entry'),
+                            tooltip: 'NAS 用户配对',
+                            onPressed: () => showCinemaSyncSheet(
+                              context,
+                              coordinator: _together,
+                            ),
+                            icon: Icon(
+                              Icons.people_outline_rounded,
+                              size: 19,
+                              color: _together.isPaired
+                                  ? CinemaTheme.copper
+                                  : CinemaTheme.muted,
+                            ),
+                          ),
+                        ),
+                      PopupMenuButton<String>(
+                        tooltip: '更多',
+                        icon: const Icon(Icons.more_horiz_rounded, size: 20),
+                        onSelected: (value) {
+                          switch (value) {
+                            case 'sources':
+                              _openSourceSettings();
+                            case 'tools':
+                              _openTools();
+                            case 'appearance':
+                              showCinemaAppearanceSheet(context);
+                            case 'update':
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => const NakuUpdatePage(),
+                                ),
+                              );
+                            case 'about':
+                              showAboutDialog(
+                                context: context,
+                                applicationName: 'NAKU播放器',
+                                applicationVersion: _applicationVersion,
+                                applicationLegalese: '基于 Kazumi · GPL-3.0',
+                                children: [
+                                  TextButton(
+                                    onPressed: () => launchUrl(
+                                      Uri.parse(
+                                        NakuUpdateService.repositoryUrl,
+                                      ),
+                                    ),
+                                    child: const Text('NAKU播放器源代码'),
+                                  ),
+                                  TextButton(
+                                    onPressed: () => launchUrl(
+                                      Uri.parse(
+                                        'https://github.com/Predidit/Kazumi',
+                                      ),
+                                    ),
+                                    child: const Text('查看 Kazumi 开源项目'),
+                                  ),
+                                ],
+                              );
+                          }
+                        },
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(value: 'sources', child: Text('片源管理')),
+                          PopupMenuItem(value: 'tools', child: Text('影视工具')),
+                          PopupMenuItem(value: 'appearance', child: Text('外观')),
+                          PopupMenuItem(value: 'update', child: Text('检查更新')),
+                          PopupMenuItem(value: 'about', child: Text('关于 NAKU')),
+                        ],
+                      ),
+                      const SizedBox(width: 18),
+                    ],
+                  ),
+                ),
+              ),
+              const Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                height: 100,
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Colors.transparent, Color(0xA6080B10)],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 16,
+                child: Center(
+                  child: CinemaNavigationIsland<_Section>(
+                    key: const ValueKey('cinema-floating-island'),
+                    value: _section,
+                    onChanged: _selectSection,
+                    keyFor: (section) =>
+                        ValueKey('cinema-destination-${section.name}'),
+                    destinations: const [
+                      (_Section.movies, Icons.local_movies_outlined, '电影'),
+                      (_Section.series, Icons.tv_rounded, '剧集'),
+                      (_Section.anime, Icons.animation_rounded, '动漫'),
+                      (
+                        _Section.favorites,
+                        Icons.bookmark_border_rounded,
+                        '我的收藏',
+                      ),
+                      (_Section.history, Icons.history_rounded, '继续观看'),
+                      (_Section.settings, Icons.settings_outlined, '设置'),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showDesktopAbout() => showAboutDialog(
+    context: context,
+    applicationName: 'NAKU播放器',
+    applicationVersion: _applicationVersion,
+    applicationLegalese: '基于 Kazumi · GPL-3.0',
+    children: [
+      TextButton(
+        onPressed: () => launchUrl(Uri.parse(NakuUpdateService.repositoryUrl)),
+        child: const Text('NAKU播放器源代码'),
+      ),
+      TextButton(
+        onPressed: () =>
+            launchUrl(Uri.parse('https://github.com/Predidit/Kazumi')),
+        child: const Text('查看 Kazumi 开源项目'),
+      ),
+    ],
+  );
+
+  Future<void> _submitDesktopSearch() async {
+    final submission = ++_desktopSearchRevision;
+    final query = _search.text;
+    if (!_isCatalog) {
+      final target = _catalogs[_Section.movies]!;
+      final opening = _selectSection(_Section.movies);
+      final navigation = _sectionRevision;
+      final generation = target.generation;
+      // Show the submitted query on its destination immediately. A later
+      // catalogue reply must never write through the current-page getter.
+      target.search.text = query;
+      await opening;
+      if (!mounted ||
+          submission != _desktopSearchRevision ||
+          navigation != _sectionRevision ||
+          !identical(target, _catalog) ||
+          generation != target.generation ||
+          target.search.text != query) {
+        return;
+      }
+    }
+    await _runSearch();
   }
 
   Widget _navigation({bool closeDrawer = false}) {
@@ -2221,7 +2610,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     );
   }
 
-  Widget _catalogSortControls() => Padding(
+  Widget _catalogSortControls({bool compact = false}) => Padding(
     padding: const EdgeInsets.only(top: 14),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2244,12 +2633,22 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                   CinemaCatalogSort.rating => '评分',
                 }),
                 selected: _currentCatalogSort == sort,
-                selectedColor: CinemaTheme.copper.withValues(alpha: .18),
-                side: BorderSide(
-                  color: _currentCatalogSort == sort
-                      ? CinemaTheme.copper
-                      : CinemaTheme.border,
-                ),
+                showCheckmark: !compact,
+                backgroundColor: compact ? Colors.transparent : null,
+                selectedColor: compact
+                    ? const Color(0x14FFFFFF)
+                    : CinemaTheme.copper.withValues(alpha: .18),
+                labelStyle: compact
+                    ? TextStyle(
+                        color: _currentCatalogSort == sort
+                            ? CinemaTheme.text
+                            : CinemaTheme.muted,
+                        fontWeight: _currentCatalogSort == sort
+                            ? FontWeight.w600
+                            : FontWeight.w400,
+                      )
+                    : null,
+                side: BorderSide.none,
                 onSelected: (_) {
                   if (_currentCatalogSort == sort) return;
                   setState(() {
@@ -2288,29 +2687,46 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                   },
                 ),
               ),
-            Padding(
-              padding: const EdgeInsets.only(left: 4),
-              child: Text(
-                switch (_currentCatalogSort) {
-                  CinemaCatalogSort.popular =>
-                    _searching ? '已加载资源 · 片源热度' : '豆瓣 · 近期热门',
-                  CinemaCatalogSort.latest => '已加载作品 · 片源更新时间',
-                  CinemaCatalogSort.rating => '已加载作品 · 评分从高到低',
-                },
-                style: const TextStyle(fontSize: 11, color: CinemaTheme.muted),
+            if (compact)
+              Tooltip(
+                message: _catalogSortExplanation,
+                child: const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Icon(
+                    Icons.info_outline_rounded,
+                    size: 15,
+                    color: CinemaTheme.muted,
+                  ),
+                ),
               ),
-            ),
+            if (!compact)
+              Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: Text(
+                  switch (_currentCatalogSort) {
+                    CinemaCatalogSort.popular =>
+                      _searching ? '已加载资源 · 片源热度' : '豆瓣 · 近期热门',
+                    CinemaCatalogSort.latest => '已加载作品 · 片源更新时间',
+                    CinemaCatalogSort.rating => '已加载作品 · 评分从高到低',
+                  },
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: CinemaTheme.muted,
+                  ),
+                ),
+              ),
           ],
         ),
-        const SizedBox(height: 7),
-        Text(
-          _catalogSortExplanation,
-          style: const TextStyle(
-            fontSize: 11,
-            height: 1.5,
-            color: CinemaTheme.muted,
+        if (!compact) const SizedBox(height: 7),
+        if (!compact)
+          Text(
+            _catalogSortExplanation,
+            style: const TextStyle(
+              fontSize: 11,
+              height: 1.5,
+              color: CinemaTheme.muted,
+            ),
           ),
-        ),
       ],
     ),
   );
@@ -2330,7 +2746,13 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     scoreOf: (title) => _ratings.scoreFor(title, _scoreProvider),
   );
 
-  Widget _content(bool wide) {
+  Widget _content(bool wide, {double topInset = 0}) {
+    if (topInset > 0 && !_isCatalog) {
+      return Padding(
+        padding: EdgeInsets.only(top: topInset),
+        child: _content(wide),
+      );
+    }
     if (_section == _Section.settings) {
       if (_showSourceManager) return _sourceManager(wide);
       return CinemaSettingsPage(
@@ -2377,9 +2799,54 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     final representatives = view.representatives;
     final visibleItems = view.visible;
     final variantsByKey = view.variants;
+    final immersive = wide && Platform.isMacOS && !NakuDevice.isTV;
+    final featured =
+        immersive &&
+            aggregated &&
+            _currentCatalogSort == CinemaCatalogSort.popular &&
+            visibleItems.length >= 8
+        ? visibleItems.take(4).toList()
+        : <CinemaTitle>[];
+    final featuredKeys = featured.map((title) => title.key).toSet();
+    final wallItems = featured.isEmpty
+        ? visibleItems
+        : visibleItems
+              .where((title) => !featuredKeys.contains(title.key))
+              .toList();
+    final wallIndices = {
+      for (var index = 0; index < wallItems.length; index++)
+        wallItems[index].key: index,
+    };
     return CustomScrollView(
       key: PageStorageKey(_catalogViewportKey),
       slivers: [
+        if (featured.isEmpty && topInset > 0)
+          SliverToBoxAdapter(child: SizedBox(height: topInset)),
+        if (featured.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 24),
+              child: CinemaFeaturedWall(
+                key: ValueKey('cinema-featured-${_section.name}'),
+                topInset: topInset,
+                titles: featured,
+                onOpen: (title) => _openTitle(
+                  title,
+                  variants: variantsByKey[title.key] ?? const [],
+                ),
+                statusBuilder: (title) => title.sourceId == 'douban-discovery'
+                    ? Align(
+                        alignment: Alignment.centerLeft,
+                        child: CinemaResourceBadge(
+                          title: title,
+                          sources: _activeSources,
+                          service: _resources,
+                        ),
+                      )
+                    : const SizedBox.shrink(),
+              ),
+            ),
+          ),
         SliverToBoxAdapter(
           child: Padding(
             padding: EdgeInsets.fromLTRB(padding, 0, padding, 20),
@@ -2389,14 +2856,15 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 if (aggregated) ...[
                   Row(
                     children: [
-                      const Text(
-                        '全部片源',
+                      Text(
+                        immersive ? _heading : '全部片源',
                         style: TextStyle(
                           color: CinemaTheme.muted,
                           fontSize: 13,
                         ),
                       ),
                       const Spacer(),
+                      if (immersive) _catalogStatusMenu(snapshot!),
                       Text(
                         '${searchGroups.length} 部作品',
                         style: const TextStyle(
@@ -2413,47 +2881,49 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                       ),
                     ],
                   ),
-                  Text(
-                    snapshot!.message,
-                    style: const TextStyle(
-                      color: CinemaTheme.muted,
-                      fontSize: 11,
+                  if (!immersive) ...[
+                    Text(
+                      snapshot!.message,
+                      style: const TextStyle(
+                        color: CinemaTheme.muted,
+                        fontSize: 11,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 7,
-                    runSpacing: 6,
-                    children: [
-                      for (final status in snapshot.sources)
-                        Tooltip(
-                          message:
-                              status.error ??
-                              (status.yearUnsupported
-                                  ? '此源未按年份返回，已排除不匹配内容'
-                                  : status.source.name),
-                          child: Text(
-                            '${status.source.name} · ${status.loading
-                                ? '读取中'
-                                : status.error != null
-                                ? '暂不可用'
-                                : status.yearUnsupported
-                                ? '待匹配'
-                                : status.loadedCount > 0
-                                ? '${status.loadedCount}'
-                                : snapshot.usesMetadataDiscovery
-                                ? '按作品匹配'
-                                : '暂无内容'}',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: status.loading
-                                  ? CinemaTheme.copper
-                                  : CinemaTheme.muted,
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 7,
+                      runSpacing: 6,
+                      children: [
+                        for (final status in snapshot.sources)
+                          Tooltip(
+                            message:
+                                status.error ??
+                                (status.yearUnsupported
+                                    ? '此源未按年份返回，已排除不匹配内容'
+                                    : status.source.name),
+                            child: Text(
+                              '${status.source.name} · ${status.loading
+                                  ? '读取中'
+                                  : status.error != null
+                                  ? '暂不可用'
+                                  : status.yearUnsupported
+                                  ? '待匹配'
+                                  : status.loadedCount > 0
+                                  ? '${status.loadedCount}'
+                                  : snapshot.usesMetadataDiscovery
+                                  ? '按作品匹配'
+                                  : '暂无内容'}',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: status.loading
+                                    ? CinemaTheme.copper
+                                    : CinemaTheme.muted,
+                              ),
                             ),
                           ),
-                        ),
-                    ],
-                  ),
+                      ],
+                    ),
+                  ],
                 ],
                 if (!_searching && !aggregated)
                   Row(
@@ -2568,6 +3038,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                     ),
                   ),
                 CinemaFilterBar(
+                  compact: immersive,
                   value: _catalog.filters,
                   items: aggregated ? representatives : _items,
                   onChanged: _changeCatalogueFilters,
@@ -2577,7 +3048,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                       ? '聚合目录'
                       : '已加载片源目录',
                 ),
-                if (_showsCatalogSort) _catalogSortControls(),
+                if (_showsCatalogSort) _catalogSortControls(compact: immersive),
                 if (_searching) _discoveryResults(),
                 if (_section == _Section.anime && !_searching)
                   Padding(
@@ -2659,30 +3130,28 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             padding: EdgeInsets.fromLTRB(padding, 0, padding, 28),
             sliver: SliverLayoutBuilder(
               builder: (context, constraints) {
-                final columns = (constraints.crossAxisExtent / 165)
-                    .floor()
-                    .clamp(2, 6);
+                final columns =
+                    (constraints.crossAxisExtent / (immersive ? 205 : 165))
+                        .floor()
+                        .clamp(2, immersive ? 7 : 6);
                 return SliverGrid(
                   delegate: SliverChildBuilderDelegate(
                     (context, index) => _titleCard(
-                      visibleItems[index],
-                      variants:
-                          variantsByKey[visibleItems[index].key] ?? const [],
+                      wallItems[index],
+                      variants: variantsByKey[wallItems[index].key] ?? const [],
                     ),
-                    childCount: visibleItems.length,
+                    childCount: wallItems.length,
                     findChildIndexCallback: (key) =>
                         key is ValueKey<String> &&
                             key.value.startsWith('title-card:')
-                        ? view.indices[key.value.substring(
-                            'title-card:'.length,
-                          )]
+                        ? wallIndices[key.value.substring('title-card:'.length)]
                         : null,
                   ),
                   gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: columns,
                     crossAxisSpacing: 18,
                     mainAxisSpacing: 24,
-                    childAspectRatio: .51,
+                    childAspectRatio: immersive ? .57 : .51,
                   ),
                 );
               },
@@ -2766,32 +3235,49 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               ),
             ),
           ),
+        if (immersive) const SliverToBoxAdapter(child: SizedBox(height: 96)),
       ],
     );
   }
 
-  Widget _poster(CinemaTitle title, double? width, double? height) => ClipRRect(
-    borderRadius: BorderRadius.circular(9),
-    child: SizedBox(
-      width: width,
-      height: height,
-      child: title.poster.isEmpty
-          ? _posterFallback(title.title)
-          : CachedNetworkImage(
-              cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
-              memCacheWidth: 480,
-              fadeInDuration: Duration.zero,
-              fadeOutDuration: Duration.zero,
-              imageUrl: title.poster,
-              httpHeaders: title.sourceId == 'douban-discovery'
-                  ? doubanImageHeaders
-                  : null,
-              fit: BoxFit.cover,
-              placeholder: (_, _) => _posterFallback(title.title),
-              errorWidget: (_, _, _) => _posterFallback(title.title),
-            ),
-    ),
-  );
+  Widget _poster(CinemaTitle title, double? width, double? height) =>
+      DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(9),
+          boxShadow: Platform.isMacOS && !NakuDevice.isTV
+              ? const [
+                  BoxShadow(
+                    color: Color(0x50000000),
+                    blurRadius: 22,
+                    spreadRadius: -3,
+                    offset: Offset(0, 9),
+                  ),
+                ]
+              : const [],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(9),
+          child: SizedBox(
+            width: width,
+            height: height,
+            child: title.poster.isEmpty
+                ? _posterFallback(title.title)
+                : CachedNetworkImage(
+                    cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
+                    memCacheWidth: 480,
+                    fadeInDuration: Duration.zero,
+                    fadeOutDuration: Duration.zero,
+                    imageUrl: title.poster,
+                    httpHeaders: title.sourceId == 'douban-discovery'
+                        ? doubanImageHeaders
+                        : null,
+                    fit: BoxFit.cover,
+                    placeholder: (_, _) => _posterFallback(title.title),
+                    errorWidget: (_, _, _) => _posterFallback(title.title),
+                  ),
+          ),
+        ),
+      );
 
   Widget _posterFallback(String name) => LayoutBuilder(
     builder: (context, bounds) => bounds.maxWidth < 96 || bounds.maxHeight < 100
@@ -2832,6 +3318,72 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           ),
   );
 
+  Widget _posterCardSurface({required Widget child}) =>
+      Platform.isMacOS && !NakuDevice.isTV
+      ? child
+      : CinemaGlass(
+          blur: false,
+          radius: 14,
+          padding: const EdgeInsets.all(7),
+          child: child,
+        );
+
+  Widget _catalogStatusMenu(CinemaAggregateSnapshot snapshot) =>
+      PopupMenuButton<void>(
+        tooltip: '片源状态',
+        icon: const Icon(
+          Icons.info_outline_rounded,
+          size: 17,
+          color: CinemaTheme.muted,
+        ),
+        itemBuilder: (_) => [
+          PopupMenuItem<void>(
+            enabled: false,
+            child: SizedBox(
+              width: 340,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    snapshot.message,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: CinemaTheme.text,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  for (final status in snapshot.sources)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 5),
+                      child: Tooltip(
+                        message: status.error ?? status.source.name,
+                        child: Text(
+                          '${status.source.name} · ${status.loading
+                              ? '读取中'
+                              : status.error != null
+                              ? '暂不可用'
+                              : status.yearUnsupported
+                              ? '待匹配'
+                              : status.loadedCount > 0
+                              ? '${status.loadedCount}'
+                              : snapshot.usesMetadataDiscovery
+                              ? '按作品匹配'
+                              : '暂无内容'}',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: CinemaTheme.muted,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+
   Widget _titleCard(
     CinemaTitle title, {
     List<CinemaTitle> variants = const [],
@@ -2840,10 +3392,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       key: ValueKey('title-card:${title.key}'),
       onTap: () => _openTitle(title, variants: variants),
       borderRadius: BorderRadius.circular(10),
-      child: CinemaGlass(
-        blur: false,
-        radius: 14,
-        padding: const EdgeInsets.all(7),
+      child: _posterCardSurface(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -3112,7 +3661,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             decoration: BoxDecoration(
               color: CinemaTheme.surface,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: CinemaTheme.border),
+              border: Platform.isMacOS
+                  ? null
+                  : Border.all(color: CinemaTheme.border),
             ),
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -3494,42 +4045,195 @@ class _TitleDetailsState extends State<_TitleDetails> {
     _selectedTitle,
   );
   int _road = 0;
+  int _informationTab = 0;
+  CinemaTitle? _resolvedInput, _resolvedTitle;
   late List<CinemaTitle> _variants = [
     widget.title,
     ...widget.variants.where((v) => v.key != widget.title.key),
   ];
-  bool _discovering = true;
+  bool _discovering = true, _discoveryFailed = false;
   bool _variantChosen = false;
+  bool _routeChosen = false;
+  StreamSubscription<List<CinemaTitle>>? _discoverySubscription;
+  ImageStream? _posterStream;
+  ImageStreamListener? _posterListener;
+  ImageProvider<Object>? _posterProvider;
+  String? _posterIdentity;
+  CancelToken? _artworkCancel;
+  bool _posterTerminal = false, _posterFailed = false, _attachingPoster = false;
+  bool _ratingsTerminal = false, _presentationReady = false, _disposing = false;
+  bool _scoresTerminal = false, _informationTerminal = false;
+  CinemaTitle? _ratingsTitle;
+  int _detailGeneration = 0, _ratingTicket = 0, _posterTicket = 0;
   @override
   void initState() {
     super.initState();
+    _variants = orderCinemaVariants(
+      _variants,
+      widget.store.enabledSources.map((source) => source.id),
+    );
+    if (widget.resume == null && _variants.isNotEmpty) {
+      _selectVariant(_variants.first, automatic: true);
+    }
     _discover();
   }
 
-  Future<void> _discover() async {
-    await for (final variants in discoverCinemaWorkSources(
-      anchor: widget.title,
-      known: _variants,
-      sources: widget.store.enabledSources,
-      repository: widget.repository,
-      isCurrent: () => mounted,
-    )) {
-      if (!mounted) return;
-      final priority = widget.store.enabledSources.map((s) => s.id).toList();
-      setState(() => _variants = orderCinemaVariants(variants, priority));
-      if (!_variantChosen && widget.resume == null && _variants.isNotEmpty) {
-        final preferred = _variants.first;
-        if (preferred.key != _selectedTitle.key &&
-            orderCinemaVariants([
-                  preferred,
-                  _selectedTitle,
-                ], priority).first.key ==
-                preferred.key) {
-          _selectVariant(preferred, automatic: true);
-        }
-      }
+  void _discover() {
+    _discoverySubscription =
+        discoverCinemaWorkSources(
+          anchor: widget.title,
+          known: _variants,
+          sources: widget.store.enabledSources,
+          repository: widget.repository,
+          isCurrent: () => mounted && !_disposing,
+          onSourceError: (source, error) {
+            if (mounted && !_disposing) setState(() => _discoveryFailed = true);
+          },
+        ).listen(
+          (variants) {
+            if (!mounted || _disposing) return;
+            final priority = widget.store.enabledSources
+                .map((s) => s.id)
+                .toList();
+            setState(() => _variants = orderCinemaVariants(variants, priority));
+            if (!_variantChosen &&
+                widget.resume == null &&
+                _variants.isNotEmpty) {
+              final preferred = _variants.first;
+              if (preferred.key != _selectedTitle.key &&
+                  orderCinemaVariants([
+                        preferred,
+                        _selectedTitle,
+                      ], priority).first.key ==
+                      preferred.key) {
+                _selectVariant(preferred, automatic: true);
+              }
+            }
+          },
+          onDone: () {
+            if (mounted && !_disposing) setState(() => _discovering = false);
+          },
+          onError: (Object error, StackTrace stack) {
+            if (mounted && !_disposing) {
+              setState(() {
+                _discovering = false;
+                _discoveryFailed = true;
+              });
+            }
+          },
+        );
+  }
+
+  void _detachPoster() {
+    final listener = _posterListener;
+    if (listener != null) _posterStream?.removeListener(listener);
+    _posterListener = null;
+    _posterStream = null;
+  }
+
+  void _watchPoster(CinemaTitle title) {
+    final identity =
+        (widget.ratingsRepository ?? CinemaRatingsRepository.instance)
+            .peek(title)
+            ?.identity ??
+        const RatingIdentity();
+    final key = CinemaDetailArtworkRepository.identityKey(title, identity);
+    if (_posterIdentity == key) return;
+    _artworkCancel?.cancel('Selected artwork changed');
+    _detachPoster();
+    _posterIdentity = key;
+    final ticket = ++_posterTicket;
+    _posterTerminal = false;
+    _posterFailed = false;
+    _presentationReady = false;
+    _posterProvider = null;
+    final cancel = _artworkCancel = CancelToken();
+    bool current() => mounted && !_disposing && ticket == _posterTicket;
+    CinemaDetailArtworkRepository.instance
+        .resolve(
+          title,
+          identity: identity,
+          cancelToken: cancel,
+          isCurrent: current,
+        )
+        .then(
+          (artwork) {
+            if (!current()) return;
+            _attachPoster(title, artwork, ticket);
+            if (current()) setState(() {});
+          },
+          onError: (Object error, StackTrace stack) {
+            if (!current()) return;
+            _attachPoster(
+              title,
+              CinemaDetailArtwork(url: title.poster),
+              ticket,
+            );
+            if (current()) setState(() {});
+          },
+        );
+  }
+
+  void _attachPoster(
+    CinemaTitle title,
+    CinemaDetailArtwork artwork,
+    int ticket,
+  ) {
+    _detachPoster();
+    if (artwork.url.isEmpty) {
+      _posterProvider = null;
+      _posterTerminal = true;
+      return;
     }
-    if (mounted) setState(() => _discovering = false);
+    // The file's original dimensions were checked before selecting HD. Fit
+    // preserves them and caps decode memory; it never manufactures pixels.
+    _posterProvider = ResizeImage(
+      CachedNetworkImageProvider(
+        artwork.url,
+        cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
+        headers: artwork.headers.isEmpty ? null : artwork.headers,
+      ),
+      width: 1600,
+      height: 2400,
+      policy: ResizeImagePolicy.fit,
+    );
+    final stream = _posterStream = _posterProvider!.resolve(
+      createLocalImageConfiguration(context),
+    );
+    void terminal({required bool failed}) {
+      if (!mounted || _disposing || ticket != _posterTicket) return;
+      if (failed && artwork.url != title.poster && title.poster.isNotEmpty) {
+        _attachPoster(title, CinemaDetailArtwork(url: title.poster), ticket);
+        if (!_attachingPoster) setState(() {});
+        return;
+      }
+      _posterTerminal = true;
+      _posterFailed = failed;
+      _detachPoster();
+      if (!_attachingPoster) setState(() {});
+    }
+
+    final listener = _posterListener = ImageStreamListener((
+      frame,
+      synchronousCall,
+    ) {
+      frame.dispose();
+      terminal(failed: false);
+    }, onError: (Object error, StackTrace? stack) => terminal(failed: true));
+    _attachingPoster = true;
+    stream.addListener(listener);
+    _attachingPoster = false;
+  }
+
+  @override
+  void dispose() {
+    _disposing = true;
+    _ratingTicket++;
+    _posterTicket++;
+    _artworkCancel?.cancel('Detail disposed');
+    _detachPoster();
+    unawaited(_discoverySubscription?.cancel());
+    super.dispose();
   }
 
   void _selectVariant(CinemaTitle variant, {bool automatic = false}) {
@@ -3540,376 +4244,653 @@ class _TitleDetailsState extends State<_TitleDetails> {
         .firstOrNull;
     if (source == null) return;
     setState(() {
+      _detailGeneration++;
+      _ratingTicket++;
+      _ratingsTitle = null;
+      _ratingsTerminal = false;
+      _scoresTerminal = false;
+      _informationTerminal = false;
+      _presentationReady = false;
+      _posterTicket++;
+      _artworkCancel?.cancel('Selected source changed');
+      _posterIdentity = null;
+      _posterProvider = null;
+      _detachPoster();
       _selectedTitle = variant;
       _selectedSource = source;
       _road = 0;
+      _routeChosen = false;
       _detail = automatic && variant.routes.isNotEmpty
           ? Future.value(variant)
           : widget.repository.detail(source, variant);
     });
   }
 
+  /// Catalogue quality labels choose a starting route; the existing player
+  /// probes the stream and handles source failover after playback begins.
+  int _preferredRoad(CinemaTitle title) {
+    if (_routeChosen &&
+        _road < title.routes.length &&
+        title.routes[_road].episodes.isNotEmpty) {
+      return _road;
+    }
+    int quality(String name) {
+      if (RegExp(r'4k|2160|uhd|蓝光原盘', caseSensitive: false).hasMatch(name)) {
+        return 3;
+      }
+      if (RegExp(r'1080|fhd|蓝光', caseSensitive: false).hasMatch(name)) return 2;
+      if (RegExp(r'720|高清', caseSensitive: false).hasMatch(name)) return 1;
+      return 0;
+    }
+
+    var best = -1;
+    for (var index = 0; index < title.routes.length; index++) {
+      if (title.routes[index].episodes.isEmpty) continue;
+      if (best < 0 ||
+          quality(title.routes[index].name) >
+              quality(title.routes[best].name)) {
+        best = index;
+      }
+    }
+    return best;
+  }
+
+  Widget _actions(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
+    final playable = snapshot.hasData && _preferredRoad(title) >= 0;
+    final route = title.routes.isEmpty
+        ? 0
+        : (_routeChosen ? _road : _preferredRoad(title)).clamp(
+            0,
+            title.routes.length - 1,
+          );
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        FilledButton.icon(
+          key: const ValueKey('cinema-detail-primary-play'),
+          style: FilledButton.styleFrom(
+            backgroundColor: Colors.white,
+            foregroundColor: const Color(0xFF111114),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
+          ),
+          onPressed: playable
+              ? () => widget.onPlay(
+                  title,
+                  _selectedSource,
+                  _preferredRoad(title),
+                  0,
+                  _variants,
+                )
+              : null,
+          icon: const Icon(Icons.play_arrow_rounded, size: 25),
+          label: const Text('开始观看'),
+        ),
+        if (NakuDevice.canDownload && playable)
+          IconButton(
+            tooltip: '下载',
+            onPressed: () => showCinemaDownloadSheet(
+              context,
+              title: title,
+              source: _selectedSource,
+              routeIndex: route,
+            ),
+            icon: const Icon(Icons.download_rounded, size: 21),
+          ),
+        IconButton(
+          tooltip: widget.store.isFavorite(title) ? '取消收藏' : '收藏',
+          onPressed: () async {
+            await widget.store.toggleFavorite(title);
+            if (mounted) setState(() {});
+          },
+          icon: Icon(
+            widget.store.isFavorite(title)
+                ? Icons.bookmark_rounded
+                : Icons.bookmark_border_rounded,
+            size: 20,
+          ),
+        ),
+        if (Platform.isAndroid && !NakuDevice.isTV && playable)
+          IconButton(
+            tooltip: '发送到电视',
+            onPressed: () => showCinemaCast(
+              context,
+              title: title,
+              source: _selectedSource,
+              road: route,
+            ),
+            icon: const Icon(Icons.cast, size: 20),
+          ),
+        if (widget.resume != null &&
+            widget.resume!.title.key == _selectedTitle.key &&
+            snapshot.hasData &&
+            title.routes.isNotEmpty)
+          TextButton.icon(
+            onPressed: () {
+              final selection = cinemaResumeSelection(title, widget.resume!);
+              if (selection == null) {
+                KazumiDialog.showToast(
+                  context: context,
+                  message: '片源的线路或集数已变化，请在下方重新选择。',
+                );
+                return;
+              }
+              widget.onPlay(
+                title,
+                _selectedSource,
+                selection.routeIndex,
+                selection.episodeIndex,
+                _variants,
+              );
+            },
+            icon: const Icon(Icons.history_rounded, size: 18),
+            label: const Text('继续观看'),
+          ),
+      ],
+    );
+  }
+
+  Widget _sourceControls(
+    CinemaTitle title,
+    AsyncSnapshot<CinemaTitle> snapshot,
+  ) {
+    final road = title.routes.isEmpty
+        ? 0
+        : (_routeChosen ? _road : _preferredRoad(title)).clamp(
+            0,
+            title.routes.length - 1,
+          );
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _selectedSource.name,
+                  style: const TextStyle(
+                    color: CinemaTheme.muted,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+              if (_discovering)
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 1.5),
+                ),
+            ],
+          ),
+          if (_variants.length > 1) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final variant in _variants)
+                  ChoiceChip(
+                    key: ValueKey('source-variant:${variant.key}'),
+                    showCheckmark: false,
+                    side: BorderSide.none,
+                    backgroundColor: Colors.transparent,
+                    selectedColor: Colors.white.withValues(alpha: .08),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    label: Text(
+                      [
+                        widget.store.sources
+                                .where((s) => s.id == variant.sourceId)
+                                .firstOrNull
+                                ?.name ??
+                            '已移除片源',
+                        if (_variants
+                                .where((v) => v.sourceId == variant.sourceId)
+                                .length >
+                            1)
+                          variant.title,
+                        if (variant.remarks.isNotEmpty) variant.remarks,
+                      ].join(' · '),
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                    selected: variant.key == _selectedTitle.key,
+                    onSelected: (_) => _selectVariant(variant),
+                  ),
+              ],
+            ),
+          ],
+          if (_discoveryFailed)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Text(
+                '部分片源暂未返回，可继续使用已加载线路',
+                style: TextStyle(color: CinemaTheme.muted, fontSize: 11),
+              ),
+            ),
+          if (snapshot.connectionState != ConnectionState.done) ...[
+            const SizedBox(height: 18),
+            const LinearProgressIndicator(minHeight: 2),
+          ],
+          if (snapshot.hasError) ...[
+            const SizedBox(height: 12),
+            Text(
+              '片源加载失败：${snapshot.error}',
+              style: const TextStyle(color: CinemaTheme.muted, fontSize: 12),
+            ),
+            const SizedBox(height: 10),
+            FilledButton.tonal(
+              onPressed: () => setState(() {
+                _detail = widget.repository.detail(
+                  _selectedSource,
+                  _selectedTitle,
+                );
+              }),
+              child: const Text('重试'),
+            ),
+          ],
+          if (snapshot.hasData && title.routes.isEmpty) ...[
+            const SizedBox(height: 14),
+            const Text(
+              '这个结果暂未提供可播放线路，可尝试其他片源。',
+              style: TextStyle(color: CinemaTheme.muted, fontSize: 12),
+            ),
+          ],
+          if (snapshot.hasData && title.routes.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (var r = 0; r < title.routes.length; r++)
+                  ChoiceChip(
+                    showCheckmark: false,
+                    side: BorderSide.none,
+                    backgroundColor: Colors.transparent,
+                    selectedColor: Colors.white.withValues(alpha: .08),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    label: Text(title.routes[r].name),
+                    selected: road == r,
+                    onSelected: (_) => setState(() {
+                      _variantChosen = true;
+                      _routeChosen = true;
+                      _road = r;
+                    }),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (var e = 0; e < title.routes[road].episodes.length; e++)
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      foregroundColor: CinemaTheme.text,
+                    ),
+                    onPressed: () => widget.onPlay(
+                      title,
+                      _selectedSource,
+                      road,
+                      e,
+                      _variants,
+                    ),
+                    child: Text(title.routes[road].episodes[e].name),
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _metadata(CinemaTitle title, {required bool cast}) {
+    final values = cast
+        ? {'导演': title.director, '演员 / 配音': title.actors}
+        : {
+            '地区': title.area,
+            '语言': title.language,
+            '类型': title.genres,
+            '上映': title.releaseDateText,
+            '片长': RegExp(r'^\d+$').hasMatch(title.durationText)
+                ? '${title.durationText} 分钟'
+                : title.durationText,
+            '又名': title.aliases,
+          };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (cast && values.values.every((value) => value.isEmpty))
+          const Text(
+            '此片源暂未提供演职员资料',
+            style: TextStyle(color: CinemaTheme.muted, fontSize: 13),
+          ),
+        for (final entry in values.entries)
+          if (entry.value.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: cast ? 76 : 48,
+                    child: Text(
+                      entry.key,
+                      style: const TextStyle(
+                        color: CinemaTheme.muted,
+                        fontSize: 11,
+                        height: 1.9,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: SelectableText(
+                      entry.value,
+                      style: const TextStyle(fontSize: 13, height: 1.7),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+      ],
+    );
+  }
+
+  Widget _information(
+    CinemaTitle title,
+    Widget details,
+    Widget reviews,
+  ) => Padding(
+    key: const ValueKey('cinema-detail-information'),
+    padding: const EdgeInsets.only(top: 2),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 4,
+          runSpacing: 6,
+          children: [
+            for (final (index, label) in ['简介', '演员', '相似推荐', '影评'].indexed)
+              TextButton(
+                key: ValueKey('cinema-detail-tab-$index'),
+                style: TextButton.styleFrom(
+                  foregroundColor: _informationTab == index
+                      ? CinemaTheme.text
+                      : CinemaTheme.muted,
+                  backgroundColor: Colors.transparent,
+                  padding: const EdgeInsets.fromLTRB(0, 6, 20, 8),
+                  textStyle: TextStyle(
+                    fontSize: 13,
+                    fontWeight: _informationTab == index
+                        ? FontWeight.w600
+                        : FontWeight.w400,
+                  ),
+                ),
+                onPressed: () => setState(() => _informationTab = index),
+                child: Text(label),
+              ),
+          ],
+        ),
+        const SizedBox(height: 20),
+        if (_informationTab == 0) ...[
+          if (title.description.isNotEmpty)
+            SelectableText(
+              title.description,
+              style: const TextStyle(fontSize: 14, height: 1.9),
+            ),
+          const SizedBox(height: 20),
+          _metadata(title, cast: false),
+        ],
+        if (_informationTab == 1) _metadata(title, cast: true),
+        // Keep both independently loaded views mounted when changing tabs;
+        // their existing caches, identity edits and retry flows stay intact.
+        Offstage(
+          key: const ValueKey('cinema-detail-recommendations-pane'),
+          offstage: _informationTab != 2,
+          child: details,
+        ),
+        Offstage(
+          key: const ValueKey('cinema-detail-reviews-pane'),
+          offstage: _informationTab != 3,
+          child: reviews,
+        ),
+      ],
+    ),
+  );
+
+  Widget _layout(
+    BuildContext context,
+    CinemaTitle title,
+    AsyncSnapshot<CinemaTitle> snapshot,
+    Widget ratings,
+    Widget details,
+    Widget reviews,
+  ) => LayoutBuilder(
+    builder: (context, constraints) {
+      final wide = constraints.maxWidth >= 820;
+      final left = Column(
+        key: const ValueKey('cinema-detail-left'),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title.title,
+            style: TextStyle(
+              fontSize: wide ? 42 : 30,
+              height: 1.14,
+              fontWeight: FontWeight.w600,
+              letterSpacing: -.8,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            [
+              title.year,
+              title.category,
+              title.remarks,
+            ].where((value) => value.isNotEmpty).join(' · '),
+            style: const TextStyle(color: CinemaTheme.muted, fontSize: 12),
+          ),
+          const SizedBox(height: 26),
+          CinemaNeonRegion(
+            key: const ValueKey('cinema-detail-actions-region'),
+            ready: snapshot.connectionState == ConnectionState.done,
+            child: _actions(title, snapshot),
+          ),
+          const SizedBox(height: 20),
+          CinemaNeonRegion(
+            key: const ValueKey('cinema-detail-ratings-region'),
+            ready: _scoresTerminal,
+            child: ratings,
+          ),
+          const SizedBox(height: 24),
+          CinemaNeonRegion(
+            key: const ValueKey('cinema-detail-sources-region'),
+            ready:
+                snapshot.connectionState == ConnectionState.done &&
+                !_discovering,
+            child: _sourceControls(title, snapshot),
+          ),
+        ],
+      );
+      final right = Padding(
+        padding: EdgeInsets.only(top: wide && title.poster.isNotEmpty ? 72 : 0),
+        child: CinemaNeonRegion(
+          key: const ValueKey('cinema-detail-information-region'),
+          ready:
+              snapshot.connectionState == ConnectionState.done &&
+              (_informationTab < 2 || _informationTerminal),
+          child: _information(title, details, reviews),
+        ),
+      );
+      return SingleChildScrollView(
+        key: const ValueKey('cinema-title-detail-layout'),
+        padding: EdgeInsets.fromLTRB(wide ? 38 : 20, 0, wide ? 38 : 20, 32),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(height: title.poster.isNotEmpty ? (wide ? 196 : 150) : 60),
+            if (wide)
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 5, child: left),
+                  const SizedBox(width: 28),
+                  Expanded(flex: 6, child: right),
+                ],
+              )
+            else ...[
+              left,
+              const SizedBox(height: 24),
+              right,
+            ],
+          ],
+        ),
+      );
+    },
+  );
+
   @override
   Widget build(BuildContext context) => Theme(
     data: CinemaTheme.of(context),
     child: SizedBox(
-      height: MediaQuery.sizeOf(context).height * .84,
+      height: MediaQuery.sizeOf(context).height * .88,
       child: FutureBuilder<CinemaTitle>(
         key: ValueKey(_selectedTitle.key),
         future: _detail,
         initialData: _selectedTitle.routes.isNotEmpty ? _selectedTitle : null,
         builder: (context, snapshot) {
+          // Keep rating identity widgets stable across tab, hover and source
+          // discovery updates; merging metadata otherwise makes a new object
+          // on every build and restarts independent ratings requests.
+          if (snapshot.data != null &&
+              (!identical(_resolvedInput, snapshot.data) ||
+                  _resolvedTitle?.key != _selectedTitle.key)) {
+            _resolvedInput = snapshot.data;
+            _resolvedTitle = inheritCinemaRatingMetadata(
+              inheritCinemaRatingMetadata(snapshot.data!, _selectedTitle),
+              widget.title,
+            );
+          }
           final title = snapshot.data == null
               ? _selectedTitle
-              : inheritCinemaRatingMetadata(
-                  inheritCinemaRatingMetadata(snapshot.data!, _selectedTitle),
-                  widget.title,
-                );
-          return CinemaCoverBackdrop(
-            poster: title.poster,
-            child: ListView(
-              padding: const EdgeInsets.all(30),
-              children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (title.poster.isNotEmpty) ...[
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: CachedNetworkImage(
-                          cacheManager:
-                              ProxyAwareImageCacheManager.cinemaInstance,
-                          memCacheWidth: 480,
-                          imageUrl: title.poster,
-                          httpHeaders: title.sourceId == 'douban-discovery'
-                              ? doubanImageHeaders
-                              : null,
-                          width: MediaQuery.sizeOf(context).width < 600
-                              ? 90
-                              : 150,
-                          height: MediaQuery.sizeOf(context).width < 600
-                              ? 135
-                              : 225,
-                          fit: BoxFit.cover,
-                          errorWidget: (_, _, _) =>
-                              const Icon(Icons.movie_outlined, size: 50),
-                        ),
-                      ),
-                      const SizedBox(width: 24),
-                    ],
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            title.title,
-                            style: const TextStyle(
-                              fontSize: 26,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            [
-                              _selectedSource.name,
-                              title.category,
-                              title.year,
-                              title.remarks,
-                            ].where((s) => s.isNotEmpty).join('  ·  '),
-                            style: const TextStyle(
-                              color: CinemaTheme.muted,
-                              fontSize: 12,
-                            ),
-                          ),
-                          const SizedBox(height: 22),
-                          Wrap(
-                            spacing: 12,
-                            runSpacing: 10,
-                            children: [
-                              if (snapshot.hasData &&
-                                  title.routes.any(
-                                    (r) => r.episodes.isNotEmpty,
-                                  ))
-                                FilledButton.icon(
-                                  onPressed: () {
-                                    final r = title.routes.indexWhere(
-                                      (r) => r.episodes.isNotEmpty,
-                                    );
-                                    widget.onPlay(
-                                      title,
-                                      _selectedSource,
-                                      r,
-                                      0,
-                                      _variants,
-                                    );
-                                  },
-                                  icon: const Icon(Icons.play_arrow),
-                                  label: const Text('开始观看'),
-                                ),
-                              if (NakuDevice.canDownload &&
-                                  snapshot.hasData &&
-                                  title.routes.any(
-                                    (r) => r.episodes.isNotEmpty,
-                                  ))
-                                OutlinedButton.icon(
-                                  onPressed: () => showCinemaDownloadSheet(
-                                    context,
-                                    title: title,
-                                    source: _selectedSource,
-                                    routeIndex: _road,
-                                  ),
-                                  icon: const Icon(
-                                    Icons.download_rounded,
-                                    size: 18,
-                                  ),
-                                  label: const Text('下载'),
-                                ),
-                              if (Platform.isAndroid &&
-                                  !NakuDevice.isTV &&
-                                  snapshot.hasData &&
-                                  title.routes.any(
-                                    (r) => r.episodes.isNotEmpty,
-                                  ))
-                                OutlinedButton.icon(
-                                  onPressed: () => showCinemaCast(
-                                    context,
-                                    title: title,
-                                    source: _selectedSource,
-                                    road: _road,
-                                  ),
-                                  icon: const Icon(Icons.cast),
-                                  label: const Text('发送到电视'),
-                                ),
-                              OutlinedButton.icon(
-                                onPressed: () async {
-                                  await widget.store.toggleFavorite(title);
-                                  if (mounted) setState(() {});
-                                },
-                                icon: Icon(
-                                  widget.store.isFavorite(title)
-                                      ? Icons.bookmark
-                                      : Icons.bookmark_border,
-                                  size: 18,
-                                ),
-                                label: Text(
-                                  widget.store.isFavorite(title) ? '已收藏' : '收藏',
-                                ),
-                              ),
-                              if (widget.resume != null &&
-                                  widget.resume!.title.key ==
-                                      _selectedTitle.key &&
-                                  snapshot.hasData &&
-                                  title.routes.isNotEmpty) ...[
-                                const SizedBox(width: 12),
-                                FilledButton.icon(
-                                  onPressed: () {
-                                    final h = widget.resume!;
-                                    final selection = cinemaResumeSelection(
-                                      title,
-                                      h,
-                                    );
-                                    if (selection == null) {
-                                      KazumiDialog.showToast(
-                                        context: context,
-                                        message: '片源的线路或集数已变化，请在下方重新选择。',
-                                      );
-                                      return;
-                                    }
-                                    widget.onPlay(
-                                      title,
-                                      _selectedSource,
-                                      selection.routeIndex,
-                                      selection.episodeIndex,
-                                      _variants,
-                                    );
-                                  },
-                                  icon: const Icon(Icons.play_arrow),
-                                  label: const Text('继续观看'),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ],
+              : _resolvedTitle!;
+          if (!identical(_ratingsTitle, title)) {
+            _ratingsTitle = title;
+            _ratingTicket++;
+            _ratingsTerminal = false;
+            _scoresTerminal = false;
+            _informationTerminal = false;
+          }
+          _watchPoster(title);
+          final generation = _detailGeneration;
+          final ratingTicket = _ratingTicket;
+          final sourceTerminal =
+              snapshot.connectionState == ConnectionState.done;
+          final completed = [
+            sourceTerminal,
+            !_discovering,
+            _ratingsTerminal,
+            _posterTerminal,
+          ].where((value) => value).length;
+          if (completed == 4) _presentationReady = true;
+          return CinemaNeonDecode(
+            loading: !_presentationReady,
+            progress: completed / 4,
+            regional: true,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(24),
+              child: Stack(
+                children: [
+                  const Positioned.fill(
+                    child: IgnorePointer(
+                      child: CinemaGlass(
+                        key: ValueKey('cinema-detail-frost'),
+                        radius: 0,
+                        interactive: false,
+                        child: SizedBox.expand(),
                       ),
                     ),
-                    IconButton(
-                      tooltip: '关闭',
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close_rounded),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 18),
-                for (final entry in {
-                  '导演': title.director,
-                  '演员 / 配音': title.actors,
-                  '地区': title.area,
-                  '语言': title.language,
-                  '类型': title.genres,
-                  '上映（片源）': title.releaseDateText,
-                  '片长（片源）': RegExp(r'^\d+$').hasMatch(title.durationText)
-                      ? '${title.durationText} 分钟'
-                      : title.durationText,
-                  '又名（片源）': title.aliases,
-                }.entries)
-                  if (entry.value.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: SelectableText(
-                        '${entry.key}  ${entry.value}',
-                        style: const TextStyle(
-                          color: CinemaTheme.muted,
-                          height: 1.6,
+                  ),
+                  if (_posterProvider != null)
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: MediaQuery.sizeOf(context).height * .66,
+                      child: CinemaNeonRegion(
+                        key: const ValueKey('cinema-detail-poster-region'),
+                        ready: _posterTerminal,
+                        child: CinemaArtworkBackdrop(
+                          image: _posterProvider!,
+                          alignment: const Alignment(0, -.55),
+                          shadeLeading: true,
                         ),
                       ),
                     ),
-                if (title.director.isEmpty && title.actors.isEmpty)
-                  const Text(
-                    '此片源暂未提供演职员资料',
-                    style: TextStyle(color: CinemaTheme.muted, fontSize: 12),
-                  ),
-                if (_discovering)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 12),
-                    child: Text(
-                      '正在查找其他片源…',
-                      style: TextStyle(color: CinemaTheme.muted, fontSize: 12),
-                    ),
-                  ),
-                if (_variants.length > 1) ...[
-                  const SizedBox(height: 20),
-                  const Text(
-                    '可用片源',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final variant in _variants)
-                        ChoiceChip(
-                          key: ValueKey('source-variant:${variant.key}'),
-                          label: Text(
-                            [
-                              widget.store.sources
-                                      .where((s) => s.id == variant.sourceId)
-                                      .firstOrNull
-                                      ?.name ??
-                                  '已移除片源',
-                              if (_variants
-                                      .where(
-                                        (v) => v.sourceId == variant.sourceId,
-                                      )
-                                      .length >
-                                  1)
-                                variant.title,
-                              if (variant.remarks.isNotEmpty) variant.remarks,
-                            ].join(' · '),
-                            style: const TextStyle(fontSize: 11),
-                          ),
-                          selected: variant.key == _selectedTitle.key,
-                          onSelected: (_) => _selectVariant(variant),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    '播放页统一显示来源和线路，失败后自动尝试同集的其他线路。',
-                    style: TextStyle(fontSize: 11, color: CinemaTheme.muted),
-                  ),
-                ],
-                const SizedBox(height: 20),
-                if (title.description.isNotEmpty)
-                  Text(
-                    title.description,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      height: 1.85,
-                      color: CinemaTheme.muted,
-                    ),
-                  ),
-                const SizedBox(height: 20),
-                if (snapshot.hasData) ...[
                   CinemaRatingsPanel(
                     title: title,
                     sourceName: _selectedSource.name,
                     repository: widget.ratingsRepository,
                     onRecommendationSelected: widget.onRecommendationSelected,
-                  ),
-                  const SizedBox(height: 20),
-                ],
-                const Divider(height: 40),
-                if (snapshot.connectionState != ConnectionState.done)
-                  const Center(child: CircularProgressIndicator()),
-                if (snapshot.hasError)
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '片源加载失败：${snapshot.error}',
-                        style: const TextStyle(color: CinemaTheme.muted),
-                      ),
-                      const SizedBox(height: 12),
-                      FilledButton.tonal(
-                        onPressed: () => setState(() {
-                          _detail = widget.repository.detail(
-                            _selectedSource,
-                            _selectedTitle,
-                          );
-                        }),
-                        child: const Text('重试'),
-                      ),
-                    ],
-                  ),
-                if (snapshot.hasData && title.routes.isEmpty)
-                  const Text('这个结果暂未提供可播放线路，可返回后尝试其他片源。'),
-                if (snapshot.hasData && title.routes.isNotEmpty) ...[
-                  const Text('选择线路与集数', style: TextStyle(fontSize: 17)),
-                  const SizedBox(height: 15),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (var r = 0; r < title.routes.length; r++)
-                        ChoiceChip(
-                          label: Text(title.routes[r].name),
-                          selected: _road == r,
-                          onSelected: (_) => setState(() {
-                            _variantChosen = true;
-                            _road = r;
-                          }),
+                    compact: true,
+                    onLoadState: (state) {
+                      if (!mounted ||
+                          _disposing ||
+                          generation != _detailGeneration ||
+                          ratingTicket != _ratingTicket ||
+                          state.titleKey != _selectedTitle.key ||
+                          (_ratingsTerminal == state.terminal &&
+                              _scoresTerminal == !state.ratingsLoading &&
+                              _informationTerminal == !state.detailsLoading)) {
+                        return;
+                      }
+                      setState(() {
+                        _ratingsTerminal = state.terminal;
+                        _scoresTerminal = !state.ratingsLoading;
+                        _informationTerminal = !state.detailsLoading;
+                      });
+                    },
+                    layoutBuilder: (context, ratings, details, reviews) =>
+                        _layout(
+                          context,
+                          title,
+                          snapshot,
+                          ratings,
+                          details,
+                          reviews,
                         ),
-                    ],
                   ),
-                  const SizedBox(height: 20),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
-                    children: [
-                      for (
-                        var e = 0;
-                        e <
-                            title
-                                .routes[_road.clamp(0, title.routes.length - 1)]
-                                .episodes
-                                .length;
-                        e++
-                      )
-                        OutlinedButton(
-                          onPressed: () => widget.onPlay(
-                            title,
-                            _selectedSource,
-                            _road,
-                            e,
-                            _variants,
-                          ),
-                          child: Text(title.routes[_road].episodes[e].name),
+                  Positioned(
+                    top: 12,
+                    right: 14,
+                    child: IconButton(
+                      tooltip: '关闭',
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ),
+                  if (_posterFailed)
+                    const Positioned(
+                      top: 18,
+                      left: 22,
+                      child: Text(
+                        '海报暂未加载',
+                        style: TextStyle(
+                          color: CinemaTheme.muted,
+                          fontSize: 11,
                         ),
-                    ],
-                  ),
+                      ),
+                    ),
                 ],
-              ],
+              ),
             ),
           );
         },

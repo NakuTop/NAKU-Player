@@ -74,6 +74,7 @@ class _Repo extends CinemaRepository {
 
 class _Discovery extends DoubanRepository {
   final calls = <(DoubanKind, DoubanFilters, int, String?)>[];
+  final counts = <int>[];
   Future<DoubanResultPage> Function(DoubanKind, DoubanFilters, int)? respond;
   @override
   Future<DoubanResultPage> browse({
@@ -86,6 +87,7 @@ class _Discovery extends DoubanRepository {
     CancelToken? cancelToken,
   }) async {
     calls.add((kind, filters, start, sort));
+    counts.add(count);
     return respond?.call(kind, filters, start) ??
         const DoubanResultPage(
           items: [],
@@ -120,6 +122,94 @@ DoubanResultPage metadataPage({
 );
 
 void main() {
+  test(
+    'a provider with one twenty-card leaf fills forty before load more',
+    () async {
+      final repo = _Repo()
+        ..categoryData = const [CinemaCategory(id: '1', name: '电影')];
+      repo.respond = (s, category, year, page) async => CinemaPage(
+        items: [
+          for (var i = (page - 1) * 20; i < page * 20; i++)
+            CinemaTitle(
+              id: '$i',
+              sourceId: s.id,
+              title: '电影$i',
+              category: '电影',
+              categoryId: '1',
+            ),
+        ],
+        page: page,
+        pageCount: 4,
+      );
+      final controller = CinemaAggregateCatalogController(repository: repo);
+      await controller.load(
+        sources: [source('s')],
+        kind: CinemaAggregateKind.movies,
+      );
+      expect(repo.calls.map((call) => call.$4), [1, 2]);
+      expect(controller.snapshot.items, hasLength(40));
+      await controller.loadMore();
+      expect(repo.calls.map((call) => call.$4), [1, 2, 3]);
+      expect(controller.snapshot.items, hasLength(60));
+      controller.dispose();
+    },
+  );
+
+  test(
+    'movie and TV discovery request forty cards and retain server cursors',
+    () async {
+      for (final kind in [
+        CinemaAggregateKind.movies,
+        CinemaAggregateKind.series,
+      ]) {
+        final discovery = _Discovery();
+        discovery.respond = (type, filters, start) async => DoubanResultPage(
+          items: [
+            for (var i = start == 0 ? 0 : 35; i < (start == 0 ? 40 : 80); i++)
+              DoubanTitle(
+                id: '${10000 + i}',
+                title: '作品$i',
+                kind: type,
+                year: '2026',
+                genres: const ['科幻'],
+              ),
+          ],
+          start: start,
+          nextStart: start == 0 ? 47 : 94,
+          hasMore: start == 0,
+        );
+        final controller = CinemaAggregateCatalogController(
+          repository: _Repo(),
+          discoveryRepository: discovery,
+        );
+        await controller.load(
+          sources: [],
+          kind: kind,
+          sort: CinemaCatalogSort.popular,
+        );
+        expect(discovery.counts, [40]);
+        expect(controller.snapshot.groups, hasLength(40));
+        await controller.loadMore();
+        expect(discovery.calls.map((call) => call.$3), [0, 47]);
+        expect(discovery.counts, [40, 40]);
+        expect(controller.snapshot.groups, hasLength(80));
+        expect(controller.snapshot.hasMore, isFalse);
+        for (final sort in CinemaCatalogSort.values) {
+          await controller.load(
+            sources: [],
+            kind: kind,
+            sort: sort,
+            filters: const CinemaFilters(genre: '科幻'),
+          );
+          expect(discovery.counts.last, 40);
+          expect(discovery.calls.last.$3, 0);
+          expect(controller.snapshot.groups, hasLength(40));
+        }
+        controller.dispose();
+      }
+    },
+  );
+
   test(
     '4K catalogue searches every source and includes its explicit 4K categories',
     () async {
@@ -289,7 +379,14 @@ void main() {
     () async {
       final repo = _Repo()
         ..respond = (s, category, year, page) async => CinemaPage(
-          items: [movie(s.id, '$page', name: '${s.id} page $page')],
+          items: [
+            for (var index = 0; index < 20; index++)
+              movie(
+                s.id,
+                '$page-$index',
+                name: '${s.id} page $page item $index',
+              ),
+          ],
           page: page,
           pageCount: s.id == 'short' ? 1 : 3,
         );
@@ -300,17 +397,32 @@ void main() {
       addTearDown(controller.dispose);
       final sources = [source('short'), source('long')];
       await controller.load(sources: sources, kind: CinemaAggregateKind.movies);
-      await controller.loadMore();
+      expect(repo.calls.where((call) => call.$1 == 'short').map((c) => c.$4), [
+        1,
+      ]);
+      expect(repo.calls.where((call) => call.$1 == 'long').map((c) => c.$4), [
+        1,
+        2,
+      ]);
+      expect(controller.snapshot.items, hasLength(60));
       await controller.load(
         sources: sources,
         kind: CinemaAggregateKind.movies,
         sort: CinemaCatalogSort.rating,
       );
       expect(repo.calls, hasLength(3));
+      expect(controller.snapshot.hasMore, isTrue);
       await controller.loadMore();
       expect(repo.calls.last, ('long', '1', '', 3));
-      expect(controller.snapshot.items, hasLength(4));
+      expect(repo.calls, hasLength(4));
+      expect(controller.snapshot.items, hasLength(80));
+      expect(
+        controller.snapshot.items.map((item) => item.key).toSet(),
+        hasLength(80),
+      );
       expect(controller.snapshot.hasMore, isFalse);
+      await controller.loadMore();
+      expect(repo.calls, hasLength(4));
     },
   );
 

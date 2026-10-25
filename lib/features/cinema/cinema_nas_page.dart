@@ -17,6 +17,7 @@ import 'cinema_player_page.dart';
 import 'cinema_download_sheet.dart';
 
 import 'cinema_theme.dart';
+import 'cinema_route_motion.dart';
 
 export 'cinema_nas_media.dart' show CinemaNASClient, nasInt, nasRows, nasFiles;
 
@@ -791,6 +792,9 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       if (!mounted) return;
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
+          settings: const RouteSettings(
+            name: CinemaPageTransitionsBuilder.playerRouteName,
+          ),
           builder: (_) => CinemaPlayerPage(
             title: title,
             source: cinemaNASSource,

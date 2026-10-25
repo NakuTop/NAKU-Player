@@ -32,6 +32,14 @@ CinemaTitle sample(CinemaSource source, {String? year}) => CinemaTitle(
 
 class RatingsStub extends CinemaRatingsRepository {
   @override
+  Future<CinemaRatings> loadQuickRatings(CinemaTitle title) => load(title);
+  @override
+  Future<DoubanSubjectDetails> loadDoubanDetails(
+    CinemaTitle title, {
+    RatingIdentity? identity,
+    bool force = false,
+  }) async => const DoubanSubjectDetails(doubanId: '');
+  @override
   Future<CinemaRatings> load(CinemaTitle title, {bool force = false}) async =>
       const CinemaRatings(
         identity: RatingIdentity(),
@@ -51,6 +59,7 @@ class CatalogueStub extends CinemaRepository {
   final details = <String>[];
   Completer<CinemaTitle>? pendingA;
   bool delayA = false;
+  bool qualityRoutes = false;
   @override
   Future<List<CinemaCategory>> categories(CinemaSource source) async => const [
     CinemaCategory(id: '1', name: '科幻片'),
@@ -108,6 +117,16 @@ class CatalogueStub extends CinemaRepository {
           ),
         ],
       ),
+      if (qualityRoutes)
+        CinemaRoute(
+          name: '${source.name}4K线路',
+          episodes: [
+            CinemaEpisode(
+              name: '4K正片',
+              url: 'https://${source.id}.example/movie-4k.mp4',
+            ),
+          ],
+        ),
     ],
   );
 }
@@ -171,6 +190,70 @@ void main() {
 
   Finder card() => find.byKey(const ValueKey('title-card:maccms-feifan::m1'));
 
+  testWidgets(
+    'native details keep ratings left and tab changes reuse source loading',
+    (tester) async {
+      await mount(tester);
+      await search(tester);
+      await tester.tap(card());
+      await tester.pumpAndSettle();
+      final left = find.byKey(const ValueKey('cinema-detail-left'));
+      final information = find.byKey(
+        const ValueKey('cinema-detail-information'),
+      );
+      expect(
+        tester.getTopLeft(left).dx,
+        lessThan(tester.getTopLeft(information).dx),
+      );
+      for (final provider in ['豆瓣', 'IMDb', '烂番茄']) {
+        expect(
+          find.descendant(
+            of: left,
+            matching: find.byKey(ValueKey('rating-card-$provider')),
+          ),
+          findsOneWidget,
+        );
+      }
+      expect(find.text('非凡影视的详情'), findsOneWidget);
+      final sourceRequests = List<String>.of(repository.details);
+      await tester.tap(find.byKey(const ValueKey('cinema-detail-tab-1')));
+      await tester.pumpAndSettle();
+      expect(find.text('此片源暂未提供演职员资料'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('cinema-detail-tab-0')));
+      await tester.pumpAndSettle();
+      expect(find.text('非凡影视的详情'), findsOneWidget);
+      expect(repository.details, sourceRequests);
+      expect(
+        find.byKey(const ValueKey('cinema-detail-primary-play')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'details prefer the labelled 4K route and retain a manual override',
+    (tester) async {
+      repository.qualityRoutes = true;
+      await mount(tester);
+      await search(tester);
+      await tester.tap(card());
+      await tester.pumpAndSettle();
+      final best = find.widgetWithText(ChoiceChip, '非凡影视4K线路');
+      final standard = find.widgetWithText(ChoiceChip, '非凡影视专属线路');
+      expect(tester.widget<ChoiceChip>(best).selected, isTrue);
+      expect(find.text('4K正片'), findsOneWidget);
+      await tester.ensureVisible(standard);
+      await tester.tap(standard);
+      await tester.pumpAndSettle();
+      expect(tester.widget<ChoiceChip>(standard).selected, isTrue);
+      expect(tester.widget<ChoiceChip>(best).selected, isFalse);
+      expect(find.text('非凡影视正片'), findsOneWidget);
+      expect(find.text('4K正片'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('drag handle submits the chosen playback priority', (
     tester,
   ) async {
@@ -228,7 +311,7 @@ void main() {
       expect(find.text('非凡影视的详情'), findsOneWidget);
       final sheetScroll = find
           .descendant(
-            of: find.byType(BottomSheet),
+            of: find.byKey(const ValueKey('cinema-title-detail-layout')),
             matching: find.byType(Scrollable),
           )
           .first;
@@ -240,6 +323,9 @@ void main() {
       expect(find.text('非凡影视专属线路'), findsOneWidget);
       await tester.drag(sheetScroll, const Offset(0, 800));
       await tester.pumpAndSettle();
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('source-variant:source-a::a1')),
+      );
       await tester.tap(
         find.byKey(const ValueKey('source-variant:source-a::a1')),
       );
@@ -264,8 +350,14 @@ void main() {
     await tester.tap(card());
     await tester.pumpAndSettle();
     repository.delayA = true;
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('source-variant:source-a::a1')),
+    );
     await tester.tap(find.byKey(const ValueKey('source-variant:source-a::a1')));
     await tester.pump();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('source-variant:maccms-feifan::m1')),
+    );
     await tester.tap(
       find.byKey(const ValueKey('source-variant:maccms-feifan::m1')),
     );

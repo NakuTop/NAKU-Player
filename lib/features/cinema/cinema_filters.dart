@@ -51,11 +51,13 @@ class CinemaFilterBar extends StatelessWidget {
     required this.items,
     required this.onChanged,
     this.scope = '已加载内容',
+    this.compact = false,
   });
   final CinemaFilters value;
   final List<CinemaTitle> items;
   final ValueChanged<CinemaFilters> onChanged;
   final String scope;
+  final bool compact;
   @override
   Widget build(BuildContext context) {
     final now = DateTime.now().year;
@@ -91,34 +93,56 @@ class CinemaFilterBar extends StatelessWidget {
       String current,
       List<String> choices,
       void Function(String) select,
-    ) => SizedBox(
-      width: 138,
-      child: DropdownButtonFormField<String>(
-        key: ValueKey('cinema-filter-$label-$current'),
-        initialValue: current,
-        isExpanded: true,
-        decoration: InputDecoration(
-          isDense: true,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 10,
+    ) => Semantics(
+      label: '按$label筛选',
+      child: SizedBox(
+        width: compact ? 112 : 138,
+        child: DropdownButtonFormField<String>(
+          key: ValueKey('cinema-filter-$label-$current'),
+          initialValue: current,
+          isExpanded: true,
+          icon: Icon(
+            Icons.expand_more_rounded,
+            size: compact ? 16 : 20,
+            color: CinemaTheme.muted,
           ),
+          style: compact
+              ? Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: CinemaTheme.text,
+                  fontSize: 12,
+                )
+              : null,
+          decoration: InputDecoration(
+            isDense: true,
+            filled: compact ? false : null,
+            border: compact ? InputBorder.none : null,
+            enabledBorder: compact ? InputBorder.none : null,
+            focusedBorder: compact
+                ? const UnderlineInputBorder(
+                    borderSide: BorderSide(color: Color(0x80FFFFFF)),
+                  )
+                : null,
+            contentPadding: EdgeInsets.symmetric(
+              horizontal: compact ? 6 : 12,
+              vertical: compact ? 8 : 10,
+            ),
+          ),
+          items: [
+            DropdownMenuItem(value: '', child: Text('全部$label')),
+            for (final item in {...choices, if (current.isNotEmpty) current})
+              DropdownMenuItem(value: item, child: Text(item)),
+          ],
+          onChanged: (v) {
+            if (v != null) select(v);
+          },
         ),
-        items: [
-          DropdownMenuItem(value: '', child: Text('全部$label')),
-          for (final item in {...choices, if (current.isNotEmpty) current})
-            DropdownMenuItem(value: item, child: Text(item)),
-        ],
-        onChanged: (v) {
-          if (v != null) select(v);
-        },
       ),
     );
     return Padding(
-      padding: const EdgeInsets.only(top: 16, bottom: 6),
+      padding: EdgeInsets.only(top: compact ? 4 : 16, bottom: 6),
       child: Wrap(
-        spacing: 10,
-        runSpacing: 10,
+        spacing: compact ? 8 : 10,
+        runSpacing: compact ? 4 : 10,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           menu('年份', value.year, [
@@ -153,10 +177,11 @@ class CinemaFilterBar extends StatelessWidget {
               onPressed: () => onChanged(const CinemaFilters()),
               child: const Text('重置'),
             ),
-          Text(
-            '$scope · ${items.where(value.matches).length}/${items.length} 部',
-            style: const TextStyle(fontSize: 11, color: CinemaTheme.muted),
-          ),
+          if (!compact)
+            Text(
+              '$scope · ${items.where(value.matches).length}/${items.length} 部',
+              style: const TextStyle(fontSize: 11, color: CinemaTheme.muted),
+            ),
         ],
       ),
     );

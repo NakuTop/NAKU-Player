@@ -5,7 +5,11 @@ import 'package:kazumi/features/cinema/cinema_settings_page.dart';
 import 'package:kazumi/features/cinema/cinema_theme.dart';
 
 void main() {
-  for (final size in [const Size(360, 700), const Size(1280, 900)]) {
+  for (final size in [
+    const Size(360, 700),
+    const Size(800, 900),
+    const Size(1280, 900),
+  ]) {
     testWidgets(
       'unified settings fit $size and preserve every original route',
       (tester) async {
@@ -23,6 +27,7 @@ void main() {
                 enabledSourceCount: 7,
                 sourceCount: 10,
                 onSources: () => opened.add('sources'),
+                onTools: () => opened.add('tools'),
                 onAppearance: () => opened.add('appearance'),
                 onUpdates: () => opened.add('updates'),
                 onOpenRoute: opened.add,
@@ -31,13 +36,13 @@ void main() {
           ),
         );
         expect(find.text('已启用 7 / 10 个片源'), findsOneWidget);
-        for (final entry in ['sources', 'appearance', 'updates']) {
+        for (final entry in ['sources', 'tools-v2', 'appearance', 'updates']) {
           final target = find.byKey(ValueKey('settings-$entry'));
           await tester.ensureVisible(target);
           await tester.pumpAndSettle();
           await tester.tap(target);
         }
-        expect(opened, ['sources', 'appearance', 'updates']);
+        expect(opened, ['sources', 'tools', 'appearance', 'updates']);
         final destinations = cinemaSettingsGroups
             .expand((group) => group.destinations)
             .where((destination) => !destination.androidOnly);
@@ -54,6 +59,58 @@ void main() {
       },
     );
   }
+
+  testWidgets('desktop common settings remain usable with larger text at 800', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final opened = <String>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: CinemaTheme.data.copyWith(platform: TargetPlatform.macOS),
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: TextScaler.linear(1.7)),
+          child: child!,
+        ),
+        home: Scaffold(
+          body: CinemaSettingsPage(
+            platform: TargetPlatform.macOS,
+            enabledSourceCount: 7,
+            sourceCount: 10,
+            onSources: () => opened.add('sources'),
+            onAppearance: () => opened.add('appearance'),
+            onUpdates: () => opened.add('updates'),
+            onOpenRoute: opened.add,
+          ),
+        ),
+      ),
+    );
+    for (final id in [
+      'quality',
+      'player',
+      'sources',
+      'appearance',
+      'updates',
+    ]) {
+      final entry = find.byKey(ValueKey('settings-$id'));
+      await tester.ensureVisible(entry);
+      await tester.pumpAndSettle();
+      await tester.tap(entry);
+    }
+    expect(opened, [
+      '/settings/player/quality',
+      '/settings/player',
+      'sources',
+      'appearance',
+      'updates',
+    ]);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('keeps platform-only settings visible on Android', (
     tester,

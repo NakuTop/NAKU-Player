@@ -22,6 +22,8 @@ void main() {
       rows.every((entry) => entry.time >= 0 && entry.message.isNotEmpty),
       isTrue,
     );
+    // Intentional stdout evidence for the opt-in live probe.
+    // ignore: avoid_print
     print('LIVE_DANMAKU: ${rows.length} accepted timed comments');
   }, skip: !enabled);
 }

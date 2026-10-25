@@ -70,13 +70,14 @@ class _Source extends CinemaRepository {
     if (offline) throw const HttpException('offline fixture');
     return CinemaPage(
       items: [
-        CinemaTitle(
-          id: 'page$page',
-          sourceId: source.id,
-          title: 'Page $page',
-          category: '电影',
-          year: year.isEmpty ? '2020' : year,
-        ),
+        for (var index = 0; index < 20; index++)
+          CinemaTitle(
+            id: 'page$page-$index',
+            sourceId: source.id,
+            title: 'Page $page item $index',
+            category: '电影',
+            year: year.isEmpty ? '2020' : year,
+          ),
       ],
       page: page,
       pageCount: 5,
@@ -210,13 +211,21 @@ void main() {
   test(
     'source catalogue restores category cursors without reloading prior pages',
     () async {
+      final firstRepo = _Source();
       final first = CinemaAggregateCatalogController(
-        repository: _Source(),
+        repository: firstRepo,
         cache: CinemaHomeCache(directory: directory),
       );
       await first.load(sources: [_source], kind: CinemaAggregateKind.movies);
+      expect(firstRepo.browsed, [1, 2]);
+      expect(first.snapshot.items, hasLength(40));
       await first.loadMore();
-      expect(first.snapshot.items.map((t) => t.id), ['page1', 'page2']);
+      expect(firstRepo.browsed, [1, 2, 3]);
+      final retainedIds = [
+        for (var page = 1; page <= 3; page++)
+          for (var index = 0; index < 20; index++) 'page$page-$index',
+      ];
+      expect(first.snapshot.items.map((t) => t.id), retainedIds);
       first.dispose();
       final repo = _Source();
       final second = CinemaAggregateCatalogController(
@@ -226,8 +235,11 @@ void main() {
       addTearDown(second.dispose);
       await second.load(sources: [_source], kind: CinemaAggregateKind.movies);
       expect(repo.browsed, isEmpty);
+      expect(second.snapshot.items.map((t) => t.id), retainedIds);
       await second.loadMore();
-      expect(repo.browsed, [3]);
+      expect(repo.browsed, [4]);
+      expect(second.snapshot.items, hasLength(80));
+      expect(second.snapshot.items.map((t) => t.key).toSet(), hasLength(80));
     },
   );
 

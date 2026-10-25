@@ -20,6 +20,7 @@ import 'package:kazumi/features/cinema/cinema_season_subtitle_prefetch.dart';
 import 'package:kazumi/features/cinema/cinema_subtitle_catalogs.dart';
 import 'package:dio/dio.dart';
 import 'package:kazumi/features/cinema/cinema_player_page.dart';
+import 'package:kazumi/features/cinema/cinema_player_entrance.dart';
 import 'package:kazumi/features/cinema/cinema_player_preferences.dart';
 import 'package:kazumi/features/cinema/cinema_ratings.dart';
 import 'package:kazumi/features/cinema/cinema_ratings_panel.dart';
@@ -65,6 +66,14 @@ const _title = CinemaTitle(
   ],
 );
 
+class _PopObserver extends NavigatorObserver {
+  int pops = 0;
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    pops++;
+  }
+}
+
 class _Backend extends PlatformPlayer {
   _Backend(
     PlayerConfiguration configuration, {
@@ -73,6 +82,11 @@ class _Backend extends PlatformPlayer {
   }) : super(configuration: configuration);
   final bool failOpen;
   final bool emitVideo;
+  void emitVideoDimensions() {
+    widthController.add(1280);
+    heightController.add(720);
+  }
+
   Media? opened;
   int pauses = 0;
   final subtitles = <SubtitleTrack>[];
@@ -446,6 +460,8 @@ void main() {
     Size viewport = const Size(1200, 900),
     Map<String, String>? offlinePaths,
     bool renderToolbar = false,
+    bool withLibraryRoute = false,
+    NavigatorObserver? navigatorObserver,
     bool? mobileControls,
     bool autoBest = false,
     CinemaMediaProbe? probe,
@@ -474,77 +490,95 @@ void main() {
           name == 'shortcut_forward' ? ['L'] : defaults,
       isMetered: false,
     );
+    final playbackPage = CinemaPlayerPage(
+      title: selectedTitle ?? _title,
+      episodeIndex: initialEpisode,
+      subtitleClientFactory: subtitleClientFactory,
+      nasPlayback: nasPlayback,
+      mobileControls: mobileControls,
+      resolveNASRatings: resolveNASRatings,
+      autoSelectBestRoute: autoBest,
+      mediaProbe: probe,
+      mediaCache: cache,
+      initialPositionSeconds: initialPosition,
+      offlinePaths: offlinePaths,
+      source: _source,
+      store: store,
+      watchTogether: together,
+      repository: _Repository(),
+      ratingsRepository: _Ratings(),
+      preferences: prefs,
+      windowControls: windowControls,
+      createPlayer: (config) {
+        final backend = _Backend(
+          config,
+          failOpen: failFirst && backends.isEmpty,
+          emitVideo: !(stallFirst && backends.isEmpty),
+        );
+        backends.add(backend);
+        return _Player(backend);
+      },
+      videoSurfaceBuilder: (_, player) => renderToolbar
+          ? Builder(
+              builder: (context) => Column(
+                children: [
+                  Row(
+                    children: MaterialDesktopVideoControlsTheme.of(
+                      context,
+                    ).normal.topButtonBar,
+                  ),
+                  Expanded(
+                    child: StreamBuilder<bool>(
+                      stream: player.stream.buffering,
+                      initialData: false,
+                      builder: (context, snapshot) {
+                        final theme = MaterialDesktopVideoControlsTheme.of(
+                          context,
+                        ).normal;
+                        if (snapshot.data == true) {
+                          return theme.bufferingIndicatorBuilder?.call(
+                                context,
+                              ) ??
+                              const SizedBox();
+                        }
+                        return theme.primaryButtonBar.isEmpty
+                            ? const Text('fake video')
+                            : Row(children: theme.primaryButtonBar);
+                      },
+                    ),
+                  ),
+                  Row(
+                    children: MaterialDesktopVideoControlsTheme.of(
+                      context,
+                    ).normal.bottomButtonBar.toList(),
+                  ),
+                ],
+              ),
+            )
+          : const SizedBox.expand(child: Text('fake video')),
+    );
     await tester.pumpWidget(
       MaterialApp(
-        home: CinemaPlayerPage(
-          title: selectedTitle ?? _title,
-          episodeIndex: initialEpisode,
-          subtitleClientFactory: subtitleClientFactory,
-          nasPlayback: nasPlayback,
-          mobileControls: mobileControls,
-          resolveNASRatings: resolveNASRatings,
-          autoSelectBestRoute: autoBest,
-          mediaProbe: probe,
-          mediaCache: cache,
-          initialPositionSeconds: initialPosition,
-          offlinePaths: offlinePaths,
-          source: _source,
-          store: store,
-          watchTogether: together,
-          repository: _Repository(),
-          ratingsRepository: _Ratings(),
-          preferences: prefs,
-          windowControls: windowControls,
-          createPlayer: (config) {
-            final backend = _Backend(
-              config,
-              failOpen: failFirst && backends.isEmpty,
-              emitVideo: !(stallFirst && backends.isEmpty),
-            );
-            backends.add(backend);
-            return _Player(backend);
-          },
-          videoSurfaceBuilder: (_, player) => renderToolbar
-              ? Builder(
-                  builder: (context) => Column(
-                    children: [
-                      Row(
-                        children: MaterialDesktopVideoControlsTheme.of(
-                          context,
-                        ).normal.topButtonBar,
-                      ),
-                      Expanded(
-                        child: StreamBuilder<bool>(
-                          stream: player.stream.buffering,
-                          initialData: false,
-                          builder: (context, snapshot) {
-                            final theme = MaterialDesktopVideoControlsTheme.of(
-                              context,
-                            ).normal;
-                            if (snapshot.data == true) {
-                              return theme.bufferingIndicatorBuilder?.call(
-                                    context,
-                                  ) ??
-                                  const SizedBox();
-                            }
-                            return theme.primaryButtonBar.isEmpty
-                                ? const Text('fake video')
-                                : Row(children: theme.primaryButtonBar);
-                          },
-                        ),
-                      ),
-                      Row(
-                        children: MaterialDesktopVideoControlsTheme.of(
-                          context,
-                        ).normal.bottomButtonBar.toList(),
-                      ),
-                    ],
-                  ),
-                )
-              : const SizedBox.expand(child: Text('fake video')),
-        ),
+        navigatorObservers: [?navigatorObserver],
+        home: withLibraryRoute
+            ? const Scaffold(body: Text('测试片库'))
+            : playbackPage,
       ),
     );
+    if (withLibraryRoute) {
+      unawaited(
+        tester
+            .state<NavigatorState>(find.byType(Navigator))
+            .push(
+              PageRouteBuilder<void>(
+                transitionDuration: Duration.zero,
+                reverseTransitionDuration: Duration.zero,
+                pageBuilder: (_, _, _) => playbackPage,
+              ),
+            ),
+      );
+      await tester.pump();
+    }
     if (offlinePaths != null) {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 50)),
@@ -1496,12 +1530,290 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Mac cinema fills the first viewport and waits for real video dimensions',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      const soundChannel = MethodChannel('naku/desktop-controls');
+      final soundCalls = <MethodCall>[];
+      messenger.setMockMethodCallHandler(soundChannel, (call) async {
+        soundCalls.add(call);
+        return null;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(soundChannel, null));
+      await mount(tester, {}, stallFirst: true, renderToolbar: true);
+      final viewport = find.byKey(const ValueKey('cinema-mac-player-viewport'));
+      expect(tester.getRect(viewport), const Rect.fromLTWH(0, 0, 1200, 900));
+      expect(find.byType(AppBar), findsNothing);
+      expect(
+        find.byKey(ValueKey('playback-route:${_title.key}:0')),
+        findsNothing,
+      );
+      final entrance = tester.state<CinemaPlayerEntranceState>(
+        find.byType(CinemaPlayerEntrance),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(entrance.debugPhase, 'waiting');
+      expect(entrance.debugIsAnimating, isFalse);
+      final frames = entrance.debugFrameCount;
+      await tester.pump(const Duration(seconds: 3));
+      expect(entrance.debugFrameCount, frames);
+      expect(
+        soundCalls.where((c) => c.method == 'playCinemaStartupSound'),
+        isEmpty,
+      );
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(find.text('正在加载视频'), findsNothing);
+      expect(find.text('正在等待视频首帧'), findsNothing);
+      expect(find.text('启用视频直连并重试'), findsNothing);
+      expect(find.text('取消'), findsNothing);
+      expect(find.byTooltip('取消加载').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('返回片库').hitTestable(), findsOneWidget);
+      expect(entrance.debugLoadStage, CinemaPlayerLoadStage.opening);
+      final openingExtent = entrance.debugLampExtent;
+      backends.single.reportBuffering(true);
+      await tester.pump();
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(entrance.debugLampExtent, openingExtent);
+      backends.single.reportBuffering(false);
+      await tester.pump();
+      final backend = backends.single;
+      final scroll = tester
+          .widget<SingleChildScrollView>(
+            find.byKey(const ValueKey('cinema-mac-page-scroll')),
+          )
+          .controller!;
+      scroll.jumpTo(600);
+      await tester.pump();
+      expect(backends, [backend]);
+      expect(backend.disposed, isFalse);
+      scroll.jumpTo(0);
+      backend.emitVideoDimensions();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(entrance.debugPhase, 'lighting');
+      expect(
+        soundCalls.where((c) => c.method == 'playCinemaStartupSound'),
+        hasLength(1),
+      );
+      await tester.pump(const Duration(milliseconds: 1700));
+      await tester.pump();
+      expect(entrance.debugPhase, 'complete');
+      expect(backends, [backend]);
+      final chooser = find.byKey(const ValueKey('cinema-mac-work-chooser'));
+      expect(tester.getTopLeft(chooser).dy, greaterThanOrEqualTo(900));
+      expect(chooser.hitTestable(), findsNothing);
+      expect(find.text('在线搜索字幕'), findsNothing);
+      expect(find.text('保存截图'), findsNothing);
+      expect(find.text('NAS 用户配对'), findsNothing);
+      expect(find.text('选集与片源'), findsOneWidget);
+      await tester.tap(find.byTooltip('选集与片源'));
+      await tester.pumpAndSettle();
+      for (var route = 0; route < 3; route++) {
+        expect(
+          find.byKey(ValueKey('playback-route:${_title.key}:$route')),
+          findsOneWidget,
+        );
+      }
+      expect(find.text('第1集'), findsOneWidget);
+      expect(find.text('第2集'), findsOneWidget);
+      Navigator.of(tester.element(find.byType(BottomSheet))).pop();
+      await tester.pumpAndSettle();
+      expect(backends, [backend]);
+      await tester.tap(find.byTooltip('播放选项'));
+      await tester.pumpAndSettle();
+      expect(find.text('在线搜索字幕'), findsOneWidget);
+      expect(find.text('保存截图'), findsOneWidget);
+      expect(find.text('NAS 用户配对'), findsOneWidget);
+      expect(find.text('超分辨率'), findsOneWidget);
+      expect(find.text('播放线路测速'), findsOneWidget);
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(chooser);
+      await tester.pumpAndSettle();
+      expect(chooser.hitTestable(), findsOneWidget);
+      await tester.tap(chooser);
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(ValueKey('playback-route:${_title.key}:2')),
+        findsOneWidget,
+      );
+      expect(find.text('第2集'), findsOneWidget);
+      Navigator.of(tester.element(find.byType(BottomSheet))).pop();
+      await tester.pumpAndSettle();
+      expect(backends, [backend]);
+      expect(backend.disposed, isFalse);
+      await unmount(tester);
+      expect(backend.disposed, isTrue);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
+  testWidgets('Mac cinema cancel exposes retry and starts a new generation', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    await mount(tester, {}, stallFirst: true);
+    await tester.pump(const Duration(milliseconds: 600));
+    final entrance = tester.state<CinemaPlayerEntranceState>(
+      find.byType(CinemaPlayerEntrance),
+    );
+    expect(entrance.debugPhase, 'waiting');
+    await tester.tap(find.byTooltip('取消加载').hitTestable());
+    await tester.pump();
+    expect(entrance.debugPhase, 'cancelled');
+    expect(find.text('已取消加载').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('取消加载'), findsNothing);
+    expect(find.text('选集与片源').hitTestable(), findsOneWidget);
+    expect(find.text('重试').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('返回片库').hitTestable(), findsOneWidget);
+    await tester.tap(find.text('重试').hitTestable());
+    await tester.pumpAndSettle();
+    expect(backends, hasLength(2));
+    expect(backends.first.state.playing, isFalse);
+    // Subtitle persistence uses real disk I/O; media is already paused while
+    // its existing asynchronous cleanup finishes.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 30)),
+    );
+    await tester.pump();
+    expect(backends.first.disposed, isTrue);
+    expect(backends.last.state.playing, isTrue);
+    expect(entrance.debugPhase, 'complete');
+    await unmount(tester);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets(
+    'Mac return closes the television before one pop and saves history',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      const soundChannel = MethodChannel('naku/desktop-controls');
+      final soundCalls = <String>[];
+      messenger.setMockMethodCallHandler(soundChannel, (call) async {
+        soundCalls.add(call.method);
+        return call.method == 'playCinemaStartupSound' ? true : null;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(soundChannel, null));
+      final observer = _PopObserver();
+      await mount(
+        tester,
+        {'privateMode': false},
+        initialPosition: 120,
+        renderToolbar: true,
+        withLibraryRoute: true,
+        navigatorObserver: observer,
+      );
+      final backend = backends.single;
+      final entrance = tester.state<CinemaPlayerEntranceState>(
+        find.byType(CinemaPlayerEntrance),
+      );
+      soundCalls.clear();
+      final back = tester
+          .widget<IconButton>(
+            find.byWidgetPredicate(
+              (widget) => widget is IconButton && widget.tooltip == '返回',
+            ),
+          )
+          .onPressed!;
+      back();
+      back();
+      await tester.pump();
+      await tester.pump();
+      expect(entrance.debugPhase, 'exiting');
+      expect(backend.state.playing, isFalse);
+      expect(backend.disposed, isFalse);
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byType(CinemaPlayerPage), findsOneWidget);
+      expect(observer.pops, 0);
+      expect(entrance.debugPhase, 'exiting');
+      backend.emitVideoDimensions();
+      await tester.pump();
+      expect(entrance.debugPhase, 'exiting');
+      await tester.pump(const Duration(milliseconds: 300));
+      for (
+        var i = 0;
+        i < 40 && find.byType(CinemaPlayerPage).evaluate().isNotEmpty;
+        i++
+      ) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 5)),
+        );
+        await tester.pump();
+      }
+      expect(find.byType(CinemaPlayerPage), findsNothing);
+      expect(find.text('测试片库'), findsOneWidget);
+      expect(observer.pops, 1);
+      expect(backends, [backend]);
+      expect(backend.disposed, isTrue);
+      expect(store.history.single.positionSeconds, 120);
+      expect(
+        soundCalls.where((method) => method == 'playCinemaStartupSound'),
+        isEmpty,
+      );
+      await unmount(tester);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
+  for (final scenario in ['loading', 'reduced']) {
+    testWidgets(
+      'Mac return during $scenario skips exit animation without hanging',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        final observer = _PopObserver();
+        await mount(
+          tester,
+          {if (scenario == 'reduced') 'playerDisableAnimations': true},
+          renderToolbar: true,
+          withLibraryRoute: true,
+          navigatorObserver: observer,
+          stallFirst: scenario == 'loading',
+        );
+        if (scenario == 'loading') {
+          await tester.tap(find.byTooltip('返回片库'));
+        } else {
+          unawaited(
+            tester.state<NavigatorState>(find.byType(Navigator)).maybePop(),
+          );
+        }
+        await tester.pump();
+        for (
+          var i = 0;
+          i < 40 && find.byType(CinemaPlayerPage).evaluate().isNotEmpty;
+          i++
+        ) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 5)),
+          );
+          await tester.pump();
+        }
+        expect(find.text('测试片库'), findsOneWidget);
+        expect(find.byType(CinemaPlayerPage), findsNothing);
+        expect(observer.pops, 1);
+        expect(backends, hasLength(1));
+        await unmount(tester);
+        debugDefaultTargetPlatformOverride = null;
+      },
+    );
+  }
+
   testWidgets('desktop bottom bar has one subtitle/audio entry', (
     tester,
   ) async {
     await mount(tester, {}, renderToolbar: true);
     expect(find.byTooltip('字幕与音轨'), findsOneWidget);
-    expect(find.ancestor(of: find.byIcon(Icons.closed_caption_outlined), matching: find.byType(IconButton)), findsNothing);
+    expect(
+      find.ancestor(
+        of: find.byIcon(Icons.closed_caption_outlined),
+        matching: find.byType(IconButton),
+      ),
+      findsNothing,
+    );
     await unmount(tester);
   });
 

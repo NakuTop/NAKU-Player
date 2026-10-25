@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:kazumi/bean/widget/tonal_card.dart';
+import 'package:kazumi/features/cinema/cinema_theme.dart';
 
 const double splitListOuterRadius = tonalCardRadius;
 const double splitListInnerRadius = 4;
@@ -46,6 +47,7 @@ class _SplitListRowState extends State<SplitListRow> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
+    final cinema = theme.platform == TargetPlatform.macOS;
     final child = widget.onTap == null
         ? widget.child
         : InkWell(
@@ -61,24 +63,40 @@ class _SplitListRowState extends State<SplitListRow> {
       curve: splitListMotionCurve,
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
-        color: colors.surfaceContainerLow,
+        color: cinema
+            ? (_pressed ? const Color(0x12FFFFFF) : Colors.transparent)
+            : colors.surfaceContainerLow,
         borderRadius: BorderRadius.vertical(
           top: Radius.circular(
-              _pressed ? widget.pressedRadius : widget.topRadius),
+            cinema
+                ? 10
+                : _pressed
+                ? widget.pressedRadius
+                : widget.topRadius,
+          ),
           bottom: Radius.circular(
-              _pressed ? widget.pressedRadius : widget.bottomRadius),
+            cinema
+                ? 10
+                : _pressed
+                ? widget.pressedRadius
+                : widget.bottomRadius,
+          ),
         ),
       ),
       child: Material(
         type: MaterialType.transparency,
         child: ListTileTheme(
           data: theme.listTileTheme.copyWith(
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            titleTextStyle:
-                theme.textTheme.bodyLarge?.copyWith(color: colors.onSurface),
-            subtitleTextStyle: theme.textTheme.bodyMedium
-                ?.copyWith(color: colors.onSurfaceVariant),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 4,
+            ),
+            titleTextStyle: theme.textTheme.bodyLarge?.copyWith(
+              color: colors.onSurface,
+            ),
+            subtitleTextStyle: theme.textTheme.bodyMedium?.copyWith(
+              color: colors.onSurfaceVariant,
+            ),
           ),
           child: _SplitRowScope(onPressChanged: _reportPress, child: child),
         ),
@@ -110,20 +128,25 @@ class SplitListGroup extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    final cinema = Theme.of(context).platform == TargetPlatform.macOS;
+    final rows = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         for (int i = 0; i < children.length; i++) ...[
-          if (i > 0) const SizedBox(height: splitListRowGap),
+          if (i > 0) SizedBox(height: cinema ? 0 : splitListRowGap),
           SplitListRow(
             topRadius: i == 0 ? outerRadius : splitListInnerRadius,
-            bottomRadius:
-                i == children.length - 1 ? outerRadius : splitListInnerRadius,
+            bottomRadius: i == children.length - 1
+                ? outerRadius
+                : splitListInnerRadius,
             pressedRadius: outerRadius,
             child: children[i],
           ),
         ],
       ],
     );
+    return cinema
+        ? CinemaGlass(blur: false, interactive: false, child: rows)
+        : rows;
   }
 }

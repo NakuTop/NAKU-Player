@@ -43,6 +43,7 @@ import 'package:kazumi/request/core/dio_factory.dart';
 import 'package:kazumi/services/storage/storage.dart';
 
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/services.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/pages/player/player_keyboard_shortcuts.dart';
@@ -74,6 +75,7 @@ import 'cinema_repository.dart';
 import 'cinema_store.dart';
 import 'cinema_player_preferences.dart';
 import 'cinema_video_gestures.dart';
+import 'cinema_player_entrance.dart';
 
 /// Locate the saved episode in a fresh catalogue without trusting old indexes.
 ({int routeIndex, int episodeIndex})? cinemaResumeSelection(
@@ -346,6 +348,63 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   String? _nasReference, _nasResolution;
   int? _nasAudio, _nasSubtitle;
   final _playerFocus = FocusScopeNode(debugLabel: 'NAKU player');
+  final _cinemaPageScroll = ScrollController();
+  final _nativeEntranceKey = GlobalKey<CinemaPlayerEntranceState>();
+  bool _exitCrtRequested = false, _allowPlayerPop = false;
+  static const _startupSoundChannel = MethodChannel('naku/desktop-controls');
+  static int _startupSoundSequence = DateTime.now().microsecondsSinceEpoch;
+  int? _audibleEntranceGeneration, _audibleEntranceToken;
+
+  void _playEntranceSound(int generation) {
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    if (!_isCurrent(generation) ||
+        !_usesMacCinemaLayout ||
+        _volume <= 0 ||
+        _windowControls.blocksPlayback ||
+        _backgroundPaused ||
+        (lifecycle != null && lifecycle != AppLifecycleState.resumed) ||
+        _playback?.ready != true ||
+        _playback?.firstFrameRendered != true) {
+      return;
+    }
+    _audibleEntranceGeneration = generation;
+    final soundToken = ++_startupSoundSequence;
+    _audibleEntranceToken = soundToken;
+    unawaited(() async {
+      try {
+        await _startupSoundChannel.invokeMethod<bool>(
+          'playCinemaStartupSound',
+          {'generation': soundToken, 'volume': (_volume / 100).clamp(0, .25)},
+        );
+      } catch (_) {
+        // Audio decoration must never delay or fail the actual media reveal.
+      }
+    }());
+  }
+
+  void _stopEntranceSound([int? generation]) {
+    final audible = _audibleEntranceGeneration;
+    if (audible == null || (generation != null && audible != generation)) {
+      return;
+    }
+    _audibleEntranceGeneration = null;
+    final soundToken = _audibleEntranceToken;
+    _audibleEntranceToken = null;
+    unawaited(() async {
+      try {
+        await _startupSoundChannel.invokeMethod<void>(
+          'stopCinemaStartupSound',
+          {'generation': soundToken},
+        );
+      } catch (_) {}
+    }());
+  }
+
+  bool get _usesMacCinemaLayout =>
+      defaultTargetPlatform == TargetPlatform.macOS &&
+      !NakuDevice.isTV &&
+      widget.mobileControls != true &&
+      MediaQuery.sizeOf(context).width >= 980;
   Timer? _volumeSaveTimer;
   final _volumePersistence = CinemaVolumePersistence();
   bool _pip = false, _pipChanging = false;
@@ -827,6 +886,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
     _probeTokens.clear();
     final old = _playback;
+    _stopEntranceSound();
     final generation = ++_generation;
     unawaited(_together.clearPlaybackMedia(_syncOwner));
     _resolver.cancel();
@@ -854,6 +914,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               ? '自动换源 · ${selectedSource.name} / ${route.name}'
               : '正在连接片源');
     });
+    if (_cinemaPageScroll.hasClients) _cinemaPageScroll.jumpTo(0);
     if (route.episodes.isEmpty) {
       _fail(generation, '这条线路没有集数，请选择另一条线路。');
       return;
@@ -1531,6 +1592,40 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     );
   }
 
+  Widget _macPlaybackOptions() {
+    final playback = _playback;
+    final actions = <String, VoidCallback?>{
+      '保存截图': playback == null ? null : _screenshot,
+      '在线搜索字幕': playback == null ? null : _showOnlineSubtitles,
+      _usesNASPlayback ? '清晰度与 NAS 播放设置' : '画质信息与处理':
+          playback == null && !_usesNASPlayback ? null : _showQuality,
+      '超分辨率': _showSuperResolutionOptions,
+      'NAS 用户配对': () => showCinemaSyncSheet(context, coordinator: _together),
+      if (NakuDevice.canDownload && widget.offlinePaths == null)
+        '下载选集': _downloadCurrent,
+      if (widget.offlinePaths == null && !_usesNASPlayback)
+        '播放线路测速': () {
+          _showEpisodes();
+          _probeRoutes();
+        },
+      if (_canRetryDirect) '启用视频直连并重试': _retryDirect,
+    };
+    return PopupMenuButton<String>(
+      key: const ValueKey('cinema-mac-playback-options'),
+      tooltip: '播放选项',
+      icon: const Icon(Icons.more_horiz_rounded),
+      onSelected: (action) => actions[action]?.call(),
+      itemBuilder: (_) => [
+        for (final action in actions.entries)
+          PopupMenuItem(
+            value: action.key,
+            enabled: action.value != null,
+            child: Text(action.key),
+          ),
+      ],
+    );
+  }
+
   String get _subtitleEpisodeName {
     final episode = _episode;
     if (episode == null) return '';
@@ -1648,6 +1743,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       playback.player.stream.volume.listen((volume) {
         if (!current() || !volume.isFinite || volume == _volume) return;
         _volume = volume.clamp(0, 100).toDouble();
+        if (_volume <= 0) _stopEntranceSound();
         if (_volume > 0) _audibleVolume = _volume;
         _volumePersistence.update(_volume);
         _volumeSaveTimer?.cancel();
@@ -1715,6 +1811,35 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     ]);
   }
 
+  void _observeNativeFirstFrame(_CinemaPlayback playback) {
+    if (playback.firstFrameObserved) return;
+    playback.firstFrameObserved = true;
+    if (widget.videoSurfaceBuilder != null) {
+      // An injected test surface has no native texture/controller to signal.
+      playback.firstFrameRendered = true;
+      return;
+    }
+    unawaited(
+      playback.controller.waitUntilFirstFrameRendered.then<void>(
+        (_) {
+          if (!_isCurrent(playback.generation) ||
+              !identical(_playback, playback)) {
+            return;
+          }
+          playback.firstFrameTimer?.cancel();
+          setState(() => playback.firstFrameRendered = true);
+          playback.logStage('first-frame-rendered');
+        },
+        onError: (Object error, StackTrace _) {
+          if (_isCurrent(playback.generation) &&
+              identical(_playback, playback)) {
+            _fail(playback.generation, '视频画面未能初始化，请重试或更换线路。');
+          }
+        },
+      ),
+    );
+  }
+
   void _updateReady(_CinemaPlayback playback, int generation) {
     if (!_isCurrent(generation) ||
         playback.ready ||
@@ -1723,6 +1848,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return;
     }
     playback.ready = true;
+    if (_usesMacCinemaLayout &&
+        widget.videoSurfaceBuilder == null &&
+        !playback.firstFrameRendered) {
+      playback.firstFrameTimer = Timer(const Duration(seconds: 30), () {
+        if (_isCurrent(generation) &&
+            identical(_playback, playback) &&
+            !playback.firstFrameRendered) {
+          _fail(generation, '视频已有媒体信息，但未能显示首帧，请重试或更换线路。');
+        }
+      });
+    }
     playback.bufferMonitor.start();
     unawaited(playback.danmaku?.loadAutomatic());
     // A cached caption is available immediately, before MPV's asynchronous
@@ -1849,6 +1985,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   void _releasePlayback() {
+    _stopEntranceSound();
     _recoveryTimer?.cancel();
     _recoveryTimer = null;
     _resolver.cancel();
@@ -2497,19 +2634,33 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   Future<void> _leaveOnce() async {
     if (_closing) return;
+    final animateExit =
+        _usesMacCinemaLayout &&
+        !_pip &&
+        !_loading &&
+        _error == null &&
+        _playback?.ready == true &&
+        _playback?.firstFrameRendered == true;
+    _stopEntranceSound();
+    _exitCrtRequested = true;
     _closing = true;
     _recoveryTimer?.cancel();
     _recoveryTimer = null;
+    // Silence the existing backend first, retaining its final video texture for
+    // the CRT contraction. The backend is disposed by the same cleanup below.
+    try {
+      await _playback?.player.pause();
+    } catch (_) {
+      // Disposal below still closes a backend that is already failing.
+    }
+    if (_usesMacCinemaLayout) {
+      await _nativeEntranceKey.currentState?.closeForExit(animate: animateExit);
+    }
     await _pipTransition?.future;
     if (_fullscreen) await _setFullscreen(false);
     if (_pip) {
       await _restoreWindow();
       _pip = false;
-    }
-    try {
-      await _playback?.player.pause();
-    } catch (_) {
-      // Disposal below still closes a backend that is already failing.
     }
     await _together.detachPlayback(_syncOwner);
     _resolver.cancel();
@@ -2522,11 +2673,18 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final old = _playback;
     _playback = null;
     if (old != null) await old.dispose();
-    if (mounted) Navigator.of(context).pop();
+    if (mounted) {
+      if (_usesMacCinemaLayout) {
+        setState(() => _allowPlayerPop = true);
+        await WidgetsBinding.instance.endOfFrame;
+      }
+      if (mounted) Navigator.of(context).pop();
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) _stopEntranceSound();
     final revision = ++_lifecycleRevision;
     if (!_fullscreenChanging &&
         _fullscreenTransition == null &&
@@ -2553,6 +2711,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _backgroundPaused = false;
       return;
     }
+    _stopEntranceSound();
     if (!_windowControls.blocksPlayback) return;
     _backgroundPaused = true;
     await _playback?.player.pause();
@@ -2575,6 +2734,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   @override
   void dispose() {
+    _stopEntranceSound();
     _tvControlsTimer?.cancel();
     FocusManager.instance.removeEarlyKeyEventHandler(_tvRemoteKey);
     if (Platform.isAndroid) {
@@ -2596,6 +2756,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
     _panelRevision.dispose();
     _playerFocus.dispose();
+    _cinemaPageScroll.dispose();
     _warmTimer?.cancel();
     _cancelRouteProbe();
     for (final token in _probeTokens) {
@@ -2626,8 +2787,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   @override
   Widget build(BuildContext context) => PopScope(
-    canPop: !NakuDevice.isTV || !_fullscreen,
+    canPop: _usesMacCinemaLayout
+        ? _allowPlayerPop
+        : !NakuDevice.isTV || !_fullscreen,
     onPopInvokedWithResult: (didPop, _) {
+      if (!didPop && _usesMacCinemaLayout && !_allowPlayerPop) {
+        unawaited(_leave());
+        return;
+      }
       if (!didPop && NakuDevice.isTV && _fullscreen) {
         if (_tvControlsVisible) {
           setState(() => _tvControlsVisible = false);
@@ -2738,6 +2905,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         ),
       );
     }
+    if (_usesMacCinemaLayout) return _macCinemaPlayer();
     return Theme(
       data: CinemaTheme.of(context),
       child: Scaffold(
@@ -2815,17 +2983,94 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     );
   }
 
-  Widget _mainColumn() => Column(
+  /// The first viewport is the cinema. Metadata stays below it in the same
+  /// scroll view; selecting a route still uses the existing bottom sheet.
+  Widget _macCinemaPlayer() => Theme(
+    data: CinemaTheme.of(context),
+    child: Scaffold(
+      key: const ValueKey('cinema-mac-immersive-page'),
+      backgroundColor: Colors.black,
+      body: LayoutBuilder(
+        builder: (context, box) => SingleChildScrollView(
+          key: const ValueKey('cinema-mac-page-scroll'),
+          controller: _cinemaPageScroll,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(
+                key: const ValueKey('cinema-mac-player-viewport'),
+                height: box.maxHeight,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    _videoSurface(),
+                    if (_loading ||
+                        _error != null ||
+                        (_playback?.ready == true &&
+                            _playback?.firstFrameRendered != true))
+                      Positioned(
+                        top: MediaQuery.paddingOf(context).top + 12,
+                        left: 16,
+                        child: IconButton.filledTonal(
+                          tooltip: '返回片库',
+                          onPressed: _leave,
+                          icon: const Icon(Icons.arrow_back_rounded),
+                        ),
+                      ),
+                    if (!_closing &&
+                        _error == null &&
+                        (_loading ||
+                            (_playback?.ready == true &&
+                                _playback?.firstFrameRendered != true)))
+                      Positioned(
+                        top: MediaQuery.paddingOf(context).top + 12,
+                        right: 16,
+                        child: IconButton(
+                          tooltip: '取消加载',
+                          onPressed: _cancelLoading,
+                          color: Colors.white70,
+                          icon: const Icon(Icons.close_rounded, size: 20),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              ColoredBox(
+                color: const Color(0xFF09090B),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(48, 28, 48, 48),
+                  child: _mainColumn(includeVideo: false),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+
+  Widget _mainColumn({bool includeVideo = true}) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: AspectRatio(aspectRatio: 16 / 9, child: _videoSurface()),
-      ),
-      const SizedBox(height: 12),
-      _playbackTools(),
+      if (includeVideo) ...[
+        ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: AspectRatio(aspectRatio: 16 / 9, child: _videoSurface()),
+        ),
+        const SizedBox(height: 12),
+      ],
+      if (includeVideo)
+        _playbackTools()
+      else
+        TextButton.icon(
+          key: const ValueKey('cinema-mac-work-chooser'),
+          onPressed: _showEpisodes,
+          icon: const Icon(Icons.playlist_play_rounded, size: 20),
+          label: const Text('选集与片源'),
+        ),
       const SizedBox(height: 20),
-      if (widget.offlinePaths == null &&
+      if (includeVideo &&
+          widget.offlinePaths == null &&
           (_probingRoutes ||
               _probeStatus != null ||
               _bestMeasuredRoute != null)) ...[
@@ -2952,10 +3197,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     key: _videoSurfaceKey,
     builder: (context, constraints) {
       final wide = constraints.maxWidth >= 850;
+      final nativeCinema = _usesMacCinemaLayout && !_pip;
       final mobile =
           widget.mobileControls ??
           (!NakuDevice.isTV && (Platform.isAndroid || Platform.isIOS));
       final playback = _playback;
+      final entranceGeneration = _generation;
+      if (nativeCinema && playback != null) _observeNativeFirstFrame(playback);
+      final waitingForFirstFrame =
+          nativeCinema &&
+          playback?.ready == true &&
+          playback?.firstFrameRendered != true;
       if (widget.videoSurfaceBuilder == null) {
         playback?.observeControllerInitialization();
       }
@@ -2984,14 +3236,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         seekBarThumbColor: const Color(0xFF3388FF),
         volumeBarActiveColor: const Color(0xFF3388FF),
         primaryButtonBar: const [],
-        bufferingIndicatorBuilder: (_) => const SizedBox.square(
-          key: ValueKey('cinema-buffering-indicator'),
-          dimension: 24,
-          child: CircularProgressIndicator(
-            color: Colors.white,
-            strokeWidth: 2.5,
-          ),
-        ),
+        bufferingIndicatorBuilder:
+            nativeCinema && (_loading || waitingForFirstFrame)
+            ? (_) => const SizedBox.shrink()
+            : (_) => const SizedBox.square(
+                key: ValueKey('cinema-buffering-indicator'),
+                dimension: 24,
+                child: CircularProgressIndicator(
+                  color: Colors.white,
+                  strokeWidth: 2.5,
+                ),
+              ),
         topButtonBar: _pip
             ? const []
             : [
@@ -3262,7 +3517,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                             ),
                                           ),
                                           _speedControl(),
-                                          if (_fullscreen) ...[
+                                          if (_fullscreen && !nativeCinema) ...[
                                             IconButton(
                                               constraints:
                                                   const BoxConstraints.tightFor(
@@ -3347,6 +3602,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                                 ),
                                               ),
                                           ],
+                                          if (nativeCinema)
+                                            _macPlaybackOptions(),
                                           IconButton(
                                             constraints:
                                                 const BoxConstraints.tightFor(
@@ -3368,7 +3625,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                                   height: 40,
                                                 ),
                                             padding: EdgeInsets.zero,
-                                            tooltip: '线路 / 选集',
+                                            tooltip: nativeCinema
+                                                ? '选集与片源'
+                                                : '线路 / 选集',
                                             onPressed: _showEpisodes,
                                             icon: const Icon(
                                               Icons.playlist_play_rounded,
@@ -3409,99 +3668,161 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         child: Stack(
           fit: StackFit.expand,
           children: [
-            if (playback != null)
-              CinemaVideoGestures(
-                controlsInsets: EdgeInsets.only(
-                  top: _pip ? 0 : 52,
-                  bottom: _pip ? 48 : 108,
-                ),
-                onTogglePlayback: () {
-                  if (!_loading && !_closing) {
-                    unawaited(_togglePlayback());
-                  }
-                },
-                onToggleFullscreen: () => unawaited(_toggleFullscreen()),
-                child: MaterialDesktopVideoControlsTheme(
-                  normal: controlsTheme,
-                  fullscreen: controlsTheme,
-                  child:
-                      widget.videoSurfaceBuilder?.call(
-                        context,
-                        playback.player,
-                      ) ??
-                      ListenableBuilder(
-                        listenable: Listenable.merge([
-                          widget.store,
-                          cinemaExternalSubtitleState(playback.player).active,
-                        ]),
-                        builder: (context, _) => Video(
-                          key: ValueKey(playback),
-                          controller: playback.controller,
-                          fit: _preferences.aspectRatio.fit,
-                          aspectRatio:
-                              _preferences.aspectRatio.frameAspectRatio,
-                          controls: NakuDevice.isTV || _androidPip
-                              ? NoVideoControls
-                              : MaterialDesktopVideoControls,
-                          subtitleViewConfiguration:
-                              CinemaSubtitleAppearance.from(
-                                widget.store.extras['subtitleAppearance'],
-                              ).configurationFor(
-                                visible: !cinemaExternalSubtitleState(
-                                  playback.player,
-                                ).active.value,
-                              ),
-                          pauseUponEnteringBackgroundMode: false,
-                        ),
+            CinemaPlayerEntrance(
+              key: _nativeEntranceKey,
+              generation: _generation,
+              // These are observed milestones, not a simulated download
+              // percentage. An unknown network wait keeps its current lamp.
+              loadStage: playback == null
+                  ? CinemaPlayerLoadStage.connecting
+                  : playback.ready
+                  ? CinemaPlayerLoadStage.waitingForFrame
+                  : CinemaPlayerLoadStage.opening,
+              // The existing generation-safe gate requires open plus real video
+              // dimensions. No timer or poster load can admit the lamp reveal.
+              ready:
+                  !_loading &&
+                  playback?.ready == true &&
+                  playback?.firstFrameRendered == true &&
+                  (playback?.width ?? 0) > 0 &&
+                  (playback?.height ?? 0) > 0,
+              hasError: _error != null || (_closing && !_exitCrtRequested),
+              enabled: nativeCinema,
+              onReveal: () => _playEntranceSound(entranceGeneration),
+              onCancel: () => _stopEntranceSound(entranceGeneration),
+              reduceMotion:
+                  _preferences.disableAnimations ||
+                  MediaQuery.disableAnimationsOf(context),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (playback != null)
+                    CinemaVideoGestures(
+                      controlsInsets: EdgeInsets.only(
+                        top: _pip ? 0 : 52,
+                        bottom: _pip ? 48 : 108,
                       ),
-                ),
-              ),
-            if (playback != null)
-              Positioned.fill(
-                child: ListenableBuilder(
-                  listenable: widget.store,
-                  builder: (context, _) => CinemaExternalSubtitleOverlay(
-                    player: playback.player,
-                    appearance: CinemaSubtitleAppearance.from(
-                      widget.store.extras['subtitleAppearance'],
-                    ),
-                  ),
-                ),
-              ),
-            if (playback?.danmaku case final danmaku?)
-              Positioned.fill(child: CinemaDanmakuOverlay(controller: danmaku)),
-            if (playback != null)
-              Positioned(
-                left: 20,
-                right: 20,
-                bottom: _pip ? 12 : 74,
-                child: IgnorePointer(
-                  child: ListenableBuilder(
-                    listenable: playback.liveSubtitles,
-                    builder: (context, _) => playback.liveSubtitles.text.isEmpty
-                        ? const SizedBox.shrink()
-                        : Center(
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 14,
-                                vertical: 7,
-                              ),
-                              color: const Color(0xB3000000),
-                              child: Text(
-                                playback.liveSubtitles.text,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: CinemaSubtitleAppearance.from(
-                                    widget.store.extras['subtitleAppearance'],
-                                  ).fontSize,
-                                ),
+                      onTogglePlayback: () {
+                        if (!_loading && !_closing) {
+                          unawaited(_togglePlayback());
+                        }
+                      },
+                      onToggleFullscreen: () => unawaited(_toggleFullscreen()),
+                      child: MaterialDesktopVideoControlsTheme(
+                        normal: controlsTheme,
+                        fullscreen: controlsTheme,
+                        child:
+                            widget.videoSurfaceBuilder?.call(
+                              context,
+                              playback.player,
+                            ) ??
+                            ListenableBuilder(
+                              listenable: Listenable.merge([
+                                widget.store,
+                                cinemaExternalSubtitleState(
+                                  playback.player,
+                                ).active,
+                              ]),
+                              builder: (context, _) => Video(
+                                key: ValueKey(playback),
+                                controller: playback.controller,
+                                fit: _preferences.aspectRatio.fit,
+                                aspectRatio:
+                                    _preferences.aspectRatio.frameAspectRatio,
+                                controls: NakuDevice.isTV || _androidPip
+                                    ? NoVideoControls
+                                    : MaterialDesktopVideoControls,
+                                subtitleViewConfiguration:
+                                    CinemaSubtitleAppearance.from(
+                                      widget.store.extras['subtitleAppearance'],
+                                    ).configurationFor(
+                                      visible: !cinemaExternalSubtitleState(
+                                        playback.player,
+                                      ).active.value,
+                                    ),
+                                pauseUponEnteringBackgroundMode: false,
                               ),
                             ),
+                      ),
+                    ),
+                  if (nativeCinema)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: Offstage(
+                          offstage: playback?.firstFrameRendered == true,
+                          child: _title.poster.isEmpty
+                              ? const SizedBox.shrink()
+                              : Opacity(
+                                  opacity: .54,
+                                  child: CachedNetworkImage(
+                                    key: ValueKey(
+                                      'cinema-opening-poster:${_title.key}',
+                                    ),
+                                    imageUrl: _title.poster,
+                                    memCacheWidth: 1280,
+                                    fit: BoxFit.cover,
+                                    fadeInDuration: Duration.zero,
+                                    errorWidget: (_, _, _) =>
+                                        const SizedBox.shrink(),
+                                  ),
+                                ),
+                        ),
+                      ),
+                    ),
+                  if (playback != null)
+                    Positioned.fill(
+                      child: ListenableBuilder(
+                        listenable: widget.store,
+                        builder: (context, _) => CinemaExternalSubtitleOverlay(
+                          player: playback.player,
+                          appearance: CinemaSubtitleAppearance.from(
+                            widget.store.extras['subtitleAppearance'],
                           ),
-                  ),
-                ),
+                        ),
+                      ),
+                    ),
+                  if (playback?.danmaku case final danmaku?)
+                    Positioned.fill(
+                      child: CinemaDanmakuOverlay(controller: danmaku),
+                    ),
+                  if (playback != null)
+                    Positioned(
+                      left: 20,
+                      right: 20,
+                      bottom: _pip ? 12 : 74,
+                      child: IgnorePointer(
+                        child: ListenableBuilder(
+                          listenable: playback.liveSubtitles,
+                          builder: (context, _) =>
+                              playback.liveSubtitles.text.isEmpty
+                              ? const SizedBox.shrink()
+                              : Center(
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 14,
+                                      vertical: 7,
+                                    ),
+                                    color: const Color(0xB3000000),
+                                    child: Text(
+                                      playback.liveSubtitles.text,
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: CinemaSubtitleAppearance.from(
+                                          widget
+                                              .store
+                                              .extras['subtitleAppearance'],
+                                        ).fontSize,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                        ),
+                      ),
+                    ),
+                ],
               ),
+            ),
             if (NakuDevice.isTV &&
                 _tvControlsVisible &&
                 playback != null &&
@@ -3569,16 +3890,22 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   ),
                 ),
               ),
-            if (_loading || _error != null)
+            if (_error != null ||
+                (!nativeCinema && (_loading || waitingForFirstFrame)))
               ColoredBox(
-                color: const Color(0xEE0B0C0D),
-                child: Center(
+                color: nativeCinema && _error == null
+                    ? Colors.transparent
+                    : const Color(0xEE0B0C0D),
+                child: Align(
+                  alignment: nativeCinema
+                      ? const Alignment(0, .56)
+                      : Alignment.center,
                   child: SingleChildScrollView(
                     padding: const EdgeInsets.all(20),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (_loading)
+                        if (_loading || waitingForFirstFrame)
                           const SizedBox(
                             width: 28,
                             height: 28,
@@ -3595,7 +3922,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                           ),
                         const SizedBox(height: 16),
                         Text(
-                          _error ?? _phase,
+                          _error ??
+                              (waitingForFirstFrame ? '正在等待视频首帧' : _phase),
                           textAlign: TextAlign.center,
                           style: const TextStyle(color: _text, fontSize: 14),
                         ),
@@ -3622,7 +3950,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                             OutlinedButton.icon(
                               onPressed: _showEpisodes,
                               icon: const Icon(Icons.playlist_play),
-                              label: const Text('线路 / 选集'),
+                              label: Text(nativeCinema ? '选集与片源' : '线路 / 选集'),
                             ),
                             if (_canRetryDirect)
                               OutlinedButton.icon(
@@ -3639,20 +3967,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                           ],
                         ),
                         const SizedBox(height: 12),
-                        if (_loading)
+                        if (_loading || waitingForFirstFrame)
                           TextButton(
-                            onPressed: () {
-                              ++_generation;
-                              _resolver.cancel();
-                              _loadTimer?.cancel();
-                              final current = _playback;
-                              _playback = null;
-                              if (current != null) unawaited(current.dispose());
-                              setState(() {
-                                _loading = false;
-                                _error = '已取消加载';
-                              });
-                            },
+                            onPressed: _cancelLoading,
                             child: const Text('取消'),
                           )
                         else if (_episode != null)
@@ -3698,6 +4015,25 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     return widget.offlinePaths == null &&
         url != null &&
         NetworkConfig.forMedia().proxyForUri(url) != null;
+  }
+
+  void _cancelLoading() {
+    if (_closing || (!_loading && _playback?.firstFrameRendered == true)) {
+      return;
+    }
+    ++_generation;
+    _resolver.cancel();
+    _loadTimer?.cancel();
+    final current = _playback;
+    _playback = null;
+    if (current != null) {
+      unawaited(current.player.pause().catchError((_) {}));
+      unawaited(current.dispose());
+    }
+    setState(() {
+      _loading = false;
+      _error = '已取消加载';
+    });
   }
 
   Future<void> _showSpeedOptions() async {
@@ -4256,6 +4592,8 @@ class _CinemaPlayback {
   int width = 0;
   int height = 0;
   bool opened = false;
+  bool firstFrameObserved = false, firstFrameRendered = false;
+  Timer? firstFrameTimer;
   int manualPlaybackRevision = 0;
   String? mediaUrl;
   Map<String, String> mediaHeaders = const {};
@@ -4281,6 +4619,7 @@ class _CinemaPlayback {
 
   Future<void> dispose() => _disposal ??= _dispose();
   Future<void> _dispose() async {
+    firstFrameTimer?.cancel();
     await keyboardTransport?.close();
     try {
       await subtitles?.flush();

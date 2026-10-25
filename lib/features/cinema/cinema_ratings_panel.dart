@@ -9,6 +9,19 @@ import 'cinema_douban_reviews.dart';
 import 'cinema_douban_reviews_view.dart';
 import 'cinema_theme.dart';
 
+@immutable
+class CinemaRatingsLoadState {
+  const CinemaRatingsLoadState({
+    required this.titleKey,
+    required this.ratingsLoading,
+    required this.detailsLoading,
+    required this.hasError,
+  });
+  final String titleKey;
+  final bool ratingsLoading, detailsLoading, hasError;
+  bool get terminal => !ratingsLoading && !detailsLoading;
+}
+
 /// Loads ratings independently of playback and keeps each provider's scale.
 class CinemaRatingsPanel extends StatefulWidget {
   const CinemaRatingsPanel({
@@ -18,6 +31,9 @@ class CinemaRatingsPanel extends StatefulWidget {
     this.repository,
     this.reviewsRepository,
     this.onRecommendationSelected,
+    this.layoutBuilder,
+    this.compact = false,
+    this.onLoadState,
   });
 
   final CinemaTitle title;
@@ -25,6 +41,18 @@ class CinemaRatingsPanel extends StatefulWidget {
   final CinemaRatingsRepository? repository;
   final CinemaDoubanReviewsRepository? reviewsRepository;
   final ValueChanged<DoubanRecommendation>? onRecommendationSelected;
+
+  /// Reuses one identity lookup and loading lifecycle when a detail page puts
+  /// scores beside, rather than above, its metadata and reviews.
+  final Widget Function(
+    BuildContext context,
+    Widget ratings,
+    Widget details,
+    Widget reviews,
+  )?
+  layoutBuilder;
+  final bool compact;
+  final ValueChanged<CinemaRatingsLoadState>? onLoadState;
 
   @override
   State<CinemaRatingsPanel> createState() => _CinemaRatingsPanelState();
@@ -41,6 +69,32 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
 
   CinemaRatingsRepository get _repository =>
       widget.repository ?? CinemaRatingsRepository.instance;
+
+  void _emitLoadState() {
+    final callback = widget.onLoadState;
+    if (callback == null) return;
+    final request = _request;
+    final state = CinemaRatingsLoadState(
+      titleKey: widget.title.key,
+      ratingsLoading: _loading,
+      detailsLoading: _detailsLoading,
+      hasError:
+          _error != null ||
+          (_details != null &&
+              !_details!.hasContent &&
+              _details!.note.isNotEmpty),
+    );
+    // The parent may be constructing this panel when a cached result arrives.
+    // Publish after that frame and reject every superseded request/disposal.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          request != _request ||
+          state.titleKey != widget.title.key) {
+        return;
+      }
+      callback(state);
+    });
+  }
 
   @override
   void initState() {
@@ -85,6 +139,7 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
       _loading = true;
       _error = null;
     });
+    _emitLoadState();
     _loadDetails(request, force);
     _loadQuick(request);
     try {
@@ -97,6 +152,7 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
     } finally {
       if (mounted && request == _request) {
         setState(() => _loading = false);
+        _emitLoadState();
       }
     }
   }
@@ -114,6 +170,7 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
 
   Future<void> _loadDetails(int request, bool force) async {
     setState(() => _detailsLoading = true);
+    _emitLoadState();
     try {
       final details = await _repository.loadDoubanDetails(
         widget.title,
@@ -132,6 +189,7 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
     } finally {
       if (mounted && request == _request) {
         setState(() => _detailsLoading = false);
+        _emitLoadState();
       }
     }
   }
@@ -213,74 +271,126 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) => Theme(
-    data: CinemaTheme.of(context),
-    child: Material(
-      color: CinemaTheme.surface,
-      shape: RoundedRectangleBorder(
-        side: const BorderSide(color: CinemaTheme.border),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Wrap(
-              alignment: WrapAlignment.spaceBetween,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              spacing: 16,
-              runSpacing: 4,
-              children: [
-                const Text(
-                  '作品评分',
-                  style: TextStyle(
-                    color: CinemaTheme.text,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                Wrap(
-                  spacing: 4,
-                  children: [
-                    TextButton.icon(
-                      onPressed: _loading || _editing
-                          ? null
-                          : () => _load(force: true),
-                      icon: const Icon(Icons.refresh_rounded, size: 17),
-                      label: const Text('刷新评分'),
-                    ),
-                    TextButton.icon(
-                      onPressed: _editing ? null : _editIdentity,
-                      icon: const Icon(Icons.link_rounded, size: 17),
-                      label: Text(_editing ? '正在关联' : '关联条目'),
-                    ),
-                  ],
+  Widget _compactOptions() => PopupMenuButton<String>(
+    tooltip: '评分选项',
+    icon: const Icon(Icons.more_horiz_rounded, size: 18),
+    onSelected: (action) {
+      switch (action) {
+        case 'refresh':
+          _load(force: true);
+          return;
+        case 'identity':
+          _editIdentity();
+          return;
+        case 'details':
+          showDialog<void>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('关联与说明'),
+              content: SelectableText(_identityDescription),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('完成'),
                 ),
               ],
             ),
-            if (_loading) ...[
-              const SizedBox(height: 8),
-              const LinearProgressIndicator(minHeight: 2),
-              const SizedBox(height: 8),
-              const Text(
-                '正在读取评分；首次使用 IMDb 需下载约 9 MB，每日更新缓存。',
-                style: TextStyle(color: CinemaTheme.muted, fontSize: 12),
+          );
+      }
+    },
+    itemBuilder: (context) => [
+      PopupMenuItem(
+        value: 'refresh',
+        enabled: !_loading && !_editing,
+        child: const Text('刷新评分'),
+      ),
+      PopupMenuItem(
+        value: 'identity',
+        enabled: !_editing,
+        child: Text(_editing ? '正在关联' : '关联条目'),
+      ),
+      if (_result != null)
+        const PopupMenuItem(value: 'details', child: Text('关联与说明')),
+    ],
+  );
+
+  String get _identityDescription => [
+    if (_result?.message.isNotEmpty == true) _result!.message,
+    if (_result?.identity.doubanId.isNotEmpty == true)
+      '豆瓣 ID：${_result!.identity.doubanId}',
+    if (_result?.identity.imdbId.isNotEmpty == true)
+      'IMDb ID：${_result!.identity.imdbId}',
+    if (_result?.identity.rottenTomatoesId.isNotEmpty == true)
+      '烂番茄 ID：${_result!.identity.rottenTomatoesId}',
+    if (_result?.identity.wikidataId.isNotEmpty == true)
+      'Wikidata：${_result!.identity.wikidataId}',
+  ].join('\n');
+
+  @override
+  Widget build(BuildContext context) {
+    final ratings = <Widget>[
+      if (!widget.compact)
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 16,
+          runSpacing: 4,
+          children: [
+            const Text(
+              '作品评分',
+              style: TextStyle(
+                color: CinemaTheme.text,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
               ),
-            ],
-            if (_error != null) ...[
-              const SizedBox(height: 8),
-              Text(
-                _error!,
-                key: const ValueKey('ratings-error'),
-                style: const TextStyle(color: Color(0xFFF5A69F), fontSize: 12),
-              ),
-            ],
-            const SizedBox(height: 12),
-            LayoutBuilder(
+            ),
+            Wrap(
+              spacing: 4,
+              children: [
+                TextButton.icon(
+                  onPressed: _loading || _editing
+                      ? null
+                      : () => _load(force: true),
+                  icon: const Icon(Icons.refresh_rounded, size: 17),
+                  label: const Text('刷新评分'),
+                ),
+                TextButton.icon(
+                  onPressed: _editing ? null : _editIdentity,
+                  icon: const Icon(Icons.link_rounded, size: 17),
+                  label: Text(_editing ? '正在关联' : '关联条目'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      if (_loading) ...[
+        const SizedBox(height: 8),
+        const LinearProgressIndicator(minHeight: 2),
+        const SizedBox(height: 8),
+        if (!widget.compact)
+          const Text(
+            '正在读取评分；首次使用 IMDb 需下载约 9 MB，每日更新缓存。',
+            style: TextStyle(color: CinemaTheme.muted, fontSize: 12),
+          ),
+      ],
+      if (_error != null) ...[
+        const SizedBox(height: 8),
+        Text(
+          _error!,
+          key: const ValueKey('ratings-error'),
+          style: const TextStyle(color: Color(0xFFF5A69F), fontSize: 12),
+        ),
+      ],
+      if (!widget.compact) const SizedBox(height: 12),
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: LayoutBuilder(
               builder: (context, constraints) {
-                final columns = constraints.maxWidth >= 600
+                final columns = widget.compact && constraints.maxWidth >= 260
+                    ? 3
+                    : constraints.maxWidth >= 600
                     ? 3
                     : constraints.maxWidth >= 400
                     ? 2
@@ -298,68 +408,81 @@ class _CinemaRatingsPanelState extends State<CinemaRatingsPanel> {
                           provider: provider,
                           rating: _rating(provider),
                           sourceName: widget.sourceName,
+                          compact: widget.compact,
                         ),
                       ),
                   ],
                 );
               },
             ),
-            if (_result != null)
-              ExpansionTile(
-                key: const ValueKey('ratings-identity-details'),
-                tilePadding: EdgeInsets.zero,
-                childrenPadding: const EdgeInsets.only(bottom: 4),
-                dense: true,
-                title: const Text('关联与说明', style: TextStyle(fontSize: 13)),
-                subtitle: _result!.identity.label.isEmpty
-                    ? null
-                    : Text(
-                        _result!.identity.label,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: CinemaTheme.muted,
-                          fontSize: 12,
-                        ),
-                      ),
-                children: [
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: SelectableText(
-                      [
-                        if (_result!.message.isNotEmpty) _result!.message,
-                        if (_result!.identity.doubanId.isNotEmpty)
-                          '豆瓣 ID：${_result!.identity.doubanId}',
-                        if (_result!.identity.imdbId.isNotEmpty)
-                          'IMDb ID：${_result!.identity.imdbId}',
-                        if (_result!.identity.rottenTomatoesId.isNotEmpty)
-                          '烂番茄 ID：${_result!.identity.rottenTomatoesId}',
-                        if (_result!.identity.wikidataId.isNotEmpty)
-                          'Wikidata：${_result!.identity.wikidataId}',
-                      ].join('\n'),
-                      style: const TextStyle(
-                        color: CinemaTheme.muted,
-                        fontSize: 12,
-                        height: 1.6,
-                      ),
-                    ),
+          ),
+          if (widget.compact) _compactOptions(),
+        ],
+      ),
+      if (_result != null && !widget.compact)
+        ExpansionTile(
+          key: const ValueKey('ratings-identity-details'),
+          tilePadding: EdgeInsets.zero,
+          childrenPadding: const EdgeInsets.only(bottom: 4),
+          dense: true,
+          title: const Text('关联与说明', style: TextStyle(fontSize: 13)),
+          subtitle: _result!.identity.label.isEmpty
+              ? null
+              : Text(
+                  _result!.identity.label,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: CinemaTheme.muted,
+                    fontSize: 12,
                   ),
-                ],
+                ),
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: SelectableText(
+                _identityDescription,
+                style: const TextStyle(
+                  color: CinemaTheme.muted,
+                  fontSize: 12,
+                  height: 1.6,
+                ),
               ),
-            DoubanDetailsView(
-              details: _details,
-              loading: _detailsLoading,
-              onRecommendationSelected: widget.onRecommendationSelected,
-            ),
-            CinemaDoubanReviewsView(
-              subjectId: _result?.identity.doubanId ?? _details?.doubanId ?? '',
-              repository: widget.reviewsRepository,
             ),
           ],
         ),
-      ),
-    ),
-  );
+    ];
+    final details = DoubanDetailsView(
+      details: _details,
+      loading: _detailsLoading,
+      onRecommendationSelected: widget.onRecommendationSelected,
+    );
+    final reviews = CinemaDoubanReviewsView(
+      subjectId: _result?.identity.doubanId ?? _details?.doubanId ?? '',
+      repository: widget.reviewsRepository,
+    );
+    Widget scorePanel(List<Widget> children) {
+      final content = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: children,
+      );
+      return widget.compact
+          ? content
+          : CinemaGlass(padding: const EdgeInsets.all(16), child: content);
+    }
+
+    return Theme(
+      data: CinemaTheme.of(context),
+      child: widget.layoutBuilder == null
+          ? scorePanel([...ratings, details, reviews])
+          : widget.layoutBuilder!(
+              context,
+              scorePanel(ratings),
+              details,
+              reviews,
+            ),
+    );
+  }
 }
 
 class _RatingCard extends StatelessWidget {
@@ -367,11 +490,13 @@ class _RatingCard extends StatelessWidget {
     required this.provider,
     required this.rating,
     required this.sourceName,
+    this.compact = false,
   });
 
   final String provider;
   final CinemaRating rating;
   final String sourceName;
+  final bool compact;
 
   Future<void> _openSource(BuildContext context) async {
     final uri = Uri.tryParse(rating.url);
@@ -415,14 +540,88 @@ class _RatingCard extends StatelessWidget {
     final note = sourceReported
         ? originalNote.replaceFirst(RegExp(r'^片源转述\s*·\s*未核验[；;]?\s*'), '')
         : originalNote;
+    if (compact) {
+      return Semantics(
+        button: true,
+        label: '$provider $score${isTomatometer ? '%' : ' / 10'}，查看评分详情',
+        child: InkWell(
+          key: ValueKey('rating-card-$provider'),
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => showDialog<void>(
+            context: context,
+            builder: (context) => AlertDialog(
+              content: SizedBox(
+                width: 320,
+                child: _RatingCard(
+                  provider: provider,
+                  rating: rating,
+                  sourceName: sourceName,
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('完成'),
+                ),
+              ],
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isTomatometer ? '🍅' : provider,
+                  style: const TextStyle(
+                    color: CinemaTheme.muted,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 7),
+                Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.end,
+                  spacing: 2,
+                  children: [
+                    Text(
+                      score,
+                      key: ValueKey('rating-value-$provider'),
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.w600,
+                        height: 1.1,
+                        color: valid ? CinemaTheme.text : CinemaTheme.muted,
+                      ),
+                    ),
+                    Text(
+                      isTomatometer ? '%' : '/10',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: CinemaTheme.muted,
+                      ),
+                    ),
+                  ],
+                ),
+                if (sourceReported || (valid && !rating.verified)) ...[
+                  const SizedBox(height: 5),
+                  Text(
+                    sourceReported ? '片源评分' : '未核验',
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: CinemaTheme.muted,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     return Container(
       key: ValueKey('rating-card-$provider'),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: CinemaTheme.background,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: CinemaTheme.border),
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

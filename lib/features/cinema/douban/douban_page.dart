@@ -4,9 +4,11 @@ import 'dart:math' as math;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:kazumi/services/network/proxy_aware_image_cache_manager.dart';
 import '../cinema_theme.dart';
+import '../cinema_navigation_island.dart';
 import 'douban_models.dart';
 import 'douban_repository.dart';
 import 'douban_image_headers.dart';
@@ -144,6 +146,22 @@ class _DoubanPageState extends State<DoubanPage> {
       kind: _KindState(_session._states[kind]),
   };
   _KindState get _state => _states[_kind]!;
+  bool _layoutInitialized = false;
+  bool get _cinemaLayout =>
+      defaultTargetPlatform == TargetPlatform.macOS &&
+      MediaQuery.sizeOf(context).width >= 860;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_layoutInitialized || !_cinemaLayout) return;
+    _layoutInitialized = true;
+    for (final kind in DoubanKind.values) {
+      if (!_session._states.containsKey(kind)) {
+        _states[kind]!.themesExpanded = false;
+      }
+    }
+  }
 
   @override
   void initState() {
@@ -259,6 +277,7 @@ class _DoubanPageState extends State<DoubanPage> {
         filters: filters,
         tags: themes,
         start: start,
+        count: 40,
         cancelToken: token,
       );
       if (!mounted || generation != state.generation) return;
@@ -456,41 +475,51 @@ class _DoubanPageState extends State<DoubanPage> {
       ),
       if (selected.isNotEmpty) selected,
     };
+    final menu = DropdownButtonHideUnderline(
+      child: DropdownButton<String>(
+        key: ValueKey('douban-filter-$id'),
+        value: selected,
+        isDense: true,
+        isExpanded: true,
+        borderRadius: BorderRadius.circular(12),
+        menuMaxHeight: 380,
+        style: TextStyle(
+          color: selected.isEmpty
+              ? CinemaTheme.muted
+              : _cinemaLayout
+              ? CinemaTheme.text
+              : CinemaTheme.copper,
+          fontSize: 13,
+        ),
+        items: [
+          for (final value in values)
+            DropdownMenuItem(
+              value: value,
+              child: Text(
+                value.isEmpty ? '全部$label' : value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+        ],
+        onChanged: values.length == 1
+            ? null
+            : (value) {
+                if (value != null && value != selected) onChanged(value);
+              },
+      ),
+    );
     return InputDecorator(
       decoration: InputDecoration(
+        filled: !_cinemaLayout,
         contentPadding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        border: _cinemaLayout
+            ? InputBorder.none
+            : OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        enabledBorder: _cinemaLayout ? InputBorder.none : null,
+        focusedBorder: _cinemaLayout ? InputBorder.none : null,
       ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          key: ValueKey('douban-filter-$id'),
-          value: selected,
-          isDense: true,
-          isExpanded: true,
-          borderRadius: BorderRadius.circular(12),
-          menuMaxHeight: 380,
-          style: TextStyle(
-            color: selected.isEmpty ? CinemaTheme.muted : CinemaTheme.copper,
-            fontSize: 13,
-          ),
-          items: [
-            for (final value in values)
-              DropdownMenuItem(
-                value: value,
-                child: Text(
-                  value.isEmpty ? '全部$label' : value,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-          ],
-          onChanged: values.length == 1
-              ? null
-              : (value) {
-                  if (value != null && value != selected) onChanged(value);
-                },
-        ),
-      ),
+      child: menu,
     );
   }
 
@@ -505,6 +534,8 @@ class _DoubanPageState extends State<DoubanPage> {
             key: ValueKey('douban-theme-$theme'),
             label: Text(theme, style: const TextStyle(fontSize: 12)),
             selected: state.selectedThemes.contains(theme),
+            backgroundColor: _cinemaLayout ? Colors.transparent : null,
+            showCheckmark: false,
             onSelected:
                 state.selectedThemes.length >= 6 &&
                     !state.selectedThemes.contains(theme)
@@ -584,172 +615,164 @@ class _DoubanPageState extends State<DoubanPage> {
               _selectFilters(filters.copyWith(platform: value)),
         ),
     ];
-    return CinemaGlass(
-      blur: false,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final columns = (constraints.maxWidth / 170).floor().clamp(1, 5);
-              final width =
-                  (constraints.maxWidth - (columns - 1) * 10) / columns;
-              return Wrap(
-                spacing: 10,
-                runSpacing: 14,
-                children: [
-                  for (final field in fields)
-                    SizedBox(width: width, child: field),
-                ],
-              );
-            },
-          ),
-          if (state.sorts.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 7,
-              runSpacing: 6,
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final columns = (constraints.maxWidth / 170).floor().clamp(1, 5);
+            final width = (constraints.maxWidth - (columns - 1) * 10) / columns;
+            return Wrap(
+              spacing: 10,
+              runSpacing: 14,
               children: [
-                for (final sort in state.sorts)
-                  ChoiceChip(
-                    key: ValueKey('douban-sort-${sort.name}'),
-                    label: Text(
-                      sort.text,
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                    selected:
-                        state.sort == sort.name ||
-                        (state.sort == null && sort.isDefault),
-                    onSelected: (_) {
-                      if (state.sort == sort.name ||
-                          (state.sort == null && sort.isDefault)) {
-                        return;
-                      }
-                      setState(() => state.sort = sort.name);
-                      if (state.scroll.hasClients) state.scroll.jumpTo(0);
-                      unawaited(_loadPage(_kind));
-                    },
-                  ),
+                for (final field in fields)
+                  SizedBox(width: width, child: field),
               ],
-            ),
-          ],
-          ...[
-            const SizedBox(height: 8),
-            Theme(
-              data: CinemaTheme.of(
-                context,
-              ).copyWith(dividerColor: Colors.transparent),
-              child: ExpansionTile(
-                key: PageStorageKey('douban-${_kind.name}-themes'),
-                initiallyExpanded: state.themesExpanded,
-                onExpansionChanged: (expanded) =>
-                    state.themesExpanded = expanded,
-                expansionAnimationStyle: AnimationStyle.noAnimation,
-                tilePadding: EdgeInsets.zero,
-                childrenPadding: const EdgeInsets.only(bottom: 8),
-                title: const Text('风格与主题', style: TextStyle(fontSize: 13)),
-                subtitle: state.selectedThemes.isEmpty
-                    ? null
-                    : Text(
-                        state.selectedThemes.join(' · '),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: CinemaTheme.copper,
-                        ),
-                      ),
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        '已发现 ${state.themes.length} 个主题',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: CinemaTheme.muted,
-                        ),
-                      ),
-                      const Spacer(),
-                      TextButton.icon(
-                        key: const ValueKey('douban-more-themes'),
-                        onPressed: state.themesLoading
-                            ? null
-                            : () => _loadThemes(_kind),
-                        icon: state.themesLoading
-                            ? const SizedBox(
-                                width: 13,
-                                height: 13,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 1.5,
-                                ),
-                              )
-                            : const Icon(Icons.add, size: 16),
-                        label: Text(state.themesLoading ? '正在发现' : '更多主题'),
-                      ),
-                    ],
-                  ),
-                  if (state.selectedThemes.length >= 6)
-                    const Padding(
-                      padding: EdgeInsets.only(bottom: 8),
-                      child: Text(
-                        '已选 6 个主题，取消一项可继续选择。',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: CinemaTheme.muted,
-                        ),
+            );
+          },
+        ),
+        if (state.sorts.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 7,
+            runSpacing: 6,
+            children: [
+              for (final sort in state.sorts)
+                ChoiceChip(
+                  key: ValueKey('douban-sort-${sort.name}'),
+                  label: Text(sort.text, style: const TextStyle(fontSize: 12)),
+                  backgroundColor: _cinemaLayout ? Colors.transparent : null,
+                  showCheckmark: false,
+                  selected:
+                      state.sort == sort.name ||
+                      (state.sort == null && sort.isDefault),
+                  onSelected: (_) {
+                    if (state.sort == sort.name ||
+                        (state.sort == null && sort.isDefault)) {
+                      return;
+                    }
+                    setState(() => state.sort = sort.name);
+                    if (state.scroll.hasClients) state.scroll.jumpTo(0);
+                    unawaited(_loadPage(_kind));
+                  },
+                ),
+            ],
+          ),
+        ],
+        ...[
+          const SizedBox(height: 8),
+          Theme(
+            data: CinemaTheme.of(
+              context,
+            ).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              key: PageStorageKey('douban-${_kind.name}-themes'),
+              initiallyExpanded: state.themesExpanded,
+              onExpansionChanged: (expanded) => state.themesExpanded = expanded,
+              expansionAnimationStyle: AnimationStyle.noAnimation,
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: const EdgeInsets.only(bottom: 8),
+              title: const Text('风格与主题', style: TextStyle(fontSize: 13)),
+              subtitle: state.selectedThemes.isEmpty
+                  ? null
+                  : Text(
+                      state.selectedThemes.join(' · '),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: CinemaTheme.copper,
                       ),
                     ),
-                  if (state.showAllThemes)
-                    _themeChips(state)
-                  else
-                    SizedBox(
-                      height: 144,
-                      child: Scrollbar(
-                        controller: state.themeScroll,
-                        thumbVisibility: true,
-                        child: SingleChildScrollView(
-                          // ExpansionTile stores a bool in PageStorage. This
-                          // nested scroller needs its own key for a double offset.
-                          key: PageStorageKey(
-                            'douban-${_kind.name}-theme-scroll',
-                          ),
-                          controller: state.themeScroll,
-                          padding: const EdgeInsets.only(right: 12),
-                          child: _themeChips(state),
-                        ),
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      '已发现 ${state.themes.length} 个主题',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: CinemaTheme.muted,
                       ),
                     ),
-                  if (state.themes.isNotEmpty)
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: TextButton.icon(
-                        key: const ValueKey('douban-show-all-themes'),
-                        onPressed: () => setState(
-                          () => state.showAllThemes = !state.showAllThemes,
-                        ),
-                        icon: Icon(
-                          state.showAllThemes
-                              ? Icons.unfold_less
-                              : Icons.unfold_more,
-                          size: 16,
-                        ),
-                        label: Text(
-                          state.showAllThemes
-                              ? '收起为滚动列表'
-                              : '展开全部 ${state.themes.length} 个主题',
-                        ),
-                      ),
-                    ),
-                  if (_themeCatalog.storageError != null)
+                    const Spacer(),
                     TextButton.icon(
-                      onPressed: _themeCatalog.retryPersistence,
-                      icon: const Icon(Icons.info_outline, size: 14),
-                      label: Text(
-                        _themeCatalog.storageError!,
-                        style: const TextStyle(fontSize: 11),
+                      key: const ValueKey('douban-more-themes'),
+                      onPressed: state.themesLoading
+                          ? null
+                          : () => _loadThemes(_kind),
+                      icon: state.themesLoading
+                          ? const SizedBox(
+                              width: 13,
+                              height: 13,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 1.5,
+                              ),
+                            )
+                          : const Icon(Icons.add, size: 16),
+                      label: Text(state.themesLoading ? '正在发现' : '更多主题'),
+                    ),
+                  ],
+                ),
+                if (state.selectedThemes.length >= 6)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      '已选 6 个主题，取消一项可继续选择。',
+                      style: TextStyle(fontSize: 11, color: CinemaTheme.muted),
+                    ),
+                  ),
+                if (state.showAllThemes)
+                  _themeChips(state)
+                else
+                  SizedBox(
+                    height: 144,
+                    child: Scrollbar(
+                      controller: state.themeScroll,
+                      thumbVisibility: true,
+                      child: SingleChildScrollView(
+                        // ExpansionTile stores a bool in PageStorage. This
+                        // nested scroller needs its own key for a double offset.
+                        key: PageStorageKey(
+                          'douban-${_kind.name}-theme-scroll',
+                        ),
+                        controller: state.themeScroll,
+                        padding: const EdgeInsets.only(right: 12),
+                        child: _themeChips(state),
                       ),
                     ),
+                  ),
+                if (state.themes.isNotEmpty)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      key: const ValueKey('douban-show-all-themes'),
+                      onPressed: () => setState(
+                        () => state.showAllThemes = !state.showAllThemes,
+                      ),
+                      icon: Icon(
+                        state.showAllThemes
+                            ? Icons.unfold_less
+                            : Icons.unfold_more,
+                        size: 16,
+                      ),
+                      label: Text(
+                        state.showAllThemes
+                            ? '收起为滚动列表'
+                            : '展开全部 ${state.themes.length} 个主题',
+                      ),
+                    ),
+                  ),
+                if (_themeCatalog.storageError != null)
+                  TextButton.icon(
+                    onPressed: _themeCatalog.retryPersistence,
+                    icon: const Icon(Icons.info_outline, size: 14),
+                    label: Text(
+                      _themeCatalog.storageError!,
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ),
+                if (!_cinemaLayout || state.themeMessage != null)
                   SizedBox(
                     height: 32,
                     child: Align(
@@ -764,37 +787,55 @@ class _DoubanPageState extends State<DoubanPage> {
                       ),
                     ),
                   ),
-                ],
-              ),
+              ],
             ),
-          ],
-          if (state.filtersLoading) ...[
-            const SizedBox(height: 12),
-            const LinearProgressIndicator(minHeight: 1),
-          ],
-          if (state.filterError != null) ...[
-            const SizedBox(height: 8),
-            Text(
-              '部分筛选项暂时无法更新。${state.filterError}',
-              style: const TextStyle(color: CinemaTheme.muted, fontSize: 12),
-            ),
-            TextButton(
-              onPressed: () => _loadFilters(_kind),
-              child: const Text('重试筛选项'),
-            ),
-          ],
+          ),
         ],
-      ),
+        if (state.filtersLoading) ...[
+          const SizedBox(height: 12),
+          const LinearProgressIndicator(minHeight: 1),
+        ],
+        if (state.filterError != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            '部分筛选项暂时无法更新。${state.filterError}',
+            style: const TextStyle(color: CinemaTheme.muted, fontSize: 12),
+          ),
+          TextButton(
+            onPressed: () => _loadFilters(_kind),
+            child: const Text('重试筛选项'),
+          ),
+        ],
+      ],
     );
+    return _cinemaLayout
+        ? Padding(
+            key: const ValueKey('douban-cinema-filters'),
+            padding: const EdgeInsets.only(bottom: 6),
+            child: content,
+          )
+        : CinemaGlass(
+            blur: false,
+            padding: const EdgeInsets.all(16),
+            child: content,
+          );
   }
 
   @override
   Widget build(BuildContext context) => Theme(
     data: CinemaTheme.of(context),
     child: Scaffold(
+      key: const ValueKey('douban-board'),
       backgroundColor: CinemaTheme.background,
       appBar: AppBar(
-        title: const Text('豆瓣榜单'),
+        toolbarHeight: _cinemaLayout ? 76 : null,
+        backgroundColor: _cinemaLayout ? Colors.transparent : null,
+        title: Text(
+          '豆瓣榜单',
+          style: _cinemaLayout
+              ? const TextStyle(fontSize: 27, fontWeight: FontWeight.w700)
+              : null,
+        ),
         actions: [
           IconButton(
             tooltip: '豆瓣官网',
@@ -815,20 +856,33 @@ class _DoubanPageState extends State<DoubanPage> {
               padding: const EdgeInsets.fromLTRB(24, 10, 24, 14),
               child: Row(
                 children: [
-                  SegmentedButton<DoubanKind>(
-                    segments: [
-                      for (final kind in DoubanKind.values)
-                        ButtonSegment(value: kind, label: Text(kind.label)),
-                    ],
-                    selected: {_kind},
-                    onSelectionChanged: (values) => _selectKind(values.single),
-                  ),
+                  if (_cinemaLayout)
+                    CinemaNavigationIsland<DoubanKind>(
+                      key: const ValueKey('douban-cinema-navigation'),
+                      value: _kind,
+                      destinations: const [
+                        (DoubanKind.movie, Icons.movie_outlined, '电影'),
+                        (DoubanKind.tv, Icons.tv_rounded, '剧集'),
+                      ],
+                      keyFor: (kind) => ValueKey('douban-kind-${kind.name}'),
+                      onChanged: _selectKind,
+                    )
+                  else
+                    SegmentedButton<DoubanKind>(
+                      segments: [
+                        for (final kind in DoubanKind.values)
+                          ButtonSegment(value: kind, label: Text(kind.label)),
+                      ],
+                      selected: {_kind},
+                      onSelectionChanged: (values) =>
+                          _selectKind(values.single),
+                    ),
                   const Spacer(),
                   TextButton.icon(
                     key: const ValueKey('douban-reset-filters'),
                     onPressed:
                         _state.filters.isEmpty &&
-                            _state.sort == null &&
+                            (_state.sort == null || _state.sort == 'U') &&
                             _state.selectedThemes.isEmpty
                         ? null
                         : _reset,
@@ -850,14 +904,16 @@ class _DoubanPageState extends State<DoubanPage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           _filters(),
-                          const SizedBox(height: 14),
-                          const Text(
-                            '按豆瓣公开分类筛选，点击作品搜索可用片源。',
-                            style: TextStyle(
-                              color: CinemaTheme.muted,
-                              fontSize: 12,
+                          if (!_cinemaLayout) ...[
+                            const SizedBox(height: 14),
+                            const Text(
+                              '按豆瓣公开分类筛选，点击作品搜索可用片源。',
+                              style: TextStyle(
+                                color: CinemaTheme.muted,
+                                fontSize: 12,
+                              ),
                             ),
-                          ),
+                          ],
                           if (_state.error != null) ...[
                             const SizedBox(height: 14),
                             Text(
@@ -891,9 +947,11 @@ class _DoubanPageState extends State<DoubanPage> {
                     padding: const EdgeInsets.symmetric(horizontal: 24),
                     sliver: SliverLayoutBuilder(
                       builder: (context, constraints) {
-                        final columns = (constraints.crossAxisExtent / 175)
-                            .floor()
-                            .clamp(2, 7);
+                        final columns =
+                            (constraints.crossAxisExtent /
+                                    (_cinemaLayout ? 205 : 175))
+                                .floor()
+                                .clamp(2, 7);
                         return SliverGrid.builder(
                           gridDelegate:
                               SliverGridDelegateWithFixedCrossAxisCount(
@@ -902,8 +960,8 @@ class _DoubanPageState extends State<DoubanPage> {
                                   18,
                                   constraints.crossAxisExtent / 25,
                                 ),
-                                mainAxisSpacing: 20,
-                                childAspectRatio: .54,
+                                mainAxisSpacing: _cinemaLayout ? 24 : 20,
+                                childAspectRatio: _cinemaLayout ? .57 : .54,
                               ),
                           itemCount: _state.items.length,
                           itemBuilder: (context, index) =>
@@ -959,34 +1017,77 @@ class _DoubanPageState extends State<DoubanPage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Expanded(
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: SizedBox.expand(
-              child: item.poster.isEmpty
-                  ? _posterFallback()
-                  : CachedNetworkImage(
-                      cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
-                      memCacheWidth: 480,
-                      imageUrl: item.poster,
-                      httpHeaders: doubanImageHeaders,
-                      fit: BoxFit.cover,
-                      errorWidget: (_, _, _) => _posterFallback(),
-                    ),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(9),
+              boxShadow: _cinemaLayout
+                  ? const [
+                      BoxShadow(
+                        color: Color(0x70000000),
+                        blurRadius: 22,
+                        spreadRadius: -3,
+                        offset: Offset(0, 9),
+                      ),
+                    ]
+                  : const [],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(9),
+              child: SizedBox.expand(
+                child: item.poster.isEmpty
+                    ? _posterFallback()
+                    : CachedNetworkImage(
+                        cacheManager:
+                            ProxyAwareImageCacheManager.cinemaInstance,
+                        memCacheWidth: 480,
+                        imageUrl: item.poster,
+                        httpHeaders: doubanImageHeaders,
+                        fit: BoxFit.cover,
+                        errorWidget: (_, _, _) => _posterFallback(),
+                      ),
+              ),
             ),
           ),
         ),
         const SizedBox(height: 9),
         Text(
           item.title,
-          maxLines: 2,
+          maxLines: _cinemaLayout ? 1 : 2,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 5),
-        Text(
-          '${item.year}  ·  豆瓣 ${item.score?.toStringAsFixed(1) ?? '暂无评分'}',
-          style: const TextStyle(color: CinemaTheme.copper, fontSize: 12),
-        ),
+        if (_cinemaLayout)
+          Row(
+            children: [
+              if (item.year.isNotEmpty)
+                Text(
+                  item.year,
+                  style: const TextStyle(
+                    color: CinemaTheme.muted,
+                    fontSize: 12,
+                  ),
+                ),
+              if (item.score != null) ...[
+                if (item.year.isNotEmpty) const SizedBox(width: 10),
+                const Icon(
+                  Icons.star_rounded,
+                  size: 13,
+                  color: CinemaTheme.copper,
+                ),
+                const SizedBox(width: 3),
+                Text(
+                  item.score!.toStringAsFixed(1),
+                  style: const TextStyle(color: CinemaTheme.text, fontSize: 12),
+                ),
+              ],
+            ],
+          )
+        else
+          Text(
+            '${item.year}  ·  豆瓣 ${item.score?.toStringAsFixed(1) ?? '暂无评分'}',
+            style: const TextStyle(color: CinemaTheme.copper, fontSize: 12),
+          ),
       ],
     ),
   );

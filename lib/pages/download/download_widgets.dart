@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:kazumi/bean/card/network_img_layer.dart';
-import 'package:kazumi/bean/card/rule_card.dart';
+import 'package:kazumi/features/cinema/cinema_theme.dart';
 import 'package:kazumi/bean/widget/kazumi_menu.dart';
 import 'package:kazumi/bean/widget/loading_indicator.dart';
 import 'package:kazumi/modules/download/download_module.dart';
@@ -77,114 +77,152 @@ class DownloadRecordCard extends StatelessWidget {
       }
     }
 
-    return Card(
-      elevation: 0,
-      margin: const EdgeInsets.only(bottom: 12),
-      color: colorScheme.surfaceContainerLow,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          InkWell(
-            onTap: onToggle,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 8, 16),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  NetworkImgLayer(
-                    src: record.bangumiCover,
-                    width: 56,
-                    height: 75,
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          record.bangumiName,
-                          style: textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w700,
+    final episodeContent = expanded
+        ? Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: Column(children: episodeTileBuilder()),
+          )
+        : const SizedBox(width: double.infinity);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: CinemaGlass(
+        radius: 20,
+        blur: false,
+        child: Material(
+          color: Colors.transparent,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final compact = constraints.maxWidth < 520;
+                  final coverWidth = compact ? 64.0 : 82.0;
+                  return InkWell(
+                    onTap: onToggle,
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        compact ? 14 : 20,
+                        18,
+                        8,
+                        18,
+                      ),
+                      child: Row(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: record.bangumiCover.isEmpty
+                                ? SizedBox(
+                                    width: coverWidth,
+                                    height: coverWidth * 1.4,
+                                    child: const ColoredBox(
+                                      color: Color(0x12FFFFFF),
+                                      child: Icon(
+                                        Icons.movie_outlined,
+                                        color: CinemaTheme.muted,
+                                      ),
+                                    ),
+                                  )
+                                : NetworkImgLayer(
+                                    src: record.bangumiCover,
+                                    width: coverWidth,
+                                    height: coverWidth * 1.4,
+                                  ),
                           ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 6),
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 4,
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          children: [
-                            RuleTag(
-                              label: record.displaySource,
-                              background: colorScheme.secondaryContainer,
-                              foreground: colorScheme.onSecondaryContainer,
+                          const SizedBox(width: 18),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  record.bangumiName,
+                                  style: textTheme.titleMedium?.copyWith(
+                                    fontSize: compact ? 16 : 18,
+                                    fontWeight: FontWeight.w600,
+                                    height: 1.3,
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  record.displaySource,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: textTheme.bodySmall?.copyWith(
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  meta,
+                                  style: textTheme.bodySmall?.copyWith(
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
                             ),
-                            Text(
-                              meta,
-                              style: textTheme.bodySmall?.copyWith(
-                                color: colorScheme.onSurfaceVariant,
+                          ),
+                          KazumiMenuButton(
+                            animated: false,
+                            builder: (context, toggle) => IconButton(
+                              icon: const Icon(Icons.more_horiz_rounded),
+                              tooltip: '更多操作',
+                              onPressed: toggle,
+                            ),
+                            menuChildren: [
+                              KazumiMenuItem(
+                                label: '全部开始',
+                                onPressed: onResumeAll,
                               ),
+                              KazumiMenuItem(
+                                label: '全部删除',
+                                destructive: true,
+                                onPressed: onDeleteAll,
+                              ),
+                            ],
+                          ),
+                          IconButton(
+                            tooltip: expanded ? '收起集数' : '展开集数',
+                            onPressed: onToggle,
+                            icon: AnimatedRotation(
+                              turns: expanded ? .5 : 0,
+                              duration: MediaQuery.disableAnimationsOf(context)
+                                  ? Duration.zero
+                                  : _kExpandDuration,
+                              curve: _kExpandCurve,
+                              child: const Icon(Icons.expand_more_rounded),
                             ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  KazumiMenuButton(
-                    animated: false,
-                    builder: (context, toggle) => IconButton(
-                      icon: Icon(
-                        Icons.more_vert,
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                      tooltip: '更多操作',
-                      onPressed: toggle,
-                    ),
-                    menuChildren: [
-                      KazumiMenuItem(label: '全部开始', onPressed: onResumeAll),
-                      KazumiMenuItem(
-                        label: '全部删除',
-                        destructive: true,
-                        onPressed: onDeleteAll,
-                      ),
-                    ],
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: AnimatedRotation(
-                      turns: expanded ? 0.5 : 0,
-                      duration: _kExpandDuration,
-                      curve: _kExpandCurve,
-                      child: Icon(
-                        Icons.expand_more,
-                        color: colorScheme.onSurfaceVariant,
+                          ),
+                        ],
                       ),
                     ),
-                  ),
-                ],
+                  );
+                },
               ),
-            ),
+              if (!allCompleted)
+                Padding(
+                  padding: EdgeInsets.fromLTRB(20, 0, 20, expanded ? 8 : 18),
+                  child: LinearProgressIndicator(
+                    value: aggregateProgress.clamp(0.0, 1.0),
+                    minHeight: 3,
+                    borderRadius: BorderRadius.circular(3),
+                    color: const Color(0xCCFFFFFF),
+                    backgroundColor: const Color(0x14FFFFFF),
+                  ),
+                ),
+              if (MediaQuery.disableAnimationsOf(context))
+                episodeContent
+              else
+                AnimatedSize(
+                  duration: _kExpandDuration,
+                  curve: _kExpandCurve,
+                  alignment: Alignment.topCenter,
+                  child: episodeContent,
+                ),
+            ],
           ),
-          if (!allCompleted)
-            Padding(
-              padding: EdgeInsets.fromLTRB(16, 0, 16, expanded ? 4 : 16),
-              child: LinearProgressIndicator(value: aggregateProgress),
-            ),
-          AnimatedSize(
-            duration: _kExpandDuration,
-            curve: _kExpandCurve,
-            alignment: Alignment.topCenter,
-            child: expanded
-                ? Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                    child: Column(children: episodeTileBuilder()),
-                  )
-                : const SizedBox(width: double.infinity),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -219,7 +257,7 @@ class DownloadEpisodeTile extends StatelessWidget {
       borderRadius: BorderRadius.circular(12),
       onTap: onPlay,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
         child: Row(
           children: [
             _EpisodeStatusBadge(episode: episode),
@@ -237,19 +275,28 @@ class DownloadEpisodeTile extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 2),
-                  Text(
-                    statusText,
-                    style: textTheme.bodySmall?.copyWith(
-                      color: isError
-                          ? colorScheme.error
-                          : colorScheme.onSurfaceVariant,
+                  Tooltip(
+                    message: statusText,
+                    child: Text(
+                      statusText,
+                      style: textTheme.bodySmall?.copyWith(
+                        color: isError
+                            ? colorScheme.error
+                            : colorScheme.onSurfaceVariant,
+                      ),
+                      maxLines: episode.errorMessage.isEmpty ? 1 : 3,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    maxLines: episode.errorMessage.isEmpty ? 1 : 2,
-                    overflow: TextOverflow.ellipsis,
                   ),
                   if (showProgress) ...[
                     const SizedBox(height: 6),
-                    LinearProgressIndicator(value: episode.progressPercent),
+                    LinearProgressIndicator(
+                      value: episode.progressPercent.clamp(0.0, 1.0),
+                      minHeight: 2,
+                      color: const Color(0xBBFFFFFF),
+                      backgroundColor: const Color(0x14FFFFFF),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ],
                 ],
               ),
@@ -276,7 +323,7 @@ class _EpisodeStatusBadge extends StatelessWidget {
     Widget child;
     switch (episode.status) {
       case DownloadStatus.completed:
-        background = colorScheme.secondaryContainer;
+        background = Colors.transparent;
         child = Icon(
           episode.errorMessage.isEmpty
               ? Icons.check_rounded
@@ -292,7 +339,9 @@ class _EpisodeStatusBadge extends StatelessWidget {
           height: 22,
           child: CircularProgressIndicator(
             value: episode.progressPercent,
-            strokeWidth: 2.5,
+            strokeWidth: 2,
+            color: colorScheme.onSurface,
+            backgroundColor: const Color(0x18FFFFFF),
           ),
         );
         break;
@@ -305,15 +354,15 @@ class _EpisodeStatusBadge extends StatelessWidget {
         );
         break;
       case DownloadStatus.failed:
-        background = colorScheme.errorContainer;
+        background = Colors.transparent;
         child = Icon(
           Icons.error_outline_rounded,
           size: 18,
-          color: colorScheme.onErrorContainer,
+          color: colorScheme.error,
         );
         break;
       case DownloadStatus.paused:
-        background = colorScheme.surfaceContainerHighest;
+        background = Colors.transparent;
         child = Icon(
           Icons.pause_rounded,
           size: 18,
@@ -322,7 +371,7 @@ class _EpisodeStatusBadge extends StatelessWidget {
         break;
       case DownloadStatus.pending:
       default:
-        background = colorScheme.surfaceContainerHighest;
+        background = Colors.transparent;
         child = Icon(
           Icons.schedule_rounded,
           size: 18,

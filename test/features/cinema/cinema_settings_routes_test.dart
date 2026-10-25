@@ -140,6 +140,47 @@ void main() {
     });
   }
 
+  testWidgets('desktop window-close entry opens persisted native choices', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 960);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final stored = GStorage.getSetting(SettingsKeys.exitBehavior);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: CinemaTheme.data.copyWith(platform: TargetPlatform.macOS),
+        home: Scaffold(
+          body: CinemaSettingsPage(
+            platform: TargetPlatform.macOS,
+            enabledSourceCount: 3,
+            sourceCount: 5,
+            onSources: () {},
+            onAppearance: () {},
+            onUpdates: () {},
+          ),
+        ),
+      ),
+    );
+    final entry = find.byKey(const ValueKey('settings-window-close-entry'));
+    await tester.ensureVisible(entry);
+    await tester.pumpAndSettle();
+    await tester.tap(entry);
+    await tester.pumpAndSettle();
+    final choices = tester.widget<DropdownButton<int>>(
+      find.byKey(const ValueKey('window-close-behavior')),
+    );
+    expect(choices.value, [0, 1, 2].contains(stored) ? stored : 2);
+    expect(choices.items!.map((item) => item.value), [0, 1, 2]);
+    expect(GStorage.getSetting(SettingsKeys.exitBehavior), stored);
+    await tester.tap(find.text('完成'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.byType(CinemaSettingsPage), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   test(
     'host binding retains live counts and ignores an old owner disposal',
     () {

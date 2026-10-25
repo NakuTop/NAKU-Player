@@ -155,7 +155,13 @@ void main() {
     await tester.tap(find.text('关闭'));
     await tester.pumpAndSettle();
     for (final section in ['剧集', '电影']) {
-      final entry = find.widgetWithText(ListTile, section);
+      final entry = Platform.isMacOS
+          ? find.byKey(
+              ValueKey(
+                'cinema-destination-${section == '剧集' ? 'series' : 'movies'}',
+              ),
+            )
+          : find.widgetWithText(ListTile, section);
       await tester.ensureVisible(entry);
       await tester.tap(entry);
       await tester.pumpAndSettle();

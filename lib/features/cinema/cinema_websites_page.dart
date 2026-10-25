@@ -471,7 +471,9 @@ class _CinemaWebsitesPageState extends State<CinemaWebsitesPage> {
       decoration: BoxDecoration(
         color: CinemaTheme.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: CinemaTheme.border),
+        border: Theme.of(context).platform == TargetPlatform.macOS
+            ? null
+            : Border.all(color: CinemaTheme.border),
       ),
       padding: const EdgeInsets.all(22),
       child: Column(

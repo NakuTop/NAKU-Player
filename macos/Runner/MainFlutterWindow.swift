@@ -214,6 +214,130 @@ private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStanda
   }
 }
 
+// An original, quiet synthesized chord, not an Apple recording or system sound.
+// This owner lives with its window and never requests capture/audio permissions.
+private final class NakuCinemaStartupSound {
+  private weak var window: NSWindow?
+  private var sound: NSSound?
+  private var activeGeneration: Int64?
+  private var highestGeneration: Int64?
+  private var observers = [NSObjectProtocol]()
+
+  init(window: NSWindow) {
+    self.window = window
+    let center = NotificationCenter.default
+    for name in [NSApplication.didResignActiveNotification,
+                 NSApplication.didHideNotification,
+                 NSApplication.willTerminateNotification] {
+      observers.append(center.addObserver(forName: name, object: nil, queue: .main) {
+        [weak self] _ in self?.stop()
+      })
+    }
+    for name in [NSWindow.willCloseNotification, NSWindow.didMiniaturizeNotification] {
+      observers.append(center.addObserver(forName: name, object: window, queue: .main) {
+        [weak self] _ in self?.stop()
+      })
+    }
+  }
+
+  deinit {
+    stop()
+    for observer in observers { NotificationCenter.default.removeObserver(observer) }
+  }
+
+  func stop(generation: Int64? = nil) {
+    if let generation, activeGeneration != generation { return }
+    sound?.stop()
+    sound = nil
+    activeGeneration = nil
+  }
+
+  func play(generation: Int64, volume: Double) throws -> Bool {
+    // Tokens are globally increasing across Dart player instances. Neither a
+    // duplicate ready notification nor an old route may replay a completed cue.
+    if let highestGeneration, generation <= highestGeneration { return false }
+    stop()
+    guard NSApp.isActive, !NSApp.isHidden,
+          let window, window.isVisible, !window.isMiniaturized else { return false }
+    highestGeneration = generation
+    let quietVolume = min(0.25, max(0, volume))
+    guard quietVolume > 0 else { return false }
+    let url = try Self.cachedWaveURL()
+    guard let prepared = NSSound(contentsOf: url, byReference: false) else {
+      throw NSError(domain: "naku.cinema-startup-sound", code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "无法准备影院提示音。"])
+    }
+    prepared.loops = false
+    prepared.volume = Float(quietVolume)
+    guard prepared.play() else {
+      throw NSError(domain: "naku.cinema-startup-sound", code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "当前音频输出暂不可用。"])
+    }
+    sound = prepared
+    activeGeneration = generation
+    return true
+  }
+
+  private static func cachedWaveURL() throws -> URL {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      Bundle.main.bundleIdentifier ?? "naku-player", isDirectory: true)
+      .appendingPathComponent("cinema-audio", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory,
+      withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let url = directory.appendingPathComponent("original-startup-chord-v1.wav")
+    if !FileManager.default.fileExists(atPath: url.path) {
+      try waveData().write(to: url, options: .atomic)
+    }
+    return url
+  }
+
+  private static func waveData() -> Data {
+    let sampleRate = 22_050
+    let duration = 0.92
+    let samples = Int(Double(sampleRate) * duration)
+    let pcmBytes = samples * 2
+    var data = Data(capacity: 44 + pcmBytes)
+    func word(_ value: UInt16) {
+      var little = value.littleEndian
+      withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+    }
+    func dword(_ value: UInt32) {
+      var little = value.littleEndian
+      withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+    }
+    data.append(contentsOf: "RIFF".utf8)
+    dword(UInt32(36 + pcmBytes))
+    data.append(contentsOf: "WAVEfmt ".utf8)
+    dword(16)
+    word(1) // Linear PCM.
+    word(1) // Mono; no synthetic spatial movement over the video soundtrack.
+    dword(UInt32(sampleRate))
+    dword(UInt32(sampleRate * 2))
+    word(2)
+    word(16)
+    data.append(contentsOf: "data".utf8)
+    dword(UInt32(pcmBytes))
+
+    let frequencies = [164.8138, 329.6276, 415.3047, 493.8833, 739.9888]
+    let weights = [0.20, 0.28, 0.18, 0.22, 0.12]
+    for index in 0..<samples {
+      let time = Double(index) / Double(sampleRate)
+      let attack = pow(sin(min(1, time / 0.065) * .pi / 2), 2)
+      let release = pow(max(0, 1 - time / duration), 2.4)
+      var signal = 0.0
+      for voice in frequencies.indices {
+        let localTime = max(0, time - Double(voice) * 0.006)
+        let phase = 2 * Double.pi * frequencies[voice] * localTime
+        signal += weights[voice] * (sin(phase) + 0.08 * sin(phase * 2))
+      }
+      let value = Int16((min(1, max(-1, signal * attack * release * 0.58))
+        * Double(Int16.max)).rounded())
+      word(UInt16(bitPattern: value))
+    }
+    return data
+  }
+}
+
 class MainFlutterWindow: NSWindow {
   // Keep the engine owner explicit; the window's root controller is the glass
   // container, while all plugin registrars still belong to this Flutter child.
@@ -226,8 +350,10 @@ class MainFlutterWindow: NSWindow {
   private var downloadActivity: NSObjectProtocol?
   private let nasMovies = NakuNASMovies()
   private var desktopControls: NakuDesktopWindowController?
+  private var cinemaStartupSound: NakuCinemaStartupSound?
 
   deinit {
+    cinemaStartupSound?.stop()
     if let activity = downloadActivity { ProcessInfo.processInfo.endActivity(activity) }
   }
 
@@ -254,15 +380,17 @@ class MainFlutterWindow: NSWindow {
 
     let desktopControls = NakuDesktopWindowController(window: self)
     self.desktopControls = desktopControls
+    cinemaStartupSound = NakuCinemaStartupSound(window: self)
     let desktopChannel = FlutterMethodChannel(name: "naku/desktop-controls",
       binaryMessenger: flutterViewController.engine.binaryMessenger)
-    desktopControls.onVisibilityChange = { hidden in
+    desktopControls.onVisibilityChange = { [weak self] hidden in
+      if hidden { self?.cinemaStartupSound?.stop() }
       desktopChannel.invokeMethod("visibilityChanged", arguments: ["hidden": hidden])
     }
     desktopControls.onStateChange = { state in
       desktopChannel.invokeMethod("stateChanged", arguments: state)
     }
-    desktopChannel.setMethodCallHandler { [weak desktopControls] call, result in
+    desktopChannel.setMethodCallHandler { [weak self, weak desktopControls] call, result in
       guard let controls = desktopControls else { result(nil); return }
       switch call.method {
       case "state": result(controls.state)
@@ -289,6 +417,29 @@ class MainFlutterWindow: NSWindow {
         result(nil)
       case "hide": controls.hide(); result(nil)
       case "show": controls.show(); result(nil)
+      case "playCinemaStartupSound":
+        guard let args = call.arguments as? [String: Any],
+              let generation = args["generation"] as? Int64, generation >= 0,
+              let volume = (args["volume"] as? NSNumber)?.doubleValue,
+              volume.isFinite else {
+          result(FlutterError(code: "invalid", message: "影院提示音参数无效。", details: nil)); return
+        }
+        do {
+          result(try self?.cinemaStartupSound?.play(generation: generation, volume: volume) ?? false)
+        } catch {
+          result(FlutterError(code: "cinema_sound", message: error.localizedDescription, details: nil))
+        }
+      case "stopCinemaStartupSound":
+        if let arguments = call.arguments, !(arguments is NSNull) {
+          guard let args = arguments as? [String: Any],
+                let generation = args["generation"] as? Int64 else {
+            result(FlutterError(code: "invalid", message: "影院提示音代次无效。", details: nil)); return
+          }
+          self?.cinemaStartupSound?.stop(generation: generation)
+        } else {
+          self?.cinemaStartupSound?.stop()
+        }
+        result(nil)
       default: result(FlutterMethodNotImplemented)
       }
     }

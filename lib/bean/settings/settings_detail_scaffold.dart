@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:kazumi/bean/appbar/sys_app_bar.dart';
+import 'package:kazumi/features/cinema/cinema_theme.dart';
 
 class SettingsPaneScope extends InheritedWidget {
   const SettingsPaneScope({
@@ -79,10 +80,12 @@ class SettingsDetailScaffold extends StatelessWidget {
       );
     }
 
-    // Keep routed panes opaque during transitions.
     return Scaffold(
+      backgroundColor: scope?.embedded == true
+          ? Colors.transparent
+          : CinemaTheme.background,
       appBar: appBar,
-      body: body,
+      body: CinemaCanvas(child: body),
       floatingActionButton: floatingActionButton,
       bottomNavigationBar: bottomNavigationBar,
     );

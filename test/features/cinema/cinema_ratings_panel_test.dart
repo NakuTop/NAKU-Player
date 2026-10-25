@@ -111,6 +111,7 @@ void main() {
     double width = 900,
     double textScale = 1,
     bool settle = true,
+    bool compact = false,
     CinemaTitle title = _title,
     CinemaDoubanReviewsRepository? reviewsRepository,
   }) async {
@@ -129,6 +130,7 @@ void main() {
               child: CinemaRatingsPanel(
                 title: title,
                 sourceName: '测试片源',
+                compact: compact,
                 repository: repository,
                 reviewsRepository: reviewsRepository ?? _ReviewsRepository(),
               ),
@@ -139,6 +141,41 @@ void main() {
     );
     if (settle) await tester.pumpAndSettle();
   }
+
+  testWidgets(
+    'compact scores retain details and source verification at narrow width',
+    (tester) async {
+      final repository = _FakeRepository();
+      await mount(tester, repository, width: 360, compact: true);
+      expect(find.text('9.1'), findsOneWidget);
+      expect(find.text('8.7'), findsOneWidget);
+      expect(find.text('89'), findsOneWidget);
+      await tester.tap(find.byTooltip('评分选项'));
+      await tester.pumpAndSettle();
+      expect(find.text('刷新评分'), findsOneWidget);
+      expect(find.text('关联条目'), findsOneWidget);
+      await tester.tap(find.text('关联与说明'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('IMDb ID：tt0816692'), findsOneWidget);
+      await tester.tap(find.text('完成'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.byKey(const ValueKey('rating-card-IMDb')));
+      await tester.pumpAndSettle();
+      expect(find.text('2,617,420 人评价'), findsOneWidget);
+      expect(find.text('更新 2026-10-08 12:30'), findsOneWidget);
+      expect(find.text('查看来源'), findsOneWidget);
+      expect(repository.forces, [false]);
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.text('完成'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('rating-card-豆瓣')));
+      await tester.pumpAndSettle();
+      expect(find.text('片源转述 · 未核验'), findsOneWidget);
+      expect(find.text('来自 测试片源'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'reviews are placed after related works in the full details panel',
