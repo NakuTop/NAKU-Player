@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 import 'package:flutter/services.dart';
@@ -33,15 +34,14 @@ class _CinemaNavigationIslandState<T extends Object>
     with SingleTickerProviderStateMixin {
   late final _position = AnimationController.unbounded(
     vsync: this,
-    value: _selected.toDouble(),
+    value: math.max(0, _selected).toDouble(),
   );
   bool _dragging = false;
   double _segmentWidth = 104;
   double _grabOffset = 0;
 
-  int get _selected => widget.destinations
-      .indexWhere((entry) => entry.$1 == widget.value)
-      .clamp(0, widget.destinations.length - 1);
+  int get _selected =>
+      widget.destinations.indexWhere((entry) => entry.$1 == widget.value);
   bool get _reduceMotion => MediaQuery.disableAnimationsOf(context);
 
   @override
@@ -49,21 +49,27 @@ class _CinemaNavigationIslandState<T extends Object>
     super.didChangeDependencies();
     if (_reduceMotion) {
       _position.stop();
-      _position.value = _selected.toDouble();
+      _position.value = math.max(0, _selected).toDouble();
     }
   }
 
   @override
   void didUpdateWidget(CinemaNavigationIsland<T> oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!_dragging &&
-        (oldWidget.value != widget.value ||
-            oldWidget.destinations.length != widget.destinations.length)) {
+    final sameOrder = listEquals(
+      oldWidget.destinations.map((entry) => entry.$1).toList(),
+      widget.destinations.map((entry) => entry.$1).toList(),
+    );
+    if (oldWidget.value != widget.value || !sameOrder) {
+      // Pointer coordinates and spring positions refer to the old ID order.
+      // A canceled gesture's remaining move/up events must not select a new ID.
+      _dragging = false;
       _settle(_selected);
     }
   }
 
   void _settle(int index) {
+    index = math.max(0, index);
     if (_reduceMotion) {
       _position.value = index.toDouble();
     } else {
@@ -81,6 +87,7 @@ class _CinemaNavigationIslandState<T extends Object>
 
   void _commit(int index) {
     _dragging = false;
+    if (index < 0 || index >= widget.destinations.length) return;
     _settle(index);
     if (widget.destinations[index].$1 != widget.value) {
       widget.onChanged(widget.destinations[index].$1);
@@ -90,11 +97,16 @@ class _CinemaNavigationIslandState<T extends Object>
   void _start(DragStartDetails details) {
     _position.stop();
     _dragging = true;
+    if (_selected < 0) {
+      _position.value = ((details.localPosition.dx - 7) / _segmentWidth - .5)
+          .clamp(0.0, widget.destinations.length - 1.0);
+    }
     _grabOffset =
         details.localPosition.dx - 7 - (_position.value + .5) * _segmentWidth;
   }
 
   void _drag(DragUpdateDetails details) {
+    if (!_dragging) return;
     final raw =
         (details.localPosition.dx - 7 - _grabOffset) / _segmentWidth - .5;
     final last = widget.destinations.length - 1.0;
@@ -124,7 +136,11 @@ class _CinemaNavigationIslandState<T extends Object>
           ? -1
           : 0;
       if (direction == 0) return KeyEventResult.ignored;
-      _commit((_selected + direction).clamp(0, widget.destinations.length - 1));
+      if (widget.destinations.isEmpty) return KeyEventResult.ignored;
+      final target = _selected < 0
+          ? (direction > 0 ? 0 : widget.destinations.length - 1)
+          : (_selected + direction).clamp(0, widget.destinations.length - 1);
+      _commit(target);
       return KeyEventResult.handled;
     },
     child: CinemaGlass(
@@ -145,12 +161,15 @@ class _CinemaNavigationIslandState<T extends Object>
               dragStartBehavior: DragStartBehavior.down,
               onHorizontalDragStart: _start,
               onHorizontalDragUpdate: _drag,
-              onHorizontalDragEnd: (_) => _commit(
-                _position.value.round().clamp(
-                  0,
-                  widget.destinations.length - 1,
-                ),
-              ),
+              onHorizontalDragEnd: (_) {
+                if (!_dragging) return;
+                _commit(
+                  _position.value.round().clamp(
+                    0,
+                    widget.destinations.length - 1,
+                  ),
+                );
+              },
               onHorizontalDragCancel: () {
                 _dragging = false;
                 _settle(_selected);
@@ -159,20 +178,23 @@ class _CinemaNavigationIslandState<T extends Object>
                 children: [
                   AnimatedBuilder(
                     animation: _position,
-                    builder: (_, _) => Positioned(
-                      left: 3 + _position.value * _segmentWidth,
-                      top: 3,
-                      bottom: 3,
-                      width: _segmentWidth,
-                      child: IgnorePointer(
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: const Color(0x22FFFFFF),
-                            borderRadius: BorderRadius.circular(24),
+                    builder: (_, _) => _selected < 0 && !_dragging
+                        ? const SizedBox.shrink()
+                        : Positioned(
+                            left: 3 + _position.value * _segmentWidth,
+                            top: 3,
+                            bottom: 3,
+                            width: _segmentWidth,
+                            child: IgnorePointer(
+                              child: DecoratedBox(
+                                key: const ValueKey('cinema-navigation-thumb'),
+                                decoration: BoxDecoration(
+                                  color: const Color(0x22FFFFFF),
+                                  borderRadius: BorderRadius.circular(24),
+                                ),
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
-                    ),
                   ),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 3),

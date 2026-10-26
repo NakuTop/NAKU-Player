@@ -14,10 +14,13 @@ void main() {
     (5, Icons.settings_outlined, '设置'),
   ];
   var current = 0;
+  var visibleEntries = entries;
+  late StateSetter update;
   final committed = <int>[];
 
-  Future<void> mount(WidgetTester tester) async {
-    current = 0;
+  Future<void> mount(WidgetTester tester, {int initial = 0}) async {
+    current = initial;
+    visibleEntries = entries;
     committed.clear();
     await tester.pumpWidget(
       MaterialApp(
@@ -25,9 +28,10 @@ void main() {
           body: Center(
             child: StatefulBuilder(
               builder: (context, setState) {
+                update = setState;
                 return CinemaNavigationIsland<int>(
                   value: current,
-                  destinations: entries,
+                  destinations: visibleEntries,
                   keyFor: (value) => ValueKey('destination-$value'),
                   onChanged: (value) => setState(() {
                     current = value;
@@ -107,4 +111,147 @@ void main() {
     expect(tester.binding.hasScheduledFrame, isFalse);
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets(
+    'filtering destinations preserves selected IDs and click mapping',
+    (tester) async {
+      await mount(tester, initial: 3);
+      update(
+        () => visibleEntries = entries.where((entry) => entry.$1 != 2).toList(),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('destination-2')), findsNothing);
+      expect(
+        tester
+            .getCenter(find.byKey(const ValueKey('cinema-navigation-thumb')))
+            .dx,
+        closeTo(
+          tester.getCenter(find.byKey(const ValueKey('destination-3'))).dx,
+          1,
+        ),
+      );
+      await tester.tap(find.byKey(const ValueKey('destination-5')));
+      await tester.pumpAndSettle();
+      expect(current, 5);
+      expect(committed, [5]);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('same-length ID reordering moves the thumb to the selected ID', (
+    tester,
+  ) async {
+    await mount(tester, initial: 4);
+    update(() => visibleEntries = [entries[4], ...entries.take(4), entries[5]]);
+    await tester.pumpAndSettle();
+    expect(current, 4);
+    expect(committed, isEmpty);
+    expect(
+      tester
+          .getCenter(find.byKey(const ValueKey('cinema-navigation-thumb')))
+          .dx,
+      closeTo(
+        tester.getCenter(find.byKey(const ValueKey('destination-4'))).dx,
+        1,
+      ),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('removing an ID during drag cancels remaining move and release', (
+    tester,
+  ) async {
+    await mount(tester);
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byKey(const ValueKey('destination-0'))),
+      kind: PointerDeviceKind.mouse,
+    );
+    await gesture.moveTo(
+      tester.getCenter(find.byKey(const ValueKey('destination-4'))),
+    );
+    await tester.pump();
+    update(
+      () => visibleEntries = entries.where((entry) => entry.$1 != 2).toList(),
+    );
+    await tester.pump();
+    await gesture.moveTo(
+      tester.getCenter(find.byKey(const ValueKey('destination-5'))),
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(current, 0);
+    expect(committed, isEmpty);
+    expect(
+      tester
+          .getCenter(find.byKey(const ValueKey('cinema-navigation-thumb')))
+          .dx,
+      closeTo(
+        tester.getCenter(find.byKey(const ValueKey('destination-0'))).dx,
+        1,
+      ),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'external selection during drag cannot be overwritten on release',
+    (tester) async {
+      await mount(tester);
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byKey(const ValueKey('destination-0'))),
+        kind: PointerDeviceKind.mouse,
+      );
+      await gesture.moveTo(
+        tester.getCenter(find.byKey(const ValueKey('destination-4'))),
+      );
+      await tester.pump();
+      update(() => current = 1);
+      await tester.pump();
+      await gesture.moveTo(
+        tester.getCenter(find.byKey(const ValueKey('destination-5'))),
+      );
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(current, 1);
+      expect(committed, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  for (final direction in [
+    LogicalKeyboardKey.arrowRight,
+    LogicalKeyboardKey.arrowLeft,
+  ]) {
+    testWidgets(
+      'a hidden selected value has no false highlight and $direction chooses an edge',
+      (tester) async {
+        await mount(tester, initial: 2);
+        update(
+          () =>
+              visibleEntries = entries.where((entry) => entry.$1 != 2).toList(),
+        );
+        await tester.pumpAndSettle();
+        expect(current, 2);
+        expect(
+          find.byKey(const ValueKey('cinema-navigation-thumb')),
+          findsNothing,
+        );
+        final selection = find.descendant(
+          of: find.byType(CinemaNavigationIsland<int>),
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Semantics && widget.properties.selected == true,
+          ),
+        );
+        expect(selection, findsNothing);
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.sendKeyEvent(direction);
+        await tester.pumpAndSettle();
+        final expected = direction == LogicalKeyboardKey.arrowRight ? 0 : 5;
+        expect(current, expected);
+        expect(committed, [expected]);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
 }

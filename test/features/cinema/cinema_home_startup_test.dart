@@ -15,6 +15,7 @@ import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/cinema_settings_page.dart';
 import 'package:kazumi/features/cinema/cinema_startup_preferences.dart';
+import 'package:kazumi/features/cinema/cinema_navigation_preferences.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
 import 'package:kazumi/features/cinema/douban/douban_models.dart';
 import 'package:kazumi/features/cinema/douban/douban_page.dart';
@@ -104,6 +105,11 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final target = CinemaStartupTarget.fromStored(startup);
+    final navigation = CinemaNavigationPreferences(
+      readValue: () => true,
+      writeValue: (_) async {},
+    );
+    addTearDown(navigation.dispose);
     final module = createModule(
       register: (c) {
         c
@@ -118,6 +124,7 @@ void main() {
             '/cinema',
             provide: provideCinemaAnimeControllers,
             child: (_, state) => CinemaHomePage(
+              navigationPreferences: navigation,
               initialStartup: CinemaStartupTarget.fromStored(
                 state.uri.toString(),
               ),

@@ -4,6 +4,7 @@ import 'cinema_poster_atmosphere.dart';
 import 'cinema_poster_palette.dart';
 import 'cinema_featured_wall.dart';
 import 'cinema_navigation_island.dart';
+import 'cinema_navigation_preferences.dart';
 import 'cinema_tv_focus.dart';
 import 'cinema_lan_cast.dart';
 import 'package:kazumi/services/platform/naku_device.dart';
@@ -130,6 +131,7 @@ class CinemaHomePage extends StatefulWidget {
     this.catalogDiscovery,
     this.doubanThemeCatalog,
     this.animePageBuilder,
+    this.navigationPreferences,
     this.playerPageBuilder,
     this.initialStartup = const CinemaStartupTarget(),
   });
@@ -149,6 +151,7 @@ class CinemaHomePage extends StatefulWidget {
   final DoubanRepository? catalogDiscovery;
   final DoubanThemeCatalog? doubanThemeCatalog;
   final Widget Function(BuildContext context, bool active)? animePageBuilder;
+  final CinemaNavigationPreferences? navigationPreferences;
 
   @override
   State<CinemaHomePage> createState() => _CinemaHomePageState();
@@ -161,6 +164,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   List<CinemaSource> get _activeSources =>
       _health.available(_store.enabledSources);
   late final CinemaStore _store = widget.store ?? CinemaStore();
+  late final _navigationPreferences =
+      widget.navigationPreferences ?? CinemaNavigationPreferences.instance;
   CinemaNASSync? _nasSync;
   final _nasPageCache = CinemaNASPageCache();
   late final CinemaRepository _repository =
@@ -376,6 +381,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           .length,
     );
     _store.addListener(_onStoreChanged);
+    _navigationPreferences.addListener(_onNavigationChanged);
     _health.addListener(_onHealthChanged);
 
     _ratings.changes.addListener(_onRatingsChanged);
@@ -854,6 +860,16 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     if (sourcesChanged && _isCatalog && !_searching) unawaited(_browse());
   }
 
+  void _onNavigationChanged() {
+    if (mounted) setState(() {});
+  }
+
+  // Explicit anime startup/deep links keep a selected destination while that
+  // page is open, without changing the device's saved navigation preference.
+  bool get _showAnimeDestination =>
+      !(Platform.isAndroid || NakuDevice.isTV) &&
+      (_navigationPreferences.showAnime || _section == _Section.anime);
+
   Future<void> _initialize() async {
     try {
       await _store.load();
@@ -924,6 +940,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       _together.onFollowRequested = null;
     }
     _store.removeListener(_onStoreChanged);
+    _navigationPreferences.removeListener(_onNavigationChanged);
     _health.removeListener(_onHealthChanged);
 
     unawaited(_health.flush());
@@ -2404,10 +2421,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                     onChanged: _selectSection,
                     keyFor: (section) =>
                         ValueKey('cinema-destination-${section.name}'),
-                    destinations: const [
+                    destinations: [
                       (_Section.movies, Icons.local_movies_outlined, '电影'),
                       (_Section.series, Icons.tv_rounded, '剧集'),
-                      (_Section.anime, Icons.animation_rounded, '动漫'),
+                      if (_showAnimeDestination)
+                        (_Section.anime, Icons.animation_rounded, '动漫'),
                       (
                         _Section.favorites,
                         Icons.bookmark_border_rounded,
@@ -2510,8 +2528,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           ),
         const SizedBox(height: 28),
         for (final section in _Section.values.where(
-          (s) =>
-              !(Platform.isAndroid || NakuDevice.isTV) || s != _Section.anime,
+          (s) => s != _Section.anime || _showAnimeDestination,
         )) ...[
           if (section == _Section.favorites)
             const Padding(
@@ -2521,6 +2538,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
             child: ListTile(
+              key: ValueKey('cinema-destination-${section.name}'),
               autofocus: NakuDevice.isTV && _section == section,
               selected: _section == section,
               selectedTileColor: CinemaTheme.copper.withValues(alpha: .16),
@@ -2835,6 +2853,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     if (_section == _Section.settings) {
       if (_showSourceManager) return _sourceManager(wide);
       return CinemaSettingsPage(
+        navigationPreferences: _navigationPreferences,
         platform: Platform.isAndroid
             ? TargetPlatform.android
             : Platform.isMacOS

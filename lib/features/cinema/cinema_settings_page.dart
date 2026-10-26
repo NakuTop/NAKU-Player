@@ -7,6 +7,7 @@ import 'cinema_theme.dart';
 import 'cinema_settings_catalog.dart';
 import 'cinema_window_close_settings.dart';
 import 'cinema_desktop_window_settings.dart';
+import 'cinema_navigation_preferences.dart';
 
 /// Shared settings entry; source editing remains owned by the home store.
 class CinemaSettingsPage extends StatelessWidget {
@@ -20,6 +21,7 @@ class CinemaSettingsPage extends StatelessWidget {
     this.onOpenRoute,
     this.onTools,
     this.platform,
+    this.navigationPreferences,
   });
 
   final TargetPlatform? platform;
@@ -30,6 +32,7 @@ class CinemaSettingsPage extends StatelessWidget {
   final int? enabledSourceCount;
   final int? sourceCount;
   final ValueChanged<String>? onOpenRoute;
+  final CinemaNavigationPreferences? navigationPreferences;
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
@@ -106,6 +109,8 @@ class CinemaSettingsPage extends StatelessWidget {
                           subtitle: refined ? '' : '调整全局磨砂玻璃背景的透明度',
                           onTap: onAppearance,
                         ),
+                        if (!android && !NakuDevice.isTV)
+                          _animeNavigationToggle(compact: refined),
                         if (!refined)
                           const Divider(height: 1, indent: 68, endIndent: 20),
                         if (!android) const CinemaWindowCloseSettings(),
@@ -315,6 +320,7 @@ class CinemaSettingsPage extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         group('外观与窗口', [
+                          _animeNavigationToggle(compact: true),
                           _entry(
                             key: 'settings-appearance',
                             icon: Icons.blur_on_rounded,
@@ -370,6 +376,37 @@ class CinemaSettingsPage extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _animeNavigationToggle({required bool compact}) {
+    final preferences =
+        navigationPreferences ?? CinemaNavigationPreferences.instance;
+    return ListenableBuilder(
+      listenable: preferences,
+      builder: (context, _) => Column(
+        children: [
+          SwitchListTile.adaptive(
+            key: const ValueKey('settings-anime-navigation'),
+            contentPadding: EdgeInsets.symmetric(horizontal: compact ? 10 : 22),
+            secondary: const Icon(
+              Icons.animation_rounded,
+              color: CinemaTheme.muted,
+            ),
+            title: const Text('显示动漫入口', style: TextStyle(fontSize: 14)),
+            value: preferences.showAnime,
+            onChanged: preferences.saving ? null : preferences.setShowAnime,
+          ),
+          if (preferences.error != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(22, 0, 22, 10),
+              child: Text(
+                preferences.error!,
+                style: const TextStyle(color: CinemaTheme.muted, fontSize: 12),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
