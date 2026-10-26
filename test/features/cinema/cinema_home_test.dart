@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
 import 'package:kazumi/features/cinema/cinema_featured_wall.dart';
 import 'package:kazumi/features/cinema/cinema_resource_badge.dart';
+import 'package:kazumi/features/cinema/cinema_card_ratings.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
@@ -1160,6 +1161,73 @@ void main() {
     await tester.pumpAndSettle();
     expect(offset(), closeTo(seriesOffset, 1));
     expect(repository.browsed, hasLength(calls));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('scroll frames retain mounted poster cards and resource badges', (
+    tester,
+  ) async {
+    repository.manyItems = true;
+    await mount(tester);
+    final verticalScroll = find.descendant(
+      of: find.byType(CustomScrollView).first,
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is Scrollable && widget.axisDirection == AxisDirection.down,
+      ),
+    );
+    final position = tester.state<ScrollableState>(verticalScroll).position;
+    position.jumpTo(1000);
+    await tester.pumpAndSettle();
+    final mountedCards = find.byType(CinemaCardRatings).evaluate().toSet();
+    final mountedBadges = find.byType(CinemaResourceBadge).evaluate().toSet();
+    final home = tester.element(find.byType(CinemaHomePage));
+    expect(mountedCards.length, greaterThanOrEqualTo(6));
+    expect(mountedBadges.length, greaterThanOrEqualTo(6));
+    var cardRebuilds = 0;
+    var badgeRebuilds = 0;
+    var homeRebuilds = 0;
+    final previousBuild = debugOnRebuildDirtyWidget;
+    final frameMicros = <int>[];
+    debugOnRebuildDirtyWidget = (element, builtOnce) {
+      previousBuild?.call(element, builtOnce);
+      // Flutter's builtOnce flag is only maintained when verbose rebuild
+      // printing is enabled. Track the actual settled Elements instead so the
+      // probe distinguishes updates from newly mounted cache-extent children.
+      if (mountedCards.contains(element)) cardRebuilds++;
+      if (mountedBadges.contains(element)) badgeRebuilds++;
+      if (identical(element, home)) homeRebuilds++;
+    };
+    try {
+      final gesture = await tester.startGesture(const Offset(1100, 500));
+      for (var frame = 0; frame < 48; frame++) {
+        final stopwatch = Stopwatch()..start();
+        await gesture.moveBy(const Offset(0, -2));
+        await tester.pump(const Duration(milliseconds: 16));
+        frameMicros.add(stopwatch.elapsedMicroseconds);
+      }
+      await gesture.up();
+    } finally {
+      debugOnRebuildDirtyWidget = previousBuild;
+    }
+    frameMicros.sort();
+    debugPrint(
+      'HOME_SCROLL_PROFILE: frames=${frameMicros.length} '
+      'tracked_cards=${mountedCards.length} '
+      'card_rebuilds=$cardRebuilds badge_rebuilds=$badgeRebuilds '
+      'home_rebuilds=$homeRebuilds '
+      'debug_host_p50_us=${frameMicros[frameMicros.length ~/ 2]} '
+      'debug_host_p95_us=${frameMicros[(frameMicros.length * .95).floor()]}',
+    );
+    expect(position.pixels, greaterThan(1050));
+    expect(
+      cardRebuilds,
+      0,
+      reason: 'Scrolling must not update every already-mounted poster card.',
+    );
+    expect(badgeRebuilds, 0);
+    expect(homeRebuilds, 0);
+    await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
 

@@ -2890,6 +2890,21 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       for (var index = 0; index < wallItems.length; index++)
         wallItems[index].key: index,
     };
+    // SliverLayoutBuilder receives new scrollOffset/cache constraints on every
+    // scroll frame. Keep the child delegate stable within this catalogue build
+    // so those geometry updates do not rebuild every mounted poster, rating and
+    // resource badge. Data, sorting and filtering create a fresh delegate here.
+    final wallChildren = SliverChildBuilderDelegate(
+      (context, index) => _titleCard(
+        wallItems[index],
+        variants: variantsByKey[wallItems[index].key] ?? const [],
+      ),
+      childCount: wallItems.length,
+      findChildIndexCallback: (key) =>
+          key is ValueKey<String> && key.value.startsWith('title-card:')
+          ? wallIndices[key.value.substring('title-card:'.length)]
+          : null,
+    );
     return CustomScrollView(
       key: PageStorageKey(_catalogViewportKey),
       slivers: [
@@ -3210,18 +3225,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         .floor()
                         .clamp(2, immersive ? 7 : 6);
                 return SliverGrid(
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) => _titleCard(
-                      wallItems[index],
-                      variants: variantsByKey[wallItems[index].key] ?? const [],
-                    ),
-                    childCount: wallItems.length,
-                    findChildIndexCallback: (key) =>
-                        key is ValueKey<String> &&
-                            key.value.startsWith('title-card:')
-                        ? wallIndices[key.value.substring('title-card:'.length)]
-                        : null,
-                  ),
+                  delegate: wallChildren,
                   gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: columns,
                     crossAxisSpacing: 18,

@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
-import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
@@ -56,13 +56,16 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
       widget.windowControls ?? DesktopWindowControls.instance;
   PlatformInAppWebViewWidget? _webView;
   PlatformInAppWebViewController? _controller;
-  Uint8List? _preview;
+  ui.Image? _preview;
   Timer? _timeout, _captureTimer, _settleTimer, _renewTimer;
   bool _loading = true, _overlay = true, _hidden = false;
   bool _occluded = false, _minimized = false;
   bool get _suspended => _hidden || _occluded;
-  bool _capturePending = false, _authorizing = false, _needsNAS = false;
+  Future<void>? _captureWork;
+  bool _authorizing = false, _needsNAS = false;
   int _generation = 0, _document = 0, _captures = 0, _progress = 0;
+  int _previewStage = 0;
+  int? _finishingDocument;
   String? _error;
   String _url = cinemaHomeDisplayUrl;
 
@@ -229,6 +232,8 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
                   return false;
                 }
                 unawaited(_finishDocument(generation, _document));
+              } else if (state['firstDrawObserved'] == true) {
+                _requestPreview(generation, _document, stage: 2);
               }
               return true;
             },
@@ -252,8 +257,9 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
           }
         },
         onProgressChanged: (_, value) {
-          if (_active(generation)) {
-            setState(() => _progress = value.clamp(0, 100));
+          final next = value.clamp(0, 100);
+          if (_active(generation) && _loading && next != _progress) {
+            setState(() => _progress = next);
           }
         },
         onPageCommitVisible: (_, _) {
@@ -322,6 +328,8 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
       _preview = null;
       _progress = 0;
       _captures = 0;
+      _previewStage = 0;
+      _finishingDocument = null;
       _error = null;
     });
     final document = _document;
@@ -338,57 +346,103 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
   }
 
   void _startCaptures(int generation, int document) {
-    if (!_loading || _captureTimer != null || _suspended) return;
-    unawaited(_capture(generation, document));
-    _captureTimer = Timer.periodic(const Duration(milliseconds: 900), (_) {
-      if (!_active(generation) ||
-          document != _document ||
-          !_loading ||
-          _suspended ||
-          _captures >= 24) {
-        _captureTimer?.cancel();
-        _captureTimer = null;
-        return;
-      }
-      unawaited(_capture(generation, document));
+    _requestPreview(generation, document, stage: 1);
+  }
+
+  void _requestPreview(int generation, int document, {required int stage}) {
+    if (!_active(generation) ||
+        document != _document ||
+        !_loading ||
+        _suspended ||
+        stage <= _previewStage) {
+      return;
+    }
+    _previewStage = stage;
+    _captureTimer?.cancel();
+    // A native snapshot is a GPU readback plus PNG encode/decode. Capture only
+    // meaningful page milestones; the front-end field animates independently.
+    _captureTimer = Timer(const Duration(milliseconds: 150), () {
+      _captureTimer = null;
+      unawaited(() async {
+        await _captureWork;
+        if (!_active(generation) ||
+            document != _document ||
+            !_loading ||
+            _suspended ||
+            _finishingDocument == document ||
+            _captures >= 2) {
+          return;
+        }
+        await _capture(generation, document);
+      }());
     });
   }
 
-  Future<void> _capture(int generation, int document) async {
+  Future<void> _capture(int generation, int document) {
+    final pending = _captureWork;
+    if (pending != null) return pending;
+    final work = _captureOnce(generation, document);
+    _captureWork = work;
+    return work.whenComplete(() {
+      if (identical(_captureWork, work)) _captureWork = null;
+    });
+  }
+
+  Future<void> _captureOnce(int generation, int document) async {
     final controller = _controller;
-    if (_capturePending || controller == null || _suspended) return;
-    _capturePending = true;
+    if (controller == null || _suspended) return;
     ++_captures;
+    ui.Codec? codec;
+    ui.Image? image;
     try {
       final bytes = await controller
           .takeScreenshot(
             screenshotConfiguration: ScreenshotConfiguration(
-              snapshotWidth: 960,
+              snapshotWidth: 640,
             ),
           )
           .timeout(const Duration(seconds: 3));
+      if (bytes != null &&
+          _active(generation) &&
+          document == _document &&
+          _overlay) {
+        codec = await ui.instantiateImageCodec(
+          bytes,
+          targetWidth: 960,
+          allowUpscaling: false,
+        );
+        image = (await codec.getNextFrame()).image;
+      }
       if (_active(generation) &&
           document == _document &&
           _overlay &&
-          bytes != null) {
+          image != null) {
         final previous = _preview;
-        setState(() => _preview = bytes);
-        if (previous != null && !identical(previous, bytes)) {
-          PaintingBinding.instance.imageCache.evict(MemoryImage(previous));
-        }
+        setState(() => _preview = image);
+        image = null; // Ownership transfers to the front-end renderer.
+        _retirePreview(previous);
       }
     } catch (_) {
       // A snapshot failure does not stop the native page or change readiness.
     } finally {
-      _capturePending = false;
+      codec?.dispose();
+      image?.dispose();
     }
   }
 
   Future<void> _finishDocument(int generation, int document) async {
-    if (!_loading || !_active(generation) || document != _document) return;
+    if (!_loading ||
+        !_active(generation) ||
+        document != _document ||
+        _finishingDocument == document) {
+      return;
+    }
+    _finishingDocument = document;
     _timeout?.cancel();
     _captureTimer?.cancel();
     _captureTimer = null;
+    await _captureWork;
+    if (!_active(generation) || document != _document) return;
     await _capture(generation, document);
     if (!_active(generation) || document != _document) return;
     setState(() {
@@ -424,9 +478,14 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
   void _releasePreview() {
     final previous = _preview;
     _preview = null;
-    if (previous != null) {
-      PaintingBinding.instance.imageCache.evict(MemoryImage(previous));
-    }
+    _retirePreview(previous);
+  }
+
+  void _retirePreview(ui.Image? image) {
+    if (image == null) return;
+    // Let the previous painter leave the current frame before releasing its
+    // GPU image. No snapshots or decoded frames enter the global image cache.
+    WidgetsBinding.instance.addPostFrameCallback((_) => image.dispose());
   }
 
   void _cancelLoadingTimers() {
@@ -544,17 +603,11 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
               child: CinemaNeonDecode(
                 loading: _loading,
                 progress: (_progress / 100) * .75,
+                snapshotRendering: true,
+                rasterSnapshot: _preview,
                 child: ColoredBox(
                   color: CinemaTheme.background.withValues(alpha: 1),
-                  child: _preview == null
-                      ? const SizedBox.expand()
-                      : Image.memory(
-                          _preview!,
-                          fit: BoxFit.fill,
-                          gaplessPlayback: true,
-                          filterQuality: FilterQuality.high,
-                          excludeFromSemantics: true,
-                        ),
+                  child: const SizedBox.expand(),
                 ),
               ),
             ),

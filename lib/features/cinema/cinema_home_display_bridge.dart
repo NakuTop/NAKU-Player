@@ -12,13 +12,14 @@ const cinemaHomeDisplayBridgeSource = r'''
   'use strict';
   if (window.top !== window || location.origin !== 'https://between-us-home.pages.dev') return;
   if (window.__nakuHomeDisplay) return;
-  const restorers = [], listeners = [], contexts = new WeakMap();
+  const restorers = [], listeners = [], contexts = new WeakMap(), pendingContexts = new Set();
   const handlerName = 'nakuHomeDisplayState';
   let destroyed = false, visible = true, timer = 0, frame = 0, observer = null;
   let generation = 0, navigation = '', startedAt = 0, pausedAt = null, ready = false, timedOut = false;
   let apiStatus = null, apiObserved = false, fontsReady = false, settling = false;
   let drawn = false, drawCalls = 0, uploadedWidth = 0, uploadedHeight = 0, uploads = 0;
   let textureTier = null, renderDpr = null, lastUploadAt = 0, lastSent = '', pendingReport = null;
+  let displayRoute = false, observedContext = null;
   const clock = () => performance.now();
   const active = () => !destroyed && visible && !document.hidden;
   const route = () => location.pathname.replace(/\/+$/, '') || '/';
@@ -83,7 +84,8 @@ const cinemaHomeDisplayBridgeSource = r'''
   function contextState(context) {
     let entry = contexts.get(context);
     if (!entry) {
-      entry = { width: 0, height: 0, uploads: 0, lastUploadAt: 0, draws: 0, framebuffer: null };
+      entry = { width: 0, height: 0, uploads: 0, lastUploadAt: 0, draws: 0, drawGeneration: -1,
+        drawnUploads: 0, drawnWidth: 0, drawnHeight: 0, drawnUploadAt: 0, framebuffer: null };
       contexts.set(context, entry);
     }
     return entry;
@@ -96,27 +98,50 @@ const cinemaHomeDisplayBridgeSource = r'''
     return { canvas, stage };
   }
   function observeDraw(context, args, name) {
+    if (!displayRoute) return;
     const count = name === 'drawArrays' || name === 'drawArraysInstanced' ? args[2] : name === 'drawRangeElements' ? args[3] : args[1];
     const instances = name === 'drawArraysInstanced' ? args[3] : name === 'drawElementsInstanced' ? args[4] : 1;
     if (!finite(count) || !finite(instances) || context.drawingBufferWidth <= 0 || context.drawingBufferHeight <= 0) return;
     const entry = contextState(context);
     if (entry.framebuffer !== null) return;
     entry.draws += 1;
-    if (!active() || route() !== '/display') return;
-    const target = earthCanvas(context);
-    if (!target) return;
-    const changed = !drawn || uploads !== entry.uploads || uploadedWidth !== entry.width || uploadedHeight !== entry.height;
-    drawn = true; drawCalls = entry.draws;
-    uploads = entry.uploads; uploadedWidth = entry.width; uploadedHeight = entry.height;
-    lastUploadAt = entry.lastUploadAt;
-    // The site reports its loaded base profile as 2K/4K/8K, then upgrades it
-    // progressively. Tiny placeholder uploads must not complete the transition.
-    const label = target.stage.getAttribute('data-earth-texture-tier');
-    const tier = ({ '2K': 2048, '4K': 4096, '8K': 8192 })[label] || Number(label);
-    textureTier = [2048, 4096, 8192].includes(tier) ? tier : null;
-    const dpr = Number(target.canvas.getAttribute('data-earth-dpr'));
-    if (finite(dpr)) renderDpr = dpr;
-    if (changed || !ready) schedule(100);
+    if (!ready && !active()) return;
+    entry.drawGeneration = generation;
+    const textureChanged = entry.drawnUploads !== entry.uploads;
+    if (textureChanged) {
+      entry.drawnUploads = entry.uploads;
+      entry.drawnWidth = entry.width; entry.drawnHeight = entry.height;
+      entry.drawnUploadAt = entry.lastUploadAt;
+    }
+    if (observedContext === context) drawCalls = entry.draws;
+    // DOM geometry reads can flush WebKit layout. Never put them in a draw
+    // call: the site may issue dozens of calls for each displayed frame.
+    // Once ready, normal animation does no observation work beyond counting.
+    if (ready && !textureChanged) return;
+    pendingContexts.add(context);
+    schedule(100);
+  }
+  function collectRenderObservations() {
+    for (const context of pendingContexts) {
+      const entry = contextState(context);
+      if (entry.drawGeneration !== generation) continue;
+      const target = earthCanvas(context);
+      if (!target) continue;
+      observedContext = context;
+      drawn = true; drawCalls = entry.draws;
+      // Only publish uploads followed by a valid visible draw. Uploading a new
+      // image without drawing it must not dismiss the front-end transition.
+      uploads = entry.drawnUploads; uploadedWidth = entry.drawnWidth; uploadedHeight = entry.drawnHeight;
+      lastUploadAt = entry.drawnUploadAt;
+      // Keep the website's 2K/4K/8K and DPR choices intact. Optional texture
+      // upgrades enqueue one observation without reviving per-frame polling.
+      const label = target.stage.getAttribute('data-earth-texture-tier');
+      const tier = ({ '2K': 2048, '4K': 4096, '8K': 8192 })[label] || Number(label);
+      textureTier = [2048, 4096, 8192].includes(tier) ? tier : null;
+      const dpr = Number(target.canvas.getAttribute('data-earth-dpr'));
+      if (finite(dpr)) renderDpr = dpr;
+    }
+    pendingContexts.clear();
   }
   function dimensions(source) {
     if (!source || typeof source !== 'object') return null;
@@ -138,7 +163,7 @@ const cinemaHomeDisplayBridgeSource = r'''
     const entry = contextState(context);
     entry.uploads += 1; entry.lastUploadAt = clock();
     if (size[0] * size[1] >= entry.width * entry.height) { entry.width = size[0]; entry.height = size[1]; }
-    if (earthCanvas(context)) schedule(100);
+    if (displayRoute) { pendingContexts.add(context); schedule(100); }
   }
   const prototypes = new Set();
   for (const constructor of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
@@ -191,6 +216,7 @@ const cinemaHomeDisplayBridgeSource = r'''
   function check() {
     if (!active()) return;
     if (navigation !== location.href) resetNavigation();
+    collectRenderObservations();
     if (!ready && contentReady() && !settling) {
       settling = true;
       const ticket = generation;
@@ -209,6 +235,7 @@ const cinemaHomeDisplayBridgeSource = r'''
   }
   function resetNavigation() {
     cancelWork(); generation += 1; navigation = location.href; startedAt = clock();
+    displayRoute = route() === '/display'; observedContext = null; pendingContexts.clear();
     ready = false; timedOut = false; apiObserved = false; apiStatus = null;
     pausedAt = active() ? null : startedAt;
     drawn = false; drawCalls = 0; uploads = 0; uploadedWidth = uploadedHeight = 0;
@@ -245,7 +272,7 @@ const cinemaHomeDisplayBridgeSource = r'''
     getState() { return state(); },
     destroy() {
       if (destroyed) return;
-      destroyed = true; generation += 1; cancelWork();
+      destroyed = true; generation += 1; cancelWork(); pendingContexts.clear(); observedContext = null;
       if (observer) observer.disconnect();
       for (const remove of listeners.reverse()) { try { remove(); } catch (_) {} }
       for (const restore of restorers.reverse()) { try { restore(); } catch (_) {} }

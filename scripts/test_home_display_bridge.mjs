@@ -23,6 +23,7 @@ class Events {
 function browser(path = '/display', origin = 'https://between-us-home.pages.dev', options = {}) {
   let now = 0, nextId = 1;
   const jobs = new Map(), reports = [], requested = [], observers = [];
+  const observations = { closest: 0, dimensions: 0, attributes: 0 };
   const window = new Events(), document = new Events();
   const location = {};
   const setUrl = (value) => {
@@ -38,9 +39,15 @@ function browser(path = '/display', origin = 'https://between-us-home.pages.dev'
   class WebGL {
     constructor(earth = true) {
       this.drawingBufferWidth = 1280; this.drawingBufferHeight = 720;
-      this.canvas = { clientWidth: 1280, clientHeight: 720,
-        closest: () => earth ? { getAttribute: () => options.textureTier || '4K' } : null,
-        getAttribute: () => null };
+      this.canvas = {
+        get clientWidth() { observations.dimensions++; return 1280; },
+        get clientHeight() { observations.dimensions++; return 720; },
+        closest() {
+          observations.closest++;
+          return earth ? { getAttribute() { observations.attributes++; return options.textureTier || '4K'; } } : null;
+        },
+        getAttribute() { observations.attributes++; return null; },
+      };
     }
     drawElements(...args) { if (this.drawError) throw this.drawError; this.drawArgs = args; return 'draw-return'; }
     drawArrays(...args) { return this.drawElements(...args); }
@@ -97,7 +104,7 @@ function browser(path = '/display', origin = 'https://between-us-home.pages.dev'
     }
     now = end; await Promise.resolve(); await Promise.resolve();
   }
-  return { window, document, location, history, reports, requested, observers, jobs, WebGL, WebGL2,
+  return { window, document, location, history, reports, requested, observers, observations, jobs, WebGL, WebGL2,
     originalDraw, originalUpload, originalPush, originalFetch, advance,
     last: () => reports.at(-1)?.state };
 }
@@ -253,6 +260,57 @@ await test('steady animation does not continuously message native code', async (
   const count = page.reports.length;
   for (let i = 0; i < 60; i += 1) { earth.drawElements(4, 3, 0, 0); await page.advance(16); }
   assert.equal(page.reports.length, count);
+  page.window.__nakuHomeDisplay.destroy();
+});
+
+await test('steady WebGL animation does not query layout or texture labels per draw', async () => {
+  const page = browser(), earth = new page.WebGL();
+  earth.texImage2D(0, 0, 0, 0, 0, { width: 4096, height: 2048 });
+  earth.drawElements(4, 3, 0, 0);
+  await page.window.fetch('/api/display'); await page.advance(500);
+  assert.equal(page.last().phase, 'ready');
+  const before = { ...page.observations }, reports = page.reports.length;
+  for (let frame = 0; frame < 120; frame++) {
+    for (let object = 0; object < 30; object++) earth.drawElements(4, 3, 0, 0);
+    await page.advance(8.333);
+  }
+  assert.deepEqual(page.observations, before,
+    '3600 steady draw calls add no layout or texture-label reads');
+  assert.equal(page.reports.length, reports, 'steady rendering adds no native messages');
+  earth.texImage2D(0, 0, 0, 0, 0, { width: 8192, height: 4096 });
+  earth.drawElements(4, 3, 0, 0); await page.advance(250);
+  assert.equal(page.last().maxTextureUploadWidth, 8192,
+    'an optional high-resolution upload remains observable after readiness');
+  page.window.__nakuHomeDisplay.destroy();
+});
+
+await test('loading coalesces layout observations across multiple WebGL draws', async () => {
+  const page = browser(), earth = new page.WebGL();
+  earth.texImage2D(0, 0, 0, 0, 0, { width: 16, height: 16 });
+  await page.window.fetch('/api/display');
+  const before = { ...page.observations };
+  for (let draw = 0; draw < 3600; draw++) earth.drawElements(4, 3, 0, 0);
+  assert.deepEqual(page.observations, before, 'draw hooks never synchronously read layout');
+  await page.advance(150);
+  assert.ok(page.observations.closest - before.closest <= 2, 'one scheduled check observes the canvas');
+  assert.equal(page.last().drawCalls, 3600);
+  assert.equal(page.last().phase, 'loading', 'coalescing cannot complete placeholder textures');
+  page.window.__nakuHomeDisplay.destroy();
+});
+
+await test('a higher-resolution upload still needs a subsequent visible draw', async () => {
+  const page = browser(), earth = new page.WebGL();
+  await page.window.fetch('/api/display');
+  earth.texImage2D(0, 0, 0, 0, 0, { width: 16, height: 16 });
+  earth.drawElements(4, 3, 0, 0); await page.advance(500);
+  assert.equal(page.last().phase, 'loading');
+  earth.texImage2D(0, 0, 0, 0, 0, { width: 4096, height: 2048 });
+  await page.advance(500);
+  assert.equal(page.last().phase, 'loading', 'an upload alone is not displayed content');
+  assert.equal(page.last().maxTextureUploadWidth, 16);
+  earth.drawElements(4, 3, 0, 0); await page.advance(500);
+  assert.equal(page.last().phase, 'ready');
+  assert.equal(page.last().maxTextureUploadWidth, 4096);
   page.window.__nakuHomeDisplay.destroy();
 });
 

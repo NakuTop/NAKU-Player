@@ -20,6 +20,8 @@ class CinemaNeonDecode extends StatefulWidget {
     required this.child,
     this.progress,
     this.regional = false,
+    this.snapshotRendering = false,
+    this.rasterSnapshot,
   });
 
   final bool loading;
@@ -28,6 +30,14 @@ class CinemaNeonDecode extends StatefulWidget {
   /// When true, only descendant [CinemaNeonRegion] widgets still awaiting their
   /// own resource are filtered. Already available controls stay sharp.
   final bool regional;
+
+  /// Opt-in path for native web-view previews. A single fragment pass samples
+  /// this caller-owned image; the live detail/region path remains unchanged.
+  final bool snapshotRendering;
+
+  /// The caller retains ownership and retires a replaced image after a frame.
+  /// Updating it never starts a new reveal session or resets the animation clock.
+  final ui.Image? rasterSnapshot;
 
   /// Real source-search progress, when available. The decorative reveal also
   /// unfolds slowly when no determinate progress is available; it is never
@@ -42,6 +52,7 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   static const _revealSeconds = 8.0;
   final _signal = _DecodeFrame();
+  final _snapshotSurface = GlobalKey<_CinemaSnapshotSurfaceState>();
   late final Ticker _ticker;
   Duration _lastFrame = Duration.zero;
   Timer? _settleTimer;
@@ -116,13 +127,16 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
 
   void _advanceReveal() {
     // This decorative phase is separate from source progress. Once sampling
-    // reaches its pending limit, the material remains visible without a ticker.
-    // Only a real regional-ready event or final assembly needs to wake it.
+    // reaches its pending limit, live details rest without a ticker. Snapshot
+    // previews keep a subtle paint-only breathing clock while genuinely loading.
     final t = (_signal.elapsed / _revealSeconds).clamp(0.0, 1.0);
     final ambient = .90 * (1 - math.pow(1 - t, 1.7));
     _signal.reveal = math.max(
       _signal.reveal,
-      math.max(ambient, _signal.progress),
+      // Native web progress arrives in a few large milestones. Its preview
+      // refines on display time instead; the real ready gate still ends it
+      // immediately, without waiting for this decorative eight-second phase.
+      widget.snapshotRendering ? ambient : math.max(ambient, _signal.progress),
     );
   }
 
@@ -156,6 +170,10 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
     generation: _generation,
   );
 
+  @visibleForTesting
+  ui.FragmentShader? get debugSnapshotShader =>
+      _snapshotSurface.currentState?._shader;
+
   void _begin() {
     _pauseFrames();
     _settleTimer?.cancel();
@@ -184,6 +202,7 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
 
   bool get _needsFrames =>
       _signal.settling ||
+      (widget.snapshotRendering && widget.loading) ||
       (widget.loading && _signal.reveal < .9) ||
       _signal.clock + .000001 < _signal.animateUntil;
 
@@ -272,21 +291,186 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
   }
 
   @override
-  Widget build(BuildContext context) => _CinemaDecodeScope(
-    frame: _signal,
-    child: AnimatedBuilder(
-      animation: _signal,
-      child: widget.regional
-          ? widget.child
-          : CinemaNeonRegion(ready: !widget.loading, child: widget.child),
-      builder: (context, child) => _ContentAssemblyGlow(
-        gain: _visible && _signal.settling
-            ? 1 + .045 * math.sin(_signal.assembly * math.pi)
-            : 1,
-        child: child!,
+  Widget build(BuildContext context) => widget.snapshotRendering
+      ? _CinemaSnapshotSurface(
+          key: _snapshotSurface,
+          frame: _signal,
+          snapshot: widget.rasterSnapshot,
+          child: widget.child,
+        )
+      : _CinemaDecodeScope(
+          frame: _signal,
+          child: AnimatedBuilder(
+            animation: _signal,
+            child: widget.regional
+                ? widget.child
+                : CinemaNeonRegion(ready: !widget.loading, child: widget.child),
+            builder: (context, child) => _ContentAssemblyGlow(
+              gain: _visible && _signal.settling
+                  ? 1 + .045 * math.sin(_signal.assembly * math.pi)
+                  : 1,
+              child: child!,
+            ),
+          ),
+        );
+}
+
+Future<ui.FragmentProgram?>? _snapshotDecodeProgram;
+
+Future<ui.FragmentProgram?>
+_loadSnapshotDecodeProgram() => _snapshotDecodeProgram ??= () async {
+  try {
+    return await ui.FragmentProgram.fromAsset(
+      'shaders/cinema_snapshot_decode.frag',
+    );
+  } catch (_) {
+    // Older/unsupported renderers retain the image through the cheap
+    // original-image fallback, without reinstating the live clip/filter path.
+    return null;
+  }
+}();
+
+class _CinemaSnapshotSurface extends StatefulWidget {
+  const _CinemaSnapshotSurface({
+    super.key,
+    required this.frame,
+    required this.snapshot,
+    required this.child,
+  });
+
+  final _DecodeFrame frame;
+  final ui.Image? snapshot;
+  final Widget child;
+
+  @override
+  State<_CinemaSnapshotSurface> createState() => _CinemaSnapshotSurfaceState();
+}
+
+class _CinemaSnapshotSurfaceState extends State<_CinemaSnapshotSurface> {
+  ui.FragmentShader? _shader;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_prepareShader());
+  }
+
+  Future<void> _prepareShader() async {
+    final program = await _loadSnapshotDecodeProgram();
+    if (!mounted || program == null) return;
+    try {
+      final shader = program.fragmentShader();
+      setState(() => _shader = shader);
+    } catch (_) {
+      // Fragment shaders may be unsupported even when asset loading succeeds.
+    }
+  }
+
+  @override
+  void dispose() {
+    _shader?.dispose();
+    _shader = null;
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => RepaintBoundary(
+    child: CustomPaint(
+      foregroundPainter: _SnapshotDecodePainter(
+        widget.frame,
+        image: widget.snapshot,
+        shader: _shader,
       ),
+      // Every display-frame tick marks only this painter dirty. The real child
+      // stays mounted and does not rebuild or repaint underneath the preview.
+      child: RepaintBoundary(child: widget.child),
     ),
   );
+}
+
+class _SnapshotDecodePainter extends CustomPainter {
+  _SnapshotDecodePainter(
+    this.frame, {
+    required this.image,
+    required this.shader,
+  }) : super(repaint: frame);
+
+  final _DecodeFrame frame;
+  final ui.Image? image;
+  final ui.FragmentShader? shader;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final bounds = Offset.zero & size;
+    final source = image;
+    if (source == null) {
+      _paintWaitingField(canvas, size);
+      return;
+    }
+    final effect = shader;
+    if (effect == null || !frame.enabled) {
+      canvas.drawImageRect(
+        source,
+        Rect.fromLTWH(0, 0, source.width.toDouble(), source.height.toDouble()),
+        bounds,
+        Paint()..filterQuality = FilterQuality.low,
+      );
+      return;
+    }
+    effect
+      ..setFloat(0, size.width)
+      ..setFloat(1, size.height)
+      ..setFloat(2, source.width.toDouble())
+      ..setFloat(3, source.height.toDouble())
+      ..setFloat(4, frame.pixelSize)
+      ..setFloat(5, frame.reveal)
+      ..setFloat(6, frame.clock)
+      ..setFloat(7, frame.assembly)
+      ..setFloat(8, frame.enabled ? 1 : 0)
+      ..setImageSampler(0, source, filterQuality: FilterQuality.low);
+    canvas.drawRect(bounds, Paint()..shader = effect);
+  }
+
+  void _paintWaitingField(Canvas canvas, Size size) {
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()..color = const Color(0xFF111115),
+    );
+    final columns = (8 + frame.reveal * 8).round();
+    final rows = (columns * size.height / size.width).round().clamp(4, 12);
+    final width = size.width / columns, height = size.height / rows;
+    final paint = Paint();
+    for (var row = 0; row < rows; row++) {
+      for (var column = 0; column < columns; column++) {
+        final noise = ((row * 37 + column * 17) % 101) / 101;
+        final shimmer = .5 + .5 * math.sin(frame.clock * .85 + noise * 6.28);
+        paint.color = Color.lerp(
+          const Color(0xFF151519),
+          const Color(0xFF26262C),
+          .15 + .30 * frame.reveal + .20 * shimmer,
+        )!;
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(
+              column * width + .5,
+              row * height + .5,
+              math.max(0, width - 1),
+              math.max(0, height - 1),
+            ),
+            Radius.circular(math.min(width, height) * .20),
+          ),
+          paint,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_SnapshotDecodePainter oldDelegate) =>
+      oldDelegate.frame != frame ||
+      oldDelegate.image != image ||
+      oldDelegate.shader != shader;
 }
 
 class _CinemaDecodeScope extends InheritedWidget {

@@ -128,6 +128,87 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets(
+    'preview readbacks follow rendering milestones, not elapsed time',
+    (tester) async {
+      final platform = _installFakeWebView();
+      await _mountAuthorized(tester, platform);
+      platform.view.params.onPageCommitVisible!(
+        platform.controller,
+        WebUri(cinemaHomeDisplayUrl),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pump();
+      expect(platform.controller.screenshotCalls, 1);
+      for (var update = 0; update < 20; update++) {
+        platform.view.params.onLoadStop!(
+          platform.controller,
+          WebUri(cinemaHomeDisplayUrl),
+        );
+        await tester.pump(const Duration(milliseconds: 200));
+      }
+      expect(
+        platform.controller.screenshotCalls,
+        1,
+        reason:
+            'Repeated network callbacks do not trigger periodic GPU readbacks.',
+      );
+      platform.controller.emit({..._readyState, 'phase': 'loading'});
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pump();
+      expect(platform.controller.screenshotCalls, 2);
+      for (var frame = 0; frame < 120; frame++) {
+        platform.controller.emit({..._readyState, 'phase': 'loading'});
+        await tester.pump(const Duration(microseconds: 8333));
+      }
+      expect(
+        platform.controller.screenshotCalls,
+        2,
+        reason:
+            'The front-end animation does not sample the native page per frame.',
+      );
+      expect(_decoding(tester).loading, isTrue);
+      platform.controller.emit(_readyState);
+      await tester.pump();
+      await tester.pump();
+      expect(platform.controller.screenshotCalls, 3);
+      await tester.pump(const Duration(seconds: 20));
+      expect(platform.controller.screenshotCalls, 3);
+      expect(find.byType(CinemaNeonDecode), findsNothing);
+      expect(platform.view.disposed, isFalse);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'front-end reveal advances while the native snapshot is pending',
+    (tester) async {
+      final platform = _installFakeWebView();
+      await _mountAuthorized(tester, platform);
+      final screenshot = Completer<Uint8List?>();
+      platform.controller.screenshot = () => screenshot.future;
+      platform.view.params.onPageCommitVisible!(
+        platform.controller,
+        WebUri(cinemaHomeDisplayUrl),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      final state = tester.state<CinemaNeonDecodeState>(
+        find.byType(CinemaNeonDecode),
+      );
+      final before = state.debugSnapshot.elapsed;
+      for (var frame = 0; frame < 30; frame++) {
+        await tester.pump(const Duration(microseconds: 8333));
+      }
+      expect(state.debugSnapshot.elapsed - before, closeTo(.24999, .00001));
+      expect(state.debugSnapshot.running, isTrue);
+      expect(platform.controller.screenshotCalls, 1);
+      expect(_decoding(tester).loading, isTrue);
+      screenshot.complete(null);
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('API 401 revokes and disposes even after a pending screenshot', (
     tester,
   ) async {
