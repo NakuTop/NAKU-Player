@@ -108,9 +108,26 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
             let expiry=Date().timeIntervalSince1970*1000+299_000
             payload=["authenticated":true,"expiresAt":expiry]
             headers["Set-Cookie"]="__Host-naku-display=fixture-display-credential; Max-Age=300; Path=/; Secure; HttpOnly; SameSite=Strict, __Host-naku-display-context=1; Path=/; Secure; HttpOnly; SameSite=Strict"
+            if Self.mode.hasPrefix("cookie-format-") {
+                // Match NextResponse's real attributes, including Expires' comma.
+                let date=DateFormatter();date.locale=Locale(identifier:"en_US_POSIX");date.timeZone=TimeZone(secondsFromGMT:0);date.dateFormat="EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+                let expires=Self.mode.contains("expires") ? "; Expires="+date.string(from:Date().addingTimeInterval(300)):""
+                let credential="__Host-naku-display=fixture-display-credential; Path=/"+expires+"; Max-Age=300; Secure; HttpOnly; SameSite=strict"
+                let context="__Host-naku-display-context=1; Path=/; Secure; HttpOnly; SameSite=strict"
+                let fields=Self.mode.contains("reverse") ? [context,credential]:[credential,context]
+                headers["Set-Cookie"]=fields.joined(separator:Self.mode.contains("no-space") ? ",":", ")
+            }
             if Self.mode == "redirect" {status=307;headers["Location"]="https://evil.test/stolen"}
             if Self.mode == "wrong-origin" {responseURL=URL(string:"https://evil.test/api/auth/nas/exchange")!}
             if Self.mode == "no-httponly" {headers["Set-Cookie"]=headers["Set-Cookie"]!.replacingOccurrences(of:"; HttpOnly",with:"")}
+            if Self.mode == "no-cookie" {headers.removeValue(forKey:"Set-Cookie")}
+            if Self.mode == "cookie-no-space" {headers["Set-Cookie"]=headers["Set-Cookie"]!.replacingOccurrences(of:"Strict, ",with:"Strict,")}
+            if Self.mode == "cookie-duplicate-credential" {headers["Set-Cookie"]! += ",__Host-naku-display=second-credential; Path=/; Max-Age=300; Secure; HttpOnly; SameSite=Strict"}
+            if Self.mode == "cookie-duplicate-context" {headers["Set-Cookie"]! += ",__Host-naku-display-context=1; Path=/; Secure; HttpOnly; SameSite=Strict"}
+            if Self.mode == "cookie-duplicate-conflicting-context" {headers["Set-Cookie"]! += ",__Host-naku-display-context=2; Path=/; Secure; HttpOnly; SameSite=Strict"}
+            if Self.mode == "cookie-marker-invalid" {headers["Set-Cookie"]=headers["Set-Cookie"]!.replacingOccurrences(of:"display-context=1;",with:"display-context=2;")}
+            if Self.mode == "cookie-marker-persistent" {headers["Set-Cookie"]! += "; Max-Age=300"}
+            if Self.mode == "cookie-expiry-missing" {headers["Set-Cookie"]=headers["Set-Cookie"]!.replacingOccurrences(of:"Max-Age=300; ",with:"")}
             if Self.mode == "domain" {headers["Set-Cookie"]! += "; Domain=between-us-home.pages.dev"}
             if Self.mode == "expired" {headers["Set-Cookie"]="__Host-naku-display=expired; Max-Age=0; Path=/; Secure; HttpOnly";payload["expiresAt"]=0}
             if Self.mode == "marker-only" {headers["Set-Cookie"]="__Host-naku-display-context=1; Path=/; Secure; HttpOnly; SameSite=Strict"}
@@ -120,6 +137,7 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
             }
             if Self.mode.hasPrefix("diagnostic-") {status=401;headers=[:];payload=["error":"nas_authentication_failed"]}
             if Self.mode == "invalid-payload" {payload=["authenticated":true,"expiresAt":0,"error":"fixture-private-token-must-not-be-returned"]}
+            if Self.mode == "unauthorized-payload" {payload=["authenticated":false,"expiresAt":expiry]}
         } else {
             var data:[String:Any]=[:]
             if path.hasSuffix("/verify/sn") {data=["sn":"fixture-public-routing-hint"]}
@@ -145,7 +163,7 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
     private func respond(status: Int,headers: [String:String],payload: [String:Any],responseURL: URL) {
         let response=HTTPURLResponse(url:responseURL,statusCode:status,httpVersion:nil,headerFields:headers)!
         client!.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
-        client!.urlProtocol(self,didLoad:try! JSONSerialization.data(withJSONObject:payload))
+        client!.urlProtocol(self,didLoad:Self.mode == "invalid-payload-body" ? Data("[]".utf8):try! JSONSerialization.data(withJSONObject:payload))
         client!.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
@@ -225,6 +243,22 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
         expect(!store.hasCredential && store.hasContext && store.hasOwner,"forget completion retains context and owner cookies")
         print("PASS actual logout/forget callbacks await invalidation; a generation change prevents stale saved-credential deletion")
     }
+    @MainActor static func cookieFormats(_ session: NASMovieSession,_ store: HomeDisplayFixtureCookieStore) async {
+        let modes=["cookie-format-forward","cookie-format-reverse","cookie-format-forward-no-space","cookie-format-reverse-no-space",
+            "cookie-format-forward-expires","cookie-format-reverse-expires","cookie-format-forward-expires-no-space","cookie-format-reverse-expires-no-space","cookie-no-space"]
+        for mode in modes {
+            HomeDisplayFixtureProtocol.mode=mode
+            let beforeCurrent=HomeDisplayFixtureProtocol.currentReads,beforeDevice=HomeDisplayFixtureProtocol.deviceReads
+            let value=await session.homeDisplayAuthorize()
+            expect(value["authenticated"] as? Bool == true,"legitimate combined Set-Cookie format is accepted: "+mode)
+            expect(HomeDisplayFixtureProtocol.currentReads == beforeCurrent && HomeDisplayFixtureProtocol.deviceReads == beforeDevice,"cookie compatibility adds no NAS reads")
+            expect(store.hasCredential && store.hasContext,"both independently scoped cookies installed: "+mode)
+            let context=store.cookies.first {$0.name == "__Host-naku-display-context"}
+            expect(context?.isSessionOnly == true && context?.isHTTPOnly == true && context?.isSecure == true,"context remains session-only Secure HttpOnly: "+mode)
+        }
+        HomeDisplayFixtureProtocol.mode="valid"
+        print("PASS comma/no-space, either cookie order and Expires date commas remain compatible without weakening cookie policy")
+    }
     @MainActor static func diagnostics(_ session: NASMovieSession,_ store: HomeDisplayFixtureCookieStore) async throws {
         let cases:[(String,String,String,Int?,Int?)]=[
             ("http-401","nas_authentication_failed","exchange_http",401,nil),
@@ -235,9 +269,19 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
             ("transport-timeout","backend_timeout","exchange_transport",nil,URLError.Code.timedOut.rawValue),
             ("transport-dns","backend_network_error","exchange_transport",nil,URLError.Code.cannotFindHost.rawValue),
             ("wrong-origin","authorization_response_invalid","response_origin_or_size",nil,nil),
-            ("no-httponly","authorization_response_invalid","response_cookie",nil,nil),
-            ("marker-only","authorization_response_invalid","response_cookie",nil,nil),
-            ("invalid-payload","authorization_response_invalid","response_payload",nil,nil),
+            ("no-cookie","authorization_response_invalid","response_cookie_header",nil,nil),
+            ("domain","authorization_response_invalid","response_cookie_header",nil,nil),
+            ("no-httponly","authorization_response_invalid","response_cookie_scope",nil,nil),
+            ("marker-only","authorization_response_invalid","response_cookie_parse",nil,nil),
+            ("cookie-duplicate-credential","authorization_response_invalid","response_cookie_parse",nil,nil),
+            ("cookie-duplicate-context","authorization_response_invalid","response_cookie_parse",nil,nil),
+            ("cookie-duplicate-conflicting-context","authorization_response_invalid","response_cookie_parse",nil,nil),
+            ("cookie-marker-invalid","authorization_response_invalid","response_cookie_marker",nil,nil),
+            ("cookie-marker-persistent","authorization_response_invalid","response_cookie_persistence",nil,nil),
+            ("cookie-expiry-missing","authorization_response_invalid","response_cookie_expiry",nil,nil),
+            ("invalid-payload-body","authorization_response_invalid","response_payload_body",nil,nil),
+            ("unauthorized-payload","authorization_response_invalid","response_payload_authorized",nil,nil),
+            ("invalid-payload","authorization_response_invalid","response_payload_expiry",nil,nil),
         ]
         for (mode,reason,stage,status,network) in cases {
             HomeDisplayFixtureProtocol.mode=mode
@@ -342,6 +386,7 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
         print("PASS redirects, wrong host, unsafe cookie, expiry, marker-only, missing configuration and NAS logout rejection")
         HomeDisplayFixtureProtocol.mode="valid"
         try await adopt(session,pem)
+        await cookieFormats(session,store)
         try await diagnostics(session,store)
         try await probeDiagnostics(session,store,pem)
         try await lifecycle(session,store,pem)

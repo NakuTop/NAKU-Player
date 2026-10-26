@@ -2907,34 +2907,50 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           ? wallIndices[key.value.substring('title-card:'.length)]
           : null,
     );
+    // Keep this widget stable across scroll-only sliver constraint updates.
+    final featuredWall = featured.isEmpty
+        ? null
+        : CinemaFeaturedWall(
+            key: ValueKey('cinema-featured-${_section.name}'),
+            topInset: topInset,
+            titles: featured,
+            artworkRepository: widget.artworkRepository,
+            artworkChanges: _ratings.changes,
+            artworkIdentity: (title) =>
+                _ratings.peek(title)?.identity ?? const RatingIdentity(),
+            onOpen: (title) => _openTitle(
+              title,
+              variants: variantsByKey[title.key] ?? const [],
+            ),
+            statusBuilder: (title) => Align(
+              alignment: Alignment.centerLeft,
+              child: CinemaResourceBadge(
+                title: title,
+                sources: _activeSources,
+                service: _resources,
+              ),
+            ),
+          );
     return CustomScrollView(
       key: PageStorageKey(_catalogViewportKey),
       slivers: [
         if (featured.isEmpty && topInset > 0)
           SliverToBoxAdapter(child: SizedBox(height: topInset)),
-        if (featured.isNotEmpty)
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 24),
-              child: CinemaFeaturedWall(
-                key: ValueKey('cinema-featured-${_section.name}'),
-                topInset: topInset,
-                titles: featured,
-                artworkRepository: widget.artworkRepository,
-                artworkChanges: _ratings.changes,
-                artworkIdentity: (title) =>
-                    _ratings.peek(title)?.identity ?? const RatingIdentity(),
-                onOpen: (title) => _openTitle(
-                  title,
-                  variants: variantsByKey[title.key] ?? const [],
-                ),
-                statusBuilder: (title) => Align(
-                  alignment: Alignment.centerLeft,
-                  child: CinemaResourceBadge(
-                    title: title,
-                    sources: _activeSources,
-                    service: _resources,
+        if (featuredWall != null)
+          SliverLayoutBuilder(
+            builder: (context, constraints) => SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 24),
+                child: ConstrainedBox(
+                  // The 60px floating navigation sits 16px from the bottom.
+                  // Leave another 20px so the hero action stays clear of it.
+                  constraints: BoxConstraints(
+                    maxHeight: (constraints.viewportMainAxisExtent - 96).clamp(
+                      0.0,
+                      double.infinity,
+                    ),
                   ),
+                  child: featuredWall,
                 ),
               ),
             ),
@@ -5058,16 +5074,28 @@ class _DetailInformationFrost extends StatelessWidget {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: CinemaAppearanceScope.of(context),
     builder: (context, _) {
-      final solid = CinemaAppearanceScope.of(context).reduceTransparency;
+      final appearance = CinemaAppearanceScope.of(context);
+      final solid = appearance.reduceTransparency;
+      final atmosphere = CinemaPosterAtmosphere(
+        palette: palette,
+        active: palette.isNotEmpty && !appearance.reduceMotion,
+      );
       final veil = CustomPaint(
         painter: _DetailInformationFrostPainter(feather, solid: solid),
         foregroundPainter: solid ? null : _DetailInformationFeather(feather),
         child: solid
-            ? const SizedBox.expand()
-            : CinemaPosterAtmosphere(
-                palette: palette,
-                active: palette.isNotEmpty,
-              ),
+            // Reducing transparency removes backdrop blur, not color motion.
+            // Mask only the isolated color layer so the poster is never erased.
+            ? ShaderMask(
+                blendMode: BlendMode.dstIn,
+                shaderCallback: (bounds) => ui.Gradient.linear(
+                  bounds.topLeft,
+                  bounds.topLeft + Offset(0, feather),
+                  const [Colors.transparent, Colors.white],
+                ),
+                child: atmosphere,
+              )
+            : atmosphere,
       );
       return IgnorePointer(
         child: ClipRect(

@@ -16,15 +16,19 @@ import 'cinema_ratings.dart';
 import 'cinema_theme.dart';
 import 'cinema_artwork_backdrop.dart';
 
-/// Width-fit landscapes have room for their whole composition, even when a
-/// short window must scroll. Unknown images and portraits share a 16:9 canvas
-/// rather than reserving a portrait's unbounded full-width height.
+/// Reserve a cinematic canvas without letting an image's aspect ratio push
+/// its action below the usable viewport. Short windows crop the image instead.
 double cinemaFeaturedHeroHeight({
   required Size viewport,
   required double width,
   required CinemaDetailArtwork artwork,
   double topInset = 0,
+  double? maxHeight,
 }) {
+  final ceiling = math.max(
+    0.0,
+    math.min(viewport.height, maxHeight ?? viewport.height),
+  );
   final minimum = (viewport.height * .76)
       .clamp(340.0, 900.0)
       .clamp(0.0, viewport.height * .86);
@@ -32,7 +36,10 @@ double cinemaFeaturedHeroHeight({
       ? artwork.width / artwork.height
       : 0.0;
   final aspect = knownAspect >= 1.25 ? knownAspect : 16 / 9;
-  return math.max(minimum, width / aspect + topInset + 12 + 40);
+  return math.min(
+    ceiling,
+    math.max(minimum, width / aspect + topInset + 12 + 40),
+  );
 }
 
 /// A real catalogue selection; these titles are excluded from the wall below.
@@ -290,6 +297,9 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
           width: width,
           artwork: artwork,
           topInset: widget.topInset,
+          maxHeight: constraints.hasBoundedHeight
+              ? constraints.maxHeight
+              : null,
         );
         return MouseRegion(
           cursor: SystemMouseCursors.basic,
@@ -438,6 +448,7 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
                   policy: ResizeImagePolicy.fit,
                 ),
             alignment: const Alignment(.4, 0),
+            fit: BoxFit.cover,
             contentInsets: EdgeInsets.fromLTRB(0, widget.topInset + 12, 0, 40),
           ),
         // Keep contrast local to the title/action area. A page-wide shadow

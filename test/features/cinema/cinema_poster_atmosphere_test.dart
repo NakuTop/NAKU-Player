@@ -7,6 +7,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_poster_atmosphere.dart';
 
 const _palette = [Color(0xFFFF452A), Color(0xFF225AFF), Color(0xFFB77720)];
+const _similarPalette = [
+  Color(0xFF913D28),
+  Color(0xFF8A402C),
+  Color(0xFF994C30),
+];
 const _rasterKey = ValueKey('atmosphere-raster');
 
 Widget _host({
@@ -68,6 +73,40 @@ int _pixelDifference(Uint8List a, Uint8List b) {
   return difference;
 }
 
+// Compare the entire quiet background, including where color moved away from.
+// Signed tile changes distinguish traveling color from a uniform brightness pulse.
+({double meanDelta, double changedFraction, int brighterTiles, int darkerTiles})
+_spatialChange(Uint8List before, Uint8List after) {
+  const width = 320, height = 180;
+  var totalDelta = 0, changed = 0, brighter = 0, darker = 0;
+  final tileChanges = List<double>.filled(32, 0);
+  for (var y = 0; y < height; y++) {
+    for (var x = 0; x < width; x++) {
+      final offset = (y * width + x) * 4;
+      var peakDelta = 0, signedDelta = 0;
+      for (var channel = 0; channel < 3; channel++) {
+        final delta = after[offset + channel] - before[offset + channel];
+        signedDelta += delta;
+        totalDelta += delta.abs();
+        if (delta.abs() > peakDelta) peakDelta = delta.abs();
+      }
+      if (peakDelta >= 6) changed++;
+      tileChanges[(y ~/ 45) * 8 + x ~/ 40] += signedDelta / 3;
+    }
+  }
+  for (final sum in tileChanges) {
+    final mean = sum / (40 * 45);
+    if (mean > 2) brighter++;
+    if (mean < -2) darker++;
+  }
+  return (
+    meanDelta: totalDelta / (width * height * 3),
+    changedFraction: changed / (width * height),
+    brighterTiles: brighter,
+    darkerTiles: darker,
+  );
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -102,7 +141,7 @@ void main() {
     await tester.pump(const Duration(seconds: 8));
     final after = await _pixels(tester);
     expect(key.currentState!.debugSnapshot.running, isTrue);
-    expect(key.currentState!.debugSnapshot.phase, closeTo(.25, .001));
+    expect(key.currentState!.debugSnapshot.phase, closeTo(1 / 3, .001));
     expect(_pixelDifference(before, after), greaterThan(50000));
     expect(builds, baselineBuilds);
     expect(find.byType(BackdropFilter), findsNothing);
@@ -129,6 +168,42 @@ void main() {
     await tester.pump();
     expect(tester.binding.hasScheduledFrame, isFalse);
   });
+
+  for (final entry in {
+    'different hues': _palette,
+    'similar hues': _similarPalette,
+  }.entries) {
+    testWidgets(
+      '${entry.key} travel across the quiet surface within four to eight seconds',
+      (tester) async {
+        final key = GlobalKey<CinemaPosterAtmosphereState>();
+        await tester.pumpWidget(_host(surfaceKey: key, palette: entry.value));
+        final before = await _pixels(tester);
+        await tester.pump(const Duration(seconds: 4));
+        final atFour = _spatialChange(before, await _pixels(tester));
+        // A visible fraction of the surface changes by several RGB levels.
+        expect(atFour.meanDelta, greaterThan(2));
+        expect(atFour.changedFraction, greaterThan(.35));
+        await tester.pump(const Duration(seconds: 4));
+        final after = await _pixels(tester);
+        final atEight = _spatialChange(before, after);
+        expect(atEight.meanDelta, greaterThan(4));
+        expect(atEight.changedFraction, greaterThan(.5));
+        expect(atEight.brighterTiles, greaterThanOrEqualTo(8));
+        expect(atEight.darkerTiles, greaterThanOrEqualTo(8));
+        var peak = 0;
+        for (var offset = 0; offset < after.length; offset += 4) {
+          for (var channel = 0; channel < 3; channel++) {
+            if (after[offset + channel] > peak) peak = after[offset + channel];
+          }
+        }
+        expect(peak, lessThan(90));
+        await tester.pumpWidget(const SizedBox());
+        await tester.pump();
+        expect(tester.binding.hasScheduledFrame, isFalse);
+      },
+    );
+  }
 
   for (final mode in ['active', 'ticker', 'reduce']) {
     testWidgets('$mode suspends the clock and resumes from the same phase', (
@@ -157,7 +232,7 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
       expect(
         key.currentState!.debugSnapshot.phase,
-        closeTo(phase + 1 / 32, .001),
+        closeTo(phase + 1 / 24, .001),
       );
       await tester.pumpWidget(const SizedBox());
     });
@@ -186,7 +261,7 @@ void main() {
       await tester.pump();
       expect(surface.debugSnapshot.phase, phase);
       await tester.pump(const Duration(seconds: 1));
-      expect(surface.debugSnapshot.phase, closeTo(phase + 1 / 32, .001));
+      expect(surface.debugSnapshot.phase, closeTo(phase + 1 / 24, .001));
     }
     await tester.pumpWidget(const SizedBox());
     expect(tester.takeException(), isNull);

@@ -49,15 +49,18 @@ void main() {
     bool offscreen = false,
     List<CinemaTitle> titles = _titles,
     ScrollController? scrollController,
+    double width = 1280,
     double height = 860,
     double topInset = 0,
+    double? maxHeroHeight,
+    bool navigation = false,
     CinemaDetailArtworkRepository? artworkRepository,
     Listenable? artworkChanges,
     RatingIdentity Function(CinemaTitle)? artworkIdentity,
     Widget Function(CinemaTitle)? statusBuilder,
     ImageProvider Function(CinemaDetailArtwork, int)? artworkImageProvider,
   }) async {
-    tester.view.physicalSize = Size(1280, height);
+    tester.view.physicalSize = Size(width, height);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -65,32 +68,52 @@ void main() {
       MaterialApp(
         home: MediaQuery(
           data: MediaQueryData(
-            size: Size(1280, height),
+            size: Size(width, height),
             disableAnimations: reduced,
           ),
           child: TickerMode(
             enabled: tickerEnabled,
-            child: SingleChildScrollView(
-              controller: scrollController,
-              child: Column(
-                children: [
-                  if (offscreen) const SizedBox(height: 1000),
-                  RepaintBoundary(
-                    key: const ValueKey('hero-page-raster'),
-                    child: CinemaFeaturedWall(
-                      titles: titles,
-                      onOpen: onOpen ?? (_) {},
-                      topInset: topInset,
-                      artworkRepository: artworkRepository,
-                      artworkChanges: artworkChanges,
-                      artworkIdentity: artworkIdentity,
-                      statusBuilder: statusBuilder,
-                      artworkImageProvider: artworkImageProvider,
+            child: Stack(
+              children: [
+                SingleChildScrollView(
+                  controller: scrollController,
+                  child: Column(
+                    children: [
+                      if (offscreen) const SizedBox(height: 1000),
+                      RepaintBoundary(
+                        key: const ValueKey('hero-page-raster'),
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxHeight: maxHeroHeight ?? height,
+                          ),
+                          child: CinemaFeaturedWall(
+                            titles: titles,
+                            onOpen: onOpen ?? (_) {},
+                            topInset: topInset,
+                            artworkRepository: artworkRepository,
+                            artworkChanges: artworkChanges,
+                            artworkIdentity: artworkIdentity,
+                            statusBuilder: statusBuilder,
+                            artworkImageProvider: artworkImageProvider,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 1000),
+                    ],
+                  ),
+                ),
+                if (navigation)
+                  const Positioned(
+                    bottom: 16,
+                    left: 400,
+                    right: 400,
+                    height: 60,
+                    child: ColoredBox(
+                      key: ValueKey('floating-navigation'),
+                      color: Colors.black54,
                     ),
                   ),
-                  const SizedBox(height: 1000),
-                ],
-              ),
+              ],
             ),
           ),
         ),
@@ -155,25 +178,21 @@ void main() {
   );
 
   testWidgets(
-    'hero reserves full-width cinema composition and short windows can scroll',
+    'hero keeps its action in the constrained first screen without scrolling',
     (tester) async {
-      await mount(tester, topInset: 90);
+      await mount(tester, topInset: 90, maxHeroHeight: 764);
       expect(
         tester.getSize(find.byType(CinemaFeaturedWall)).height,
-        closeTo(1280 * 9 / 16 + 90 + 52, .01),
+        closeTo(764, .01),
       );
       expect(find.text('查看影片').hitTestable(), findsOneWidget);
-      await mount(tester, height: 480, topInset: 90);
+      await mount(tester, height: 480, topInset: 90, maxHeroHeight: 384);
       expect(
         tester.getSize(find.byType(CinemaFeaturedWall)).height,
-        closeTo(1280 * 9 / 16 + 90 + 52, .01),
+        closeTo(384, .01),
       );
-      await Scrollable.ensureVisible(
-        tester.element(find.text('查看影片').first),
-        alignment: .7,
-      );
-      await tester.pumpAndSettle();
       expect(find.text('查看影片').hitTestable(), findsOneWidget);
+      expect(tester.getBottomRight(find.text('查看影片')).dy, lessThan(384));
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -204,6 +223,13 @@ void main() {
         Paint()..color = marks[i],
       );
     }
+    if (!blank) {
+      canvas.drawCircle(
+        size.center(Offset.zero),
+        size.shortestSide * .06,
+        Paint()..color = const Color(0xFFB52EBF),
+      );
+    }
     final picture = recorder.endRecording();
     final image = await picture.toImage(
       size.width.toInt(),
@@ -214,6 +240,117 @@ void main() {
     image.dispose();
     return bytes!.buffer.asUint8List();
   }
+
+  for (final viewport in [const Size(1200, 560), const Size(1440, 900)]) {
+    for (final source in [const Size(1619, 1080), const Size(1920, 1200)]) {
+      testWidgets(
+        '${source.width.toInt()}x${source.height.toInt()} still keeps its action above navigation in $viewport',
+        (tester) async {
+          final bytes = (await tester.runAsync(() => markedImage(source)))!;
+          final repository = _Artwork()
+            ..result = CinemaDetailArtwork(
+              url: 'memory://landscape-still',
+              width: source.width.toInt(),
+              height: source.height.toInt(),
+              highResolution: true,
+            );
+          final opened = <CinemaTitle>[];
+          final scroll = ScrollController();
+          addTearDown(scroll.dispose);
+          await mount(
+            tester,
+            width: viewport.width,
+            height: viewport.height,
+            maxHeroHeight: viewport.height - 96,
+            topInset: 68,
+            navigation: true,
+            scrollController: scroll,
+            onOpen: opened.add,
+            artworkRepository: repository,
+            artworkImageProvider: (_, _) => MemoryImage(bytes),
+            statusBuilder: (_) => const SizedBox(height: 24),
+          );
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 40)),
+          );
+          await tester.pumpAndSettle();
+          final heroRect = tester.getRect(find.byType(CinemaFeaturedWall));
+          final navigationRect = tester.getRect(
+            find.byKey(const ValueKey('floating-navigation')),
+          );
+          final action = find.widgetWithText(FilledButton, '查看影片');
+          final actionRect = tester.getRect(action);
+          expect(heroRect.top, 0);
+          expect(heroRect.width, viewport.width);
+          expect(heroRect.bottom, closeTo(viewport.height - 96, .01));
+          expect(actionRect.top, greaterThan(68));
+          expect(actionRect.bottom, lessThan(navigationRect.top));
+          expect(action.hitTestable(), findsOneWidget);
+          expect(scroll.offset, 0, reason: 'The action needs no page scroll.');
+          await tester.tap(action);
+          expect(opened, [_titles.first]);
+
+          // Inspect the actual native image raster, independently of the
+          // geometry helper: both canvas edges are filled, and a source circle
+          // stays round after cropping rather than being stretched to fit.
+          final backdrop = find.byType(CinemaArtworkBackdrop);
+          final boundary = tester.renderObject<RenderRepaintBoundary>(
+            find
+                .descendant(
+                  of: backdrop,
+                  matching: find.byType(RepaintBoundary),
+                )
+                .first,
+          );
+          final raster = (await tester.runAsync(
+            () => boundary.toImage(pixelRatio: 1),
+          ))!;
+          final pixels = (await tester.runAsync(
+            () => raster.toByteData(format: ui.ImageByteFormat.rawRgba),
+          ))!;
+          final row = raster.height ~/ 2;
+          for (final x in [0, raster.width - 1]) {
+            expect(pixels.getUint8((row * raster.width + x) * 4 + 3), 255);
+            expect(
+              pixels.getUint8((row * raster.width + x) * 4),
+              greaterThan(0),
+            );
+          }
+          var left = raster.width, right = -1, top = raster.height, bottom = -1;
+          for (var y = 0; y < raster.height; y++) {
+            for (var x = 0; x < raster.width; x++) {
+              final offset = (y * raster.width + x) * 4;
+              if ((pixels.getUint8(offset) - 181).abs() <= 2 &&
+                  (pixels.getUint8(offset + 1) - 46).abs() <= 2 &&
+                  (pixels.getUint8(offset + 2) - 191).abs() <= 2) {
+                if (x < left) left = x;
+                if (x > right) right = x;
+                if (y < top) top = y;
+                if (y > bottom) bottom = y;
+              }
+            }
+          }
+          expect(right - left, greaterThan(20));
+          expect(right - left, closeTo(bottom - top, 2));
+          raster.dispose();
+          await tester.pumpWidget(const SizedBox());
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  testWidgets(
+    'actual parent constraints override the larger MediaQuery canvas',
+    (tester) async {
+      await mount(tester, height: 900, maxHeroHeight: 420, topInset: 68);
+      expect(tester.getSize(find.byType(CinemaFeaturedWall)).height, 420);
+      expect(find.text('查看影片').hitTestable(), findsOneWidget);
+      expect(tester.getBottomRight(find.text('查看影片')).dy, lessThan(420));
+      await tester.pumpWidget(const SizedBox());
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'bright full-width art keeps a local dark title bed without dimming the whole image',
@@ -323,6 +460,7 @@ void main() {
             viewport: actualSize,
             insets: backdrop.contentInsets,
             alignment: backdrop.alignment,
+            fit: backdrop.fit,
           );
           final y = pictureRect.center.dy.floor();
           List<int> rgb(int x) => [
@@ -359,10 +497,9 @@ void main() {
           final paintedLeft = centers.first - paintedWidth * .1;
           expect(paintedLeft, closeTo(0, 2));
           expect(paintedLeft + paintedWidth, closeTo(raster.width, 2));
-          expect(
-            pictureRect.height / pictureRect.width,
-            closeTo(original.height / original.width, .00001),
-          );
+          expect(pictureRect.left, closeTo(0, .01));
+          expect(pictureRect.right, closeTo(raster.width, .01));
+          expect(backdrop.fit, BoxFit.cover);
           const output = String.fromEnvironment(
             'NAKU_HERO_FULLWIDTH_RASTER_DIR',
           );

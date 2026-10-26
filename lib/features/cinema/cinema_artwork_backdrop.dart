@@ -51,13 +51,15 @@ class CinemaDetailFrost extends StatelessWidget {
   );
 }
 
-/// The full composition sits inside an edge-colour extension. Only that
-/// extension is blurred/feathered; the picture itself is never cropped or faded.
+/// The picture sits inside an edge-colour extension. Only that extension is
+/// blurred/feathered. Detail pages preserve the full composition by default;
+/// viewport-bounded homepage heroes may opt into a proportional cover crop.
 class CinemaArtworkBackdrop extends StatefulWidget {
   const CinemaArtworkBackdrop({
     super.key,
     required this.image,
     this.alignment = Alignment.center,
+    this.fit = BoxFit.contain,
     this.featherSides = false,
     this.shadeLeading = false,
     this.contentInsets = const EdgeInsets.fromLTRB(24, 24, 24, 56),
@@ -65,6 +67,7 @@ class CinemaArtworkBackdrop extends StatefulWidget {
 
   final ImageProvider image;
   final Alignment alignment;
+  final BoxFit fit;
   final bool featherSides;
   final bool shadeLeading;
   final EdgeInsets contentInsets;
@@ -168,6 +171,7 @@ class _CinemaArtworkBackdropState extends State<CinemaArtworkBackdrop> {
             sharp: _sharp?.image,
             ambient: _ambient?.image,
             alignment: widget.alignment,
+            fit: widget.fit,
             insets: widget.contentInsets,
             featherSides: widget.featherSides,
             shadeLeading: widget.shadeLeading,
@@ -179,13 +183,14 @@ class _CinemaArtworkBackdropState extends State<CinemaArtworkBackdrop> {
   );
 }
 
-/// A uniform contain transform. Its whole source rectangle remains visible,
-/// independent of poster orientation and the window's aspect ratio.
+/// A proportional image transform inside the unblurred picture area. The
+/// default contain fit keeps every source edge visible on detail pages.
 Rect cinemaArtworkCompositionRect({
   required Size source,
   required Size viewport,
   EdgeInsets insets = const EdgeInsets.fromLTRB(24, 24, 24, 56),
   Alignment alignment = Alignment.center,
+  BoxFit fit = BoxFit.contain,
 }) {
   if (source.isEmpty || viewport.isEmpty) return Rect.zero;
   // Short windows keep an actual picture area instead of consuming it with
@@ -202,7 +207,7 @@ Rect cinemaArtworkCompositionRect({
     viewport.width - insets.right * horizontal,
     viewport.height - insets.bottom * vertical,
   );
-  final fitted = applyBoxFit(BoxFit.contain, source, available.size);
+  final fitted = applyBoxFit(fit, source, available.size);
   return alignment.inscribe(fitted.destination, available);
 }
 
@@ -211,6 +216,7 @@ class _ExtendedArtworkPainter extends CustomPainter {
     required this.sharp,
     required this.ambient,
     required this.alignment,
+    required this.fit,
     required this.insets,
     required this.featherSides,
     required this.shadeLeading,
@@ -218,6 +224,7 @@ class _ExtendedArtworkPainter extends CustomPainter {
 
   final ui.Image? sharp, ambient;
   final Alignment alignment;
+  final BoxFit fit;
   final EdgeInsets insets;
   final bool featherSides, shadeLeading;
 
@@ -305,26 +312,26 @@ class _ExtendedArtworkPainter extends CustomPainter {
     axis(false);
   }
 
-  ui.ImageShader _extendedShader(ui.Image image, Rect picture) =>
+  ui.ImageShader _extendedShader(ui.Image image, Rect source, Rect picture) =>
       ui.ImageShader(
         image,
         ui.TileMode.clamp,
         ui.TileMode.clamp,
         Float64List.fromList([
-          picture.width / image.width,
+          picture.width / source.width,
           0,
           0,
           0,
           0,
-          picture.height / image.height,
+          picture.height / source.height,
           0,
           0,
           0,
           0,
           1,
           0,
-          picture.left,
-          picture.top,
+          picture.left - source.left * picture.width / source.width,
+          picture.top - source.top * picture.height / source.height,
           0,
           1,
         ]),
@@ -336,23 +343,32 @@ class _ExtendedArtworkPainter extends CustomPainter {
     final image = sharp;
     if (image == null || size.isEmpty) return;
     final bounds = Offset.zero & size;
-    final source = Rect.fromLTWH(
+    final fullSource = Rect.fromLTWH(
       0,
       0,
       image.width.toDouble(),
       image.height.toDouble(),
     );
     final picture = cinemaArtworkCompositionRect(
-      source: source.size,
+      source: fullSource.size,
       viewport: size,
       insets: insets,
       alignment: alignment,
+      fit: fit,
     );
+    final fitted = applyBoxFit(fit, fullSource.size, picture.size);
+    final source = alignment.inscribe(fitted.source, fullSource);
     // Clamp samples beyond the source edges before Gaussian diffusion. The
     // original picture is painted separately, so only the added field can blur.
     final field = ambient;
     if (field != null) {
-      final shader = _extendedShader(field, picture);
+      final fieldSource = Rect.fromLTRB(
+        source.left * field.width / image.width,
+        source.top * field.height / image.height,
+        source.right * field.width / image.width,
+        source.bottom * field.height / image.height,
+      );
+      final shader = _extendedShader(field, fieldSource, picture);
       canvas.saveLayer(bounds, Paint());
       canvas.drawRect(
         bounds,
@@ -370,7 +386,7 @@ class _ExtendedArtworkPainter extends CustomPainter {
     }
     // Start the extension at the exact border colour and blend to the diffuse
     // field over 32px. This prevents a sharp brightness seam around the picture.
-    final seam = _extendedShader(image, picture);
+    final seam = _extendedShader(image, source, picture);
     canvas.saveLayer(bounds, Paint());
     canvas.drawRect(bounds, Paint()..shader = seam);
     _seamMask(canvas, bounds, picture);
@@ -401,6 +417,7 @@ class _ExtendedArtworkPainter extends CustomPainter {
       oldDelegate.sharp != sharp ||
       oldDelegate.ambient != ambient ||
       oldDelegate.alignment != alignment ||
+      oldDelegate.fit != fit ||
       oldDelegate.insets != insets ||
       oldDelegate.featherSides != featherSides ||
       oldDelegate.shadeLeading != shadeLeading;

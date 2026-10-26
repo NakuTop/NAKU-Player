@@ -620,10 +620,7 @@ void main() {
           );
           final hero = tester.widget<CinemaFeaturedWall>(heroFinder);
           expect(hero.titles, hasLength(4), reason: '$section/$sort');
-          expect(
-            tester.getSize(heroFinder).height,
-            closeTo(1280 * 9 / 16 + hero.topInset + 52, .01),
-          );
+          expect(tester.getSize(heroFinder).height, closeTo(860 - 96, .01));
           final status = hero.statusBuilder!(hero.titles.first) as Align;
           expect(status.child, isA<CinemaResourceBadge>());
           for (final title in hero.titles) {

@@ -676,15 +676,33 @@ actor NASMovieSession {
         guard http.url == endpoint,bytes.count <= 4096 else {throw NASHomeDisplayError.invalidResponse("response_origin_or_size")}
         guard let header=http.value(forHTTPHeaderField:"Set-Cookie"),header.count <= 2048,
               header.range(of:";\\s*domain\\s*=",options:[.regularExpression,.caseInsensitive]) == nil,
-              header.range(of:";\\s*samesite=strict(?:;|$)",options:[.regularExpression,.caseInsensitive]) != nil,
-              let cookie=HTTPCookie.cookies(withResponseHeaderFields:["Set-Cookie":header],for:endpoint).first(where:{$0.name == "__Host-naku-display"}),
-              let contextCookie=HTTPCookie.cookies(withResponseHeaderFields:["Set-Cookie":header],for:endpoint).first(where:{$0.name == "__Host-naku-display-context"}),
+              header.range(of:";\\s*samesite=strict(?:;|$)",options:[.regularExpression,.caseInsensitive]) != nil else {throw NASHomeDisplayError.invalidResponse("response_cookie_header")}
+        // CFNetwork may combine repeated Set-Cookie fields without a space.
+        // Foundation then misses the second cookie. Normalize only a boundary
+        // before our known names; an Expires date's internal comma is untouched.
+        // Count the raw fields first so parser coalescing cannot hide duplicates.
+        let boundaries=try NSRegularExpression(pattern:"(?:^|,)\\s*(__Host-naku-display(?:-context)?)=")
+        let names=boundaries.matches(in:header,range:NSRange(header.startIndex...,in:header)).compactMap {
+            Range($0.range(at:1),in:header).map {String(header[$0])}
+        }
+        guard names.filter({$0 == "__Host-naku-display"}).count == 1,
+              names.filter({$0 == "__Host-naku-display-context"}).count == 1 else {throw NASHomeDisplayError.invalidResponse("response_cookie_parse")}
+        let normalized=header.replacingOccurrences(of:",\\s*(?=__Host-naku-display(?:-context)?=)",with:", ",options:.regularExpression)
+        let parsed=HTTPCookie.cookies(withResponseHeaderFields:["Set-Cookie":normalized],for:endpoint)
+        let credentials=parsed.filter {$0.name == "__Host-naku-display"},contexts=parsed.filter {$0.name == "__Host-naku-display-context"}
+        guard credentials.count == 1,contexts.count == 1,
+              let cookie=credentials.first,let contextCookie=contexts.first else {throw NASHomeDisplayError.invalidResponse("response_cookie_parse")}
+        guard
               cookie.domain == endpoint.host,cookie.path == "/",cookie.isSecure,cookie.isHTTPOnly,cookie.value.count <= 1024,
-              contextCookie.domain == endpoint.host,contextCookie.path == "/",contextCookie.isSecure,contextCookie.isHTTPOnly,contextCookie.value == "1",contextCookie.isSessionOnly,
-              let expiry=cookie.expiresDate,expiry > Date(),expiry.timeIntervalSinceNow <= 301 else {throw NASHomeDisplayError.invalidResponse("response_cookie")}
-        guard let payload=(try? JSONSerialization.jsonObject(with:bytes)) as? [String:Any],payload["authenticated"] as? Bool == true,
+              contextCookie.domain == endpoint.host,contextCookie.path == "/",contextCookie.isSecure,contextCookie.isHTTPOnly else {throw NASHomeDisplayError.invalidResponse("response_cookie_scope")}
+        guard contextCookie.value == "1" else {throw NASHomeDisplayError.invalidResponse("response_cookie_marker")}
+        guard contextCookie.isSessionOnly else {throw NASHomeDisplayError.invalidResponse("response_cookie_persistence")}
+        guard let expiry=cookie.expiresDate,expiry > Date(),expiry.timeIntervalSinceNow <= 301 else {throw NASHomeDisplayError.invalidResponse("response_cookie_expiry")}
+        guard let payload=(try? JSONSerialization.jsonObject(with:bytes)) as? [String:Any] else {throw NASHomeDisplayError.invalidResponse("response_payload_body")}
+        guard payload["authenticated"] as? Bool == true else {throw NASHomeDisplayError.invalidResponse("response_payload_authorized")}
+        guard
               let expiresAt=payload["expiresAt"] as? Double,expiresAt > Date().timeIntervalSince1970*1000,
-              expiresAt <= Date().timeIntervalSince1970*1000+301_000 else {throw NASHomeDisplayError.invalidResponse("response_payload")}
+              expiresAt <= Date().timeIntervalSince1970*1000+301_000 else {throw NASHomeDisplayError.invalidResponse("response_payload_expiry")}
         return NASHomeDisplayAuthorization(cookie:cookie,contextCookie:contextCookie,expiresAt:expiresAt,generation:attempt)
     }
     // A same-generation renewal is single-flight. In particular, an older
@@ -710,6 +728,21 @@ actor NASMovieSession {
                 result["reason"] as? String ?? "unknown",result["stage"] as? String ?? "none",
                 (result["httpStatus"] as? Int).map {String($0)} ?? "none",
                 result["nasSessionCheck"] as? String ?? "unchecked",result["nasDeviceCheck"] as? String ?? "unchecked")
+            // Persist only fixed categories and status/presence values in this
+            // application's domain. Standalone fixtures must never write prefs.
+            if Bundle.main.bundleIdentifier == "com.shenminghao.yingchuan" {
+                var diagnostic:[String:Any]=["timestamp":Date().timeIntervalSince1970]
+                for key in ["reason","stage","nasSessionCheck","nasDeviceCheck"] {
+                    if let value=result[key] as? String {diagnostic[key]=value}
+                }
+                for key in ["httpStatus","networkCode"] {
+                    if let value=result[key] as? Int {diagnostic[key]=value}
+                }
+                for key in ["authenticated","nasSessionVerified","nasDeviceVerified"] {
+                    if let value=result[key] as? Bool {diagnostic[key]=value}
+                }
+                UserDefaults.standard.set(diagnostic,forKey:"naku.homeDisplay.authorization.diagnostic")
+            }
         }
         return result
     }

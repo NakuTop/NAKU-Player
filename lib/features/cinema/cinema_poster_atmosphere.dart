@@ -118,18 +118,27 @@ class _AtmosphereFrame extends ChangeNotifier {
     Color(0xFF41454B),
     Color(0xFF535458),
   ];
-  static const _cycleSeconds = 32.0;
+  static const _cycleSeconds = 24.0;
   double phase = 0, _paletteBlend = 1;
   List<Color> colors = _neutral, _from = _neutral, _target = _neutral;
 
   void changePalette(List<Color>? palette, {required bool animate}) {
     final supplied = palette?.take(3).map((color) {
       final hsl = HSLColor.fromColor(color);
-      return hsl
+      final softened = hsl
           .withSaturation(hsl.saturation.clamp(0.0, .62))
           .withLightness(hsl.lightness.clamp(.18, .42))
-          .toColor()
-          .withValues(alpha: 1);
+          .toColor();
+      // Stronger local opacity must not produce a bright reading surface.
+      // Scale channels together so the poster hue survives the luminance cap.
+      final peak = math.max(softened.r, math.max(softened.g, softened.b));
+      final scale = peak > .47 ? .47 / peak : 1.0;
+      return softened.withValues(
+        alpha: 1,
+        red: softened.r * scale,
+        green: softened.g * scale,
+        blue: softened.b * scale,
+      );
     }).toList();
     final next = supplied == null || supplied.isEmpty
         ? _neutral
@@ -160,24 +169,31 @@ class _AtmosphereFrame extends ChangeNotifier {
 class _AtmospherePainter extends CustomPainter {
   _AtmospherePainter(this.frame) : super(repaint: frame);
   final _AtmosphereFrame frame;
-  static const _stops = [0.0, .26, .66, 1.0];
+  static const _stops = [0.0, .20, .64, 1.0];
+  static const _centerX = [.15, .79, .48];
+  static const _centerY = [.32, .76, .50];
+  static const _radius = [.92, .78, 1.08];
 
   @override
   void paint(Canvas canvas, Size size) {
     if (size.isEmpty) return;
     final bounds = Offset.zero & size;
     final angle = frame.phase * math.pi * 2;
-    final baseRadius = size.longestSide * .70;
+    // Long reviews must not move every color center below the visible screen.
+    // Three broad, asymmetric fields stay near the poster's reading surface;
+    // their outer tails dissolve into the caller's neutral charcoal below.
+    final fieldHeight = math.min(size.height, size.width * .85);
+    final baseRadius = size.width * .43;
     final paint = Paint();
     for (var index = 0; index < 3; index++) {
       final turn = angle + index * math.pi * 2 / 3;
       final center = Offset(
-        size.width * (.5 + .34 * math.sin(turn)),
-        size.height * (.52 + .30 * math.cos(turn + .45)),
+        size.width * (_centerX[index] + .25 * math.sin(turn)),
+        fieldHeight * (_centerY[index] + .24 * math.cos(turn + .45)),
       );
-      final radius = baseRadius * (.94 + .09 * math.sin(turn + 1.1));
+      final radius = baseRadius * (_radius[index] + .10 * math.sin(turn + 1.1));
       final color = frame.colors[index];
-      final strength = .17 + .025 * math.sin(turn - .7);
+      final strength = .29 + .025 * math.sin(turn - .7);
       paint.shader = ui.Gradient.radial(center, radius, [
         color.withValues(alpha: strength),
         color.withValues(alpha: strength * .72),
