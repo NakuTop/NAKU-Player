@@ -39,6 +39,12 @@ class CinemaDetailArtwork {
   final String url;
   final int width, height;
   final bool highResolution;
+
+  /// Original encoded dimensions, never a decode target or an extended canvas.
+  /// A smaller real wide frame can be provisional while HD metadata arrives.
+  bool get usableLandscape =>
+      url.isNotEmpty && width >= 960 && height >= 540 && width >= height * 1.25;
+
   Map<String, String> get headers =>
       Uri.tryParse(url)?.host.endsWith('.doubanio.com') == true
       ? doubanImageHeaders
@@ -87,8 +93,42 @@ class CinemaDetailArtworkRepository {
     CancelToken? cancelToken,
     bool Function()? isCurrent,
     bool force = false,
+  }) => _resolve(
+    title,
+    identity: identity,
+    cancelToken: cancelToken,
+    isCurrent: isCurrent,
+    force: force,
+  );
+
+  /// A hero needs a real wide image. Detail artwork can still use its existing
+  /// high-resolution portrait fallback without poisoning this separate cache.
+  Future<CinemaDetailArtwork> resolveLandscape(
+    CinemaTitle title, {
+    RatingIdentity identity = const RatingIdentity(),
+    CancelToken? cancelToken,
+    bool Function()? isCurrent,
+    bool force = false,
+  }) => _resolve(
+    title,
+    identity: identity,
+    cancelToken: cancelToken,
+    isCurrent: isCurrent,
+    force: force,
+    landscapeOnly: true,
+  );
+
+  Future<CinemaDetailArtwork> _resolve(
+    CinemaTitle title, {
+    RatingIdentity identity = const RatingIdentity(),
+    CancelToken? cancelToken,
+    bool Function()? isCurrent,
+    bool force = false,
+    bool landscapeOnly = false,
   }) async {
-    final fallback = CinemaDetailArtwork(url: title.poster);
+    final fallback = CinemaDetailArtwork(
+      url: landscapeOnly ? '' : title.poster,
+    );
     if ((title.doubanId.isNotEmpty &&
             identity.doubanId.isNotEmpty &&
             title.doubanId != identity.doubanId) ||
@@ -121,9 +161,12 @@ class CinemaDetailArtworkRepository {
     }
 
     current();
-    final key = validDouban || validImdb
+    final identityCacheKey = validDouban || validImdb
         ? '$douban|$imdb|$type'
         : 'poster|${title.poster}';
+    final key = landscapeOnly
+        ? 'landscape|$identityCacheKey'
+        : identityCacheKey;
     if (force) _cache.remove(key);
     final cached = _cache[key];
     if (cached != null && _now().isBefore(cached.$1)) {
@@ -135,6 +178,21 @@ class CinemaDetailArtworkRepository {
       deadline,
       () => cancel.cancel('Artwork lookup deadline'),
     );
+    CinemaDetailArtwork? provisional;
+    bool accept(CinemaDetailArtwork? artwork) {
+      if (artwork == null) return false;
+      if (artwork.highResolution) {
+        _remember(key, artwork);
+        return true;
+      }
+      if (provisional == null ||
+          artwork.width * artwork.height >
+              provisional!.width * provisional!.height) {
+        provisional = artwork;
+      }
+      return false;
+    }
+
     try {
       final candidates = <String>{};
       final doubanPosters = <String>{};
@@ -213,23 +271,25 @@ class CinemaDetailArtworkRepository {
         for (final url in urls) {
           if (_doubanPhotoId(url).isNotEmpty) doubanPosters.add(url);
           if (!candidates.add(url)) continue;
-          final result = await _verified(url, cancel);
+          final result = await _verified(
+            url,
+            cancel,
+            landscapeOnly: landscapeOnly,
+          );
           current();
-          if (result != null) {
-            _remember(key, result);
-            return result;
-          }
+          if (accept(result)) return result!;
         }
       }
       // A source may already publish a true original without external IDs.
       // Verify its encoded dimensions too; do not guess larger URL variants.
       if (_imageUrl(title.poster).isNotEmpty && candidates.add(title.poster)) {
-        final result = await _verified(title.poster, cancel);
+        final result = await _verified(
+          title.poster,
+          cancel,
+          landscapeOnly: landscapeOnly,
+        );
         current();
-        if (result != null) {
-          _remember(key, result);
-          return result;
-        }
+        if (accept(result)) return result!;
         if (_doubanPhotoId(title.poster).isNotEmpty) {
           doubanPosters.add(title.poster);
         }
@@ -268,12 +328,13 @@ class CinemaDetailArtworkRepository {
               if (_doubanPhotoId(url) != photo || candidates.contains(url)) {
                 continue;
               }
-              final result = await _verified(url, cancel);
+              final result = await _verified(
+                url,
+                cancel,
+                landscapeOnly: landscapeOnly,
+              );
               current();
-              if (result != null) {
-                _remember(key, result);
-                return result;
-              }
+              if (accept(result)) return result!;
             }
           }
         } catch (_) {
@@ -288,17 +349,17 @@ class CinemaDetailArtworkRepository {
       timer.cancel();
       cancel.cancel('Artwork lookup finished');
     }
-    _remember(key, null);
-    return fallback;
+    _remember(key, provisional);
+    return provisional ?? fallback;
   }
 
   void _remember(String key, CinemaDetailArtwork? artwork) {
     _cache.remove(key);
     _cache[key] = (
       _now().add(
-        artwork == null
-            ? const Duration(seconds: 30)
-            : const Duration(hours: 24),
+        artwork?.highResolution == true
+            ? const Duration(hours: 24)
+            : const Duration(seconds: 30),
       ),
       artwork,
     );
@@ -307,7 +368,11 @@ class CinemaDetailArtworkRepository {
     }
   }
 
-  Future<CinemaDetailArtwork?> _verified(String url, CancelToken cancel) async {
+  Future<CinemaDetailArtwork?> _verified(
+    String url,
+    CancelToken cancel, {
+    bool landscapeOnly = false,
+  }) async {
     try {
       _checkCancel(cancel);
       final candidate = CinemaDetailArtwork(url: url);
@@ -320,15 +385,18 @@ class CinemaDetailArtworkRepository {
       final (width, height) = size;
       final hd =
           width >= 1280 && height >= 720 || width >= 1000 && height >= 1400;
-      if (!hd || width > 16384 || height > 16384 || width * height > 80000000) {
+      if (width > 16384 || height > 16384 || width * height > 80000000) {
         return null;
       }
-      return CinemaDetailArtwork(
+      final result = CinemaDetailArtwork(
         url: url,
         width: width,
         height: height,
-        highResolution: true,
+        highResolution: hd,
       );
+      return landscapeOnly
+          ? (result.usableLandscape ? result : null)
+          : (hd ? result : null);
     } catch (_) {
       return null;
     }

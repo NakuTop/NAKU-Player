@@ -11,6 +11,7 @@ import 'package:window_manager/window_manager.dart';
 import 'cinema_home_display_bridge.dart';
 import 'cinema_nas_media.dart';
 import 'cinema_neon_decode.dart';
+import 'cinema_player_entrance.dart';
 import 'cinema_theme.dart';
 
 const cinemaHomeDisplayUrl = 'https://between-us-home.pages.dev/display';
@@ -57,6 +58,9 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
   PlatformInAppWebViewWidget? _webView;
   PlatformInAppWebViewController? _controller;
   ui.Image? _preview;
+  ui.Image? _exitPreview;
+  final _exitSurface = GlobalKey<CinemaPlayerEntranceState>();
+  bool _closing = false, _allowDisplayPop = false;
   Timer? _timeout, _captureTimer, _settleTimer, _renewTimer;
   bool _loading = true, _overlay = true, _hidden = false;
   bool _occluded = false, _minimized = false;
@@ -69,7 +73,8 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
   String? _error;
   String _url = cinemaHomeDisplayUrl;
 
-  bool _active(int generation) => mounted && generation == _generation;
+  bool _active(int generation) =>
+      mounted && !_closing && generation == _generation;
 
   @override
   void initState() {
@@ -93,7 +98,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
       _visibility(hidden || _minimized);
 
   Future<void> _open() async {
-    if (_authorizing) return;
+    if (_authorizing || _closing) return;
     final generation = ++_generation;
     _cancelLoadingTimers();
     _renewTimer?.cancel();
@@ -504,6 +509,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
   }
 
   Future<void> _visibility(bool hidden) async {
+    if (_closing) return;
     if (_hidden == hidden) return;
     _hidden = hidden;
     if (!hidden) {
@@ -525,6 +531,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
   }
 
   Future<void> _occlusion(bool occluded) async {
+    if (_closing) return;
     if (_occluded == occluded) return;
     _occluded = occluded;
     if (_hidden) return;
@@ -586,91 +593,187 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     _controller = null;
     _webView = null;
     _releasePreview();
+    _retirePreview(_exitPreview);
+    _exitPreview = null;
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) => Theme(
-    data: CinemaTheme.of(context),
-    child: Scaffold(
-      backgroundColor: Colors.transparent,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          if (_webView != null) _webView!.build(context),
-          if (_overlay && _error == null)
-            IgnorePointer(
-              child: CinemaNeonDecode(
-                loading: _loading,
-                progress: (_progress / 100) * .75,
-                snapshotRendering: true,
-                rasterSnapshot: _preview,
-                child: ColoredBox(
-                  color: CinemaTheme.background.withValues(alpha: 1),
-                  child: const SizedBox.expand(),
-                ),
-              ),
+  Future<ui.Image?> _takeExitPreview(int generation) async {
+    final current = _preview;
+    if (current != null) return current.clone();
+    final controller = _controller;
+    if (controller == null || _captureWork != null) return null;
+    ui.Codec? codec;
+    ui.Image? image;
+    try {
+      final bytes = await controller
+          .takeScreenshot(
+            screenshotConfiguration: ScreenshotConfiguration(
+              snapshotWidth: 960,
             ),
-          if (_error != null)
-            ColoredBox(
-              color: CinemaTheme.background,
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
+          )
+          .timeout(const Duration(milliseconds: 600));
+      if (bytes == null || !mounted || generation != _generation) return null;
+      codec = await ui.instantiateImageCodec(
+        bytes,
+        targetWidth: 1536,
+        allowUpscaling: false,
+      );
+      image = (await codec.getNextFrame()).image;
+      if (!mounted || generation != _generation) return null;
+      final result = image;
+      image = null;
+      return result;
+    } catch (_) {
+      return null;
+    } finally {
+      codec?.dispose();
+      image?.dispose();
+    }
+  }
+
+  Future<void> _leave() async {
+    if (_closing || !Navigator.of(context).canPop()) return;
+    setState(() => _closing = true);
+    final generation = ++_generation;
+    final navigator = Navigator.of(context);
+    _cancelLoadingTimers();
+    _renewTimer?.cancel();
+    final animate =
+        !_suspended &&
+        !MediaQuery.disableAnimationsOf(context) &&
+        TickerMode.valuesOf(context).enabled;
+    try {
+      final image = animate ? await _takeExitPreview(generation) : null;
+      if (!mounted) {
+        image?.dispose();
+        return;
+      }
+      if (image != null) {
+        // A live AppKit view cannot safely follow the shrinking Flutter
+        // transform. Keep it mounted offstage, then close its actual pixels.
+        setState(() => _exitPreview = image);
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted) return;
+        await _exitSurface.currentState?.closeForExit();
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _allowDisplayPop = true);
+        await WidgetsBinding.instance.endOfFrame;
+        if (mounted) navigator.pop();
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    canPop: _allowDisplayPop,
+    onPopInvokedWithResult: (didPop, _) {
+      if (!didPop) unawaited(_leave());
+    },
+    child: Theme(
+      data: CinemaTheme.of(context),
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: IgnorePointer(
+          ignoring: _closing,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (_webView != null)
+                Offstage(
+                  offstage: _exitPreview != null,
+                  child: _webView!.build(context),
+                ),
+              if (_overlay && _error == null && !_closing)
+                IgnorePointer(
+                  child: CinemaNeonDecode(
+                    loading: _loading,
+                    progress: (_progress / 100) * .75,
+                    snapshotRendering: true,
+                    rasterSnapshot: _preview,
+                    // Until a real preview exists the native page itself remains
+                    // visible. The overlay never substitutes generated tile colors.
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+              if (_error != null)
+                ColoredBox(
+                  color: CinemaTheme.background,
+                  child: Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(_error!, textAlign: TextAlign.center),
+                        const SizedBox(height: 16),
+                        if (_needsNAS && widget.onOpenNAS != null)
+                          FilledButton(
+                            onPressed: () async {
+                              await widget.onOpenNAS!();
+                              if (mounted) await _open();
+                            },
+                            child: const Text('登录 NAS'),
+                          )
+                        else
+                          TextButton(
+                            onPressed: _authorizing ? null : _open,
+                            child: const Text('重试'),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              Positioned(
+                key: const ValueKey('home-display-floating-controls'),
+                top: MediaQuery.paddingOf(context).top + 34,
+                left: 12,
+                right: 12,
+                child: Row(
                   children: [
-                    Text(_error!, textAlign: TextAlign.center),
-                    const SizedBox(height: 16),
-                    if (_needsNAS && widget.onOpenNAS != null)
-                      FilledButton(
-                        onPressed: () async {
-                          await widget.onOpenNAS!();
-                          if (mounted) await _open();
-                        },
-                        child: const Text('登录 NAS'),
-                      )
-                    else
-                      TextButton(
-                        onPressed: _authorizing ? null : _open,
-                        child: const Text('重试'),
-                      ),
+                    _displayControl(
+                      tooltip: '返回',
+                      icon: Icons.chevron_left_rounded,
+                      onPressed: () => unawaited(_leave()),
+                    ),
+                    const Spacer(),
+                    _displayControl(
+                      tooltip: '刷新',
+                      icon: Icons.refresh_rounded,
+                      onPressed: _authorizing ? null : _open,
+                    ),
+                    const SizedBox(width: 4),
+                    _displayControl(
+                      tooltip: '全屏',
+                      icon: Icons.fullscreen_rounded,
+                      onPressed: () async {
+                        try {
+                          await DesktopFullscreen.setFullScreen(
+                            !await DesktopFullscreen.isFullScreen(),
+                          );
+                        } catch (_) {}
+                      },
+                    ),
                   ],
                 ),
               ),
-            ),
-          Positioned(
-            key: const ValueKey('home-display-floating-controls'),
-            top: MediaQuery.paddingOf(context).top + 34,
-            left: 12,
-            right: 12,
-            child: Row(
-              children: [
-                _displayControl(
-                  tooltip: '返回',
-                  icon: Icons.chevron_left_rounded,
-                  onPressed: () => Navigator.of(context).maybePop(),
+              if (_exitPreview != null)
+                Positioned.fill(
+                  child: CinemaPlayerEntrance(
+                    key: _exitSurface,
+                    generation: 0,
+                    ready: true,
+                    animateOnEntry: false,
+                    child: RawImage(
+                      image: _exitPreview,
+                      fit: BoxFit.fill,
+                      filterQuality: FilterQuality.low,
+                    ),
+                  ),
                 ),
-                const Spacer(),
-                _displayControl(
-                  tooltip: '刷新',
-                  icon: Icons.refresh_rounded,
-                  onPressed: _authorizing ? null : _open,
-                ),
-                const SizedBox(width: 4),
-                _displayControl(
-                  tooltip: '全屏',
-                  icon: Icons.fullscreen_rounded,
-                  onPressed: () async {
-                    try {
-                      await DesktopFullscreen.setFullScreen(
-                        !await DesktopFullscreen.isFullScreen(),
-                      );
-                    } catch (_) {}
-                  },
-                ),
-              ],
-            ),
+            ],
           ),
-        ],
+        ),
       ),
     ),
   );

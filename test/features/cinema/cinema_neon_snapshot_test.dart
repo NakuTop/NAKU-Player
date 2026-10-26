@@ -158,29 +158,55 @@ void main() {
   });
 
   testWidgets(
-    'empty preview is visible and continues subtle motion after eight seconds',
+    'without real preview the underlying surface stays unchanged and idle',
     (tester) async {
       final capture = GlobalKey(), state = GlobalKey<CinemaNeonDecodeState>();
       await tester.pumpWidget(
-        _host(capture: capture, state: state, loading: true),
+        _host(
+          capture: capture,
+          state: state,
+          loading: true,
+          child: const ColoredBox(color: Color(0xFF447766)),
+        ),
       );
       final first = await _pixels(tester, capture);
-      expect(first[(80 * 160 + 80) * 4], greaterThan(15));
+      expect(first[(80 * 160 + 80) * 4], 0x44);
+      expect(first[(80 * 160 + 80) * 4 + 1], 0x77);
+      await tester.pump(const Duration(seconds: 9));
+      expect(state.currentState!.debugSnapshot.visualReveal, 0);
+      expect(state.currentState!.debugSnapshot.running, isFalse);
+      expect(state.currentState!.debugSnapshot.visible, isFalse);
+      final later = await _pixels(tester, capture);
+      expect(
+        listEquals(first, later),
+        isTrue,
+        reason: 'An absent page image never produces made-up grid colors.',
+      );
+      final real = await _image(
+        tester,
+        const Color(0xFF446688),
+        const Color(0xFF886644),
+      );
+      await tester.pumpWidget(
+        _host(capture: capture, state: state, loading: true, image: real),
+      );
+      expect(state.currentState!.debugSnapshot.running, isTrue);
+      expect(state.currentState!.debugSnapshot.elapsed, 0);
       await tester.pump(const Duration(seconds: 9));
       expect(state.currentState!.debugSnapshot.visualReveal, closeTo(.9, .001));
-      expect(state.currentState!.debugSnapshot.running, isTrue);
-      expect(state.currentState!.debugSnapshot.visible, isTrue);
-      final late = await _pixels(tester, capture);
-      await tester.pump(const Duration(milliseconds: 700));
-      final later = await _pixels(tester, capture);
-      expect(listEquals(late, later), isFalse);
+      expect(
+        state.currentState!.debugSnapshot.running,
+        isTrue,
+        reason: 'Real page pixels continue gently moving until readiness.',
+      );
       await tester.pumpWidget(
-        _host(capture: capture, state: state, loading: false),
+        _host(capture: capture, state: state, loading: false, image: real),
       );
       await tester.pump(const Duration(milliseconds: 520));
       expect(state.currentState!.debugSnapshot.running, isFalse);
       expect(state.currentState!.debugSnapshot.visible, isFalse);
       await tester.pumpWidget(const SizedBox());
+      real.dispose();
       expect(tester.binding.transientCallbackCount, 0);
       expect(tester.takeException(), isNull);
     },
@@ -238,8 +264,9 @@ void main() {
     tester,
   ) async {
     final capture = GlobalKey(), state = GlobalKey<CinemaNeonDecodeState>();
+    final image = await _image(tester, Colors.green, Colors.blue);
     await tester.pumpWidget(
-      _host(capture: capture, state: state, loading: true),
+      _host(capture: capture, state: state, loading: true, image: image),
     );
     await tester.pump(const Duration(milliseconds: 300));
     final before = state.currentState!.debugSnapshot;
@@ -251,7 +278,13 @@ void main() {
     await tester.pump();
     expect(state.currentState!.debugSnapshot.running, isTrue);
     await tester.pumpWidget(
-      _host(capture: capture, state: state, loading: true, reduced: true),
+      _host(
+        capture: capture,
+        state: state,
+        loading: true,
+        image: image,
+        reduced: true,
+      ),
     );
     expect(state.currentState!.debugSnapshot.running, isFalse);
     await tester.pumpWidget(
@@ -259,11 +292,13 @@ void main() {
         capture: capture,
         state: state,
         loading: true,
+        image: image,
         tickerEnabled: false,
       ),
     );
     expect(state.currentState!.debugSnapshot.running, isFalse);
     await tester.pumpWidget(const SizedBox());
+    image.dispose();
     expect(tester.binding.transientCallbackCount, 0);
     expect(tester.takeException(), isNull);
   });

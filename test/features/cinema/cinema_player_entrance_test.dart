@@ -31,6 +31,7 @@ class _CounterState extends State<_Counter> {
 void main() {
   var generation = 0;
   var ready = false, hasError = false, enabled = true;
+  var animateOnEntry = true;
   var reduceMotion = false, systemReduceMotion = false, tickerEnabled = true;
   var reveals = 0, cancellations = 0;
   var loadStage = CinemaPlayerLoadStage.connecting;
@@ -51,6 +52,7 @@ void main() {
               ready: ready,
               hasError: hasError,
               enabled: enabled,
+              animateOnEntry: animateOnEntry,
               reduceMotion: reduceMotion,
               loadStage: loadStage,
               onReveal: () => reveals++,
@@ -77,6 +79,7 @@ void main() {
     ready = false;
     hasError = false;
     enabled = true;
+    animateOnEntry = true;
     reduceMotion = false;
     systemReduceMotion = false;
     tickerEnabled = true;
@@ -108,6 +111,116 @@ void main() {
       }
       expect(red(width ~/ 2, (height * .065).floor()), greaterThan(0));
       image.dispose();
+    });
+  }
+
+  testWidgets('exit-only surfaces start idle without a lamp or sound hook', (
+    tester,
+  ) async {
+    animateOnEntry = false;
+    ready = true;
+    await mount(tester);
+    final surface = state(tester);
+    expect(surface.debugPhase, 'complete');
+    expect(surface.debugIsAnimating, isFalse);
+    expect(surface.debugLampExtent, 0);
+    expect(surface.debugLampTarget, 0);
+    final frames = surface.debugFrameCount;
+    await tester.pump(const Duration(seconds: 3));
+    expect(surface.debugFrameCount, frames);
+    expect(reveals, 0);
+    expect(cancellations, 0);
+    await tester.tap(find.text('播放器操作 0'));
+    await tester.pump();
+    expect(childKey.currentState!.value, 1);
+    generation++;
+    ready = false;
+    loadStage = CinemaPlayerLoadStage.waitingForFrame;
+    await tester.pumpWidget(host());
+    ready = true;
+    await tester.pumpWidget(host());
+    await tester.pump(const Duration(seconds: 2));
+    expect(surface.debugPhase, 'complete');
+    expect(surface.debugLampExtent, 0);
+    expect(surface.debugIsAnimating, isFalse);
+    expect(reveals, 0);
+    expect(cancellations, 0);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('exit-only closing runs once and retains the mounted surface', (
+    tester,
+  ) async {
+    animateOnEntry = false;
+    ready = true;
+    await mount(tester);
+    final surface = state(tester);
+    final child = childKey.currentState!;
+    var completions = 0;
+    final future = surface.closeForExit();
+    future.then((_) => completions++);
+    expect(surface.closeForExit(), same(future));
+    await tester.pump();
+    expect(surface.debugPhase, 'exiting');
+    final builds = child.builds;
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(surface.debugProgress, inExclusiveRange(0, 1));
+    expect(surface.debugLampExtent, 0);
+    expect(completions, 0);
+    expect(childKey.currentState, same(child));
+    expect(child.builds, builds);
+    await tester.pump(const Duration(milliseconds: 251));
+    expect(surface.debugPhase, 'exited');
+    await future;
+    await tester.pump();
+    expect(surface.debugPhase, 'exited');
+    expect(surface.debugIsAnimating, isFalse);
+    expect(completions, 1);
+    expect(childKey.currentState, same(child));
+    // Changing the outer generation cannot replay an entry after exit.
+    generation++;
+    await tester.pumpWidget(host());
+    await tester.pump(const Duration(seconds: 2));
+    expect(surface.debugPhase, 'exited');
+    expect(reveals, 0);
+    expect(cancellations, 0);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final reason in [
+    'reduce',
+    'system',
+    'disabled',
+    'ticker',
+    'background',
+  ]) {
+    testWidgets('exit-only $reason skips closing without an entry reveal', (
+      tester,
+    ) async {
+      animateOnEntry = false;
+      ready = true;
+      reduceMotion = reason == 'reduce';
+      systemReduceMotion = reason == 'system';
+      enabled = reason != 'disabled';
+      tickerEnabled = reason != 'ticker';
+      await mount(tester);
+      final surface = state(tester);
+      expect(surface.debugPhase, 'complete');
+      if (reason == 'background') {
+        surface.didChangeAppLifecycleState(AppLifecycleState.hidden);
+      }
+      await surface.closeForExit();
+      await tester.pump();
+      expect(surface.debugPhase, 'exited');
+      expect(surface.debugIsAnimating, isFalse);
+      expect(surface.debugLampExtent, 0);
+      expect(reveals, 0);
+      expect(cancellations, 0);
+      surface.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await tester.pump(const Duration(seconds: 2));
+      expect(surface.debugPhase, 'exited');
+      expect(surface.debugIsAnimating, isFalse);
+      expect(tester.takeException(), isNull);
     });
   }
 

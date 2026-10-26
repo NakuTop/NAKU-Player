@@ -23,20 +23,21 @@ class _Request {
   final RatingIdentity identity;
   final CancelToken cancel;
   final result = Completer<CinemaDetailArtwork>();
-  void complete() => result.complete(
-    CinemaDetailArtwork(
-      url: 'https://original.invalid/${title.id}.jpg',
-      width: 3840,
-      height: 2160,
-      highResolution: true,
-    ),
+  void complete([CinemaDetailArtwork? artwork]) => result.complete(
+    artwork ??
+        CinemaDetailArtwork(
+          url: 'https://original.invalid/${title.id}.jpg',
+          width: 3840,
+          height: 2160,
+          highResolution: true,
+        ),
   );
 }
 
 class _Repository extends CinemaDetailArtworkRepository {
   final requests = <_Request>[];
   @override
-  Future<CinemaDetailArtwork> resolve(
+  Future<CinemaDetailArtwork> resolveLandscape(
     CinemaTitle title, {
     RatingIdentity identity = const RatingIdentity(),
     CancelToken? cancelToken,
@@ -71,7 +72,7 @@ void main() {
         window.artworkFor(_titles[0]).url,
         'https://original.invalid/0.jpg',
       );
-      expect(window.artworkFor(_titles[2]).url, _titles[2].poster);
+      expect(window.artworkFor(_titles[2]).url, isEmpty);
       window.dispose();
     },
   );
@@ -89,7 +90,7 @@ void main() {
       repository.requests[1].complete();
       await _settle();
       expect(repository.requests.map((r) => r.title.id), ['0', '1', '3', '4']);
-      expect(window.artworkFor(_titles[0]).url, _titles[0].poster);
+      expect(window.artworkFor(_titles[0]).url, isEmpty);
       window.dispose();
       repository.requests[2].complete();
       repository.requests[3].complete();
@@ -131,11 +132,93 @@ void main() {
       expect(repository.requests.last.identity, identity);
       repository.requests.last.complete();
       await _settle();
-      expect(window.artworkFor(_titles[0]).url, _titles[0].poster);
+      expect(window.artworkFor(_titles[0]).url, isEmpty);
       expect(
         window.artworkFor(_titles[0], identity: identity).highResolution,
         isTrue,
       );
+      window.dispose();
+    },
+  );
+
+  test(
+    'unverified and portrait artwork never fall back to the catalogue poster',
+    () async {
+      for (final artwork in [
+        const CinemaDetailArtwork(url: 'https://images.invalid/unknown.jpg'),
+        const CinemaDetailArtwork(
+          url: 'https://images.invalid/portrait.jpg',
+          width: 1600,
+          height: 2400,
+          highResolution: true,
+        ),
+      ]) {
+        final repository = _Repository();
+        final window = CinemaFeaturedArtworkWindow(repository: repository);
+        window.update(_titles.take(1).toList(), 0);
+        expect(window.artworkFor(_titles[0]).url, isEmpty);
+        repository.requests.single.complete(artwork);
+        await _settle();
+        expect(window.artworkFor(_titles[0]).url, isEmpty);
+        window.dispose();
+      }
+    },
+  );
+
+  test(
+    'a provisional real wide frame can upgrade after its short cache expires',
+    () async {
+      var now = DateTime.utc(2026, 10, 26);
+      final repository = _Repository();
+      final window = CinemaFeaturedArtworkWindow(
+        repository: repository,
+        now: () => now,
+      );
+      final titles = _titles.take(1).toList();
+      window.update(titles, 0);
+      repository.requests.single.complete(
+        const CinemaDetailArtwork(
+          url: 'https://images.invalid/wide-preview.jpg',
+          width: 960,
+          height: 540,
+        ),
+      );
+      await _settle();
+      final preview = window.artworkFor(titles.single);
+      expect((preview.width, preview.highResolution), (960, false));
+      expect(cinemaHeroDecodeWidth(preview, 1440, 2), 960);
+      window.update(titles, 0);
+      expect(repository.requests, hasLength(1));
+      now = now.add(const Duration(seconds: 31));
+      window.update(titles, 0);
+      expect(repository.requests, hasLength(2));
+      repository.requests.last.complete();
+      await _settle();
+      expect(window.artworkFor(titles.single).highResolution, isTrue);
+      window.dispose();
+    },
+  );
+
+  test(
+    'catalogue image metadata changes cannot reuse the prior artwork',
+    () async {
+      final repository = _Repository();
+      final window = CinemaFeaturedArtworkWindow(repository: repository);
+      window.update(_titles.take(1).toList(), 0);
+      repository.requests.single.complete();
+      await _settle();
+      final changed = CinemaTitle(
+        id: _titles.first.id,
+        sourceId: _titles.first.sourceId,
+        title: _titles.first.title,
+        poster: 'https://thumb.invalid/corrected.jpg',
+      );
+      window.update([changed], 0);
+      expect(repository.requests, hasLength(2));
+      expect(window.artworkFor(changed).url, isEmpty);
+      repository.requests.last.complete();
+      await _settle();
+      expect(window.artworkFor(changed).usableLandscape, isTrue);
       window.dispose();
     },
   );

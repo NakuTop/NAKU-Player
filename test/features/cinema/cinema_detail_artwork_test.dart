@@ -83,6 +83,152 @@ void main() {
   );
 
   test(
+    'landscape waits for the real background even when a cached HD portrait wins detail',
+    () async {
+      const portrait = 'https://images.invalid/portrait-original.jpg';
+      CinemaDoubanAccess.rememberFeedSubject({
+        'id': '1292722',
+        'type': 'movie',
+        'pic': {'original': portrait},
+      });
+      final metadata = Completer<Uint8List>();
+      final inspected = <String>[];
+      final repository = CinemaDetailArtworkRepository(
+        fetch: (uri, headers, limit, cancel) =>
+            uri.host == 'v3-cinemeta.strem.io'
+            ? metadata.future
+            : Future.value(
+                _bytes({
+                  'id': '1292722',
+                  'type': 'movie',
+                  'pic': {'original': portrait},
+                }),
+              ),
+        inspect: (url, headers, cancel) async {
+          inspected.add(url);
+          return url == _background ? (3840, 2160) : (1600, 2400);
+        },
+      );
+      final title = _movie.copyWith(doubanId: '1292722');
+      expect((await repository.resolve(title)).url, portrait);
+      var settled = false;
+      final landscape = repository.resolveLandscape(title).then((result) {
+        settled = true;
+        return result;
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(settled, isFalse);
+      metadata.complete(_bytes(_meta()));
+      final result = await landscape;
+      expect(
+        (result.url, result.width, result.height),
+        (_background, 3840, 2160),
+      );
+      expect(result.highResolution, isTrue);
+      expect(inspected, contains(portrait));
+      expect(
+        (await repository.resolve(title)).url,
+        portrait,
+        reason: 'The detail portrait cache keeps its established behaviour.',
+      );
+    },
+  );
+
+  test('a landscape miss does not poison the detail portrait cache', () async {
+    const title = CinemaTitle(
+      id: 'portrait-only',
+      sourceId: 'fixture',
+      title: '仅海报',
+      poster: 'https://images.invalid/portrait.jpg',
+    );
+    final repository = CinemaDetailArtworkRepository(
+      fetch: (uri, headers, limit, cancel) async =>
+          fail('No ID-based request.'),
+      inspect: (url, headers, cancel) async => (1600, 2400),
+    );
+    expect((await repository.resolveLandscape(title)).url, isEmpty);
+    final detail = await repository.resolve(title);
+    expect((detail.url, detail.highResolution), (title.poster, true));
+  });
+
+  test(
+    'wide URL names cannot substitute for actual encoded dimensions',
+    () async {
+      final repository = CinemaDetailArtworkRepository(
+        fetch: (uri, headers, limit, cancel) async => _bytes(_meta()),
+        inspect: (url, headers, cancel) async => (1600, 2400),
+      );
+      final result = await repository.resolveLandscape(_movie);
+      expect((result.url, result.highResolution), ('', false));
+    },
+  );
+
+  test(
+    'real 960 wide frames remain provisional and can retry for HD',
+    () async {
+      var now = DateTime.utc(2026, 10, 26);
+      var inspected = 0;
+      var fullSize = false;
+      const title = CinemaTitle(
+        id: 'wide-without-ids',
+        sourceId: 'fixture',
+        title: '真实横图',
+        poster: 'https://images.invalid/source-wide.jpg',
+      );
+      final repository = CinemaDetailArtworkRepository(
+        now: () => now,
+        fetch: (uri, headers, limit, cancel) async =>
+            fail('No ID-based request.'),
+        inspect: (url, headers, cancel) async {
+          inspected++;
+          return fullSize ? (1920, 1080) : (960, 540);
+        },
+      );
+      final preview = await repository.resolveLandscape(title);
+      expect(
+        (preview.url, preview.width, preview.highResolution),
+        (title.poster, 960, false),
+      );
+      expect(preview.usableLandscape, isTrue);
+      await repository.resolveLandscape(title);
+      expect(inspected, 1);
+      fullSize = true;
+      now = now.add(const Duration(seconds: 31));
+      final upgraded = await repository.resolveLandscape(title);
+      expect((upgraded.width, upgraded.highResolution), (1920, true));
+      expect(inspected, 2);
+    },
+  );
+
+  test(
+    'landscape movie and series caches keep their exact provider type',
+    () async {
+      final requested = <String>[];
+      final repository = CinemaDetailArtworkRepository(
+        fetch: (uri, headers, limit, cancel) async {
+          requested.add(uri.path);
+          return _bytes(_meta(type: uri.pathSegments[1]));
+        },
+        inspect: (url, headers, cancel) async => (1920, 1080),
+      );
+      await repository.resolveLandscape(_movie);
+      await repository.resolveLandscape(
+        const CinemaTitle(
+          id: 'series',
+          sourceId: 'fixture',
+          title: '剧集',
+          category: '电视剧',
+          imdbId: 'tt0120338',
+        ),
+      );
+      expect(requested, [
+        '/meta/movie/tt0120338.json',
+        '/meta/series/tt0120338.json',
+      ]);
+    },
+  );
+
+  test(
     'small files advertised as large never become HD by a decode target',
     () async {
       final repository = CinemaDetailArtworkRepository(

@@ -16,7 +16,7 @@ class _Artwork extends CinemaDetailArtworkRepository {
   final identities = <String>[];
   CinemaDetailArtwork result = const CinemaDetailArtwork(url: '');
   @override
-  Future<CinemaDetailArtwork> resolve(
+  Future<CinemaDetailArtwork> resolveLandscape(
     CinemaTitle title, {
     RatingIdentity identity = const RatingIdentity(),
     CancelToken? cancelToken,
@@ -273,7 +273,6 @@ void main() {
   for (final (name, original) in [
     ('hd-wide', const Size(320, 180)),
     ('cinema-wide', const Size(480, 200)),
-    ('portrait', const Size(180, 320)),
   ]) {
     for (final windowHeight in [860.0, 480.0]) {
       testWidgets(
@@ -330,62 +329,40 @@ void main() {
             for (var c = 0; c < 3; c++)
               pixels.getUint8((y * raster.width + x) * 4 + c),
           ];
-          if (name != 'portrait') {
-            final centers = <double>[];
-            for (final color in marks) {
-              final target = [
-                (color.r * 255).round(),
-                (color.g * 255).round(),
-                (color.b * 255).round(),
-              ];
-              final matching = <int>[];
-              for (var x = 0; x < raster.width; x++) {
-                final pixel = rgb(x);
-                if (List.generate(
-                  3,
-                  (c) => (pixel[c] - target[c]).abs() <= 2,
-                ).every((same) => same)) {
-                  matching.add(x);
-                }
+          final centers = <double>[];
+          for (final color in marks) {
+            final target = [
+              (color.r * 255).round(),
+              (color.g * 255).round(),
+              (color.b * 255).round(),
+            ];
+            final matching = <int>[];
+            for (var x = 0; x < raster.width; x++) {
+              final pixel = rgb(x);
+              if (List.generate(
+                3,
+                (c) => (pixel[c] - target[c]).abs() <= 2,
+              ).every((same) => same)) {
+                matching.add(x);
               }
-              expect(
-                matching,
-                isNotEmpty,
-                reason: 'Every original interior marker must be painted.',
-              );
-              centers.add((matching.first + matching.last + 1) / 2);
             }
-            // Infer the source-to-canvas transform from observed native pixels,
-            // rather than trusting the layout helper's returned rectangle.
-            final paintedWidth = (centers.last - centers.first) / .8;
-            final paintedLeft = centers.first - paintedWidth * .1;
-            expect(paintedLeft, closeTo(0, 2));
-            expect(paintedLeft + paintedWidth, closeTo(raster.width, 2));
             expect(
-              pictureRect.height / pictureRect.width,
-              closeTo(original.height / original.width, .00001),
+              matching,
+              isNotEmpty,
+              reason: 'Every original interior marker must be painted.',
             );
-          } else {
-            expect(
-              pictureRect.height / pictureRect.width,
-              closeTo(original.height / original.width, .00001),
-            );
-            expect(
-              raster.height,
-              lessThan(1000),
-              reason:
-                  'A portrait must not reserve a full-width portrait-height page.',
-            );
-            for (final x in [0, raster.width - 1]) {
-              final edge = rgb(x);
-              expect(
-                edge.reduce((a, b) => a + b),
-                greaterThan(240),
-                reason:
-                    'The clamped edge field fills both ends, with no black side bank.',
-              );
-            }
+            centers.add((matching.first + matching.last + 1) / 2);
           }
+          // Infer the source-to-canvas transform from observed native pixels,
+          // rather than trusting the layout helper's returned rectangle.
+          final paintedWidth = (centers.last - centers.first) / .8;
+          final paintedLeft = centers.first - paintedWidth * .1;
+          expect(paintedLeft, closeTo(0, 2));
+          expect(paintedLeft + paintedWidth, closeTo(raster.width, 2));
+          expect(
+            pictureRect.height / pictureRect.width,
+            closeTo(original.height / original.width, .00001),
+          );
           const output = String.fromEnvironment(
             'NAKU_HERO_FULLWIDTH_RASTER_DIR',
           );
@@ -405,6 +382,72 @@ void main() {
         },
       );
     }
+  }
+
+  for (final height in [860.0, 480.0]) {
+    testWidgets(
+      'portrait stays out of the hero until real wide metadata arrives at height $height',
+      (tester) async {
+        final bytes = (await tester.runAsync(
+          () => markedImage(const Size(320, 180)),
+        ))!;
+        final changes = ChangeNotifier();
+        addTearDown(changes.dispose);
+        var imdb = '';
+        final painted = <String>[];
+        final repository = _Artwork()
+          ..result = const CinemaDetailArtwork(
+            url: 'memory://portrait-fixture',
+            width: 1600,
+            height: 2400,
+            highResolution: true,
+          );
+        await mount(
+          tester,
+          height: height,
+          topInset: 68,
+          titles: [
+            const CinemaTitle(
+              id: 'titanic',
+              sourceId: 'fixture',
+              title: '泰坦尼克号',
+              poster: 'https://images.invalid/portrait-card.jpg',
+            ),
+            ..._titles.skip(1),
+          ],
+          artworkRepository: repository,
+          artworkChanges: changes,
+          artworkIdentity: (_) => RatingIdentity(imdbId: imdb),
+          artworkImageProvider: (artwork, _) {
+            painted.add(artwork.url);
+            return MemoryImage(bytes);
+          },
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(CinemaArtworkBackdrop), findsNothing);
+        expect(painted, isEmpty);
+        final reserved = tester.getSize(find.byType(CinemaFeaturedWall));
+        expect(reserved.height, lessThan(1000));
+        repository.result = const CinemaDetailArtwork(
+          url: 'memory://wide-fixture',
+          width: 1920,
+          height: 1080,
+          highResolution: true,
+        );
+        imdb = 'tt0120338';
+        changes.notifyListeners();
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 40)),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(CinemaArtworkBackdrop), findsOneWidget);
+        expect(painted, isNotEmpty);
+        expect(painted.every((url) => url == 'memory://wide-fixture'), isTrue);
+        expect(tester.getSize(find.byType(CinemaFeaturedWall)), reserved);
+        await tester.pumpWidget(const SizedBox());
+        expect(tester.takeException(), isNull);
+      },
+    );
   }
 
   testWidgets('artwork keeps the normal arrow during hover and drag', (

@@ -18,6 +18,7 @@ class CinemaPlayerEntrance extends StatefulWidget {
     required this.ready,
     this.hasError = false,
     this.enabled = true,
+    this.animateOnEntry = true,
     this.reduceMotion = false,
     this.loadStage = CinemaPlayerLoadStage.connecting,
     this.onReveal,
@@ -27,6 +28,10 @@ class CinemaPlayerEntrance extends StatefulWidget {
 
   final int generation;
   final bool ready, hasError, enabled, reduceMotion;
+
+  /// False keeps an already-visible surface idle until [closeForExit] is
+  /// requested, without ever running the entry lamp or its sound callback.
+  final bool animateOnEntry;
   final CinemaPlayerLoadStage loadStage;
   final VoidCallback? onReveal, onCancel;
   final Widget child;
@@ -90,6 +95,7 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
   double get debugLampTarget => _lampTarget;
 
   bool get _waitingInDark =>
+      widget.animateOnEntry &&
       widget.enabled &&
       !widget.hasError &&
       !widget.ready &&
@@ -145,7 +151,8 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
       if (!_allowed) _finishExit();
       return;
     }
-    if (oldWidget.generation != widget.generation) {
+    if (oldWidget.generation != widget.generation ||
+        oldWidget.animateOnEntry != widget.animateOnEntry) {
       _startGeneration();
       return;
     }
@@ -163,6 +170,7 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
   }
 
   void _retargetLamp() {
+    if (!widget.animateOnEntry) return;
     // Milestones constrain the destination, never an elapsed-time estimate.
     // Preserve the current position and velocity when a newer observation
     // arrives mid-curve. A critically damped filament cannot bounce or retreat.
@@ -197,12 +205,16 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
     _cancelNotified = false;
     _animation.stop();
     _lampAnimation.stop();
-    _lampTarget = _lampExtent(widget.loadStage);
+    _lampTarget = widget.animateOnEntry ? _lampExtent(widget.loadStage) : 0;
     _lampAnimation.value = _lampTarget;
     _revealLampExtent = _lampTarget;
     _animation.value = 0;
-    _phase = _allowed ? _EntrancePhase.closing : _EntrancePhase.cancelled;
-    if (_allowed) {
+    _phase = !widget.animateOnEntry
+        ? _EntrancePhase.complete
+        : _allowed
+        ? _EntrancePhase.closing
+        : _EntrancePhase.cancelled;
+    if (widget.animateOnEntry && _allowed) {
       _animation.duration = _closeDuration;
       _animation.forward();
     }
@@ -227,7 +239,12 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
   }
 
   void _light() {
-    if (_exitCompleter != null || !_allowed || !widget.ready) return;
+    if (_exitCompleter != null ||
+        !widget.animateOnEntry ||
+        !_allowed ||
+        !widget.ready) {
+      return;
+    }
     _animation.stop();
     // Continue from the lamp that was actually painted. A fast first frame
     // must not jump the lamp to the final waiting milestone before it reveals.
@@ -264,8 +281,11 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
     }
     _animation.stop();
     _lampAnimation.stop();
-    if (_phase != _EntrancePhase.cancelled) {
-      setState(() => _phase = _EntrancePhase.cancelled);
+    final phase = widget.animateOnEntry
+        ? _EntrancePhase.cancelled
+        : _EntrancePhase.complete;
+    if (_phase != phase) {
+      setState(() => _phase = phase);
     }
   }
 

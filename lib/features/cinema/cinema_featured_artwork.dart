@@ -31,7 +31,7 @@ class CinemaFeaturedArtworkWindow extends ChangeNotifier {
     RatingIdentity identity = const RatingIdentity(),
   }) =>
       _cache[CinemaDetailArtworkRepository.identityKey(title, identity)]?.$2 ??
-      CinemaDetailArtwork(url: title.poster);
+      const CinemaDetailArtwork(url: '');
 
   void update(
     List<CinemaTitle> titles,
@@ -90,16 +90,21 @@ class CinemaFeaturedArtworkWindow extends ChangeNotifier {
     try {
       CinemaDetailArtwork artwork;
       try {
-        artwork = await _repository.resolve(
+        artwork = await _repository.resolveLandscape(
           title,
           identity: identity,
           cancelToken: cancel,
           isCurrent: current,
         );
       } catch (_) {
-        artwork = CinemaDetailArtwork(url: title.poster);
+        artwork = const CinemaDetailArtwork(url: '');
       }
       if (!current()) return;
+      // Keep a portrait or an uninspected fallback out even when an injected
+      // repository supplies one. Edge extension must not masquerade as a still.
+      if (!artwork.usableLandscape) {
+        artwork = const CinemaDetailArtwork(url: '');
+      }
       _cache.remove(key);
       _cache[key] = (
         _now().add(

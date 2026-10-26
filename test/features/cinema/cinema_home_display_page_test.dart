@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
@@ -8,9 +9,82 @@ import 'package:kazumi/features/cinema/cinema_home_display_bridge.dart';
 import 'package:kazumi/features/cinema/cinema_home_display_page.dart';
 import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'package:kazumi/features/cinema/cinema_neon_decode.dart';
+import 'package:kazumi/features/cinema/cinema_player_entrance.dart';
 import 'package:kazumi/services/platform/desktop_window_controls.dart';
 
 void main() {
+  testWidgets(
+    'return contracts real page pixels and keeps WebKit mounted until CRT finishes',
+    (tester) async {
+      final platform = _installFakeWebView();
+      final png = await _previewPng(tester);
+      final navigator = await _pushDisplay(tester, platform);
+      platform.controller.screenshot = () async => png;
+      await tester.tap(find.byTooltip('返回'));
+      for (
+        var attempt = 0;
+        attempt < 30 && find.byType(CinemaPlayerEntrance).evaluate().isEmpty;
+        attempt++
+      ) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump();
+      }
+      await tester.pump();
+      final surface = tester.state<CinemaPlayerEntranceState>(
+        find.byType(CinemaPlayerEntrance),
+      );
+      expect(surface.debugPhase, 'exiting');
+      expect(platform.view.disposed, isFalse);
+      expect(find.byKey(_nativeViewKey), findsNothing);
+      expect(find.byKey(_nativeViewKey, skipOffstage: false), findsOneWidget);
+      final raw = tester.widget<RawImage>(find.byType(RawImage));
+      expect(raw.image!.width, 32);
+      final bytes = await tester.runAsync(
+        () => raw.image!.toByteData(format: ui.ImageByteFormat.rawRgba),
+      );
+      expect(bytes!.getUint8(0), 0x44);
+      expect(bytes.getUint8(1), 0x77);
+      expect(platform.controller.screenshotCalls, 1);
+      unawaited(navigator.currentState!.maybePop());
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(surface.debugPhase, 'exiting');
+      expect(platform.view.disposed, isFalse);
+      expect(platform.controller.screenshotCalls, 1);
+      await tester.pump(const Duration(milliseconds: 301));
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('电影墙'), findsOneWidget);
+      expect(find.byType(CinemaHomeDisplayPage), findsNothing);
+      expect(platform.view.disposed, isTrue);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  for (final reduced in [false, true]) {
+    testWidgets(
+      'return remains usable with ${reduced ? 'reduced motion' : 'an unavailable native snapshot'}',
+      (tester) async {
+        final platform = _installFakeWebView();
+        await _pushDisplay(tester, platform, reduced: reduced);
+        platform.controller.screenshot = () async =>
+            throw StateError('Snapshot unavailable');
+        await tester.tap(find.byTooltip('返回'));
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+        expect(find.text('电影墙'), findsOneWidget);
+        expect(find.byType(CinemaPlayerEntrance), findsNothing);
+        expect(platform.view.disposed, isTrue);
+        expect(platform.controller.screenshotCalls, reduced ? 0 : 1);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
+
   testWidgets('display fills the window behind transparent floating controls', (
     tester,
   ) async {
@@ -181,7 +255,7 @@ void main() {
   );
 
   testWidgets(
-    'front-end reveal advances while the native snapshot is pending',
+    'before the first real snapshot the native page stays visible without a fake field',
     (tester) async {
       final platform = _installFakeWebView();
       await _mountAuthorized(tester, platform);
@@ -199,8 +273,10 @@ void main() {
       for (var frame = 0; frame < 30; frame++) {
         await tester.pump(const Duration(microseconds: 8333));
       }
-      expect(state.debugSnapshot.elapsed - before, closeTo(.24999, .00001));
-      expect(state.debugSnapshot.running, isTrue);
+      expect(state.debugSnapshot.elapsed, before);
+      expect(state.debugSnapshot.running, isFalse);
+      expect(state.widget.rasterSnapshot, isNull);
+      expect(state.widget.child, isA<SizedBox>());
       expect(platform.controller.screenshotCalls, 1);
       expect(_decoding(tester).loading, isTrue);
       screenshot.complete(null);
@@ -523,6 +599,58 @@ void main() {
 }
 
 const _nativeViewKey = ValueKey('home-display-native-webview');
+
+Future<Uint8List> _previewPng(WidgetTester tester) async =>
+    (await tester.runAsync(() async {
+      final recorder = ui.PictureRecorder();
+      Canvas(recorder).drawColor(const Color(0xFF447766), BlendMode.src);
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(32, 32);
+      try {
+        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+        return Uint8List.fromList(data!.buffer.asUint8List());
+      } finally {
+        image.dispose();
+        picture.dispose();
+      }
+    }))!;
+
+Future<GlobalKey<NavigatorState>> _pushDisplay(
+  WidgetTester tester,
+  _FakeWebViewPlatform platform, {
+  bool reduced = false,
+}) async {
+  final navigator = GlobalKey<NavigatorState>();
+  await tester.pumpWidget(
+    MaterialApp(
+      navigatorKey: navigator,
+      home: const Scaffold(body: Text('电影墙')),
+    ),
+  );
+  unawaited(
+    navigator.currentState!.push(
+      PageRouteBuilder<void>(
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+        pageBuilder: (_, _, _) => MediaQuery(
+          data: MediaQueryData(disableAnimations: reduced),
+          child: CinemaHomeDisplayPage(
+            client: CinemaNASClient(
+              invoke: (_, _) async => {'authenticated': true},
+            ),
+            windowControls: _FakeWindowControls(),
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.pump();
+  await tester.pump();
+  platform.view.params.onWebViewCreated!(platform.controller);
+  await tester.pump();
+  return navigator;
+}
+
 const _readyState = <String, dynamic>{
   'href': cinemaHomeDisplayUrl,
   'phase': 'ready',

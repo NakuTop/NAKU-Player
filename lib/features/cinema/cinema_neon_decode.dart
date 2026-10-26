@@ -86,6 +86,20 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
   @override
   void didUpdateWidget(CinemaNeonDecode oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.snapshotRendering && widget.rasterSnapshot == null) {
+      // There are no page pixels to reveal yet. Show the caller's actual
+      // surface unchanged instead of inventing a decorative placeholder grid.
+      _hasRevealSession = false;
+      _stop();
+      return;
+    }
+    if (widget.snapshotRendering &&
+        oldWidget.rasterSnapshot == null &&
+        widget.loading) {
+      _hasRevealSession = false;
+      if (_motionAllowed && _foreground) _begin();
+      return;
+    }
     if (widget.loading != oldWidget.loading) {
       if (widget.loading) {
         _hasRevealSession = false;
@@ -107,7 +121,9 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
   }
 
   void _syncEnvironment() {
-    if (!_motionAllowed || !_foreground) {
+    if (!_motionAllowed ||
+        !_foreground ||
+        (widget.snapshotRendering && widget.rasterSnapshot == null)) {
       _stop();
     } else if (widget.loading && !_visible) {
       _begin();
@@ -404,10 +420,7 @@ class _SnapshotDecodePainter extends CustomPainter {
     if (size.isEmpty) return;
     final bounds = Offset.zero & size;
     final source = image;
-    if (source == null) {
-      _paintWaitingField(canvas, size);
-      return;
-    }
+    if (source == null) return;
     final effect = shader;
     if (effect == null || !frame.enabled) {
       canvas.drawImageRect(
@@ -430,40 +443,6 @@ class _SnapshotDecodePainter extends CustomPainter {
       ..setFloat(8, frame.enabled ? 1 : 0)
       ..setImageSampler(0, source, filterQuality: FilterQuality.low);
     canvas.drawRect(bounds, Paint()..shader = effect);
-  }
-
-  void _paintWaitingField(Canvas canvas, Size size) {
-    canvas.drawRect(
-      Offset.zero & size,
-      Paint()..color = const Color(0xFF111115),
-    );
-    final columns = (8 + frame.reveal * 8).round();
-    final rows = (columns * size.height / size.width).round().clamp(4, 12);
-    final width = size.width / columns, height = size.height / rows;
-    final paint = Paint();
-    for (var row = 0; row < rows; row++) {
-      for (var column = 0; column < columns; column++) {
-        final noise = ((row * 37 + column * 17) % 101) / 101;
-        final shimmer = .5 + .5 * math.sin(frame.clock * .85 + noise * 6.28);
-        paint.color = Color.lerp(
-          const Color(0xFF151519),
-          const Color(0xFF26262C),
-          .15 + .30 * frame.reveal + .20 * shimmer,
-        )!;
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(
-            Rect.fromLTWH(
-              column * width + .5,
-              row * height + .5,
-              math.max(0, width - 1),
-              math.max(0, height - 1),
-            ),
-            Radius.circular(math.min(width, height) * .20),
-          ),
-          paint,
-        );
-      }
-    }
   }
 
   @override
