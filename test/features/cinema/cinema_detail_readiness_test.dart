@@ -17,6 +17,7 @@ import 'package:kazumi/features/cinema/cinema_appearance.dart';
 import 'package:kazumi/features/cinema/cinema_detail_artwork.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_neon_decode.dart';
+import 'package:kazumi/features/cinema/cinema_poster_atmosphere.dart';
 import 'package:kazumi/features/cinema/cinema_ratings.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
@@ -166,7 +167,7 @@ class _Ratings extends CinemaRatingsRepository {
 class _Artwork extends CinemaDetailArtworkRepository {
   Completer<CinemaDetailArtwork>? upgrade;
   @override
-  Future<CinemaDetailArtwork> resolve(
+  Future<CinemaDetailArtwork> resolveLandscape(
     CinemaTitle title, {
     RatingIdentity identity = const RatingIdentity(),
     CancelToken? cancelToken,
@@ -297,6 +298,7 @@ void main() {
     ValueNotifier<Color>? windowColor,
     Size size = const Size(1440, 1100),
     CinemaAppearance? appearance,
+    bool animateAtmosphere = false,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
@@ -339,29 +341,34 @@ void main() {
     }
     await tester.pumpWidget(
       MaterialApp(
-        builder: windowColor == null && appearance == null
-            ? null
-            : (context, child) {
-                Widget content = child!;
-                if (appearance != null) {
-                  content = CinemaAppearanceScope(
-                    appearance: appearance,
-                    child: content,
-                  );
-                }
-                if (windowColor != null) {
-                  content = RepaintBoundary(
-                    key: const ValueKey('detail-window-raster'),
-                    child: ValueListenableBuilder<Color>(
-                      valueListenable: windowColor,
-                      child: content,
-                      builder: (context, color, child) =>
-                          ColoredBox(color: color, child: child),
-                    ),
-                  );
-                }
-                return content;
-              },
+        // Business/readiness and frost contrast are checked in a still frame;
+        // the atmosphere's continuous motion has separate pixel/ticker tests.
+        builder: (context, child) {
+          Widget content = child!;
+          if (appearance != null) {
+            content = CinemaAppearanceScope(
+              appearance: appearance,
+              child: content,
+            );
+          }
+          if (windowColor != null) {
+            content = RepaintBoundary(
+              key: const ValueKey('detail-window-raster'),
+              child: ValueListenableBuilder<Color>(
+                valueListenable: windowColor,
+                child: content,
+                builder: (context, color, child) =>
+                    ColoredBox(color: color, child: child),
+              ),
+            );
+          }
+          return MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(disableAnimations: !animateAtmosphere),
+            child: content,
+          );
+        },
         home: CinemaHomePage(
           store: store,
           repository: repository,
@@ -387,6 +394,99 @@ void main() {
 
   bool loading(WidgetTester tester) =>
       tester.widget<CinemaNeonDecode>(find.byType(CinemaNeonDecode)).loading;
+
+  testWidgets('decoded poster colors flow inside the feathered detail frost', (
+    tester,
+  ) async {
+    final window = ValueNotifier(const Color(0xFF151519));
+    addTearDown(window.dispose);
+    await mount(tester, windowColor: window, animateAtmosphere: true);
+    const realArtwork = String.fromEnvironment('NAKU_DETAIL_REAL_ART');
+    if (realArtwork.isNotEmpty) {
+      final replacement = await tester.runAsync(() async {
+        final codec = await ui.instantiateImageCodec(
+          await File(realArtwork).readAsBytes(),
+        );
+        try {
+          return (await codec.getNextFrame()).image;
+        } finally {
+          codec.dispose();
+        }
+      });
+      frame.dispose();
+      frame = replacement!;
+    }
+    ratings.complete('ready-a');
+    posters['ready-a']!.complete(frame);
+    // Palette sampling is an actual tiny GPU readback, independent of fake time.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 80)),
+    );
+    await frames(tester, 40);
+    final atmosphere = find.byType(CinemaPosterAtmosphere);
+    expect(atmosphere, findsOneWidget);
+    expect(
+      tester.widget<CinemaPosterAtmosphere>(atmosphere).palette,
+      hasLength(3),
+    );
+    final state = tester.state<CinemaPosterAtmosphereState>(atmosphere);
+    expect(state.debugSnapshot.running, isTrue);
+    final viewport = tester.getRect(
+      find.byKey(const ValueKey('cinema-title-detail-layout')),
+    );
+    final information = tester.getRect(
+      find.byKey(const ValueKey('cinema-detail-left')),
+    );
+    Future<List<int>> sample(String name) async {
+      final image = (await tester.runAsync(
+        () => tester
+            .renderObject<RenderRepaintBoundary>(
+              find.byKey(const ValueKey('detail-window-raster')),
+            )
+            .toImage(pixelRatio: 1),
+      ))!;
+      try {
+        final data = (await tester.runAsync(
+          () => image.toByteData(format: ui.ImageByteFormat.rawRgba),
+        ))!;
+        const output = String.fromEnvironment('NAKU_DETAIL_RASTER');
+        if (output.isNotEmpty) {
+          final png = (await tester.runAsync(
+            () => image.toByteData(format: ui.ImageByteFormat.png),
+          ))!;
+          await tester.runAsync(
+            () => File(
+              '$output/$name.png',
+            ).writeAsBytes(png.buffer.asUint8List()),
+          );
+        }
+        return [
+          for (var y = 32; y < 80; y += 4)
+            for (var c = 0; c < 3; c++)
+              data.getUint8(
+                (((information.top + y).floor() * image.width) +
+                            (viewport.left + 12).floor()) *
+                        4 +
+                    c,
+              ),
+        ];
+      } finally {
+        image.dispose();
+      }
+    }
+
+    final before = await sample('detail-flow-0');
+    await tester.pump(const Duration(seconds: 8));
+    final after = await sample('detail-flow-8');
+    expect(
+      [
+        for (var i = 0; i < before.length; i++) (before[i] - after[i]).abs(),
+      ].reduce((a, b) => a + b),
+      greaterThan(2),
+    );
+    expect(after.every((channel) => channel < 100), isTrue);
+    expect(tester.takeException(), isNull);
+  });
 
   for (final reduced in [false, true]) {
     testWidgets('detail frost preserves artwork and covers text (solid=$reduced)', (

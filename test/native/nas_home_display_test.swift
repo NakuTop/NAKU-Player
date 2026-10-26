@@ -27,8 +27,10 @@ actor HomeDisplayFixtureGate {
     var deletionGate: HomeDisplayFixtureGate?
     var deletionStarted=HomeDisplayFixtureGate()
     var deleteCount=0
+    var rejectWrites=false
     func allCookies() async -> [HTTPCookie] {cookies}
     func setCookie(_ cookie: HTTPCookie) async {
+        if rejectWrites {return}
         cookies.removeAll {$0.name == cookie.name && $0.domain == cookie.domain && $0.path == cookie.path}
         cookies.append(cookie)
     }
@@ -55,14 +57,22 @@ actor HomeDisplayFixtureGate {
 
 final class HomeDisplayFixtureProtocol: URLProtocol {
     static var mode="valid",exchangeCount=0
+    static var currentReads=0,deviceReads=0
     static var proof: [String:Any]=[:]
     private static let deferredLock=NSLock()
     private static var deferred: HomeDisplayFixtureProtocol?
+    private static var deferredProbes=[HomeDisplayFixtureProtocol]()
     static var onDeferredExchange: (() -> Void)?
+    static var onDeferredProbe: (() -> Void)?
     static func failDeferredExchange() {
         let pending=deferredLock.withLock {let pending=deferred;deferred=nil;return pending}
         precondition(pending != nil,"no deferred exchange")
         pending!.client!.urlProtocol(pending!,didFailWithError:URLError(.timedOut))
+    }
+    static func failDeferredProbes() {
+        let pending=deferredLock.withLock {let pending=deferredProbes;deferredProbes=[];return pending}
+        precondition(!pending.isEmpty,"no deferred local probe")
+        for item in pending {item.client!.urlProtocol(item,didFailWithError:URLError(.timedOut))}
     }
     override class func canInit(with request: URLRequest) -> Bool {true}
     override class func canonicalRequest(for request: URLRequest) -> URLRequest {request}
@@ -86,6 +96,10 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
             precondition(!String(data:body,encoding:.utf8)!.contains("fixture-private-token"))
             Self.proof=try! JSONSerialization.jsonObject(with:body) as! [String:Any]
             Self.exchangeCount += 1
+            if Self.mode == "transport-timeout" || Self.mode == "transport-dns" {
+                client!.urlProtocol(self,didFailWithError:URLError(Self.mode == "transport-timeout" ? .timedOut:.cannotFindHost))
+                return
+            }
             if Self.mode == "delayed-failure" {
                 Self.deferredLock.withLock {Self.deferred=self}
                 Self.onDeferredExchange?()
@@ -101,14 +115,34 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
             if Self.mode == "expired" {headers["Set-Cookie"]="__Host-naku-display=expired; Max-Age=0; Path=/; Secure; HttpOnly";payload["expiresAt"]=0}
             if Self.mode == "marker-only" {headers["Set-Cookie"]="__Host-naku-display-context=1; Path=/; Secure; HttpOnly; SameSite=Strict"}
             if Self.mode == "missing-config" {status=503;headers=[:];payload=["error":"nas_display_unconfigured"]}
+            if Self.mode.hasPrefix("http-"),let requested=Int(Self.mode.dropFirst(5)) {
+                status=requested;headers=[:];payload=["error":"fixture-private-token-must-not-be-returned"]
+            }
+            if Self.mode.hasPrefix("diagnostic-") {status=401;headers=[:];payload=["error":"nas_authentication_failed"]}
+            if Self.mode == "invalid-payload" {payload=["authenticated":true,"expiresAt":0,"error":"fixture-private-token-must-not-be-returned"]}
         } else {
             var data:[String:Any]=[:]
             if path.hasSuffix("/verify/sn") {data=["sn":"fixture-public-routing-hint"]}
-            else if path.hasSuffix("/current/user") {data=["username":"fixture-member","uid":42]}
-            else if path.hasSuffix("/machine/common") {data=["common":["serial":"fixture-canonical-serial"]]}
+            else if path.hasSuffix("/current/user") {Self.currentReads += 1;data=["username":"fixture-member","uid":42]}
+            else if path.hasSuffix("/machine/common") {Self.deviceReads += 1;data=["common":["serial":"fixture-canonical-serial"]]}
             else {fatalError("Unexpected fixture route")}
+            if Self.mode.hasPrefix("diagnostic-") || Self.mode == "http-401" {
+                precondition(request.httpMethod == "GET" && request.timeoutInterval <= 4.01,"diagnostics use bounded existing read-only APIs")
+                if Self.mode == "diagnostic-delayed" {
+                    Self.deferredLock.withLock {Self.deferredProbes.append(self)}
+                    Self.onDeferredProbe?()
+                    return
+                }
+                if Self.mode == "diagnostic-deadline" {return}
+                if Self.mode == "diagnostic-expired" {payload=["code":401,"data":[:]];respond(status:status,headers:headers,payload:payload,responseURL:responseURL);return}
+                if Self.mode == "diagnostic-device-denied" && path.hasSuffix("/machine/common") {payload=["code":403,"data":[:]];respond(status:status,headers:headers,payload:payload,responseURL:responseURL);return}
+                if Self.mode == "diagnostic-mismatch" && path.hasSuffix("/machine/common") {data=["common":["serial":"fixture-other-device"]]}
+            }
             payload=["code":200,"data":data]
         }
+        respond(status:status,headers:headers,payload:payload,responseURL:responseURL)
+    }
+    private func respond(status: Int,headers: [String:String],payload: [String:Any],responseURL: URL) {
         let response=HTTPURLResponse(url:responseURL,statusCode:status,httpVersion:nil,headerFields:headers)!
         client!.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
         client!.urlProtocol(self,didLoad:try! JSONSerialization.data(withJSONObject:payload))
@@ -191,6 +225,82 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
         expect(!store.hasCredential && store.hasContext && store.hasOwner,"forget completion retains context and owner cookies")
         print("PASS actual logout/forget callbacks await invalidation; a generation change prevents stale saved-credential deletion")
     }
+    @MainActor static func diagnostics(_ session: NASMovieSession,_ store: HomeDisplayFixtureCookieStore) async throws {
+        let cases:[(String,String,String,Int?,Int?)]=[
+            ("http-401","nas_authentication_failed","exchange_http",401,nil),
+            ("http-403","backend_access_rejected","exchange_http",403,nil),
+            ("http-429","backend_rate_limited","exchange_http",429,nil),
+            ("http-500","backend_http_error","exchange_http",500,nil),
+            ("missing-config","backend_unconfigured","exchange_http",503,nil),
+            ("transport-timeout","backend_timeout","exchange_transport",nil,URLError.Code.timedOut.rawValue),
+            ("transport-dns","backend_network_error","exchange_transport",nil,URLError.Code.cannotFindHost.rawValue),
+            ("wrong-origin","authorization_response_invalid","response_origin_or_size",nil,nil),
+            ("no-httponly","authorization_response_invalid","response_cookie",nil,nil),
+            ("marker-only","authorization_response_invalid","response_cookie",nil,nil),
+            ("invalid-payload","authorization_response_invalid","response_payload",nil,nil),
+        ]
+        for (mode,reason,stage,status,network) in cases {
+            HomeDisplayFixtureProtocol.mode=mode
+            let beforeCurrent=HomeDisplayFixtureProtocol.currentReads,beforeDevice=HomeDisplayFixtureProtocol.deviceReads
+            let value=await session.homeDisplayAuthorize()
+            expect(value["authenticated"] as? Bool == false,"failed exchange must stay unauthorized: "+mode)
+            expect(value["reason"] as? String == reason && value["stage"] as? String == stage,"exact safe diagnostic classification: "+mode)
+            expect(value["httpStatus"] as? Int == status && value["networkCode"] as? Int == network,"only applicable numeric diagnostic codes: "+mode)
+            expect(HomeDisplayFixtureProtocol.currentReads-beforeCurrent == (status == 401 ? 1:0) && HomeDisplayFixtureProtocol.deviceReads-beforeDevice == (status == 401 ? 1:0),"only backend 401 triggers one read per NAS endpoint")
+            expect(Set(value.keys).isSubset(of:Set(["authenticated","reason","stage","httpStatus","networkCode","nasSessionVerified","nasDeviceVerified","nasSessionCheck","nasDeviceCheck"])),"diagnostic key allowlist")
+            let encoded=String(data:try JSONSerialization.data(withJSONObject:value),encoding:.utf8)!
+            expect(!encoded.contains("fixture-private-token") && !encoded.contains("fixture-member") && !encoded.contains("fixture-canonical-serial") && !encoded.contains("responseKey") && !encoded.contains("http://") && !encoded.contains("https://"),"no credential, account, serial, URL or backend message in diagnostics")
+        }
+        HomeDisplayFixtureProtocol.mode="valid"
+        store.cookies.removeAll {NASHomeDisplayCookiePolicy.shouldInvalidate($0)}
+        store.rejectWrites=true
+        let rejected=await session.homeDisplayAuthorize()
+        expect(rejected["reason"] as? String == "authorization_cookie_install_failed" && rejected["stage"] as? String == "cookie_install","cookie write failure has a separate safe stage")
+        expect(!store.hasCredential,"failed installation leaves no display credential")
+        store.rejectWrites=false
+        let beforeCurrent=HomeDisplayFixtureProtocol.currentReads,beforeDevice=HomeDisplayFixtureProtocol.deviceReads
+        expect(await session.homeDisplayAuthorize()["authenticated"] as? Bool == true,"normal authorization recovers after classified failures")
+        expect(HomeDisplayFixtureProtocol.currentReads == beforeCurrent && HomeDisplayFixtureProtocol.deviceReads == beforeDevice,"successful exchange has no extra NAS requests")
+        print("PASS safe HTTP/network/response/cookie-install stage diagnostics preserve fail-closed authorization without exposing proof or response details")
+    }
+    @MainActor static func probeDiagnostics(_ session: NASMovieSession,_ store: HomeDisplayFixtureCookieStore,_ pem: String) async throws {
+        let cases:[(String,Bool,Bool,String,String)]=[
+            ("http-401",true,true,"verified","verified"),
+            ("diagnostic-expired",false,false,"authentication_rejected","authentication_rejected"),
+            ("diagnostic-device-denied",true,false,"verified","authentication_rejected"),
+            ("diagnostic-mismatch",true,false,"verified","identity_mismatch"),
+            ("diagnostic-deadline",false,false,"timeout","timeout"),
+        ]
+        for (mode,validSession,validDevice,sessionCheck,deviceCheck) in cases {
+            HomeDisplayFixtureProtocol.mode=mode
+            let beforeCurrent=HomeDisplayFixtureProtocol.currentReads,beforeDevice=HomeDisplayFixtureProtocol.deviceReads,began=Date()
+            let value=await session.homeDisplayAuthorize()
+            expect(value["authenticated"] as? Bool == false && value["httpStatus"] as? Int == 401,"local probe never grants website access")
+            expect(value["nasSessionVerified"] as? Bool == validSession && value["nasDeviceVerified"] as? Bool == validDevice,"local NAS evidence booleans: "+mode)
+            expect(value["nasSessionCheck"] as? String == sessionCheck && value["nasDeviceCheck"] as? String == deviceCheck,"local fixed classifications: "+mode)
+            expect(HomeDisplayFixtureProtocol.currentReads == beforeCurrent+1 && HomeDisplayFixtureProtocol.deviceReads == beforeDevice+1,"exactly two GETs and no retry: "+mode)
+            expect(!(await session.currentSession()).isEmpty,"diagnostic NAS rejection does not clear the held session")
+            if mode == "diagnostic-deadline" {expect(Date().timeIntervalSince(began) < 6,"parallel diagnostic reads have a four-second deadline")}
+        }
+        HomeDisplayFixtureProtocol.mode="valid"
+        expect(await session.homeDisplayAuthorize()["authenticated"] as? Bool == true,"recovery before old-generation probe fixture")
+        let probeStarted=HomeDisplayFixtureGate()
+        HomeDisplayFixtureProtocol.onDeferredProbe={Task {await probeStarted.open()}}
+        HomeDisplayFixtureProtocol.mode="diagnostic-delayed"
+        let stale=await session.homeDisplayAuthorizationTask()
+        await probeStarted.wait()
+        await session.logoutAndInvalidateDisplay()
+        HomeDisplayFixtureProtocol.mode="valid"
+        try await adopt(session,pem)
+        expect(await session.homeDisplayAuthorize()["authenticated"] as? Bool == true,"a new generation authorizes during the old diagnostic read")
+        let deleted=store.deleteCount
+        HomeDisplayFixtureProtocol.failDeferredProbes()
+        let retired=await stale.value
+        expect(retired["authenticated"] as? Bool == false && retired["reason"] as? String == "nas_session_expired","retired probe cannot report current session evidence")
+        let currentSession=await session.currentSession()
+        expect(store.hasCredential && store.deleteCount == deleted && !currentSession.isEmpty,"late probe must not clear the new session or cookie")
+        print("PASS backend-401-only two bounded NAS GETs distinguish local session/device failures without restoring credentials or mutating a new generation")
+    }
     @MainActor static func main() async throws {
         func cookie(_ name: String,_ domain: String) -> HTTPCookie {
             HTTPCookie(properties:[.name:name,.value:"fixture",.domain:domain,.path:"/",.secure:"TRUE"])!
@@ -232,6 +342,8 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
         print("PASS redirects, wrong host, unsafe cookie, expiry, marker-only, missing configuration and NAS logout rejection")
         HomeDisplayFixtureProtocol.mode="valid"
         try await adopt(session,pem)
+        try await diagnostics(session,store)
+        try await probeDiagnostics(session,store,pem)
         try await lifecycle(session,store,pem)
     }
 }

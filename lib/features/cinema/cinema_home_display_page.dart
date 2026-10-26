@@ -16,6 +16,33 @@ import 'cinema_theme.dart';
 
 const cinemaHomeDisplayUrl = 'https://between-us-home.pages.dev/display';
 
+bool cinemaHomeDisplayNeedsNAS(Map<String, dynamic> access) =>
+    access['reason'] == 'nas_login_required' ||
+    access['reason'] == 'nas_session_expired' ||
+    (access['reason'] == 'nas_authentication_failed' &&
+        access['nasSessionCheck'] == 'authentication_rejected');
+
+/// Fixed public messages only; native diagnostics never expose NAS credentials.
+String cinemaHomeDisplayAuthorizationMessage(Map<String, dynamic> access) {
+  if (access['reason'] == 'nas_login_required') return '请先登录 NAS';
+  if (cinemaHomeDisplayNeedsNAS(access)) return '请重新登录 NAS 后打开 Home Display';
+  return switch (access['reason']) {
+    'backend_unconfigured' => '网站尚未配置 NAS 展示授权',
+    'nas_authentication_failed' when access['nasSessionVerified'] == true =>
+      'NAS 登录正常，但网站未接受展示授权（401），请重试',
+    'nas_authentication_failed' => 'NAS 与网站的授权验证未通过（401），请重试',
+    'backend_access_rejected' => '网站拒绝了展示授权（403），请稍后重试',
+    'backend_rate_limited' => '授权请求过于频繁，请稍后重试',
+    'backend_timeout' => '网站授权连接超时，请检查网络后重试',
+    'backend_network_error' => '无法连接网站授权服务，请检查网络后重试',
+    'backend_http_error' => '网站授权服务暂时异常，请稍后重试',
+    'authorization_cookie_install_failed' => '未能保存展示授权，请重试',
+    'authorization_response_invalid' => '网站授权响应未通过校验，请重试',
+    'nas_proof_unavailable' => '未能验证当前 NAS 登录，请重新打开 NAS 后重试',
+    _ => 'Home Display 授权暂不可用，请稍后重试',
+  };
+}
+
 /// Only the first-party display and its login may replace the main document.
 /// Website requests retain their own CSP, cookies and native WebKit TLS checks.
 bool cinemaAllowsHomeDisplayNavigation(String? value, {bool mainFrame = true}) {
@@ -64,7 +91,13 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
   Timer? _timeout, _captureTimer, _settleTimer, _renewTimer;
   bool _loading = true, _overlay = true, _hidden = false;
   bool _occluded = false, _minimized = false;
+  bool _backgrounded = false;
+  Completer<void>? _exitInterrupted;
+  String? _exitFrameWait;
   bool get _suspended => _hidden || _occluded;
+
+  @visibleForTesting
+  String? get debugExitFrameWait => _exitFrameWait;
   Future<void>? _captureWork;
   bool _authorizing = false, _needsNAS = false;
   int _generation = 0, _document = 0, _captures = 0, _progress = 0;
@@ -79,6 +112,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
   @override
   void initState() {
     super.initState();
+    _backgrounded = _isBackground(WidgetsBinding.instance.lifecycleState);
     WidgetsBinding.instance.addObserver(this);
     windowManager.addListener(this);
     _windowControls.register(this, _nativeVisibilityChanged);
@@ -122,14 +156,8 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
           .timeout(const Duration(seconds: 35));
       if (!_active(generation)) return;
       if (access['authenticated'] != true) {
-        _needsNAS = access['reason'] == 'nas_login_required';
-        throw StateError(
-          _needsNAS
-              ? '请先登录 NAS'
-              : access['reason'] == 'backend_unconfigured'
-              ? '网站尚未配置 NAS 展示授权'
-              : 'Home Display 授权暂不可用，请稍后重试',
-        );
+        _needsNAS = cinemaHomeDisplayNeedsNAS(access);
+        throw StateError(cinemaHomeDisplayAuthorizationMessage(access));
       }
       // A hidden page must not create a native document or start its polling.
       // Resume revalidates before constructing a fresh document below.
@@ -162,8 +190,8 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
             .timeout(const Duration(seconds: 35));
         if (!_active(generation)) return;
         if (access['authenticated'] != true) {
-          _needsNAS = access['reason'] == 'nas_login_required';
-          _showError('NAS 会话已失效，请重新登录');
+          _needsNAS = cinemaHomeDisplayNeedsNAS(access);
+          _showError(cinemaHomeDisplayAuthorizationMessage(access));
           return;
         }
         _scheduleRenewal(access, generation);
@@ -509,6 +537,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
   }
 
   Future<void> _visibility(bool hidden) async {
+    if (hidden) _interruptExit();
     if (_closing) return;
     if (_hidden == hidden) return;
     _hidden = hidden;
@@ -531,6 +560,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
   }
 
   Future<void> _occlusion(bool occluded) async {
+    if (occluded) _interruptExit();
     if (_closing) return;
     if (_occluded == occluded) return;
     _occluded = occluded;
@@ -568,6 +598,8 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _backgrounded = _isBackground(state);
+    if (_backgrounded) _interruptExit();
     if (state == AppLifecycleState.hidden ||
         state == AppLifecycleState.paused) {
       // Flutter maps AppKit occlusion (including fullscreen Space changes) to
@@ -582,6 +614,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
 
   @override
   void dispose() {
+    _interruptExit();
     ++_generation;
     _cancelLoadingTimers();
     _renewTimer?.cancel();
@@ -632,20 +665,82 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     }
   }
 
+  static bool _isBackground(AppLifecycleState? state) =>
+      state == AppLifecycleState.hidden ||
+      state == AppLifecycleState.paused ||
+      state == AppLifecycleState.detached;
+
+  void _interruptExit() {
+    final interruption = _exitInterrupted;
+    if (interruption != null && !interruption.isCompleted) {
+      interruption.complete();
+    }
+  }
+
+  Future<ui.Image?> _exitSnapshot(
+    int generation,
+    Completer<void> interruption,
+  ) {
+    final result = Completer<ui.Image?>();
+    unawaited(
+      interruption.future.then((_) {
+        if (!result.isCompleted) result.complete(null);
+      }),
+    );
+    unawaited(
+      _takeExitPreview(generation).then((image) {
+        if (result.isCompleted) {
+          // Suspension may win while WebKit or the decoder is still working.
+          // That late image was never handed to a painter and is ours to free.
+          image?.dispose();
+        } else {
+          result.complete(image);
+        }
+      }),
+    );
+    return result.future;
+  }
+
+  Future<bool> _exitFrame(
+    int generation,
+    Completer<void> interruption,
+    String stage,
+  ) async {
+    if (!mounted || _suspended || _backgrounded || interruption.isCompleted) {
+      return false;
+    }
+    _exitFrameWait = stage;
+    try {
+      // hidden/paused stop frame production. They must release a wait that
+      // already started in the foreground, without waiting for resume/timeout.
+      await Future.any<void>([
+        WidgetsBinding.instance.endOfFrame,
+        interruption.future,
+      ]);
+    } finally {
+      _exitFrameWait = null;
+    }
+    return mounted && generation == _generation && !interruption.isCompleted;
+  }
+
   Future<void> _leave() async {
     if (_closing || !Navigator.of(context).canPop()) return;
     setState(() => _closing = true);
     final generation = ++_generation;
+    final interruption = _exitInterrupted = Completer<void>();
     final navigator = Navigator.of(context);
     _cancelLoadingTimers();
     _renewTimer?.cancel();
     final animate =
         !_suspended &&
+        !_backgrounded &&
         !MediaQuery.disableAnimationsOf(context) &&
         TickerMode.valuesOf(context).enabled;
     try {
-      final image = animate ? await _takeExitPreview(generation) : null;
-      if (!mounted) {
+      final image = animate
+          ? await _exitSnapshot(generation, interruption)
+          : null;
+      if (!mounted || generation != _generation || interruption.isCompleted) {
         image?.dispose();
         return;
       }
@@ -653,14 +748,16 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
         // A live AppKit view cannot safely follow the shrinking Flutter
         // transform. Keep it mounted offstage, then close its actual pixels.
         setState(() => _exitPreview = image);
-        await WidgetsBinding.instance.endOfFrame;
-        if (!mounted) return;
-        await _exitSurface.currentState?.closeForExit();
+        if (!await _exitFrame(generation, interruption, 'snapshot')) return;
+        final closing = _exitSurface.currentState?.closeForExit();
+        if (closing != null) {
+          await Future.any<void>([closing, interruption.future]);
+        }
       }
     } finally {
       if (mounted) {
         setState(() => _allowDisplayPop = true);
-        await WidgetsBinding.instance.endOfFrame;
+        if (animate) await _exitFrame(generation, interruption, 'pop');
         if (mounted) navigator.pop();
       }
     }

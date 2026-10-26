@@ -1,5 +1,7 @@
 import 'cinema_neon_decode.dart';
 import 'cinema_detail_artwork.dart';
+import 'cinema_poster_atmosphere.dart';
+import 'cinema_poster_palette.dart';
 import 'cinema_featured_wall.dart';
 import 'cinema_navigation_island.dart';
 import 'cinema_tv_focus.dart';
@@ -4140,6 +4142,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
   ImageStream? _posterStream;
   ImageStreamListener? _posterListener;
   ImageProvider<Object>? _posterProvider;
+  List<Color> _posterPalette = const [];
   String? _posterIdentity;
   CancelToken? _artworkCancel;
   bool _posterTerminal = false, _posterFailed = false, _attachingPoster = false;
@@ -4246,10 +4249,11 @@ class _TitleDetailsState extends State<_TitleDetails> {
     _posterLimited = false;
     _presentationReady = false;
     _posterProvider = null;
+    _posterPalette = const [];
     final cancel = _artworkCancel = CancelToken();
     bool current() => mounted && !_disposing && ticket == _posterTicket;
     (widget.artworkRepository ?? CinemaDetailArtworkRepository.instance)
-        .resolve(
+        .resolveLandscape(
           title,
           identity: identity,
           cancelToken: cancel,
@@ -4264,11 +4268,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
           },
           onError: (Object error, StackTrace stack) {
             if (!current()) return;
-            _attachPoster(
-              title,
-              CinemaDetailArtwork(url: title.poster),
-              ticket,
-            );
+            _attachPoster(title, const CinemaDetailArtwork(url: ''), ticket);
             if (current()) setState(() {});
           },
         );
@@ -4280,7 +4280,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
     int ticket,
   ) {
     _detachPoster();
-    if (artwork.url.isEmpty) {
+    if (!artwork.usableLandscape) {
       _posterProvider = null;
       _posterTerminal = true;
       _posterLimited = true;
@@ -4303,11 +4303,6 @@ class _TitleDetailsState extends State<_TitleDetails> {
     );
     void terminal({required bool failed}) {
       if (!mounted || _disposing || ticket != _posterTicket) return;
-      if (failed && artwork.url != title.poster && title.poster.isNotEmpty) {
-        _attachPoster(title, CinemaDetailArtwork(url: title.poster), ticket);
-        if (!_attachingPoster) setState(() {});
-        return;
-      }
       _posterTerminal = true;
       _posterFailed = failed;
       _posterLimited = !failed && !artwork.highResolution;
@@ -4319,12 +4314,25 @@ class _TitleDetailsState extends State<_TitleDetails> {
       frame,
       synchronousCall,
     ) {
+      // This clones the frame before the listener releases it, and only reads
+      // back a 36x24 thumbnail once. Motion never samples artwork pixels.
+      unawaited(_samplePosterPalette(frame.image, ticket));
       frame.dispose();
       terminal(failed: false);
     }, onError: (Object error, StackTrace? stack) => terminal(failed: true));
     _attachingPoster = true;
     stream.addListener(listener);
     _attachingPoster = false;
+  }
+
+  Future<void> _samplePosterPalette(ui.Image image, int ticket) async {
+    try {
+      final palette = await cinemaPosterPalette(image);
+      if (!mounted || _disposing || ticket != _posterTicket) return;
+      setState(() => _posterPalette = palette);
+    } catch (_) {
+      // Artwork remains usable even if a platform cannot read back colors.
+    }
   }
 
   @override
@@ -4358,6 +4366,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
       _artworkCancel?.cancel('Selected source changed');
       _posterIdentity = null;
       _posterProvider = null;
+      _posterPalette = const [];
       _detachPoster();
       _selectedTitle = variant;
       _selectedSource = source;
@@ -4854,7 +4863,10 @@ class _TitleDetailsState extends State<_TitleDetails> {
             Stack(
               children: [
                 Positioned.fill(
-                  child: _DetailInformationFrost(feather: feather),
+                  child: _DetailInformationFrost(
+                    feather: feather,
+                    palette: _posterPalette,
+                  ),
                 ),
                 Padding(
                   key: const ValueKey('cinema-detail-information-surface'),
@@ -5038,8 +5050,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
 /// The veil belongs to the scrolling information, not to the artwork. Its
 /// feather finishes before text starts, so the image keeps its full composition.
 class _DetailInformationFrost extends StatelessWidget {
-  const _DetailInformationFrost({required this.feather});
+  const _DetailInformationFrost({required this.feather, required this.palette});
   final double feather;
+  final List<Color> palette;
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
@@ -5048,7 +5061,13 @@ class _DetailInformationFrost extends StatelessWidget {
       final solid = CinemaAppearanceScope.of(context).reduceTransparency;
       final veil = CustomPaint(
         painter: _DetailInformationFrostPainter(feather, solid: solid),
-        child: const SizedBox.expand(),
+        foregroundPainter: solid ? null : _DetailInformationFeather(feather),
+        child: solid
+            ? const SizedBox.expand()
+            : CinemaPosterAtmosphere(
+                palette: palette,
+                active: palette.isNotEmpty,
+              ),
       );
       return IgnorePointer(
         child: ClipRect(
@@ -5098,10 +5117,24 @@ class _DetailInformationFrostPainter extends CustomPainter {
       bounds,
       Paint()..color = const Color(0xFF1B1B1F).withValues(alpha: .94),
     );
+  }
+
+  @override
+  bool shouldRepaint(_DetailInformationFrostPainter oldDelegate) =>
+      oldDelegate.feather != feather || oldDelegate.solid != solid;
+}
+
+class _DetailInformationFeather extends CustomPainter {
+  const _DetailInformationFeather(this.feather);
+  final double feather;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
     // Mask inside the backdrop layer so both tint and actual blur disappear
     // together above the information, without a rectangular filter boundary.
     canvas.drawRect(
-      bounds,
+      Offset.zero & size,
       Paint()
         ..blendMode = BlendMode.dstIn
         ..shader = ui.Gradient.linear(
@@ -5119,6 +5152,6 @@ class _DetailInformationFrostPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_DetailInformationFrostPainter oldDelegate) =>
-      oldDelegate.feather != feather || oldDelegate.solid != solid;
+  bool shouldRepaint(_DetailInformationFeather oldDelegate) =>
+      oldDelegate.feather != feather;
 }

@@ -26,7 +26,8 @@ def main():
     assert 'case "logout": await session.cancelQR(); await session.logoutAndInvalidateDisplay(); value=nil' in source
     assert 'case "forget": try await session.forget(); value=nil' in source
     assert "if let active=homeDisplayAuthorization,active.generation == generation {return active.task}" in source
-    assert "func homeDisplayAuthorize() async -> [String:Any] {await homeDisplayAuthorizationTask().value}" in source
+    # The Swift fixture verifies shared-flight behavior at runtime; keep the
+    # wrapper free to emit fixed, non-sensitive diagnostic classifications.
     forget = source.split("func forget() async throws {", 1)[1].split("\n    }", 1)[0]
     assert forget.index("await logoutAndInvalidateDisplay()") < forget.index("guard generation == attempt") < forget.index("credentialStore.forget()")
     with tempfile.TemporaryDirectory(prefix="naku-display-fixtures-") as temp:

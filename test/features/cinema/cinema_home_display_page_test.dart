@@ -13,6 +13,254 @@ import 'package:kazumi/features/cinema/cinema_player_entrance.dart';
 import 'package:kazumi/services/platform/desktop_window_controls.dart';
 
 void main() {
+  test('authorization distinguishes expired NAS from a backend failure', () {
+    const validNAS = {
+      'authenticated': false,
+      'reason': 'nas_authentication_failed',
+      'nasSessionVerified': true,
+      'nasSessionCheck': 'verified',
+    };
+    expect(cinemaHomeDisplayNeedsNAS(validNAS), isFalse);
+    expect(
+      cinemaHomeDisplayAuthorizationMessage(validNAS),
+      contains('NAS 登录正常'),
+    );
+    const expired = {
+      'authenticated': false,
+      'reason': 'nas_authentication_failed',
+      'nasSessionCheck': 'authentication_rejected',
+    };
+    expect(cinemaHomeDisplayNeedsNAS(expired), isTrue);
+    expect(cinemaHomeDisplayAuthorizationMessage(expired), contains('重新登录'));
+    for (final reason in [
+      'backend_network_error',
+      'backend_timeout',
+      'backend_rate_limited',
+      'authorization_cookie_install_failed',
+    ]) {
+      final failure = {'reason': reason};
+      expect(cinemaHomeDisplayNeedsNAS(failure), isFalse);
+      expect(
+        cinemaHomeDisplayAuthorizationMessage(failure),
+        isNot(contains('重新登录')),
+      );
+    }
+  });
+
+  testWidgets('reduced motion returns without waiting for a final frame', (
+    tester,
+  ) async {
+    final platform = _installFakeWebView();
+    final observer = _PopObserver();
+    await _pushDisplay(tester, platform, reduced: true, observer: observer);
+    tester
+        .widget<IconButton>(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == '返回',
+          ),
+        )
+        .onPressed!();
+    await tester.idle();
+    expect(
+      observer.pops,
+      1,
+      reason: 'Reduced motion must pop without pumping another frame.',
+    );
+    expect(platform.controller.screenshotCalls, 0);
+    await tester.pumpAndSettle();
+    expect(platform.view.disposed, isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  for (final state in [AppLifecycleState.hidden, AppLifecycleState.paused]) {
+    testWidgets(
+      'already $state display returns with frame production stopped',
+      (tester) async {
+        final platform = _installFakeWebView();
+        final observer = _PopObserver();
+        await _pushDisplay(tester, platform, observer: observer);
+        addTearDown(
+          () => tester.binding.handleAppLifecycleStateChanged(
+            AppLifecycleState.resumed,
+          ),
+        );
+        tester.binding.handleAppLifecycleStateChanged(state);
+        expect(tester.binding.framesEnabled, isFalse);
+        tester
+            .widget<IconButton>(
+              find.byWidgetPredicate(
+                (widget) => widget is IconButton && widget.tooltip == '返回',
+              ),
+            )
+            .onPressed!();
+        await tester.idle();
+        expect(observer.pops, 1);
+        expect(platform.controller.screenshotCalls, 0);
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pumpAndSettle();
+        expect(platform.view.disposed, isTrue);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+
+    testWidgets('$state interrupts a final frame wait that started visible', (
+      tester,
+    ) async {
+      final platform = _installFakeWebView();
+      final observer = _PopObserver();
+      await _pushDisplay(tester, platform, observer: observer);
+      final dynamic page = tester.state(find.byType(CinemaHomeDisplayPage));
+      tester
+          .widget<IconButton>(
+            find.byWidgetPredicate(
+              (widget) => widget is IconButton && widget.tooltip == '返回',
+            ),
+          )
+          .onPressed!();
+      await tester.idle();
+      expect(page.debugExitFrameWait, 'pop');
+      expect(observer.pops, 0);
+      addTearDown(
+        () => tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        ),
+      );
+      tester.binding.handleAppLifecycleStateChanged(state);
+      expect(tester.binding.framesEnabled, isFalse);
+      await tester.idle();
+      expect(
+        observer.pops,
+        1,
+        reason: 'A later lifecycle change must release an existing wait.',
+      );
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(platform.view.disposed, isTrue);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
+
+  testWidgets(
+    'native hide interrupts a final frame wait while already closing',
+    (tester) async {
+      final platform = _installFakeWebView();
+      final observer = _PopObserver();
+      await _pushDisplay(tester, platform, observer: observer);
+      final dynamic page = tester.state(find.byType(CinemaHomeDisplayPage));
+      tester
+          .widget<IconButton>(
+            find.byWidgetPredicate(
+              (widget) => widget is IconButton && widget.tooltip == '返回',
+            ),
+          )
+          .onPressed!();
+      await tester.idle();
+      expect(page.debugExitFrameWait, 'pop');
+      _controls(tester).setHidden(true);
+      await tester.idle();
+      expect(observer.pops, 1);
+      await tester.pumpAndSettle();
+      expect(platform.view.disposed, isTrue);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'paused interrupts mounting a real exit snapshot before its frame',
+    (tester) async {
+      final platform = _installFakeWebView();
+      final png = await _previewPng(tester);
+      final observer = _PopObserver();
+      await _pushDisplay(tester, platform, observer: observer);
+      final dynamic page = tester.state(find.byType(CinemaHomeDisplayPage));
+      platform.controller.screenshot = () async => png;
+      tester
+          .widget<IconButton>(
+            find.byWidgetPredicate(
+              (widget) => widget is IconButton && widget.tooltip == '返回',
+            ),
+          )
+          .onPressed!();
+      for (
+        var attempt = 0;
+        attempt < 30 && page.debugExitFrameWait != 'snapshot';
+        attempt++
+      ) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.idle();
+      }
+      expect(page.debugExitFrameWait, 'snapshot');
+      expect(observer.pops, 0);
+      expect(platform.view.disposed, isFalse);
+      addTearDown(
+        () => tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        ),
+      );
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      expect(tester.binding.framesEnabled, isFalse);
+      await tester.idle();
+      expect(observer.pops, 1);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(platform.view.disposed, isTrue);
+      expect(find.byType(CinemaPlayerEntrance), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'suspension abandons a pending native snapshot and ignores its late image',
+    (tester) async {
+      final platform = _installFakeWebView();
+      final observer = _PopObserver();
+      final screenshot = Completer<Uint8List?>();
+      final png = await _previewPng(tester);
+      await _pushDisplay(tester, platform, observer: observer);
+      platform.controller.screenshot = () => screenshot.future;
+      tester
+          .widget<IconButton>(
+            find.byWidgetPredicate(
+              (widget) => widget is IconButton && widget.tooltip == '返回',
+            ),
+          )
+          .onPressed!();
+      await tester.idle();
+      expect(platform.controller.screenshotCalls, 1);
+      addTearDown(
+        () => tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        ),
+      );
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.idle();
+      expect(
+        observer.pops,
+        1,
+        reason: 'Do not wait for the native readback or its 600ms deadline.',
+      );
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      screenshot.complete(png);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pump();
+      expect(platform.view.disposed, isTrue);
+      expect(find.byType(CinemaPlayerEntrance), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets(
     'return contracts real page pixels and keeps WebKit mounted until CRT finishes',
     (tester) async {
@@ -619,11 +867,13 @@ Future<GlobalKey<NavigatorState>> _pushDisplay(
   WidgetTester tester,
   _FakeWebViewPlatform platform, {
   bool reduced = false,
+  NavigatorObserver? observer,
 }) async {
   final navigator = GlobalKey<NavigatorState>();
   await tester.pumpWidget(
     MaterialApp(
       navigatorKey: navigator,
+      navigatorObservers: [?observer],
       home: const Scaffold(body: Text('电影墙')),
     ),
   );
@@ -649,6 +899,12 @@ Future<GlobalKey<NavigatorState>> _pushDisplay(
   platform.view.params.onWebViewCreated!(platform.controller);
   await tester.pump();
   return navigator;
+}
+
+class _PopObserver extends NavigatorObserver {
+  int pops = 0;
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) => pops++;
 }
 
 const _readyState = <String, dynamic>{

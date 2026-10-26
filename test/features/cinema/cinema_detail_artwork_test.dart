@@ -36,6 +36,355 @@ Map<String, dynamic> _meta({
 void main() {
   setUp(CinemaDoubanAccess.resetForTesting);
 
+  for (final (id, category, fixture) in [
+    ('37116446', '电影', 'film'),
+    ('36675942', '电视剧', 'series'),
+  ]) {
+    test(
+      'real $fixture stills select a wide original without an IMDb ID',
+      () async {
+        final data =
+            jsonDecode(
+                  await File(
+                    'test/features/cinema/fixtures/douban-$fixture-photos.json',
+                  ).readAsString(),
+                )
+                as Map<String, dynamic>;
+        final sizes = <String, (int, int)>{};
+        for (final photo in data['photos']) {
+          final large = photo['image']['large'];
+          sizes[large['url']] = (large['width'], large['height']);
+        }
+        final requested = <Uri>[];
+        final inspected = <String>[];
+        final repository = CinemaDetailArtworkRepository(
+          fetch: (uri, headers, limit, cancel) async {
+            requested.add(uri);
+            return _bytes(data);
+          },
+          inspect: (url, headers, cancel) async {
+            inspected.add(url);
+            return sizes[url]!;
+          },
+        );
+        final result = await repository.resolveLandscape(
+          CinemaTitle(
+            id: id,
+            sourceId: 'douban-discovery',
+            title: '实际首页条目',
+            category: category,
+            doubanId: id,
+          ),
+        );
+        expect(
+          requested.single.path,
+          '/rexxar/api/v2/${fixture == 'series' ? 'tv' : 'movie'}/$id/photos',
+        );
+        expect(requested.single.queryParameters, {
+          'type': 'S',
+          'start': '0',
+          'count': '8',
+        });
+        expect(
+          (result.width, result.height, result.highResolution),
+          (1600, 900, true),
+        );
+        expect(inspected, [result.url]);
+        if (fixture == 'series') {
+          expect(
+            result.url,
+            isNot(data['photos'][0]['image']['large']['url']),
+            reason: 'The first 4:3 still must not beat available 16:9 stills.',
+          );
+        }
+      },
+    );
+  }
+
+  for (final category in ['电影', '电视剧']) {
+    test(
+      'a $category portrait-only prefix gets one bounded contiguous still segment',
+      () async {
+        const subject = '14567890';
+        final kind = category == '电影' ? 'movie' : 'tv';
+        Map<String, dynamic> photo(int index, {bool wide = false}) => {
+          'id': '${2900000000 + index}',
+          'owner_uri': 'douban://douban.com/$kind/$subject',
+          'type': 'photo',
+          'image': {
+            'large': {
+              'url':
+                  'https://img3.doubanio.com/view/photo/l/public/p${2900000000 + index}.jpg',
+              'width': 1600,
+              'height': wide ? 900 : 2400,
+            },
+          },
+        };
+        final requested = <(String?, String?)>[];
+        final inspected = <String>[];
+        final repository = CinemaDetailArtworkRepository(
+          fetch: (uri, headers, limit, cancel) async {
+            final start = uri.queryParameters['start'];
+            requested.add((start, uri.queryParameters['count']));
+            return _bytes({
+              'total': 605,
+              'photos': start == '0'
+                  ? [for (var i = 0; i < 8; i++) photo(i)]
+                  : [for (var i = 8; i < 48; i++) photo(i, wide: i == 16)],
+            });
+          },
+          inspect: (url, headers, cancel) async {
+            inspected.add(url);
+            return (1920, 1080);
+          },
+        );
+        final result = await repository.resolveLandscape(
+          CinemaTitle(
+            id: 'generic',
+            sourceId: 'fixture',
+            title: '普通条目',
+            category: category,
+            doubanId: subject,
+          ),
+        );
+        expect(requested, [('0', '8'), ('8', '40')]);
+        expect(inspected, [
+          'https://img3.doubanio.com/view/photo/l/public/p2900000016.jpg',
+        ]);
+        expect(
+          (result.width, result.height, result.highResolution),
+          (1920, 1080, true),
+        );
+      },
+    );
+  }
+
+  test(
+    'a portrait-only gallery never turns into an unbounded metadata scan',
+    () async {
+      var requests = 0;
+      final repository = CinemaDetailArtworkRepository(
+        fetch: (uri, headers, limit, cancel) async {
+          requests++;
+          return _bytes({'total': 605, 'photos': []});
+        },
+        inspect: (url, headers, cancel) async =>
+            fail('No usable candidate should be downloaded.'),
+      );
+      expect(
+        (await repository.resolveLandscape(
+          const CinemaTitle(
+            id: 'generic',
+            sourceId: 'fixture',
+            title: '普通条目',
+            category: '电影',
+            doubanId: '14567890',
+          ),
+        )).url,
+        isEmpty,
+      );
+      expect(requests, 2);
+    },
+  );
+
+  test('stills never cross subject ownership or CDN photo identity', () async {
+    for (final (owner, photoId) in [
+      ('douban://douban.com/movie/37116445', '2931939488'),
+      ('https://douban.com/movie/37116446', '2931939488'),
+      ('douban://douban.com/movie/37116446', '2931939489'),
+      ('douban://douban.com/movie/37116446?other=1', '2931939488'),
+    ]) {
+      final repository = CinemaDetailArtworkRepository(
+        fetch: (uri, headers, limit, cancel) async => _bytes({
+          'photos': [
+            {
+              'id': '2931939488',
+              'type': 'photo',
+              'owner_uri': owner,
+              'image': {
+                'large': {
+                  'url':
+                      'https://img3.doubanio.com/view/photo/l/public/p$photoId.jpg',
+                  'width': 1600,
+                  'height': 900,
+                },
+              },
+            },
+          ],
+        }),
+        inspect: (url, headers, cancel) async =>
+            fail('An unrelated photo must never be downloaded.'),
+      );
+      final result = await repository.resolveLandscape(
+        const CinemaTitle(
+          id: 'stills',
+          sourceId: 'fixture',
+          title: '给阿嬷的情书',
+          category: '电影',
+          doubanId: '37116446',
+        ),
+      );
+      expect(result.url, isEmpty);
+    }
+  });
+
+  test(
+    'advertised still dimensions are rechecked and image requests stay bounded',
+    () async {
+      final data = jsonDecode(
+        await File(
+          'test/features/cinema/fixtures/douban-film-photos.json',
+        ).readAsString(),
+      );
+      final inspected = <String>[];
+      final repository = CinemaDetailArtworkRepository(
+        fetch: (uri, headers, limit, cancel) async => _bytes(data),
+        inspect: (url, headers, cancel) async {
+          inspected.add(url);
+          return inspected.length == 1 ? (1600, 2400) : (960, 540);
+        },
+      );
+      final result = await repository.resolveLandscape(
+        const CinemaTitle(
+          id: 'stills',
+          sourceId: 'fixture',
+          title: '给阿嬷的情书',
+          category: '电影',
+          doubanId: '37116446',
+        ),
+      );
+      expect(inspected, hasLength(3));
+      expect(result.url, isNot(inspected.first));
+      expect(
+        (result.width, result.height, result.highResolution),
+        (960, 540, false),
+      );
+    },
+  );
+
+  test(
+    'a subject-detail cooldown cannot suppress real subject stills',
+    () async {
+      final data = jsonDecode(
+        await File(
+          'test/features/cinema/fixtures/douban-film-photos.json',
+        ).readAsString(),
+      );
+      CinemaDoubanAccess.noteResponse(200, {'code': 1309});
+      expect(CinemaDoubanAccess.canRequestSubject(), isFalse);
+      final requested = <String>[];
+      final repository = CinemaDetailArtworkRepository(
+        fetch: (uri, headers, limit, cancel) async {
+          requested.add(uri.path);
+          return _bytes(data);
+        },
+        inspect: (url, headers, cancel) async => (1600, 900),
+      );
+      final result = await repository.resolveLandscape(
+        const CinemaTitle(
+          id: 'stills',
+          sourceId: 'fixture',
+          title: '给阿嬷的情书',
+          category: '电影',
+          doubanId: '37116446',
+        ),
+      );
+      expect(result.usableLandscape, isTrue);
+      expect(requested, ['/rexxar/api/v2/movie/37116446/photos']);
+    },
+  );
+
+  test(
+    'stills limit suppresses repeated requests without limiting subject details',
+    () async {
+      var now = DateTime.utc(2026, 10, 26);
+      final requested = <String>[];
+      const portrait = 'https://images.invalid/portrait.jpg';
+      const title = CinemaTitle(
+        id: 'stills',
+        sourceId: 'fixture',
+        title: '给阿嬷的情书',
+        category: '电影',
+        doubanId: '37116446',
+      );
+      final repository = CinemaDetailArtworkRepository(
+        now: () => now,
+        fetch: (uri, headers, limit, cancel) async {
+          requested.add(uri.path);
+          return _bytes(
+            uri.path.endsWith('/photos')
+                ? {'code': 1309, 'msg': 'subject_ip_rate_limit'}
+                : {
+                    'id': '37116446',
+                    'type': 'movie',
+                    'pic': {'original': portrait},
+                  },
+          );
+        },
+        inspect: (url, headers, cancel) async => (1600, 2400),
+      );
+      expect((await repository.resolveLandscape(title)).url, isEmpty);
+      expect(CinemaDoubanAccess.canRequestSubject(), isTrue);
+      expect(
+        (await repository.resolveLandscape(title, force: true)).url,
+        isEmpty,
+      );
+      expect((await repository.resolve(title)).url, portrait);
+      expect(requested, [
+        '/rexxar/api/v2/movie/37116446/photos',
+        '/rexxar/api/v2/movie/37116446',
+      ]);
+      now = now.add(CinemaDoubanAccess.cooldown + const Duration(seconds: 1));
+      await repository.resolveLandscape(title, force: true);
+      expect(requested.last, '/rexxar/api/v2/movie/37116446/photos');
+      expect(requested, hasLength(3));
+    },
+  );
+
+  test(
+    'a stills cooldown keeps successful metadata available from cache',
+    () async {
+      final data = jsonDecode(
+        await File(
+          'test/features/cinema/fixtures/douban-film-photos.json',
+        ).readAsString(),
+      );
+      final requested = <String>[];
+      final repository = CinemaDetailArtworkRepository(
+        fetch: (uri, headers, limit, cancel) async {
+          requested.add(uri.path);
+          return _bytes(
+            uri.path.contains('/37116446/') ? data : {'code': 1309},
+          );
+        },
+        inspect: (url, headers, cancel) async => (1600, 900),
+      );
+      const title = CinemaTitle(
+        id: 'stills',
+        sourceId: 'fixture',
+        title: '给阿嬷的情书',
+        category: '电影',
+        doubanId: '37116446',
+      );
+      expect((await repository.resolveLandscape(title)).highResolution, isTrue);
+      await repository.resolveLandscape(
+        const CinemaTitle(
+          id: 'other',
+          sourceId: 'fixture',
+          title: '另一作品',
+          category: '电影',
+          doubanId: '37116445',
+        ),
+      );
+      expect(
+        (await repository.resolveLandscape(title, force: true)).highResolution,
+        isTrue,
+      );
+      expect(requested, hasLength(2));
+      expect(CinemaDoubanAccess.canRequestSubject(), isTrue);
+    },
+  );
+
   test(
     'requests exact movie ID and selects verified wide HD before portrait',
     () async {

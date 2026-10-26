@@ -164,7 +164,35 @@ enum NASHomeDisplayCookiePolicy {
 struct NASHomeDisplayAuthorization {
     let cookie: HTTPCookie, contextCookie: HTTPCookie, expiresAt: Double, generation: Int
 }
-private enum NASHomeDisplayError: Error { case unconfigured }
+private enum NASHomeDisplayError: Error {
+    case unconfigured, proof, cookieInstall, sessionChanged
+    case http(Int), transport(Int), invalidResponse(String)
+
+    // Fixed stage/reason values and numeric status codes are safe to expose to
+    // Flutter. Never return localized errors, URLs, response bodies or proof.
+    var diagnostic: [String:Any] {
+        var value:[String:Any]=["authenticated":false]
+        switch self {
+        case .unconfigured: value["reason"]="backend_unconfigured";value["stage"]="exchange_http";value["httpStatus"]=503
+        case .proof: value["reason"]="nas_proof_unavailable";value["stage"]="proof_prepare"
+        case .cookieInstall: value["reason"]="authorization_cookie_install_failed";value["stage"]="cookie_install"
+        case .sessionChanged: value["reason"]="nas_session_expired";value["stage"]="session_generation"
+        case .http(let status):
+            value["reason"]=status == 401 ? "nas_authentication_failed":status == 403 ? "backend_access_rejected":status == 429 ? "backend_rate_limited":"backend_http_error"
+            value["stage"]="exchange_http";value["httpStatus"]=status
+        case .transport(let code):
+            value["reason"]=code == URLError.timedOut.rawValue ? "backend_timeout":"backend_network_error"
+            value["stage"]="exchange_transport";value["networkCode"]=code
+        case .invalidResponse(let stage): value["reason"]="authorization_response_invalid";value["stage"]=stage
+        }
+        return value
+    }
+}
+private struct NASHomeDisplayProbeRead: Sendable {
+    let check: String
+    var username: String? = nil
+    var serial: String? = nil
+}
 
 // A separate, memory-only session. Never imports another application's credentials.
 actor NASMovieSession {
@@ -241,8 +269,9 @@ actor NASMovieSession {
          "X-Specify-Language":"zh-CN", "Accept-Language":"zh-CN"]
     }
     private func send(_ url: URL, method: String = "GET", body: [String:Any]? = nil,
-                      extra: [String:String] = [:]) async throws -> (Data, HTTPURLResponse) {
+                      extra: [String:String] = [:], timeout: TimeInterval? = nil) async throws -> (Data, HTTPURLResponse) {
         var req = URLRequest(url: url); req.httpMethod = method
+        if let timeout {req.timeoutInterval=timeout}
         for (k,v) in headers().merging(extra, uniquingKeysWith: { _,new in new }) { req.setValue(v, forHTTPHeaderField:k) }
         if let body { req.httpBody = try JSONSerialization.data(withJSONObject:body); req.setValue("application/json",forHTTPHeaderField:"Content-Type") }
         let (data,res) = try await session.data(for:req)
@@ -630,23 +659,32 @@ actor NASMovieSession {
         var request=URLRequest(url:endpoint);request.httpMethod="POST";request.timeoutInterval=18
         request.setValue("application/json",forHTTPHeaderField:"Content-Type")
         request.setValue("https://between-us-home.pages.dev",forHTTPHeaderField:"Origin")
-        request.httpBody=try JSONSerialization.data(withJSONObject:["version":1,"clientId":clientID,"currentUser":try homeDisplayProof(),"machine":try homeDisplayProof(parameters:["basic":"1"])])
-        let (bytes,response)=try await session.data(for:request)
-        if let http=response as? HTTPURLResponse,http.statusCode == 503,bytes.count <= 4096,
+        do {
+            request.httpBody=try JSONSerialization.data(withJSONObject:["version":1,"clientId":clientID,"currentUser":try homeDisplayProof(),"machine":try homeDisplayProof(parameters:["basic":"1"])])
+        } catch {throw NASHomeDisplayError.proof}
+        let bytes:Data,response:URLResponse
+        do {(bytes,response)=try await session.data(for:request)}
+        catch {
+            let failure=error as NSError
+            throw NASHomeDisplayError.transport(failure.domain == NSURLErrorDomain ? failure.code:0)
+        }
+        guard let http=response as? HTTPURLResponse else {throw NASHomeDisplayError.invalidResponse("response_http")}
+        if http.statusCode == 503,bytes.count <= 4096,
            let payload=(try? JSONSerialization.jsonObject(with:bytes)) as? [String:Any],payload["error"] as? String == "nas_display_unconfigured" {throw NASHomeDisplayError.unconfigured}
-        guard generation == attempt,!token.isEmpty,
-              let http=response as? HTTPURLResponse,http.statusCode == 200,http.url == endpoint,bytes.count <= 4096,
-              let header=http.value(forHTTPHeaderField:"Set-Cookie"),header.count <= 2048,
+        guard http.statusCode == 200 else {throw NASHomeDisplayError.http(http.statusCode)}
+        guard generation == attempt,!token.isEmpty else {throw NASHomeDisplayError.sessionChanged}
+        guard http.url == endpoint,bytes.count <= 4096 else {throw NASHomeDisplayError.invalidResponse("response_origin_or_size")}
+        guard let header=http.value(forHTTPHeaderField:"Set-Cookie"),header.count <= 2048,
               header.range(of:";\\s*domain\\s*=",options:[.regularExpression,.caseInsensitive]) == nil,
               header.range(of:";\\s*samesite=strict(?:;|$)",options:[.regularExpression,.caseInsensitive]) != nil,
               let cookie=HTTPCookie.cookies(withResponseHeaderFields:["Set-Cookie":header],for:endpoint).first(where:{$0.name == "__Host-naku-display"}),
               let contextCookie=HTTPCookie.cookies(withResponseHeaderFields:["Set-Cookie":header],for:endpoint).first(where:{$0.name == "__Host-naku-display-context"}),
               cookie.domain == endpoint.host,cookie.path == "/",cookie.isSecure,cookie.isHTTPOnly,cookie.value.count <= 1024,
               contextCookie.domain == endpoint.host,contextCookie.path == "/",contextCookie.isSecure,contextCookie.isHTTPOnly,contextCookie.value == "1",contextCookie.isSessionOnly,
-              let expiry=cookie.expiresDate,expiry > Date(),expiry.timeIntervalSinceNow <= 301,
-              let payload=try JSONSerialization.jsonObject(with:bytes) as? [String:Any],payload["authenticated"] as? Bool == true,
+              let expiry=cookie.expiresDate,expiry > Date(),expiry.timeIntervalSinceNow <= 301 else {throw NASHomeDisplayError.invalidResponse("response_cookie")}
+        guard let payload=(try? JSONSerialization.jsonObject(with:bytes)) as? [String:Any],payload["authenticated"] as? Bool == true,
               let expiresAt=payload["expiresAt"] as? Double,expiresAt > Date().timeIntervalSince1970*1000,
-              expiresAt <= Date().timeIntervalSince1970*1000+301_000 else {throw NASMovieError.response}
+              expiresAt <= Date().timeIntervalSince1970*1000+301_000 else {throw NASHomeDisplayError.invalidResponse("response_payload")}
         return NASHomeDisplayAuthorization(cookie:cookie,contextCookie:contextCookie,expiresAt:expiresAt,generation:attempt)
     }
     // A same-generation renewal is single-flight. In particular, an older
@@ -663,7 +701,78 @@ actor NASMovieSession {
         homeDisplayAuthorization=(attempt,task)
         return task
     }
-    func homeDisplayAuthorize() async -> [String:Any] {await homeDisplayAuthorizationTask().value}
+    func homeDisplayAuthorize() async -> [String:Any] {
+        let result=await homeDisplayAuthorizationTask().value
+        if result["authenticated"] as? Bool != true {
+            // Only fixed classifications and status numbers reach the log.
+            // Do not log the request, response, cookies or NAS identity.
+            NSLog("NAKUHomeDisplayAuth reason=%@ stage=%@ http=%@ session=%@ device=%@",
+                result["reason"] as? String ?? "unknown",result["stage"] as? String ?? "none",
+                (result["httpStatus"] as? Int).map {String($0)} ?? "none",
+                result["nasSessionCheck"] as? String ?? "unchecked",result["nasDeviceCheck"] as? String ?? "unchecked")
+        }
+        return result
+    }
+    private func homeDisplayProbeRequest(device: Bool, origin: URL, generation attempt: Int) async -> NASHomeDisplayProbeRead {
+        guard generation == attempt,!token.isEmpty else {return NASHomeDisplayProbeRead(check:"session_changed")}
+        do {
+            // Both routes are existing GET-only reads. An explicit target keeps
+            // api's ordinary expired-session logout path out of diagnostics.
+            let data=try await api(device ? "v1/sysinfo/machine/common":"v1/user/current/user",
+                parameters:device ? ["basic":"1"]:[:],at:origin,timeout:4)
+            guard generation == attempt,!token.isEmpty else {return NASHomeDisplayProbeRead(check:"session_changed")}
+            if device {
+                guard let common=data["common"] as? [String:Any],let serial=common["serial"] as? String,
+                      !serial.isEmpty,serial.count <= 256 else {return NASHomeDisplayProbeRead(check:"invalid_response")}
+                return NASHomeDisplayProbeRead(check:"verified",serial:serial)
+            }
+            guard let name=data["username"] as? String,!name.isEmpty,name.count <= 128,
+                  name == sessionUsername else {return NASHomeDisplayProbeRead(check:"invalid_response")}
+            return NASHomeDisplayProbeRead(check:"verified",username:name)
+        } catch {
+            guard generation == attempt,!token.isEmpty else {return NASHomeDisplayProbeRead(check:"session_changed")}
+            if case NASMovieError.expired = error {return NASHomeDisplayProbeRead(check:"authentication_rejected")}
+            if case NASMovieError.login = error {return NASHomeDisplayProbeRead(check:"request_rejected")}
+            let failure=error as NSError
+            if failure.domain == NSURLErrorDomain {
+                return NASHomeDisplayProbeRead(check:failure.code == URLError.timedOut.rawValue ? "timeout":"network_error")
+            }
+            return NASHomeDisplayProbeRead(check:"invalid_response")
+        }
+    }
+    private func homeDisplayProbeRead(device: Bool, origin: URL, generation attempt: Int) async -> NASHomeDisplayProbeRead {
+        do {
+            return try await withThrowingTaskGroup(of:NASHomeDisplayProbeRead.self) {group in
+                group.addTask {await self.homeDisplayProbeRequest(device:device,origin:origin,generation:attempt)}
+                group.addTask {
+                    try await Task.sleep(nanoseconds:4_000_000_000)
+                    return NASHomeDisplayProbeRead(check:"timeout")
+                }
+                let value=try await group.next() ?? NASHomeDisplayProbeRead(check:"invalid_response")
+                group.cancelAll()
+                return value
+            }
+        } catch {return NASHomeDisplayProbeRead(check:"timeout")}
+    }
+    private func homeDisplayProbe(generation attempt: Int) async -> [String:Any] {
+        guard generation == attempt,!token.isEmpty,let origin=base else {
+            return ["nasSessionVerified":false,"nasDeviceVerified":false,"nasSessionCheck":"session_changed","nasDeviceCheck":"session_changed"]
+        }
+        let expected=namespace
+        async let account=homeDisplayProbeRead(device:false,origin:origin,generation:attempt)
+        async let hardware=homeDisplayProbeRead(device:true,origin:origin,generation:attempt)
+        let (current,machine)=await (account,hardware)
+        guard generation == attempt,!token.isEmpty else {
+            return ["nasSessionVerified":false,"nasDeviceVerified":false,"nasSessionCheck":"session_changed","nasDeviceCheck":"session_changed"]
+        }
+        let sessionVerified=current.check == "verified"
+        let deviceVerified=sessionVerified && machine.check == "verified"
+            && current.username.map {name in machine.serial.map {Self.namespace(serial:$0,username:name) == expected} ?? false} == true
+        let deviceCheck=machine.check != "verified" ? machine.check:!sessionVerified ? "session_unverified":deviceVerified ? "verified":"identity_mismatch"
+        // Never return the account, serial, namespace, request URL or proof.
+        return ["nasSessionVerified":sessionVerified,"nasDeviceVerified":deviceVerified,
+                "nasSessionCheck":current.check,"nasDeviceCheck":deviceCheck]
+    }
     private func performHomeDisplayAuthorization(generation attempt: Int, after invalidation: Task<Void,Never>?) async -> [String:Any] {
         await invalidation?.value
         guard generation == attempt,!token.isEmpty else {return ["authenticated":false,"reason":"nas_login_required"]}
@@ -674,11 +783,21 @@ actor NASMovieSession {
             guard generation == authorized.generation,!token.isEmpty else {return ["authenticated":false,"reason":"nas_session_expired"]}
             let installed=await cookies.install([authorized.contextCookie,authorized.cookie],generation:authorized.generation)
             guard generation == authorized.generation,!token.isEmpty else {return ["authenticated":false,"reason":"nas_session_expired"]}
-            guard installed else {return ["authenticated":false,"reason":"authorization_failed"]}
+            guard installed else {throw NASHomeDisplayError.cookieInstall}
             return ["authenticated":true,"expiresAt":authorized.expiresAt]
         } catch {
             await cookies.invalidateCredential(generation:attempt)
-            return ["authenticated":false,"reason":token.isEmpty ? "nas_login_required":(error is NASHomeDisplayError ? "backend_unconfigured":"authorization_failed")]
+            if token.isEmpty {return ["authenticated":false,"reason":"nas_login_required"]}
+            if let failure=error as? NASHomeDisplayError {
+                var result=failure.diagnostic
+                if case .http(401) = failure,generation == attempt {
+                    let probe=await homeDisplayProbe(generation:attempt)
+                    guard generation == attempt,!token.isEmpty else {return NASHomeDisplayError.sessionChanged.diagnostic}
+                    for (key,value) in probe {result[key]=value}
+                }
+                return result
+            }
+            return ["authenticated":false,"reason":"authorization_failed","stage":"authorization_internal"]
         }
     }
 
@@ -1077,7 +1196,7 @@ actor NASMovieSession {
         guard page <= 500 else { throw NASMovieError.configuration }
         return ["video_arr":rows,"total_num":total ?? rows.count]
     }
-    func api(_ route: String, parameters: [String:String] = [:], at target: URL? = nil) async throws -> [String:Any] {
+    func api(_ route: String, parameters: [String:String] = [:], at target: URL? = nil, timeout: TimeInterval? = nil) async throws -> [String:Any] {
         guard let base = target ?? base, !token.isEmpty else { throw NASMovieError.expired }
         let key = UUID().uuidString.replacingOccurrences(of:"-",with:"")
         var params = parameters, h = headers()
@@ -1090,7 +1209,7 @@ actor NASMovieSession {
         var u = URLComponents(url:base.appendingPathComponent("ugreen/"+route),resolvingAgainstBaseURL:false)!
         u.queryItems=[URLQueryItem(name:"encrypt_query",value:combined.base64EncodedString())]
         u.percentEncodedQuery = u.percentEncodedQuery?.replacingOccurrences(of:"+",with:"%2B")
-        let (bytes,http) = try await send(u.url!,extra:h)
+        let (bytes,http) = try await send(u.url!,extra:h,timeout:timeout)
         var result = try json(bytes)
         if let text=result["encrypt_resp_body"] as? String, let data=Data(base64Encoded:text) {
             result = try json(AES.GCM.open(AES.GCM.SealedBox(combined:data),using:SymmetricKey(data:Data(key.utf8))))

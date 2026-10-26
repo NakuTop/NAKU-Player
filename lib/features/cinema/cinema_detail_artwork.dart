@@ -68,6 +68,7 @@ class CinemaDetailArtworkRepository {
   final DateTime Function() _now;
   final _cache = <String, (DateTime, CinemaDetailArtwork?)>{};
   final _metadata = <String, (DateTime, Map<String, dynamic>)>{};
+  DateTime? _photosRetryAt;
 
   static String kind(CinemaTitle title) {
     final value = title.category.toLowerCase();
@@ -216,7 +217,39 @@ class CinemaDetailArtworkRepository {
       }
 
       final jobs = <Future<List<String>>>[
-        if (feed != null) Future.value(subjectImages(feed)),
+        if (!landscapeOnly && feed != null) Future.value(subjectImages(feed)),
+        if (landscapeOnly && validDouban)
+          (() async {
+            try {
+              final data = await _json(
+                Uri.https(
+                  'm.douban.com',
+                  '/rexxar/api/v2/${type == 'series' ? 'tv' : 'movie'}/$douban/photos',
+                  {'type': 'S', 'start': '0', 'count': '8'},
+                ),
+                cancel,
+              );
+              final initial = _subjectStills(data, douban);
+              final total = data['total'];
+              if (initial.isNotEmpty || (total is num && total <= 8)) {
+                return initial;
+              }
+              // Some galleries start with a run of portrait cast photos even
+              // with type=S. Check one contiguous metadata segment, never the
+              // entire gallery. At most three image headers are inspected.
+              final next = await _json(
+                Uri.https(
+                  'm.douban.com',
+                  '/rexxar/api/v2/${type == 'series' ? 'tv' : 'movie'}/$douban/photos',
+                  {'type': 'S', 'start': '8', 'count': '40'},
+                ),
+                cancel,
+              );
+              return _subjectStills(next, douban, limit: 40);
+            } catch (_) {
+              return <String>[];
+            }
+          })(),
         if (validImdb && type.isNotEmpty)
           (() async {
             try {
@@ -243,7 +276,9 @@ class CinemaDetailArtworkRepository {
               return <String>[];
             }
           })(),
-        if (validDouban && CinemaDoubanAccess.canRequestSubject())
+        if (!landscapeOnly &&
+            validDouban &&
+            CinemaDoubanAccess.canRequestSubject())
           (() async {
             try {
               final data = await _json(
@@ -454,6 +489,16 @@ class CinemaDetailArtworkRepository {
         _now().difference(cached.$1) < const Duration(hours: 6)) {
       return cached.$2;
     }
+    final photos =
+        uri.host == 'm.douban.com' &&
+        RegExp(
+          r'^/rexxar/api/v2/(?:movie|tv)/[1-9][0-9]{1,11}/photos$',
+        ).hasMatch(uri.path);
+    // Ratings' subject-detail limit is independent of the stills resource.
+    // Reuse successful still metadata even while new photo requests cool down.
+    if (photos && _photosRetryAt?.isAfter(_now()) == true) {
+      throw const FormatException('Artwork stills temporarily rate limited');
+    }
     final data = jsonDecode(
       utf8.decode(
         await _race(_fetch(uri, const {}, 512 * 1024, cancel), cancel),
@@ -461,9 +506,21 @@ class CinemaDetailArtworkRepository {
     );
     if (data is! Map) throw const FormatException('Artwork metadata invalid');
     if (uri.host == 'm.douban.com') {
-      CinemaDoubanAccess.noteResponse(200, data);
-      if (data['id']?.toString() != uri.pathSegments.last ||
-          !const ['movie', 'tv'].contains(data['type'])) {
+      if (photos) {
+        if (data['code'].toString() == '1309' ||
+            data['msg'] == 'subject_ip_rate_limit') {
+          _photosRetryAt = _now().add(CinemaDoubanAccess.cooldown);
+          throw const FormatException(
+            'Artwork stills temporarily rate limited',
+          );
+        }
+      } else {
+        CinemaDoubanAccess.noteResponse(200, data);
+      }
+      if (photos
+          ? data['photos'] is! List
+          : data['id']?.toString() != uri.pathSegments.last ||
+                !const ['movie', 'tv'].contains(data['type'])) {
         throw const FormatException('Artwork subject identity invalid');
       }
     } else if (uri.host == 'v3-cinemeta.strem.io') {
@@ -481,6 +538,64 @@ class CinemaDetailArtworkRepository {
       _metadata.remove(_metadata.keys.first);
     }
     return result;
+  }
+
+  /// The exact subject's public stills endpoint supplies original image URLs.
+  /// A photo owner and its CDN photo ID must both match before dimensions can
+  /// rank a candidate. Header inspection remains the final size authority.
+  static List<String> _subjectStills(
+    Map<String, dynamic> data,
+    String subject, {
+    int limit = 8,
+  }) {
+    final photos = data['photos'];
+    if (photos is! List) return const [];
+    final candidates = <(String, double, int)>[];
+    for (final photo in photos.take(limit).whereType<Map>()) {
+      final owner = Uri.tryParse('${photo['owner_uri'] ?? ''}');
+      final ownerId = RegExp(
+        r'^/(?:movie|tv)/([1-9][0-9]{1,11})$',
+      ).firstMatch(owner?.path ?? '')?.group(1);
+      final id = '${photo['id'] ?? ''}';
+      final image = photo['image'];
+      if (owner?.scheme != 'douban' ||
+          owner?.host != 'douban.com' ||
+          owner?.hasQuery == true ||
+          owner?.hasFragment == true ||
+          owner?.userInfo.isNotEmpty == true ||
+          owner?.hasPort == true ||
+          ownerId != subject ||
+          photo['type'] != 'photo' ||
+          !RegExp(r'^[1-9][0-9]{1,15}$').hasMatch(id) ||
+          image is! Map ||
+          image['is_animated'] == true) {
+        continue;
+      }
+      for (final field in ['raw', 'original', 'large']) {
+        final variant = image[field];
+        if (variant is! Map) continue;
+        final url = _imageUrl(variant['url']);
+        if (_doubanPhotoId(url) != id) continue;
+        final width = variant['width'], height = variant['height'];
+        if (width is num && height is num && width > 0 && height > 0) {
+          // Skip advertised portraits; do not spend an image request on a
+          // known poster. Unknown dimensions may still be inspected last.
+          if (width < height * 1.25) continue;
+          candidates.add((
+            url,
+            (width / height - 16 / 9).abs(),
+            (width * height).toInt(),
+          ));
+        } else {
+          candidates.add((url, double.infinity, 0));
+        }
+      }
+    }
+    candidates.sort((a, b) {
+      final aspect = a.$2.compareTo(b.$2);
+      return aspect != 0 ? aspect : b.$3.compareTo(a.$3);
+    });
+    return candidates.map((candidate) => candidate.$1).toSet().take(3).toList();
   }
 
   static String _imageUrl(Object? value) {
@@ -549,7 +664,7 @@ class CinemaDetailArtworkRepository {
               'User-Agent': 'NAKUPlayer/2.12.4',
               if (target.host.endsWith('douban.com'))
                 'Referer': target.path.startsWith('/rexxar/api/')
-                    ? 'https://m.douban.com/movie/subject/${target.pathSegments.last}/'
+                    ? 'https://m.douban.com/movie/subject/${RegExp(r"^/rexxar/api/v2/(?:movie|tv)/([1-9][0-9]{1,11})").firstMatch(target.path)?.group(1) ?? target.pathSegments.last}/'
                     : 'https://movie.douban.com/',
               ...headers,
             },
