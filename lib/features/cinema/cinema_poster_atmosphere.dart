@@ -169,7 +169,7 @@ class _AtmosphereFrame extends ChangeNotifier {
 class _AtmospherePainter extends CustomPainter {
   _AtmospherePainter(this.frame) : super(repaint: frame);
   final _AtmosphereFrame frame;
-  static const _stops = [0.0, .20, .64, 1.0];
+  static const _stops = [0.0, .24, .68, 1.0];
   static const _centerX = [.15, .79, .48];
   static const _centerY = [.32, .76, .50];
   static const _radius = [.92, .78, 1.08];
@@ -183,7 +183,7 @@ class _AtmospherePainter extends CustomPainter {
     // Three broad, asymmetric fields stay near the poster's reading surface;
     // their outer tails dissolve into the caller's neutral charcoal below.
     final fieldHeight = math.min(size.height, size.width * .85);
-    final baseRadius = size.width * .43;
+    final baseRadius = size.width * .41;
     final paint = Paint();
     for (var index = 0; index < 3; index++) {
       final turn = angle + index * math.pi * 2 / 3;

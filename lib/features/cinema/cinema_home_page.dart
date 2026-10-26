@@ -5103,7 +5103,7 @@ class _DetailInformationFrost extends StatelessWidget {
           child: solid
               ? veil
               : BackdropFilter(
-                  filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                  filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
                   child: veil,
                 ),
         ),
@@ -5143,7 +5143,7 @@ class _DetailInformationFrostPainter extends CustomPainter {
     }
     canvas.drawRect(
       bounds,
-      Paint()..color = const Color(0xFF1B1B1F).withValues(alpha: .94),
+      Paint()..color = const Color(0xFF1B1B1F).withValues(alpha: .92),
     );
   }
 
