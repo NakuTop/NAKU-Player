@@ -430,7 +430,10 @@ void main() {
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 80)),
         );
-        await frames(tester, 40);
+        // Finish the loading reveal before comparing motion: a changing reveal
+        // must not count as proof that the underlying frost actually flows.
+        await frames(tester, 160);
+        expect(loading(tester), isFalse);
         final atmosphere = find.byType(CinemaPosterAtmosphere);
         expect(atmosphere, findsOneWidget);
         expect(
