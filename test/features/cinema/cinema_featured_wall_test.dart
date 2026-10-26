@@ -1,15 +1,20 @@
 import 'package:flutter/gestures.dart';
+import 'dart:io';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:dio/dio.dart';
 import 'package:kazumi/features/cinema/cinema_detail_artwork.dart';
+import 'package:kazumi/features/cinema/cinema_artwork_backdrop.dart';
 import 'package:kazumi/features/cinema/cinema_featured_wall.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_ratings.dart';
 
 class _Artwork extends CinemaDetailArtworkRepository {
   final identities = <String>[];
+  CinemaDetailArtwork result = const CinemaDetailArtwork(url: '');
   @override
   Future<CinemaDetailArtwork> resolve(
     CinemaTitle title, {
@@ -19,7 +24,7 @@ class _Artwork extends CinemaDetailArtworkRepository {
     bool force = false,
   }) async {
     identities.add(identity.imdbId);
-    return const CinemaDetailArtwork(url: '');
+    return result;
   }
 }
 
@@ -50,6 +55,7 @@ void main() {
     Listenable? artworkChanges,
     RatingIdentity Function(CinemaTitle)? artworkIdentity,
     Widget Function(CinemaTitle)? statusBuilder,
+    ImageProvider Function(CinemaDetailArtwork, int)? artworkImageProvider,
   }) async {
     tester.view.physicalSize = Size(1280, height);
     tester.view.devicePixelRatio = 1;
@@ -69,14 +75,18 @@ void main() {
               child: Column(
                 children: [
                   if (offscreen) const SizedBox(height: 1000),
-                  CinemaFeaturedWall(
-                    titles: titles,
-                    onOpen: onOpen ?? (_) {},
-                    topInset: topInset,
-                    artworkRepository: artworkRepository,
-                    artworkChanges: artworkChanges,
-                    artworkIdentity: artworkIdentity,
-                    statusBuilder: statusBuilder,
+                  RepaintBoundary(
+                    key: const ValueKey('hero-page-raster'),
+                    child: CinemaFeaturedWall(
+                      titles: titles,
+                      onOpen: onOpen ?? (_) {},
+                      topInset: topInset,
+                      artworkRepository: artworkRepository,
+                      artworkChanges: artworkChanges,
+                      artworkIdentity: artworkIdentity,
+                      statusBuilder: statusBuilder,
+                      artworkImageProvider: artworkImageProvider,
+                    ),
                   ),
                   const SizedBox(height: 1000),
                 ],
@@ -145,24 +155,257 @@ void main() {
   );
 
   testWidgets(
-    'hero fills most of the first screen and adapts to short windows',
+    'hero reserves full-width cinema composition and short windows can scroll',
     (tester) async {
       await mount(tester, topInset: 90);
       expect(
         tester.getSize(find.byType(CinemaFeaturedWall)).height,
-        closeTo(860 * .76, .01),
+        closeTo(1280 * 9 / 16 + 90 + 52, .01),
       );
       expect(find.text('查看影片').hitTestable(), findsOneWidget);
       await mount(tester, height: 480, topInset: 90);
       expect(
         tester.getSize(find.byType(CinemaFeaturedWall)).height,
-        closeTo(480 * .76, .01),
+        closeTo(1280 * 9 / 16 + 90 + 52, .01),
       );
+      await Scrollable.ensureVisible(
+        tester.element(find.text('查看影片').first),
+        alignment: .7,
+      );
+      await tester.pumpAndSettle();
       expect(find.text('查看影片').hitTestable(), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  const marks = [
+    Color(0xFFE24A40),
+    Color(0xFF36C586),
+    Color(0xFF4269E2),
+    Color(0xFFF2BE42),
+  ];
+  Future<Uint8List> markedImage(Size size, {bool blank = false}) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()..color = blank ? Colors.white : const Color(0xFFC4BBB0),
+    );
+    for (final (i, fraction)
+        in (blank ? <double>[] : [.1, .3, .7, .9]).indexed) {
+      canvas.drawRect(
+        Rect.fromLTWH(
+          size.width * (fraction - .04),
+          0,
+          size.width * .08,
+          size.height,
+        ),
+        Paint()..color = marks[i],
+      );
+    }
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(
+      size.width.toInt(),
+      size.height.toInt(),
+    );
+    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    picture.dispose();
+    image.dispose();
+    return bytes!.buffer.asUint8List();
+  }
+
+  testWidgets(
+    'bright full-width art keeps a local dark title bed without dimming the whole image',
+    (tester) async {
+      final bytes = (await tester.runAsync(
+        () => markedImage(const Size(320, 180), blank: true),
+      ))!;
+      final repository = _Artwork()
+        ..result = const CinemaDetailArtwork(
+          url: 'memory://white-fixture',
+          width: 1920,
+          height: 1080,
+          highResolution: true,
+        );
+      await mount(
+        tester,
+        topInset: 68,
+        artworkRepository: repository,
+        artworkImageProvider: (_, _) => MemoryImage(bytes),
+      );
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 40)),
+      );
+      await tester.pumpAndSettle();
+      final title = find.text('泰坦尼克号').first;
+      final titleRect = tester.getRect(title);
+      final boundaryFinder = find.byKey(const ValueKey('hero-page-raster'));
+      final origin = tester.getTopLeft(boundaryFinder);
+      final boundary = tester.renderObject<RenderRepaintBoundary>(
+        boundaryFinder,
+      );
+      final raster = (await tester.runAsync(
+        () => boundary.toImage(pixelRatio: 1),
+      ))!;
+      final pixels = (await tester.runAsync(
+        () => raster.toByteData(format: ui.ImageByteFormat.rawRgba),
+      ))!;
+      final y = (titleRect.center.dy - origin.dy).floor();
+      int red(int x) => pixels.getUint8((y * raster.width + x) * 4);
+      expect(
+        red((titleRect.left - origin.dx - 12).floor()),
+        lessThan(105),
+        reason:
+            'The text bed must retain contrast against an all-white poster.',
+      );
+      expect(
+        red(1100),
+        greaterThan(235),
+        reason: 'Unrelated image content stays bright.',
+      );
+      raster.dispose();
+      await tester.pumpWidget(const SizedBox());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final (name, original) in [
+    ('hd-wide', const Size(320, 180)),
+    ('cinema-wide', const Size(480, 200)),
+    ('portrait', const Size(180, 320)),
+  ]) {
+    for (final windowHeight in [860.0, 480.0]) {
+      testWidgets(
+        '$name actual hero canvas fills horizontal edges at window height $windowHeight',
+        (tester) async {
+          final bytes = (await tester.runAsync(() => markedImage(original)))!;
+          final repository = _Artwork()
+            ..result = CinemaDetailArtwork(
+              url: 'memory://hero-fixture',
+              width: original.width.toInt() * 6,
+              height: original.height.toInt() * 6,
+              highResolution: true,
+            );
+          await mount(
+            tester,
+            height: windowHeight,
+            topInset: 68,
+            artworkRepository: repository,
+            artworkImageProvider: (_, _) => MemoryImage(bytes),
+          );
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 40)),
+          );
+          await tester.pumpAndSettle();
+          final backdropFinder = find.byType(CinemaArtworkBackdrop);
+          final backdrop = tester.widget<CinemaArtworkBackdrop>(backdropFinder);
+          final boundary = tester.renderObject<RenderRepaintBoundary>(
+            find
+                .descendant(
+                  of: backdropFinder,
+                  matching: find.byType(RepaintBoundary),
+                )
+                .first,
+          );
+          final raster = (await tester.runAsync(
+            () => boundary.toImage(pixelRatio: 1),
+          ))!;
+          final pixels = (await tester.runAsync(
+            () => raster.toByteData(format: ui.ImageByteFormat.rawRgba),
+          ))!;
+          expect(raster.width, 1280);
+          final actualSize = Size(
+            raster.width.toDouble(),
+            raster.height.toDouble(),
+          );
+          final pictureRect = cinemaArtworkCompositionRect(
+            source: original,
+            viewport: actualSize,
+            insets: backdrop.contentInsets,
+            alignment: backdrop.alignment,
+          );
+          final y = pictureRect.center.dy.floor();
+          List<int> rgb(int x) => [
+            for (var c = 0; c < 3; c++)
+              pixels.getUint8((y * raster.width + x) * 4 + c),
+          ];
+          if (name != 'portrait') {
+            final centers = <double>[];
+            for (final color in marks) {
+              final target = [
+                (color.r * 255).round(),
+                (color.g * 255).round(),
+                (color.b * 255).round(),
+              ];
+              final matching = <int>[];
+              for (var x = 0; x < raster.width; x++) {
+                final pixel = rgb(x);
+                if (List.generate(
+                  3,
+                  (c) => (pixel[c] - target[c]).abs() <= 2,
+                ).every((same) => same)) {
+                  matching.add(x);
+                }
+              }
+              expect(
+                matching,
+                isNotEmpty,
+                reason: 'Every original interior marker must be painted.',
+              );
+              centers.add((matching.first + matching.last + 1) / 2);
+            }
+            // Infer the source-to-canvas transform from observed native pixels,
+            // rather than trusting the layout helper's returned rectangle.
+            final paintedWidth = (centers.last - centers.first) / .8;
+            final paintedLeft = centers.first - paintedWidth * .1;
+            expect(paintedLeft, closeTo(0, 2));
+            expect(paintedLeft + paintedWidth, closeTo(raster.width, 2));
+            expect(
+              pictureRect.height / pictureRect.width,
+              closeTo(original.height / original.width, .00001),
+            );
+          } else {
+            expect(
+              pictureRect.height / pictureRect.width,
+              closeTo(original.height / original.width, .00001),
+            );
+            expect(
+              raster.height,
+              lessThan(1000),
+              reason:
+                  'A portrait must not reserve a full-width portrait-height page.',
+            );
+            for (final x in [0, raster.width - 1]) {
+              final edge = rgb(x);
+              expect(
+                edge.reduce((a, b) => a + b),
+                greaterThan(240),
+                reason:
+                    'The clamped edge field fills both ends, with no black side bank.',
+              );
+            }
+          }
+          const output = String.fromEnvironment(
+            'NAKU_HERO_FULLWIDTH_RASTER_DIR',
+          );
+          if (output.isNotEmpty) {
+            await tester.runAsync(() async {
+              final png = await raster.toByteData(
+                format: ui.ImageByteFormat.png,
+              );
+              await File(
+                '$output/$name-${windowHeight.toInt()}.png',
+              ).writeAsBytes(png!.buffer.asUint8List());
+            });
+          }
+          raster.dispose();
+          await tester.pumpWidget(const SizedBox());
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
 
   testWidgets('artwork keeps the normal arrow during hover and drag', (
     tester,

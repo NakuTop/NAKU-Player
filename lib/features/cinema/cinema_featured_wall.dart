@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
@@ -15,6 +16,25 @@ import 'cinema_ratings.dart';
 import 'cinema_theme.dart';
 import 'cinema_artwork_backdrop.dart';
 
+/// Width-fit landscapes have room for their whole composition, even when a
+/// short window must scroll. Unknown images and portraits share a 16:9 canvas
+/// rather than reserving a portrait's unbounded full-width height.
+double cinemaFeaturedHeroHeight({
+  required Size viewport,
+  required double width,
+  required CinemaDetailArtwork artwork,
+  double topInset = 0,
+}) {
+  final minimum = (viewport.height * .76)
+      .clamp(340.0, 900.0)
+      .clamp(0.0, viewport.height * .86);
+  final knownAspect = artwork.width > 0 && artwork.height > 0
+      ? artwork.width / artwork.height
+      : 0.0;
+  final aspect = knownAspect >= 1.25 ? knownAspect : 16 / 9;
+  return math.max(minimum, width / aspect + topInset + 12 + 40);
+}
+
 /// A real catalogue selection; these titles are excluded from the wall below.
 class CinemaFeaturedWall extends StatefulWidget {
   const CinemaFeaturedWall({
@@ -26,6 +46,7 @@ class CinemaFeaturedWall extends StatefulWidget {
     this.artworkRepository,
     this.artworkIdentity,
     this.artworkChanges,
+    this.artworkImageProvider,
   });
 
   final List<CinemaTitle> titles;
@@ -35,6 +56,11 @@ class CinemaFeaturedWall extends StatefulWidget {
   final CinemaDetailArtworkRepository? artworkRepository;
   final CinemaArtworkIdentity? artworkIdentity;
   final Listenable? artworkChanges;
+
+  /// Keeps image drawing deterministic in native raster tests. Production uses
+  /// the same proxy-aware disk cache and bounded decode as the detail backdrop.
+  final ImageProvider Function(CinemaDetailArtwork artwork, int decodeWidth)?
+  artworkImageProvider;
 
   @override
   State<CinemaFeaturedWall> createState() => _CinemaFeaturedWallState();
@@ -249,116 +275,137 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
     if (widget.titles.isEmpty) return const SizedBox.shrink();
     final viewport = MediaQuery.sizeOf(context);
     final wide = viewport.width > 1200;
-    final heroHeight = (viewport.height * .76)
-        .clamp(340.0, 900.0)
-        .clamp(0.0, viewport.height * .86);
-    return MouseRegion(
-      cursor: SystemMouseCursors.basic,
-      onEnter: (_) {
-        _hovered = true;
-        _schedule();
-      },
-      onExit: (_) {
-        _hovered = false;
-        _schedule();
-      },
-      child: Focus(
-        key: const ValueKey('cinema-featured-focus'),
-        onFocusChange: (value) {
-          _focused = value;
-          _schedule();
-        },
-        onKeyEvent: (_, event) {
-          if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-            return KeyEventResult.ignored;
-          }
-          if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-            _select(_index - 1);
-            return KeyEventResult.handled;
-          }
-          if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-            _select(_index + 1);
-            return KeyEventResult.handled;
-          }
-          return KeyEventResult.ignored;
-        },
-        child: SizedBox(
-          height: heroHeight,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              NotificationListener<ScrollNotification>(
-                onNotification: _onScroll,
-                child: PageView.builder(
-                  key: const ValueKey('cinema-featured-pages'),
-                  controller: _pages,
-                  pageSnapping: false,
-                  scrollBehavior: ScrollConfiguration.of(context).copyWith(
-                    scrollbars: false,
-                    dragDevices: {
-                      PointerDeviceKind.mouse,
-                      PointerDeviceKind.touch,
-                      PointerDeviceKind.trackpad,
-                      PointerDeviceKind.stylus,
-                      PointerDeviceKind.invertedStylus,
-                    },
+    final title = widget.titles[_index.clamp(0, widget.titles.length - 1)];
+    final artwork = _artworkWindow.artworkFor(
+      title,
+      identity: widget.artworkIdentity?.call(title) ?? const RatingIdentity(),
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.hasBoundedWidth
+            ? constraints.maxWidth
+            : viewport.width;
+        final heroHeight = cinemaFeaturedHeroHeight(
+          viewport: viewport,
+          width: width,
+          artwork: artwork,
+          topInset: widget.topInset,
+        );
+        return MouseRegion(
+          cursor: SystemMouseCursors.basic,
+          onEnter: (_) {
+            _hovered = true;
+            _schedule();
+          },
+          onExit: (_) {
+            _hovered = false;
+            _schedule();
+          },
+          child: Focus(
+            key: const ValueKey('cinema-featured-focus'),
+            onFocusChange: (value) {
+              _focused = value;
+              _schedule();
+            },
+            onKeyEvent: (_, event) {
+              if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                return KeyEventResult.ignored;
+              }
+              if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+                _select(_index - 1);
+                return KeyEventResult.handled;
+              }
+              if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+                _select(_index + 1);
+                return KeyEventResult.handled;
+              }
+              return KeyEventResult.ignored;
+            },
+            child: SizedBox(
+              height: heroHeight,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  NotificationListener<ScrollNotification>(
+                    onNotification: _onScroll,
+                    child: PageView.builder(
+                      key: const ValueKey('cinema-featured-pages'),
+                      controller: _pages,
+                      pageSnapping: false,
+                      scrollBehavior: ScrollConfiguration.of(context).copyWith(
+                        scrollbars: false,
+                        dragDevices: {
+                          PointerDeviceKind.mouse,
+                          PointerDeviceKind.touch,
+                          PointerDeviceKind.trackpad,
+                          PointerDeviceKind.stylus,
+                          PointerDeviceKind.invertedStylus,
+                        },
+                      ),
+                      physics: _FeaturedPagePhysics(
+                        wheelActive: () => _wheelActive,
+                        parent: const BouncingScrollPhysics(),
+                      ),
+                      itemCount: widget.titles.length,
+                      onPageChanged: (index) {
+                        setState(() => _index = index);
+                        _updateArtworkWindow();
+                        _schedule();
+                      },
+                      itemBuilder: (context, index) => Listener(
+                        behavior: HitTestBehavior.translucent,
+                        onPointerSignal: _onPointerSignal,
+                        child: _artwork(widget.titles[index], wide: wide),
+                      ),
+                    ),
                   ),
-                  physics: _FeaturedPagePhysics(
-                    wheelActive: () => _wheelActive,
-                    parent: const BouncingScrollPhysics(),
-                  ),
-                  itemCount: widget.titles.length,
-                  onPageChanged: (index) {
-                    setState(() => _index = index);
-                    _updateArtworkWindow();
-                    _schedule();
-                  },
-                  itemBuilder: (context, index) => Listener(
-                    behavior: HitTestBehavior.translucent,
-                    onPointerSignal: _onPointerSignal,
-                    child: _artwork(widget.titles[index], wide: wide),
-                  ),
-                ),
-              ),
-              Positioned(
-                right: 26,
-                bottom: 31,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    for (var index = 0; index < widget.titles.length; index++)
-                      Semantics(
-                        selected: _index == index,
-                        child: IconButton(
-                          tooltip: '查看${widget.titles[index].title}',
-                          onPressed: () => _select(index),
-                          constraints: const BoxConstraints(
-                            minWidth: 29,
-                            minHeight: 36,
-                          ),
-                          padding: const EdgeInsets.symmetric(horizontal: 5),
-                          icon: AnimatedContainer(
-                            duration: _reduced
-                                ? Duration.zero
-                                : const Duration(milliseconds: 180),
-                            width: _index == index ? 18 : 4,
-                            height: 4,
-                            decoration: BoxDecoration(
-                              color: _index == index
-                                  ? Colors.white
-                                  : Colors.white38,
-                              borderRadius: BorderRadius.circular(3),
+                  Positioned(
+                    right: 26,
+                    bottom: 31,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        for (
+                          var index = 0;
+                          index < widget.titles.length;
+                          index++
+                        )
+                          Semantics(
+                            selected: _index == index,
+                            child: IconButton(
+                              tooltip: '查看${widget.titles[index].title}',
+                              onPressed: () => _select(index),
+                              constraints: const BoxConstraints(
+                                minWidth: 29,
+                                minHeight: 36,
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 5,
+                              ),
+                              icon: AnimatedContainer(
+                                duration: _reduced
+                                    ? Duration.zero
+                                    : const Duration(milliseconds: 180),
+                                width: _index == index ? 18 : 4,
+                                height: 4,
+                                decoration: BoxDecoration(
+                                  color: _index == index
+                                      ? Colors.white
+                                      : Colors.white38,
+                                  borderRadius: BorderRadius.circular(3),
+                                ),
+                              ),
                             ),
                           ),
-                        ),
-                      ),
-                  ],
-                ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -378,39 +425,52 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
       fit: StackFit.expand,
       children: [
         if (artwork.url.isNotEmpty)
-          CachedNetworkImage(
-            imageUrl: artwork.url,
-            cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
-            httpHeaders: artwork.headers.isEmpty ? null : artwork.headers,
-            memCacheWidth: decodeWidth,
-            fadeInDuration: Duration.zero,
-            imageBuilder: (_, provider) => CinemaArtworkBackdrop(
-              image: provider,
-              alignment: const Alignment(.4, 0),
-              featherSides: true,
-              contentInsets: EdgeInsets.fromLTRB(
-                24,
-                widget.topInset + 12,
-                24,
-                40,
-              ),
-            ),
-            errorWidget: (_, _, _) => const SizedBox.shrink(),
+          CinemaArtworkBackdrop(
+            image:
+                widget.artworkImageProvider?.call(artwork, decodeWidth) ??
+                ResizeImage(
+                  CachedNetworkImageProvider(
+                    artwork.url,
+                    cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
+                    headers: artwork.headers.isEmpty ? null : artwork.headers,
+                  ),
+                  width: decodeWidth,
+                  policy: ResizeImagePolicy.fit,
+                ),
+            alignment: const Alignment(.4, 0),
+            contentInsets: EdgeInsets.fromLTRB(0, widget.topInset + 12, 0, 40),
           ),
         // Keep contrast local to the title/action area. A page-wide shadow
         // must not become a second mask over the full poster composition.
         Positioned(
           left: 0,
           bottom: 0,
-          width: MediaQuery.sizeOf(context).width * .54,
-          height: compactHeight ? 215 : 285,
+          width: math.min(MediaQuery.sizeOf(context).width, wide ? 780 : 620),
+          height: compactHeight ? 270 : 335,
           child: IgnorePointer(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: RadialGradient(
-                  center: Alignment.bottomLeft,
-                  radius: 1.1,
-                  colors: const [Color(0xA609090B), Color(0x0009090B)],
+            child: ShaderMask(
+              blendMode: BlendMode.dstIn,
+              shaderCallback: (bounds) => const LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                stops: [0, .18, .86, 1],
+                colors: [
+                  Colors.transparent,
+                  Colors.white,
+                  Colors.white,
+                  Colors.transparent,
+                ],
+              ).createShader(bounds),
+              child: const DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    stops: [0, .74, 1],
+                    colors: [
+                      Color(0xC209090B),
+                      Color(0xB009090B),
+                      Color(0x0009090B),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -440,6 +500,13 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
                     fontWeight: FontWeight.w600,
                     letterSpacing: -.8,
                     color: Colors.white,
+                    shadows: const [
+                      Shadow(
+                        color: Color(0xB3000000),
+                        blurRadius: 12,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -452,7 +519,17 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
                 ].where((text) => text.isNotEmpty).join('  ·  '),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12, color: Color(0xBFFFFFFF)),
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Color(0xE6FFFFFF),
+                  shadows: [
+                    Shadow(
+                      color: Color(0xB3000000),
+                      blurRadius: 8,
+                      offset: Offset(0, 1),
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(height: 22),
               FilledButton.icon(

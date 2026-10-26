@@ -9,6 +9,7 @@ import 'cinema_download_sheet.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 import 'cinema_downloads.dart';
 import 'package:kazumi/pages/download/download_controller.dart';
 import 'package:kazumi/pages/download/download_page.dart';
@@ -4774,6 +4775,21 @@ class _TitleDetailsState extends State<_TitleDetails> {
   ) => LayoutBuilder(
     builder: (context, constraints) {
       final wide = constraints.maxWidth >= 820;
+      final height = constraints.hasBoundedHeight
+          ? constraints.maxHeight
+          : MediaQuery.sizeOf(context).height * .88;
+      final hasArtwork = _posterProvider != null && !_posterFailed;
+      // Leave the composition quiet above the information, while reserving a
+      // title and playback action on short windows rather than an empty screen.
+      final latestStart = (height - 220).clamp(60.0, 440.0);
+      final informationTop = hasArtwork
+          ? (height * (wide ? .48 : .40))
+                .clamp(wide ? 228.0 : 172.0, wide ? 440.0 : 320.0)
+                .clamp(60.0, latestStart)
+          : 60.0;
+      final feather = hasArtwork
+          ? (informationTop * .22).clamp(48.0, 88.0)
+          : 40.0;
       final left = Column(
         key: const ValueKey('cinema-detail-left'),
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -4818,37 +4834,48 @@ class _TitleDetailsState extends State<_TitleDetails> {
           ),
         ],
       );
-      final right = Padding(
-        padding: EdgeInsets.only(top: wide && title.poster.isNotEmpty ? 72 : 0),
-        child: CinemaNeonRegion(
-          key: const ValueKey('cinema-detail-information-region'),
-          ready:
-              snapshot.connectionState == ConnectionState.done &&
-              (_informationTab < 2 || _informationTerminal),
-          child: _information(title, details, reviews),
-        ),
+      final right = CinemaNeonRegion(
+        key: const ValueKey('cinema-detail-information-region'),
+        ready:
+            snapshot.connectionState == ConnectionState.done &&
+            (_informationTab < 2 || _informationTerminal),
+        child: _information(title, details, reviews),
       );
       return SingleChildScrollView(
         key: const ValueKey('cinema-title-detail-layout'),
-        padding: EdgeInsets.fromLTRB(wide ? 38 : 20, 0, wide ? 38 : 20, 32),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SizedBox(height: title.poster.isNotEmpty ? (wide ? 196 : 150) : 60),
-            if (wide)
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(flex: 5, child: left),
-                  const SizedBox(width: 28),
-                  Expanded(flex: 6, child: right),
-                ],
-              )
-            else ...[
-              left,
-              const SizedBox(height: 24),
-              right,
-            ],
+            SizedBox(height: informationTop - feather),
+            Stack(
+              children: [
+                Positioned.fill(
+                  child: _DetailInformationFrost(feather: feather),
+                ),
+                Padding(
+                  key: const ValueKey('cinema-detail-information-surface'),
+                  padding: EdgeInsets.fromLTRB(
+                    wide ? 38 : 20,
+                    feather,
+                    wide ? 38 : 20,
+                    32,
+                  ),
+                  child: wide
+                      ? Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(flex: 5, child: left),
+                            const SizedBox(width: 28),
+                            Expanded(flex: 6, child: right),
+                          ],
+                        )
+                      : Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [left, const SizedBox(height: 24), right],
+                        ),
+                ),
+              ],
+            ),
           ],
         ),
       );
@@ -5002,4 +5029,92 @@ class _TitleDetailsState extends State<_TitleDetails> {
       ),
     ),
   );
+}
+
+/// The veil belongs to the scrolling information, not to the artwork. Its
+/// feather finishes before text starts, so the image keeps its full composition.
+class _DetailInformationFrost extends StatelessWidget {
+  const _DetailInformationFrost({required this.feather});
+  final double feather;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: CinemaAppearanceScope.of(context),
+    builder: (context, _) {
+      final solid = CinemaAppearanceScope.of(context).reduceTransparency;
+      final veil = CustomPaint(
+        painter: _DetailInformationFrostPainter(feather, solid: solid),
+        child: const SizedBox.expand(),
+      );
+      return IgnorePointer(
+        child: ClipRect(
+          key: const ValueKey('cinema-detail-information-frost'),
+          child: solid
+              ? veil
+              : BackdropFilter(
+                  filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                  child: veil,
+                ),
+        ),
+      );
+    },
+  );
+}
+
+class _DetailInformationFrostPainter extends CustomPainter {
+  const _DetailInformationFrostPainter(this.feather, {required this.solid});
+  final double feather;
+  final bool solid;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final bounds = Offset.zero & size;
+    if (solid) {
+      // Without a backdrop layer, dstIn would also erase the artwork already
+      // beneath us. Source-over alpha leaves that composition intact at the lip.
+      canvas.drawRect(
+        bounds,
+        Paint()
+          ..shader = ui.Gradient.linear(
+            Offset.zero,
+            Offset(0, feather),
+            const [
+              Color(0x001B1B1F),
+              Color(0x301B1B1F),
+              Color(0xB81B1B1F),
+              Color(0xFF1B1B1F),
+            ],
+            const [0, .32, .72, 1],
+          ),
+      );
+      return;
+    }
+    canvas.drawRect(
+      bounds,
+      Paint()..color = const Color(0xFF1B1B1F).withValues(alpha: .94),
+    );
+    // Mask inside the backdrop layer so both tint and actual blur disappear
+    // together above the information, without a rectangular filter boundary.
+    canvas.drawRect(
+      bounds,
+      Paint()
+        ..blendMode = BlendMode.dstIn
+        ..shader = ui.Gradient.linear(
+          Offset.zero,
+          Offset(0, feather),
+          const [
+            Colors.transparent,
+            Color(0x30FFFFFF),
+            Color(0xB8FFFFFF),
+            Colors.white,
+          ],
+          const [0, .32, .72, 1],
+        ),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_DetailInformationFrostPainter oldDelegate) =>
+      oldDelegate.feather != feather || oldDelegate.solid != solid;
 }

@@ -133,6 +133,7 @@ void main() {
   final applied =
       <({Player player, String text, String title, String language})>[];
   Completer<void>? applyGate;
+  Completer<void>? applyEntered;
   var applyStarted = 0;
 
   Future<void> apply(
@@ -143,6 +144,9 @@ void main() {
     bool Function()? isCurrent,
   }) async {
     applyStarted++;
+    if (applyEntered case final signal? when !signal.isCompleted) {
+      signal.complete();
+    }
     await applyGate?.future;
     if (isCurrent?.call() == false) return;
     applied.add((player: player, text: text, title: title, language: language));
@@ -216,6 +220,7 @@ void main() {
     await store.load();
     applied.clear();
     applyGate = null;
+    applyEntered = null;
     applyStarted = 0;
   });
 
@@ -545,12 +550,13 @@ void main() {
     () async {
       await seed();
       applyGate = Completer<void>();
+      applyEntered = Completer<void>();
       final client = _Client()..rows = [_row(3)];
       final next = controller(3, client: client);
       final pending = next.load();
-      for (var index = 0; index < 8; index++) {
-        await Future<void>.delayed(Duration.zero);
-      }
+      // Await the native apply boundary, rather than guessing how many event
+      // loop turns filesystem work needs under concurrent test/build load.
+      await applyEntered!.future.timeout(const Duration(seconds: 5));
       expect(applyStarted, 1);
       next.beginManualSelection();
       final session = cinemaExternalSubtitleState(next.player);

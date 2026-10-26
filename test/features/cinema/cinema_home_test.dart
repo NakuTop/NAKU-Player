@@ -395,6 +395,39 @@ void main() {
     await directory.delete(recursive: true);
   });
 
+  Finder sortChip(CinemaCatalogSort sort) =>
+      find.byKey(ValueKey('catalog-sort-${sort.name}'));
+
+  Future<void> revealCatalogueFinder(WidgetTester tester, Finder target) async {
+    final verticalScroll = find
+        .descendant(
+          of: find.byType(CustomScrollView).first,
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Scrollable &&
+                widget.axisDirection == AxisDirection.down,
+          ),
+        )
+        .first;
+    if (target.evaluate().isEmpty) {
+      // The full-width hero can put the controls beyond the lazy sliver's
+      // cache. Scroll the catalogue until they exist before asking for an
+      // element; ensureVisible cannot build an absent sliver child.
+      await tester.scrollUntilVisible(target, 240, scrollable: verticalScroll);
+    }
+    await Scrollable.ensureVisible(tester.element(target), alignment: .35);
+    // Actor pagination can intentionally remain pending while this control is
+    // reached. The zero-duration scroll only needs a layout frame.
+    await tester.pump();
+    expect(target.hitTestable(), findsOneWidget);
+  }
+
+  Future<void> tapSort(WidgetTester tester, CinemaCatalogSort sort) async {
+    final target = sortChip(sort);
+    await revealCatalogueFinder(tester, target);
+    await tester.tap(target);
+  }
+
   Future<void> mount(
     WidgetTester tester, {
     double width = 1280,
@@ -433,19 +466,16 @@ void main() {
     }
 
     if (!recentHot) {
-      await tester.tap(find.byKey(const ValueKey('catalog-sort-latest')));
+      await tapSort(tester, CinemaCatalogSort.latest);
       await tester.pumpAndSettle();
       if (prepareSeries && width >= 1000) {
         await section('剧集');
-        await tester.tap(find.byKey(const ValueKey('catalog-sort-latest')));
+        await tapSort(tester, CinemaCatalogSort.latest);
         await tester.pumpAndSettle();
         await section('电影');
       }
       repository.searched.clear();
-      await Scrollable.ensureVisible(
-        tester.element(find.byKey(const ValueKey('catalog-sort-latest'))),
-        alignment: .35,
-      );
+      await revealCatalogueFinder(tester, sortChip(CinemaCatalogSort.latest));
       await tester.pumpAndSettle();
     }
   }
@@ -467,24 +497,7 @@ void main() {
   }
 
   Future<void> revealCatalogueControl(WidgetTester tester, String label) async {
-    final target = find.text(label);
-    if (target.evaluate().isEmpty) {
-      await tester.scrollUntilVisible(
-        target,
-        240,
-        scrollable: find
-            .descendant(
-              of: find.byType(CustomScrollView).first,
-              matching: find.byType(Scrollable),
-            )
-            .first,
-      );
-    }
-    await Scrollable.ensureVisible(tester.element(target), alignment: .25);
-    // Actor pagination can intentionally remain pending while this control is
-    // reached. The zero-duration scroll only needs a layout frame.
-    await tester.pump();
-    expect(target.hitTestable(), findsOneWidget);
+    await revealCatalogueFinder(tester, find.text(label));
   }
 
   testWidgets('compact recent-hot cards keep readable resource states', (
@@ -559,7 +572,7 @@ void main() {
         findsOneWidget,
       );
       await revealCatalogueControl(tester, '最新');
-      await tester.tap(find.byKey(const ValueKey('catalog-sort-latest')));
+      await tapSort(tester, CinemaCatalogSort.latest);
       await tester.pumpAndSettle();
       expect(find.byType(CinemaFeaturedWall), findsNothing);
       expect(find.text('电影测试作品'), findsWidgets);
@@ -590,11 +603,7 @@ void main() {
         }
         for (final sort in CinemaCatalogSort.values) {
           final control = find.byKey(ValueKey('catalog-sort-${sort.name}'));
-          await Scrollable.ensureVisible(
-            tester.element(control),
-            alignment: .35,
-          );
-          await tester.tap(control);
+          await tapSort(tester, sort);
           await tester.pumpAndSettle();
           final heroFinder = find.byType(
             CinemaFeaturedWall,
@@ -610,7 +619,10 @@ void main() {
           );
           final hero = tester.widget<CinemaFeaturedWall>(heroFinder);
           expect(hero.titles, hasLength(4), reason: '$section/$sort');
-          expect(tester.getSize(heroFinder).height, closeTo(860 * .76, .01));
+          expect(
+            tester.getSize(heroFinder).height,
+            closeTo(1280 * 9 / 16 + hero.topInset + 52, .01),
+          );
           final status = hero.statusBuilder!(hero.titles.first) as Align;
           expect(status.child, isA<CinemaResourceBadge>());
           for (final title in hero.titles) {
@@ -730,9 +742,6 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  Finder sortChip(CinemaCatalogSort sort) =>
-      find.byKey(ValueKey('catalog-sort-${sort.name}'));
-
   Future<void> selectYear(WidgetTester tester, String year) async {
     final selector = find.byWidgetPredicate(
       (widget) =>
@@ -749,7 +758,11 @@ void main() {
     await tester.pump();
   }
 
-  void expectSelected(WidgetTester tester, CinemaCatalogSort sort) {
+  Future<void> expectSelected(
+    WidgetTester tester,
+    CinemaCatalogSort sort,
+  ) async {
+    await revealCatalogueFinder(tester, sortChip(sort));
     expect(tester.widget<ChoiceChip>(sortChip(sort)).selected, isTrue);
   }
 
@@ -781,7 +794,7 @@ void main() {
   ) async {
     repository.useMetadata = true;
     await mount(tester);
-    expectSelected(tester, CinemaCatalogSort.latest);
+    await expectSelected(tester, CinemaCatalogSort.latest);
     expect(
       find.byTooltip('已加载 4/40 项有更新时间，缺失项排后。按片源更新时间排序，不是影片上映时间。'),
       findsOneWidget,
@@ -796,9 +809,9 @@ void main() {
       findsOneWidget,
     );
     final requests = repository.browsed.length;
-    await tester.tap(sortChip(CinemaCatalogSort.popular));
+    await tapSort(tester, CinemaCatalogSort.popular);
     await tester.pumpAndSettle();
-    expectSelected(tester, CinemaCatalogSort.popular);
+    await expectSelected(tester, CinemaCatalogSort.popular);
     expect(
       find.byTooltip('按豆瓣近期热门顺序展示，卡片会自动检查片源；同片优先选择标记为 4K 的版本。'),
       findsOneWidget,
@@ -806,7 +819,7 @@ void main() {
     expectBefore(tester, '电影较早热门', '电影最近更新');
     expectBefore(tester, '电影最近更新', '电影缺少数据');
     expect(repository.browsed, hasLength(requests));
-    await tester.tap(sortChip(CinemaCatalogSort.latest));
+    await tapSort(tester, CinemaCatalogSort.latest);
     await tester.pumpAndSettle();
     expectBefore(tester, '电影最近更新', '电影较早热门');
   });
@@ -816,25 +829,25 @@ void main() {
   ) async {
     repository.useMetadata = true;
     await mount(tester);
-    await tester.tap(sortChip(CinemaCatalogSort.popular));
+    await tapSort(tester, CinemaCatalogSort.popular);
     await tester.pumpAndSettle();
     await tester.tap(find.text('剧集'));
     await tester.pumpAndSettle();
-    expectSelected(tester, CinemaCatalogSort.latest);
-    await tester.tap(sortChip(CinemaCatalogSort.latest));
+    await expectSelected(tester, CinemaCatalogSort.latest);
+    await tapSort(tester, CinemaCatalogSort.latest);
     await tester.pumpAndSettle();
     expectBefore(tester, '剧集最近更新', '剧集较早热门');
-    await tester.tap(sortChip(CinemaCatalogSort.popular));
+    await tapSort(tester, CinemaCatalogSort.popular);
     await tester.pumpAndSettle();
     await tester.tap(find.text('电影'));
     await tester.pumpAndSettle();
-    expectSelected(tester, CinemaCatalogSort.popular);
+    await expectSelected(tester, CinemaCatalogSort.popular);
     expectBefore(tester, '电影较早热门', '电影最近更新');
-    await tester.tap(sortChip(CinemaCatalogSort.latest));
+    await tapSort(tester, CinemaCatalogSort.latest);
     await tester.pumpAndSettle();
     await tester.tap(find.text('剧集'));
     await tester.pumpAndSettle();
-    expectSelected(tester, CinemaCatalogSort.popular);
+    await expectSelected(tester, CinemaCatalogSort.popular);
     expectBefore(tester, '剧集较早热门', '剧集最近更新');
   });
 
@@ -843,19 +856,19 @@ void main() {
     (tester) async {
       repository.useMetadata = true;
       await mount(tester);
-      await tester.tap(sortChip(CinemaCatalogSort.popular));
+      await tapSort(tester, CinemaCatalogSort.popular);
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), '排序搜索');
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.pumpAndSettle();
-      expectSelected(tester, CinemaCatalogSort.popular);
+      await expectSelected(tester, CinemaCatalogSort.popular);
       expect(sortChip(CinemaCatalogSort.latest), findsOneWidget);
       expect(sortChip(CinemaCatalogSort.rating), findsOneWidget);
       expectBefore(tester, '搜索高热结果', '搜索低热结果');
       await tester.enterText(find.byType(TextField), '');
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.pumpAndSettle();
-      expectSelected(tester, CinemaCatalogSort.popular);
+      await expectSelected(tester, CinemaCatalogSort.popular);
       expectBefore(tester, '电影较早热门', '电影最近更新');
     },
   );
@@ -865,7 +878,7 @@ void main() {
   ) async {
     repository.useMetadata = true;
     await mount(tester);
-    await tester.tap(sortChip(CinemaCatalogSort.popular));
+    await tapSort(tester, CinemaCatalogSort.popular);
     await tester.pumpAndSettle();
     await revealCatalogueControl(tester, '加载更多作品');
     await tester.tap(find.text('加载更多作品'));
@@ -880,7 +893,7 @@ void main() {
     (tester) async {
       await mount(tester);
       expect(find.byTooltip('片源未提供可用更新时间，保留目录顺序。'), findsOneWidget);
-      await tester.tap(sortChip(CinemaCatalogSort.popular));
+      await tapSort(tester, CinemaCatalogSort.popular);
       await tester.pumpAndSettle();
       expect(
         find.byTooltip('按豆瓣近期热门顺序展示，卡片会自动检查片源；同片优先选择标记为 4K 的版本。'),
@@ -990,6 +1003,7 @@ void main() {
     );
     scroll.position.jumpTo(0);
     await tester.pump();
+    await revealCatalogueControl(tester, '60 部作品');
     expect(find.text('60 部作品'), findsOneWidget);
     expect(
       repository.filteredRequests
@@ -1002,6 +1016,7 @@ void main() {
     final calls = repository.browsed.length;
     await tester.tap(find.text('电影'));
     await tester.pump();
+    await revealCatalogueControl(tester, '60 部作品');
     expect(find.text('60 部作品'), findsOneWidget);
     expect(find.byType(LinearProgressIndicator), findsNothing);
     await tester.pumpAndSettle();
@@ -1080,7 +1095,7 @@ void main() {
     final pending = repository.delayedBrowse['22'] = Completer<CinemaPage>();
     await tester.tap(find.text('剧集'));
     await tester.pumpAndSettle();
-    await tester.tap(sortChip(CinemaCatalogSort.latest));
+    await tapSort(tester, CinemaCatalogSort.latest);
     await tester.pump();
     await tester.tap(find.text('电影'));
     await tester.pumpAndSettle();

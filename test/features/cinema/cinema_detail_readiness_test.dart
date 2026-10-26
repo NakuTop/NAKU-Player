@@ -13,12 +13,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite/sqflite.dart'
     show databaseFactory, databaseFactorySqflitePlugin;
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
+import 'package:kazumi/features/cinema/cinema_appearance.dart';
 import 'package:kazumi/features/cinema/cinema_detail_artwork.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_neon_decode.dart';
 import 'package:kazumi/features/cinema/cinema_ratings.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
+import 'package:kazumi/features/cinema/cinema_theme.dart';
 import 'package:kazumi/features/cinema/douban/douban_models.dart';
 import 'package:kazumi/features/cinema/douban/douban_repository.dart';
 import 'package:kazumi/services/network/proxy_aware_image_cache_manager.dart';
@@ -195,6 +197,19 @@ class _Catalogue extends DoubanRepository {
       const DoubanResultPage(items: [], start: 0, nextStart: 0, hasMore: false);
 }
 
+class _Appearance extends CinemaAppearance {
+  _Appearance(this.reduced) : super(observeNativeAccessibility: false);
+  final bool reduced;
+  @override
+  bool get reduceTransparency => reduced;
+  @override
+  double get effectiveBackgroundOpacity => reduced ? 1 : .47;
+  @override
+  Future<void> initialize() async {}
+  @override
+  Future<void> flush() async {}
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory cacheDirectory;
@@ -280,8 +295,10 @@ void main() {
   Future<void> mount(
     WidgetTester tester, {
     ValueNotifier<Color>? windowColor,
+    Size size = const Size(1440, 1100),
+    CinemaAppearance? appearance,
   }) async {
-    tester.view.physicalSize = const Size(1440, 1100);
+    tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -322,17 +339,29 @@ void main() {
     }
     await tester.pumpWidget(
       MaterialApp(
-        builder: windowColor == null
+        builder: windowColor == null && appearance == null
             ? null
-            : (context, child) => RepaintBoundary(
-                key: const ValueKey('detail-window-raster'),
-                child: ValueListenableBuilder<Color>(
-                  valueListenable: windowColor,
-                  child: child,
-                  builder: (context, color, child) =>
-                      ColoredBox(color: color, child: child),
-                ),
-              ),
+            : (context, child) {
+                Widget content = child!;
+                if (appearance != null) {
+                  content = CinemaAppearanceScope(
+                    appearance: appearance,
+                    child: content,
+                  );
+                }
+                if (windowColor != null) {
+                  content = RepaintBoundary(
+                    key: const ValueKey('detail-window-raster'),
+                    child: ValueListenableBuilder<Color>(
+                      valueListenable: windowColor,
+                      child: content,
+                      builder: (context, color, child) =>
+                          ColoredBox(color: color, child: child),
+                    ),
+                  );
+                }
+                return content;
+              },
         home: CinemaHomePage(
           store: store,
           repository: repository,
@@ -348,7 +377,10 @@ void main() {
     await tester.enterText(find.byType(TextField).first, '就绪影片');
     await tester.testTextInput.receiveAction(TextInputAction.done);
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('title-card:ready-a::film')));
+    final card = find.byKey(const ValueKey('title-card:ready-a::film'));
+    await Scrollable.ensureVisible(tester.element(card), alignment: .35);
+    await tester.pumpAndSettle();
+    await tester.tap(card);
     await frames(tester);
     addTearDown(() => tester.pumpWidget(const SizedBox()));
   }
@@ -356,55 +388,174 @@ void main() {
   bool loading(WidgetTester tester) =>
       tester.widget<CinemaNeonDecode>(find.byType(CinemaNeonDecode)).loading;
 
-  testWidgets('below HD artwork charcoal frost suppresses desktop clutter', (
-    tester,
-  ) async {
-    final color = ValueNotifier(const Color(0xFFEA5030));
-    addTearDown(color.dispose);
-    await mount(tester, windowColor: color);
-    ratings.complete('ready-a');
-    posters['ready-a']!.complete(frame);
-    await tester.pumpAndSettle();
-    expect(loading(tester), isFalse);
-    final bounds = tester.getRect(
-      find.byKey(const ValueKey('cinema-detail-frost')),
-    );
-    final point = Offset(bounds.right - 24, bounds.bottom - 24);
-    Future<List<int>> sample(String name) async {
-      final image = await tester.runAsync(
-        () => tester
-            .renderObject<RenderRepaintBoundary>(
-              find.byKey(const ValueKey('detail-window-raster')),
-            )
-            .toImage(pixelRatio: 1),
+  for (final reduced in [false, true]) {
+    testWidgets('detail frost preserves artwork and covers text (solid=$reduced)', (
+      tester,
+    ) async {
+      final color = ValueNotifier(const Color(0xFFEA5030));
+      final appearance = _Appearance(reduced);
+      addTearDown(color.dispose);
+      addTearDown(appearance.dispose);
+      await mount(tester, windowColor: color, appearance: appearance);
+      ratings.complete('ready-a');
+      posters['ready-a']!.complete(frame);
+      await tester.pumpAndSettle();
+      expect(loading(tester), isFalse);
+      final bounds = tester.getRect(
+        find.byKey(const ValueKey('cinema-detail-frost')),
       );
-      final pixels = (await tester.runAsync(
-        () => image!.toByteData(format: ui.ImageByteFormat.rawRgba),
-      ))!;
-      final index = (point.dy.floor() * image!.width + point.dx.floor()) * 4;
-      final rgb = [for (var c = 0; c < 3; c++) pixels.getUint8(index + c)];
-      const output = String.fromEnvironment('NAKU_DETAIL_RASTER');
-      if (output.isNotEmpty) {
-        await tester.runAsync(() async {
-          final png = await image.toByteData(format: ui.ImageByteFormat.png);
-          await File(
-            '$output/$name.png',
-          ).writeAsBytes(png!.buffer.asUint8List());
-        });
+      final information = tester.getRect(
+        find.byKey(const ValueKey('cinema-detail-left')),
+      );
+      final veil = tester.getRect(
+        find.byKey(const ValueKey('cinema-detail-information-frost')),
+      );
+      final points = [
+        Offset(bounds.right - 24, bounds.bottom - 24),
+        // The text starts over artwork; its supporting veil must already be dark,
+        // rather than relying on the unrelated charcoal floor below the artwork.
+        Offset(bounds.left + 12, information.top + 18),
+        // At the upper lip there is still original artwork behind the feather.
+        // An unisolated dstIn would erase it instead of painting over it.
+        Offset(bounds.center.dx, veil.top + 1),
+      ];
+      Future<List<int>> sample(String name) async {
+        final image = (await tester.runAsync(
+          () => tester
+              .renderObject<RenderRepaintBoundary>(
+                find.byKey(const ValueKey('detail-window-raster')),
+              )
+              .toImage(pixelRatio: 1),
+        ))!;
+        final pixels = (await tester.runAsync(
+          () => image.toByteData(format: ui.ImageByteFormat.rawRgba),
+        ))!;
+        final rgb = [
+          for (final point in points)
+            for (var c = 0; c < 3; c++)
+              pixels.getUint8(
+                (point.dy.floor() * image.width + point.dx.floor()) * 4 + c,
+              ),
+        ];
+        const output = String.fromEnvironment('NAKU_DETAIL_RASTER');
+        if (output.isNotEmpty) {
+          await tester.runAsync(() async {
+            final png = await image.toByteData(format: ui.ImageByteFormat.png);
+            await File(
+              '$output/$name.png',
+            ).writeAsBytes(png!.buffer.asUint8List());
+          });
+        }
+        image.dispose();
+        return rgb;
       }
-      image.dispose();
-      return rgb;
-    }
 
-    final warm = await sample('detail-warm');
-    color.value = const Color(0xFF3060EA);
-    await tester.pumpAndSettle();
-    final cool = await sample('detail-cool');
-    expect((warm[0] - cool[0]).abs(), lessThanOrEqualTo(10));
-    expect((cool[2] - warm[2]).abs(), lessThanOrEqualTo(10));
-    expect(warm.every((channel) => channel >= 20 && channel <= 45), isTrue);
-    expect(tester.takeException(), isNull);
-  });
+      final warm = await sample('detail-warm');
+      color.value = const Color(0xFF3060EA);
+      await tester.pumpAndSettle();
+      final cool = await sample('detail-cool');
+      for (var channel = 0; channel < 6; channel++) {
+        expect((warm[channel] - cool[channel]).abs(), lessThanOrEqualTo(10));
+      }
+      expect(
+        warm.take(6).every((channel) => channel >= 20 && channel <= 45),
+        isTrue,
+      );
+      expect(warm.skip(6).any((channel) => channel > 70), isTrue);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets(
+    'detail preserves a quiet poster area above supported information',
+    (tester) async {
+      await mount(tester);
+      ratings.complete('ready-a');
+      posters['ready-a']!.complete(frame);
+      await tester.pumpAndSettle();
+      final viewport = tester.getRect(
+        find.byKey(const ValueKey('cinema-title-detail-layout')),
+      );
+      final left = tester.getRect(
+        find.byKey(const ValueKey('cinema-detail-left')),
+      );
+      final right = tester.getRect(
+        find.byKey(const ValueKey('cinema-detail-information')),
+      );
+      final veil = tester.getRect(
+        find.byKey(const ValueKey('cinema-detail-information-frost')),
+      );
+      expect(left.top - viewport.top, greaterThan(viewport.height * .44));
+      expect(left.top - viewport.top, lessThan(viewport.height * .52));
+      expect(right.left, greaterThan(left.right));
+      expect((right.top - left.top).abs(), lessThanOrEqualTo(2));
+      expect(veil.left, viewport.left);
+      expect(veil.right, viewport.right);
+      expect(left.top - veil.top, inInclusiveRange(48, 88));
+      final play = find.byKey(const ValueKey('cinema-detail-primary-play'));
+      expect(tester.widget<FilledButton>(play).onPressed, isNotNull);
+      expect(tester.getRect(play).bottom, lessThan(viewport.bottom));
+      await tester.tap(find.byKey(const ValueKey('cinema-detail-tab-1')));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .state<CinemaNeonRegionState>(
+              find.byKey(const ValueKey('cinema-detail-information-region')),
+            )
+            .debugSnapshot
+            .filtered,
+        isFalse,
+      );
+      expect(ratings.fetches['ready-a'], 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final size in [const Size(1200, 560), const Size(700, 600)]) {
+    testWidgets('short detail $size keeps playback within a small scroll', (
+      tester,
+    ) async {
+      await mount(tester, size: size);
+      ratings.complete('ready-a');
+      posters['ready-a']!.complete(frame);
+      await tester.pumpAndSettle();
+      final viewport = tester.getRect(
+        find.byKey(const ValueKey('cinema-title-detail-layout')),
+      );
+      final play = find.byKey(const ValueKey('cinema-detail-primary-play'));
+      final bounds = tester.getRect(play);
+      expect(bounds.top, greaterThan(viewport.top + 120));
+      expect(bounds.bottom, lessThan(viewport.bottom + 48));
+      await Scrollable.ensureVisible(tester.element(play), alignment: .65);
+      await tester.pumpAndSettle();
+      expect(play.hitTestable(), findsOneWidget);
+      expect(tester.widget<FilledButton>(play).onPressed, isNotNull);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets(
+    'missing artwork keeps compact information instead of a blank hero',
+    (tester) async {
+      repository.posters = false;
+      await mount(tester);
+      ratings.complete('ready-a');
+      await tester.pumpAndSettle();
+      final viewport = tester.getRect(
+        find.byKey(const ValueKey('cinema-title-detail-layout')),
+      );
+      final information = tester.getRect(
+        find.byKey(const ValueKey('cinema-detail-left')),
+      );
+      expect(information.top - viewport.top, 60);
+      expect(
+        find.byKey(const ValueKey('cinema-detail-primary-play')).hitTestable(),
+        findsOneWidget,
+      );
+      expect(loading(tester), isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'detail waits for full ratings, metadata and the actual HD poster frame',

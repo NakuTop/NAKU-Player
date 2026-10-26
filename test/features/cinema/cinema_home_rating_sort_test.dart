@@ -225,11 +225,29 @@ void main() {
     expect(tester.widget<ChoiceChip>(chip).selected, isTrue);
   }
 
+  Future<void> ensureProviderVisible(WidgetTester tester) async {
+    final menu = find.byKey(const ValueKey('catalog-rating-provider'));
+    await Scrollable.ensureVisible(tester.element(menu), alignment: .35);
+    await tester.pumpAndSettle();
+    expect(menu.hitTestable(), findsOneWidget);
+  }
+
   Future<void> selectProvider(WidgetTester tester, String provider) async {
+    await ensureProviderVisible(tester);
     final menu = find.byKey(const ValueKey('catalog-rating-provider'));
     await tester.tap(menu);
     await tester.pumpAndSettle();
-    await tester.tap(find.text(provider).last);
+    final option = find
+        .descendant(
+          of: find.byWidgetPredicate(
+            (widget) =>
+                widget is DropdownMenuItem<String> && widget.value == provider,
+          ),
+          matching: find.text(provider),
+        )
+        .hitTestable();
+    expect(option, findsOneWidget, reason: 'The provider menu must be open.');
+    await tester.tap(option);
     await tester.pumpAndSettle();
     expect(tester.widget<DropdownButton<String>>(menu).value, provider);
   }
@@ -561,6 +579,9 @@ void main() {
         reason: 'Recent-hot browse does not prefetch source rating order.',
       );
       await selectRatingSort(tester);
+      // Position the viewport before recording card work. Revealing the sort
+      // control can legitimately mount new cards with their own cache reads.
+      await ensureProviderVisible(tester);
       final browses = catalogue.browseCalls;
       expect(
         ratings.cardCalls.keys.toSet(),
