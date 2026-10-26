@@ -166,6 +166,8 @@ class _Ratings extends CinemaRatingsRepository {
 
 class _Artwork extends CinemaDetailArtworkRepository {
   Completer<CinemaDetailArtwork>? upgrade;
+  bool landscapeUnavailable = false, landscapeFails = false;
+  String? landscapeUrl;
   @override
   Future<CinemaDetailArtwork> resolveLandscape(
     CinemaTitle title, {
@@ -174,9 +176,11 @@ class _Artwork extends CinemaDetailArtworkRepository {
     bool Function()? isCurrent,
     bool force = false,
   }) async {
+    if (landscapeFails) throw StateError('Landscape provider unavailable');
+    if (landscapeUnavailable) return const CinemaDetailArtwork(url: '');
     if (identity.imdbId.isNotEmpty && upgrade != null) return upgrade!.future;
     return CinemaDetailArtwork(
-      url: title.poster,
+      url: landscapeUrl ?? title.poster,
       width: 1600,
       height: 900,
       highResolution: title.poster.isNotEmpty,
@@ -570,7 +574,11 @@ void main() {
         expect((warm[channel] - cool[channel]).abs(), lessThanOrEqualTo(10));
       }
       expect(
-        warm.take(6).every((channel) => channel >= 20 && channel <= 45),
+        warm
+            .take(6)
+            .every(
+              (channel) => channel >= 20 && channel <= (reduced ? 45 : 64),
+            ),
         isTrue,
       );
       expect(warm.skip(6).any((channel) => channel > 70), isTrue);
@@ -645,6 +653,62 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   }
+
+  for (final failed in [false, true]) {
+    testWidgets(
+      'missing or failed landscape retains the existing poster (failed=$failed)',
+      (tester) async {
+        artwork.landscapeUnavailable = !failed;
+        artwork.landscapeFails = failed;
+        await mount(tester);
+        ratings.complete('ready-a');
+        expect(loading(tester), isTrue);
+        posters['ready-a']!.complete(frame);
+        await tester.pumpAndSettle();
+        expect(loading(tester), isFalse);
+        expect(
+          find.byKey(const ValueKey('cinema-detail-poster-region')),
+          findsOneWidget,
+        );
+        expect(find.text('高清海报暂不可用'), findsOneWidget);
+        expect(find.text('海报暂未加载'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('failed HD image waits for and displays the existing poster', (
+    tester,
+  ) async {
+    const url = 'https://posters.invalid/unavailable-hd.png';
+    artwork.landscapeUrl = url;
+    final hd = _Poster();
+    final provider = ResizeImage(
+      CachedNetworkImageProvider(
+        url,
+        cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
+      ),
+      width: 3200,
+      height: 2400,
+      policy: ResizeImagePolicy.fit,
+    );
+    final key = await provider.obtainKey(ImageConfiguration.empty);
+    PaintingBinding.instance.imageCache.putIfAbsent(key, () => hd);
+    await mount(tester);
+    ratings.complete('ready-a');
+    hd.fail();
+    await frames(tester);
+    expect(loading(tester), isTrue);
+    posters['ready-a']!.complete(frame);
+    await tester.pumpAndSettle();
+    expect(loading(tester), isFalse);
+    expect(
+      find.byKey(const ValueKey('cinema-detail-poster-region')),
+      findsOneWidget,
+    );
+    expect(find.text('高清海报暂不可用'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'missing artwork keeps compact information instead of a blank hero',

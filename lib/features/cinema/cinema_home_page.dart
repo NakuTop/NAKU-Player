@@ -4293,10 +4293,28 @@ class _TitleDetailsState extends State<_TitleDetails> {
   void _attachPoster(
     CinemaTitle title,
     CinemaDetailArtwork artwork,
-    int ticket,
-  ) {
+    int ticket, {
+    bool fallback = false,
+  }) {
     _detachPoster();
-    if (!artwork.usableLandscape) {
+    final existingPoster = [
+      title.poster,
+      _selectedTitle.poster,
+      widget.title.poster,
+    ].where((url) => url.isNotEmpty).firstOrNull;
+    if (!fallback && !artwork.usableLandscape) {
+      final url = artwork.url.isNotEmpty ? artwork.url : existingPoster;
+      if (url != null && url.isNotEmpty) {
+        _attachPoster(
+          title,
+          CinemaDetailArtwork(url: url),
+          ticket,
+          fallback: true,
+        );
+        return;
+      }
+    }
+    if (artwork.url.isEmpty) {
       _posterProvider = null;
       _posterTerminal = true;
       _posterLimited = true;
@@ -4319,9 +4337,22 @@ class _TitleDetailsState extends State<_TitleDetails> {
     );
     void terminal({required bool failed}) {
       if (!mounted || _disposing || ticket != _posterTicket) return;
+      if (failed &&
+          !fallback &&
+          existingPoster != null &&
+          existingPoster != artwork.url) {
+        _attachPoster(
+          title,
+          CinemaDetailArtwork(url: existingPoster),
+          ticket,
+          fallback: true,
+        );
+        if (!_attachingPoster) setState(() {});
+        return;
+      }
       _posterTerminal = true;
       _posterFailed = failed;
-      _posterLimited = !failed && !artwork.highResolution;
+      _posterLimited = !failed && (fallback || !artwork.highResolution);
       _detachPoster();
       if (!_attachingPoster) setState(() {});
     }
@@ -5143,7 +5174,7 @@ class _DetailInformationFrostPainter extends CustomPainter {
     }
     canvas.drawRect(
       bounds,
-      Paint()..color = const Color(0xFF1B1B1F).withValues(alpha: .92),
+      Paint()..color = const Color(0xFF1B1B1F).withValues(alpha: .86),
     );
   }
 
