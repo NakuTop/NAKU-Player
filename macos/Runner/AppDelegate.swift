@@ -25,7 +25,13 @@ class AppDelegate: FlutterAppDelegate {
 
     
     override func applicationDidFinishLaunching(_ notification: Notification) {
-        dockIconController = NakuDockIconController()
+        // macOS 26 renders the bundled Icon Composer appearances everywhere,
+        // including Finder and the switcher. A runtime bitmap would override it.
+        if #available(macOS 26.0, *) {
+            NSApplication.shared.applicationIconImage = nil
+        } else {
+            dockIconController = NakuDockIconController()
+        }
         setMenuEnabled(menu: "Player", enable: false)
         guard let controller = (mainFlutterWindow as? MainFlutterWindow)?.flutterViewController else {
             NSLog("NAKU: Flutter controller is unavailable; native channels were not registered.")
