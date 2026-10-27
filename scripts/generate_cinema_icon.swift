@@ -35,21 +35,16 @@ NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: tray)!
 let trayScale = NSAffineTransform()
 trayScale.scale(by: 2)
 trayScale.concat()
-let loop = NSBezierPath()
-loop.move(to: NSPoint(x: 4.3, y: 3.2))
-loop.line(to: NSPoint(x: 4.3, y: 14.8))
-loop.curve(to: NSPoint(x: 6.5, y: 15.3),
-    controlPoint1: NSPoint(x: 4.3, y: 16.1), controlPoint2: NSPoint(x: 5.3, y: 16.0))
-loop.line(to: NSPoint(x: 15.2, y: 10.3))
-loop.curve(to: NSPoint(x: 15.2, y: 7.7),
-    controlPoint1: NSPoint(x: 16.8, y: 9.4), controlPoint2: NSPoint(x: 16.8, y: 8.6))
-loop.line(to: NSPoint(x: 6.5, y: 2.7))
-loop.curve(to: NSPoint(x: 4.3, y: 3.2),
-    controlPoint1: NSPoint(x: 5.3, y: 2.0), controlPoint2: NSPoint(x: 4.3, y: 1.9))
-loop.close()
-loop.lineWidth = 2.2
-loop.lineJoinStyle = .round
+// Compact rounded N keeps the app mark recognizable at native 18pt size.
+let mark = NSBezierPath()
+mark.move(to: NSPoint(x: 4.6, y: 4.1))
+mark.line(to: NSPoint(x: 4.6, y: 13.9))
+mark.line(to: NSPoint(x: 13.4, y: 4.1))
+mark.line(to: NSPoint(x: 13.4, y: 13.9))
+mark.lineWidth = 3.3
+mark.lineCapStyle = .round
+mark.lineJoinStyle = .round
 NSColor.black.setStroke()
-loop.stroke()
+mark.stroke()
 NSGraphicsContext.restoreGraphicsState()
 try tray.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: trayOutput))
