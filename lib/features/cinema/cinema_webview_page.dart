@@ -13,6 +13,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
 
 import 'cinema_theme.dart';
@@ -676,242 +677,261 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
     final controller = _controller;
     final uri = Uri.tryParse(_currentUrl);
     final host = uri?.host ?? '';
-    return Theme(
-      data: CinemaTheme.of(context),
-      child: Scaffold(
-        backgroundColor: CinemaTheme.background,
-        body: SafeArea(
-          child: Column(
-            children: [
-              if (!_videoWindow)
-                Container(
-                  decoration: BoxDecoration(
-                    color: CinemaTheme.surface,
-                    border: const Border(
-                      bottom: BorderSide(color: CinemaTheme.border),
+    final immersive = !widget.mediaToolsEnabled && cinemaIsMoyuUrl(widget.url);
+    return CallbackShortcuts(
+      bindings: {
+        if (immersive)
+          const SingleActivator(LogicalKeyboardKey.escape): () =>
+              Navigator.of(context).maybePop(),
+      },
+      child: Theme(
+        data: CinemaTheme.of(context),
+        child: Scaffold(
+          backgroundColor: CinemaTheme.background,
+          body: SafeArea(
+            top: !immersive,
+            bottom: !immersive,
+            left: !immersive,
+            right: !immersive,
+            child: Column(
+              children: [
+                if (!_videoWindow && !immersive)
+                  Container(
+                    decoration: BoxDecoration(
+                      color: CinemaTheme.surface,
+                      border: const Border(
+                        bottom: BorderSide(color: CinemaTheme.border),
+                      ),
                     ),
-                  ),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 10,
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          IconButton(
-                            tooltip: widget.mediaToolsEnabled ? '返回站点列表' : '返回',
-                            onPressed: () => Navigator.of(context).maybePop(),
-                            icon: const Icon(Icons.arrow_back_rounded),
-                          ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  widget.title,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w600,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            IconButton(
+                              tooltip: widget.mediaToolsEnabled
+                                  ? '返回站点列表'
+                                  : '返回',
+                              onPressed: () => Navigator.of(context).maybePop(),
+                              icon: const Icon(Icons.arrow_back_rounded),
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    widget.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    host.isEmpty ? '网页观影' : host,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: CinemaTheme.muted,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if (widget.mediaToolsEnabled)
+                              IconButton(
+                                tooltip: '网页媒体工具',
+                                onPressed: controller == null
+                                    ? null
+                                    : _showMediaTools,
+                                icon: const Icon(Icons.tune),
+                              ),
+                            if (widget.mediaToolsEnabled)
+                              IconButton(
+                                tooltip: '视频画中画 / 视频浮窗',
+                                onPressed: controller == null
+                                    ? null
+                                    : () => _videoAction('pip'),
+                                icon: const Icon(Icons.picture_in_picture_alt),
+                              ),
+                            if (widget.mediaToolsEnabled)
+                              PopupMenuButton<String>(
+                                tooltip: '网页设置',
+                                onSelected: (_) => _toggleAdBlocking(),
+                                itemBuilder: (_) => [
+                                  CheckedPopupMenuItem(
+                                    value: 'ads',
+                                    checked: _blockAds,
+                                    enabled:
+                                        controller != null &&
+                                        !_changingSettings,
+                                    child: const Text('过滤已知广告域名'),
+                                  ),
+                                ],
+                              ),
+                            if (!widget.mediaToolsEnabled)
+                              IconButton(
+                                tooltip: '在浏览器中打开',
+                                onPressed: () => launchUrl(
+                                  Uri.parse(_currentUrl),
+                                  mode: LaunchMode.externalApplication,
                                 ),
-                                const SizedBox(height: 3),
-                                Text(
-                                  host.isEmpty ? '网页观影' : host,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                                icon: const Icon(Icons.open_in_new_rounded),
+                              ),
+                          ],
+                        ),
+                        Row(
+                          children: [
+                            IconButton(
+                              tooltip: '网页后退',
+                              onPressed: controller != null && _canGoBack
+                                  ? () => _runAction(controller.goBack)
+                                  : null,
+                              icon: const Icon(Icons.chevron_left_rounded),
+                            ),
+                            IconButton(
+                              tooltip: '网页前进',
+                              onPressed: controller != null && _canGoForward
+                                  ? () => _runAction(controller.goForward)
+                                  : null,
+                              icon: const Icon(Icons.chevron_right_rounded),
+                            ),
+                            IconButton(
+                              tooltip: _loading ? '停止加载' : '刷新网页',
+                              onPressed: controller == null
+                                  ? null
+                                  : _loading
+                                  ? () async {
+                                      _loadTimeout?.cancel();
+                                      await _runAction(controller.stopLoading);
+                                      if (mounted) {
+                                        setState(() => _loading = false);
+                                      }
+                                    }
+                                  : _reload,
+                              icon: Icon(
+                                _loading
+                                    ? Icons.close_rounded
+                                    : Icons.refresh_rounded,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            if (widget.mediaToolsEnabled)
+                              const Expanded(
+                                child: Text(
+                                  '在网页中搜索、选集并点击播放',
+                                  style: TextStyle(
                                     color: CinemaTheme.muted,
                                     fontSize: 12,
                                   ),
                                 ),
-                              ],
-                            ),
-                          ),
-                          if (widget.mediaToolsEnabled)
-                            IconButton(
-                              tooltip: '网页媒体工具',
-                              onPressed: controller == null
-                                  ? null
-                                  : _showMediaTools,
-                              icon: const Icon(Icons.tune),
-                            ),
-                          if (widget.mediaToolsEnabled)
-                            IconButton(
-                              tooltip: '视频画中画 / 视频浮窗',
-                              onPressed: controller == null
-                                  ? null
-                                  : () => _videoAction('pip'),
-                              icon: const Icon(Icons.picture_in_picture_alt),
-                            ),
-                          if (widget.mediaToolsEnabled)
-                            PopupMenuButton<String>(
-                              tooltip: '网页设置',
-                              onSelected: (_) => _toggleAdBlocking(),
-                              itemBuilder: (_) => [
-                                CheckedPopupMenuItem(
-                                  value: 'ads',
-                                  checked: _blockAds,
-                                  enabled:
-                                      controller != null && !_changingSettings,
-                                  child: const Text('过滤已知广告域名'),
-                                ),
-                              ],
-                            ),
-                          if (!widget.mediaToolsEnabled)
-                            IconButton(
-                              tooltip: '在浏览器中打开',
-                              onPressed: () => launchUrl(
-                                Uri.parse(_currentUrl),
-                                mode: LaunchMode.externalApplication,
                               ),
-                              icon: const Icon(Icons.open_in_new_rounded),
-                            ),
-                        ],
-                      ),
-                      Row(
-                        children: [
-                          IconButton(
-                            tooltip: '网页后退',
-                            onPressed: controller != null && _canGoBack
-                                ? () => _runAction(controller.goBack)
-                                : null,
-                            icon: const Icon(Icons.chevron_left_rounded),
-                          ),
-                          IconButton(
-                            tooltip: '网页前进',
-                            onPressed: controller != null && _canGoForward
-                                ? () => _runAction(controller.goForward)
-                                : null,
-                            icon: const Icon(Icons.chevron_right_rounded),
-                          ),
-                          IconButton(
-                            tooltip: _loading ? '停止加载' : '刷新网页',
-                            onPressed: controller == null
-                                ? null
-                                : _loading
-                                ? () async {
-                                    _loadTimeout?.cancel();
-                                    await _runAction(controller.stopLoading);
-                                    if (mounted) {
-                                      setState(() => _loading = false);
-                                    }
-                                  }
-                                : _reload,
-                            icon: Icon(
-                              _loading
-                                  ? Icons.close_rounded
-                                  : Icons.refresh_rounded,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          if (widget.mediaToolsEnabled)
-                            const Expanded(
-                              child: Text(
-                                '在网页中搜索、选集并点击播放',
-                                style: TextStyle(
-                                  color: CinemaTheme.muted,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ],
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              if (!_videoWindow && widget.mediaToolsEnabled)
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
+                if (!_videoWindow && widget.mediaToolsEnabled)
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        TextButton.icon(
+                          onPressed: controller == null
+                              ? null
+                              : () => _videoAction('toggle'),
+                          icon: const Icon(Icons.play_arrow),
+                          label: const Text('播放 / 暂停'),
+                        ),
+                        TextButton(
+                          onPressed: controller == null
+                              ? null
+                              : () => _videoAction('back'),
+                          child: const Text('后退 10 秒'),
+                        ),
+                        TextButton(
+                          onPressed: controller == null
+                              ? null
+                              : () => _videoAction('forward'),
+                          child: const Text('前进 10 秒'),
+                        ),
+                        TextButton(
+                          onPressed: controller == null
+                              ? null
+                              : () => _videoAction('speed'),
+                          child: const Text('倍速'),
+                        ),
+                        TextButton(
+                          onPressed: controller == null
+                              ? null
+                              : _showMediaTools,
+                          child: const Text('音轨 / 字幕'),
+                        ),
+                        TextButton(
+                          onPressed: controller == null
+                              ? null
+                              : _showMediaTools,
+                          child: const Text('清晰度（站点控件）'),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (!_videoWindow && !immersive)
+                  SizedBox(
+                    height: 3,
+                    child: _loading
+                        ? LinearProgressIndicator(
+                            value: _progress == 0 ? null : _progress / 100,
+                            color: CinemaTheme.copper,
+                            backgroundColor: CinemaTheme.raised,
+                          )
+                        : null,
+                  ),
+                Expanded(
+                  child: Stack(
+                    fit: StackFit.expand,
                     children: [
-                      TextButton.icon(
-                        onPressed: controller == null
-                            ? null
-                            : () => _videoAction('toggle'),
-                        icon: const Icon(Icons.play_arrow),
-                        label: const Text('播放 / 暂停'),
-                      ),
-                      TextButton(
-                        onPressed: controller == null
-                            ? null
-                            : () => _videoAction('back'),
-                        child: const Text('后退 10 秒'),
-                      ),
-                      TextButton(
-                        onPressed: controller == null
-                            ? null
-                            : () => _videoAction('forward'),
-                        child: const Text('前进 10 秒'),
-                      ),
-                      TextButton(
-                        onPressed: controller == null
-                            ? null
-                            : () => _videoAction('speed'),
-                        child: const Text('倍速'),
-                      ),
-                      TextButton(
-                        onPressed: controller == null ? null : _showMediaTools,
-                        child: const Text('音轨 / 字幕'),
-                      ),
-                      TextButton(
-                        onPressed: controller == null ? null : _showMediaTools,
-                        child: const Text('清晰度（站点控件）'),
-                      ),
-                    ],
-                  ),
-                ),
-              if (!_videoWindow)
-                SizedBox(
-                  height: 3,
-                  child: _loading
-                      ? LinearProgressIndicator(
-                          value: _progress == 0 ? null : _progress / 100,
-                          color: CinemaTheme.copper,
-                          backgroundColor: CinemaTheme.raised,
-                        )
-                      : null,
-                ),
-              Expanded(
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    if (_webView != null) _webView!.build(context),
-                    if (_error != null)
-                      ColoredBox(
-                        color: CinemaTheme.background,
-                        child: Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(28),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.public_off_rounded,
-                                  color: CinemaTheme.copper,
-                                  size: 38,
-                                ),
-                                const SizedBox(height: 18),
-                                Text(_error!, textAlign: TextAlign.center),
-                                const SizedBox(height: 18),
-                                if (controller != null)
-                                  FilledButton.icon(
-                                    onPressed: _reload,
-                                    icon: const Icon(Icons.refresh_rounded),
-                                    label: const Text('重试'),
+                      if (_webView != null) _webView!.build(context),
+                      if (_error != null)
+                        ColoredBox(
+                          color: CinemaTheme.background,
+                          child: Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(28),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(
+                                    Icons.public_off_rounded,
+                                    color: CinemaTheme.copper,
+                                    size: 38,
                                   ),
-                              ],
+                                  const SizedBox(height: 18),
+                                  Text(_error!, textAlign: TextAlign.center),
+                                  const SizedBox(height: 18),
+                                  if (controller != null)
+                                    FilledButton.icon(
+                                      onPressed: _reload,
+                                      icon: const Icon(Icons.refresh_rounded),
+                                      label: const Text('重试'),
+                                    ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

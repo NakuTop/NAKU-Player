@@ -32,14 +32,19 @@ void main() {
     expect(find.byTooltip('视频画中画 / 视频浮窗'), findsNothing);
     expect(find.text('倍速'), findsNothing);
     expect(find.text('在网页中搜索、选集并点击播放'), findsNothing);
-    expect(find.byTooltip('网页后退'), findsOneWidget);
-    expect(find.byTooltip('停止加载'), findsOneWidget);
+    expect(find.byTooltip('网页后退'), findsNothing);
+    expect(find.text('摸鱼'), findsNothing);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    final safeArea = tester.widget<SafeArea>(find.byType(SafeArea).first);
+    expect(safeArea.top, isFalse);
+    expect(safeArea.bottom, isFalse);
+    expect(find.byTooltip('停止加载'), findsNothing);
     platform.view.params.onLoadStop!(
       platform.controller,
       WebUri('https://1in8b.life/zh-hans/'),
     );
     await tester.pump();
-    expect(find.byTooltip('刷新网页'), findsOneWidget);
+    expect(find.byTooltip('刷新网页'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     expect(platform.view.disposed, isTrue);
   });
