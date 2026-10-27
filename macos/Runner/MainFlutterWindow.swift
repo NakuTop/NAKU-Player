@@ -359,6 +359,8 @@ class MainFlutterWindow: NSWindow {
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
+    // Match native titlebar/sheets to the cinema surface, not the light desktop.
+    self.appearance = NSAppearance(named: .darkAqua)
     self.backgroundColor = NSColor.clear
     self.isOpaque = false
     flutterViewController.backgroundColor = NSColor.clear
