@@ -20,17 +20,12 @@ class AppDelegate: FlutterAppDelegate {
     var player: AVPlayer?
     var videoUrl: URL?
     var httpReferer: String = ""
+    private var dockIconController: NakuDockIconController?
     var menuChannel: FlutterMethodChannel?
 
     
     override func applicationDidFinishLaunching(_ notification: Notification) {
-        // Load from this running bundle so Dock cannot reuse a historical
-        // staging application's icon cached under the same bundle identifier.
-        if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
-           let icon = NSImage(contentsOf: iconURL) {
-            NSApplication.shared.applicationIconImage = icon
-            NSApplication.shared.dockTile.display()
-        }
+        dockIconController = NakuDockIconController()
         setMenuEnabled(menu: "Player", enable: false)
         guard let controller = (mainFlutterWindow as? MainFlutterWindow)?.flutterViewController else {
             NSLog("NAKU: Flutter controller is unavailable; native channels were not registered.")

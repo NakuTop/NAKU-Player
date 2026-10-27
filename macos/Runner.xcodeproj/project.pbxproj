@@ -21,6 +21,7 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+        D0C011D0C011D0C011000001 /* NakuDockIconController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0C011D0C011D0C011000002 /* NakuDockIconController.swift */; };
         9B1139CA8C054060BA716FE1 /* NakuDesktopWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B1139CA8C054060BA716FE2 /* NakuDesktopWindowController.swift */; };
         AC13AC13AC13AC13AC13AC11 /* NakuNASMovies.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC13AC13AC13AC13AC13AC12 /* NakuNASMovies.swift */; };
         AC13AC13AC13AC13AC13AC21 /* NakuNASQR.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC13AC13AC13AC13AC13AC22 /* NakuNASQR.swift */; };
@@ -78,6 +79,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        D0C011D0C011D0C011000002 /* NakuDockIconController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NakuDockIconController.swift; sourceTree = "<group>"; };
         9B1139CA8C054060BA716FE2 /* NakuDesktopWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NakuDesktopWindowController.swift; sourceTree = "<group>"; };
         AC13AC13AC13AC13AC13AC12 /* NakuNASMovies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NakuNASMovies.swift; sourceTree = "<group>"; };
         AC13AC13AC13AC13AC13AC22 /* NakuNASQR.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NakuNASQR.swift; sourceTree = "<group>"; };
@@ -211,6 +213,7 @@
 			isa = PBXGroup;
 			children = (
 				33CC10F02044A3C60003C045 /* AppDelegate.swift */,
+                D0C011D0C011D0C011000002 /* NakuDockIconController.swift */,
 				33CC11122044BFA00003C045 /* MainFlutterWindow.swift */,
                 9B1139CA8C054060BA716FE2 /* NakuDesktopWindowController.swift */,
                 AC13AC13AC13AC13AC13AC12 /* NakuNASMovies.swift */,
@@ -495,6 +498,7 @@
                 AC13AC13AC13AC13AC13AC11 /* NakuNASMovies.swift in Sources */,
                 AC13AC13AC13AC13AC13AC21 /* NakuNASQR.swift in Sources */,
 				33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */,
+                D0C011D0C011D0C011000001 /* NakuDockIconController.swift in Sources */,
 				335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
