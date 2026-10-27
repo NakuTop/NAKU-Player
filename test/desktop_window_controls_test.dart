@@ -73,15 +73,15 @@ void main() {
   }
 
   test(
-    'fresh defaults register a shortcut but do not pause or fade the window',
+    'fresh defaults pause hidden playback while keeping the window opaque',
     () async {
       await controls.initialize();
-      expect(controls.preferences.pauseOnHide, isFalse);
+      expect(controls.preferences.pauseOnHide, isTrue);
       expect(controls.preferences.translucent, isFalse);
       expect(native['opacity'], 1.0);
       expect(controls.registered, isTrue);
       await visibility(true);
-      expect(controls.blocksPlayback, isFalse);
+      expect(controls.blocksPlayback, isTrue);
       expect(
         stored,
         '{}',
@@ -91,9 +91,22 @@ void main() {
   );
 
   test(
+    'explicit saved background playback choice remains off after restart',
+    () async {
+      stored = '{"pauseOnHide":false}';
+      await controls.initialize();
+      await visibility(true);
+      expect(controls.preferences.pauseOnHide, isFalse);
+      expect(controls.blocksPlayback, isFalse);
+      expect(DesktopWindowPreferences.decode(stored).pauseOnHide, isFalse);
+    },
+  );
+
+  test(
     'pause policy covers active film and anime owners without auto-resuming',
     () async {
       await controls.initialize();
+      await controls.update(controls.preferences.copyWith(pauseOnHide: false));
       final film = Object(), anime = Object();
       var filmPlaying = true, animePlaying = true, pauses = 0;
       controls.register(film, (hidden) async {
@@ -282,7 +295,7 @@ void main() {
   test(
     'bad values cannot make the window invisible or select an unsafe key',
     () {
-      expect(DesktopWindowPreferences.decode('{bad').pauseOnHide, isFalse);
+      expect(DesktopWindowPreferences.decode('{bad').pauseOnHide, isTrue);
       final prefs = DesktopWindowPreferences.decode(
         '{"opacity":-5,"shortcut":"command-q"}',
       );

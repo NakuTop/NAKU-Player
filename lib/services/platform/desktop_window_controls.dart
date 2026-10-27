@@ -22,7 +22,7 @@ class DesktopWindowPreferences {
   const DesktopWindowPreferences({
     this.hotkeyEnabled = true,
     this.shortcut = 'command-b',
-    this.pauseOnHide = false,
+    this.pauseOnHide = true,
     this.translucent = false,
     this.opacity = .8,
   });
@@ -44,7 +44,9 @@ class DesktopWindowPreferences {
         shortcut: desktopHideShortcuts.containsKey(data['shortcut'])
             ? data['shortcut'] as String
             : 'command-b',
-        pauseOnHide: data['pauseOnHide'] == true,
+        pauseOnHide: data['pauseOnHide'] is bool
+            ? data['pauseOnHide'] as bool
+            : true,
         translucent: data['translucent'] == true,
         opacity: opacity is num && opacity.isFinite
             ? opacity.toDouble().clamp(minimumOpacity, 1.0)

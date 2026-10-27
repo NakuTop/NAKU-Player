@@ -72,6 +72,10 @@ void main() {
       await mount(tester, size);
       final pause = find.byKey(const ValueKey('desktop-pause-on-hide'));
       await tester.ensureVisible(pause);
+      expect(controls.preferences.pauseOnHide, isTrue);
+      await tester.tap(pause);
+      await tester.pumpAndSettle();
+      expect(controls.preferences.pauseOnHide, isFalse);
       await tester.tap(pause);
       await tester.pumpAndSettle();
       expect(controls.preferences.pauseOnHide, isTrue);

@@ -6,6 +6,7 @@ import 'package:kazumi/services/platform/desktop_window_controls.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
+import 'package:kazumi/features/cinema/cinema_webview_page.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 void main() {
@@ -113,6 +114,25 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('fish toolbar entry opens the requested site inside the app', (
+    tester,
+  ) async {
+    await mount(tester, '3.0.10', '86');
+    final entry = find.byKey(const ValueKey('cinema-moyu-entry'));
+    expect(entry, findsOneWidget);
+    expect(find.text('🐟'), findsOneWidget);
+    await tester.tap(entry);
+    await tester.pumpAndSettle();
+    final page = tester.widget<CinemaWebviewPage>(
+      find.byType(CinemaWebviewPage),
+    );
+    expect(page.url, 'https://1in8b.life/zh-hans/');
+    expect(page.mediaToolsEnabled, isFalse);
+    expect(find.byTooltip('视频画中画 / 视频浮窗'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('missing platform version does not invent an old release', (
     tester,

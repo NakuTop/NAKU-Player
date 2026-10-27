@@ -3,8 +3,8 @@ import 'package:window_manager/window_manager.dart';
 import 'package:kazumi/services/platform/desktop_window_controls.dart';
 
 /// AppKit can report a hidden Flutter view during a native fullscreen animation.
-/// Minimizing follows background playback; hiding uses the separate opt-in
-/// pause-on-hide policy. Merely losing focus never pauses desktop playback.
+/// Minimizing follows background playback; hiding uses the separately saved
+/// pause-on-hide policy (enabled by default). Losing focus alone never pauses.
 Future<bool> isPlaybackWindowBackgrounded({
   bool? isMacOS,
   Future<bool> Function()? isMinimized,

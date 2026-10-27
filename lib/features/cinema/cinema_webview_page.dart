@@ -8,6 +8,9 @@ import 'package:kazumi/services/player/pip_utils.dart';
 import 'dart:convert';
 import 'package:kazumi/services/platform/desktop_window_controls.dart';
 import 'cinema_webview_media.dart';
+import 'cinema_moyu_exports.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
@@ -62,10 +65,16 @@ List<ContentBlocker> cinemaWebsiteContentBlockers() => [
 ];
 
 class CinemaWebviewPage extends StatefulWidget {
-  const CinemaWebviewPage({super.key, required this.title, required this.url});
+  const CinemaWebviewPage({
+    super.key,
+    required this.title,
+    required this.url,
+    this.mediaToolsEnabled = true,
+  });
 
   final String title;
   final String url;
+  final bool mediaToolsEnabled;
 
   @override
   State<CinemaWebviewPage> createState() => _CinemaWebviewPageState();
@@ -91,6 +100,7 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
   int _revision = 0;
   int _historyRequest = 0;
   bool _disposed = false;
+  bool _exporting = false;
   Timer? _loadTimeout;
   bool _timedOut = false;
   // macOS plugin 1.1.2 loads rejected popup requests into the current view.
@@ -127,40 +137,91 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
       PlatformInAppWebViewWidgetCreationParams(
         initialUrlRequest: URLRequest(url: WebUri(widget.url)),
         initialUserScripts: UnmodifiableListView([
-          UserScript(
-            source: cinemaWebVideoPipScript,
-            injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-            forMainFrameOnly: false,
-          ),
+          if (!widget.mediaToolsEnabled && cinemaIsMoyuUrl(widget.url))
+            UserScript(
+              source: cinemaMoyuExportBridge,
+              injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+              forMainFrameOnly: true,
+            ),
+          if (widget.mediaToolsEnabled)
+            UserScript(
+              source: cinemaWebVideoPipScript,
+              injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+              forMainFrameOnly: false,
+            ),
         ]),
         initialSettings: InAppWebViewSettings(
+          javaScriptEnabled: true,
+          cacheEnabled: true,
+          incognito: false,
           mediaPlaybackRequiresUserGesture: true,
           javaScriptCanOpenWindowsAutomatically: false,
           supportMultipleWindows: true,
           useShouldOverrideUrlLoading: true,
           allowsBackForwardNavigationGestures: true,
           isInspectable: false,
-          contentBlockers: cinemaWebsiteContentBlockers(),
+          contentBlockers: widget.mediaToolsEnabled
+              ? cinemaWebsiteContentBlockers()
+              : [],
         ),
         onWebViewCreated: (controller) {
           if (!_active(revision)) return;
           setState(() => _controller = controller);
-          controller.addJavaScriptHandler(
-            handlerName: 'nakuVideoWindow',
-            callback: (args) async {
-              if (!_active(revision) ||
-                  args.length != 1 ||
-                  !const ['enter', 'exit'].contains(args.single)) {
-                return false;
-              }
-              final enter = args.single == 'enter';
-              _videoWindowPending = _videoWindowPending
-                  .catchError((_) {})
-                  .then((_) => _setVideoWindow(enter));
-              await _videoWindowPending;
-              return true;
-            },
-          );
+          if (!widget.mediaToolsEnabled && cinemaIsMoyuUrl(widget.url)) {
+            controller.addJavaScriptHandler(
+              handlerName: 'nakuMoyuExport',
+              callback: (args) async {
+                if (!_active(revision) || _exporting) {
+                  return false;
+                }
+                final currentUrl = await controller.getUrl();
+                if (!mounted ||
+                    !_active(revision) ||
+                    _exporting ||
+                    !cinemaIsMoyuUrl(currentUrl?.toString())) {
+                  return false;
+                }
+                _exporting = true;
+                try {
+                  final export = CinemaMoyuExport.decode(args);
+                  final path = await FilePicker.platform.saveFile(
+                    dialogTitle: '保存摸鱼记录',
+                    fileName: export.name,
+                  );
+                  if (!_active(revision) || path == null) return false;
+                  await File(path).writeAsBytes(export.bytes, flush: true);
+                  return true;
+                } catch (_) {
+                  if (mounted && _active(revision)) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('文件未能保存，可重试或在浏览器中打开')),
+                    );
+                  }
+                  return false;
+                } finally {
+                  _exporting = false;
+                }
+              },
+            );
+          }
+          if (widget.mediaToolsEnabled) {
+            controller.addJavaScriptHandler(
+              handlerName: 'nakuVideoWindow',
+              callback: (args) async {
+                if (!_active(revision) ||
+                    args.length != 1 ||
+                    !const ['enter', 'exit'].contains(args.single)) {
+                  return false;
+                }
+                final enter = args.single == 'enter';
+                _videoWindowPending = _videoWindowPending
+                    .catchError((_) {})
+                    .then((_) => _setVideoWindow(enter));
+                await _videoWindowPending;
+                return true;
+              },
+            );
+          }
           _mediaLifecycle = CinemaWebMediaLifecycle(
             pause: controller.pauseAllMediaPlayback,
             suspend: (value) =>
@@ -639,7 +700,7 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
                       Row(
                         children: [
                           IconButton(
-                            tooltip: '返回站点列表',
+                            tooltip: widget.mediaToolsEnabled ? '返回站点列表' : '返回',
                             onPressed: () => Navigator.of(context).maybePop(),
                             icon: const Icon(Icons.arrow_back_rounded),
                           ),
@@ -670,33 +731,45 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
                               ],
                             ),
                           ),
-                          IconButton(
-                            tooltip: '网页媒体工具',
-                            onPressed: controller == null
-                                ? null
-                                : _showMediaTools,
-                            icon: const Icon(Icons.tune),
-                          ),
-                          IconButton(
-                            tooltip: '视频画中画 / 视频浮窗',
-                            onPressed: controller == null
-                                ? null
-                                : () => _videoAction('pip'),
-                            icon: const Icon(Icons.picture_in_picture_alt),
-                          ),
-                          PopupMenuButton<String>(
-                            tooltip: '网页设置',
-                            onSelected: (_) => _toggleAdBlocking(),
-                            itemBuilder: (_) => [
-                              CheckedPopupMenuItem(
-                                value: 'ads',
-                                checked: _blockAds,
-                                enabled:
-                                    controller != null && !_changingSettings,
-                                child: const Text('过滤已知广告域名'),
+                          if (widget.mediaToolsEnabled)
+                            IconButton(
+                              tooltip: '网页媒体工具',
+                              onPressed: controller == null
+                                  ? null
+                                  : _showMediaTools,
+                              icon: const Icon(Icons.tune),
+                            ),
+                          if (widget.mediaToolsEnabled)
+                            IconButton(
+                              tooltip: '视频画中画 / 视频浮窗',
+                              onPressed: controller == null
+                                  ? null
+                                  : () => _videoAction('pip'),
+                              icon: const Icon(Icons.picture_in_picture_alt),
+                            ),
+                          if (widget.mediaToolsEnabled)
+                            PopupMenuButton<String>(
+                              tooltip: '网页设置',
+                              onSelected: (_) => _toggleAdBlocking(),
+                              itemBuilder: (_) => [
+                                CheckedPopupMenuItem(
+                                  value: 'ads',
+                                  checked: _blockAds,
+                                  enabled:
+                                      controller != null && !_changingSettings,
+                                  child: const Text('过滤已知广告域名'),
+                                ),
+                              ],
+                            ),
+                          if (!widget.mediaToolsEnabled)
+                            IconButton(
+                              tooltip: '在浏览器中打开',
+                              onPressed: () => launchUrl(
+                                Uri.parse(_currentUrl),
+                                mode: LaunchMode.externalApplication,
                               ),
-                            ],
-                          ),
+                              icon: const Icon(Icons.open_in_new_rounded),
+                            ),
                         ],
                       ),
                       Row(
@@ -735,21 +808,22 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
                             ),
                           ),
                           const SizedBox(width: 8),
-                          const Expanded(
-                            child: Text(
-                              '在网页中搜索、选集并点击播放',
-                              style: TextStyle(
-                                color: CinemaTheme.muted,
-                                fontSize: 12,
+                          if (widget.mediaToolsEnabled)
+                            const Expanded(
+                              child: Text(
+                                '在网页中搜索、选集并点击播放',
+                                style: TextStyle(
+                                  color: CinemaTheme.muted,
+                                  fontSize: 12,
+                                ),
                               ),
                             ),
-                          ),
                         ],
                       ),
                     ],
                   ),
                 ),
-              if (!_videoWindow)
+              if (!_videoWindow && widget.mediaToolsEnabled)
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: Row(

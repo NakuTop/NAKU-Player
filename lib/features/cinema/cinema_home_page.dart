@@ -88,6 +88,7 @@ import 'cinema_header_frost.dart';
 import 'cinema_artwork_backdrop.dart';
 import 'cinema_route_motion.dart';
 import 'cinema_websites_page.dart';
+import 'cinema_webview_page.dart';
 import 'cinema_home_display_page.dart';
 
 enum _Section { movies, series, anime, favorites, history, settings }
@@ -823,6 +824,16 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       ),
     );
   }
+
+  void _openMoyu() => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (_) => const CinemaWebviewPage(
+        title: '摸鱼',
+        url: 'https://1in8b.life/zh-hans/',
+        mediaToolsEnabled: false,
+      ),
+    ),
+  );
 
   void _openTools([int tab = 0]) {
     Navigator.of(context).push(
@@ -2296,6 +2307,12 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                           onPressed: _openHomeDisplay,
                           icon: const Icon(Icons.public_rounded, size: 19),
                         ),
+                      IconButton(
+                        key: const ValueKey('cinema-moyu-entry'),
+                        tooltip: '摸鱼',
+                        onPressed: _openMoyu,
+                        icon: const Text('🐟', style: TextStyle(fontSize: 20)),
+                      ),
                       if (NakuDevice.canDownload)
                         IconButton(
                           tooltip: '下载管理',
@@ -2624,6 +2641,19 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               },
             ),
           ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+          child: ListTile(
+            key: const ValueKey('cinema-moyu-entry'),
+            dense: true,
+            leading: const Text('🐟', style: TextStyle(fontSize: 20)),
+            title: const Text('摸鱼', style: TextStyle(fontSize: 14)),
+            onTap: () {
+              if (closeDrawer) Navigator.pop(context);
+              _openMoyu();
+            },
+          ),
+        ),
         if (NakuDevice.canDownload)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),

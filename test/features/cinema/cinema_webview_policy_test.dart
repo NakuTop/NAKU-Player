@@ -4,6 +4,46 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_webview_page.dart';
 
 void main() {
+  testWidgets('moyu uses its URL without exposing film controls', (
+    tester,
+  ) async {
+    final platform = _installFakeWebView();
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: CinemaWebviewPage(
+          title: '摸鱼',
+          url: 'https://1in8b.life/zh-hans/',
+          mediaToolsEnabled: false,
+        ),
+      ),
+    );
+    expect(
+      platform.view.params.initialUrlRequest!.url.toString(),
+      'https://1in8b.life/zh-hans/',
+    );
+    expect(platform.view.params.initialUserScripts, hasLength(1));
+    expect(
+      platform.view.params.initialUserScripts!.single.source,
+      isNot(contains('nakuVideoWindow')),
+    );
+    expect(platform.view.params.initialSettings!.incognito, isFalse);
+    expect(platform.view.params.initialSettings!.contentBlockers, isEmpty);
+    expect(find.byTooltip('网页媒体工具'), findsNothing);
+    expect(find.byTooltip('视频画中画 / 视频浮窗'), findsNothing);
+    expect(find.text('倍速'), findsNothing);
+    expect(find.text('在网页中搜索、选集并点击播放'), findsNothing);
+    expect(find.byTooltip('网页后退'), findsOneWidget);
+    expect(find.byTooltip('停止加载'), findsOneWidget);
+    platform.view.params.onLoadStop!(
+      platform.controller,
+      WebUri('https://1in8b.life/zh-hans/'),
+    );
+    await tester.pump();
+    expect(find.byTooltip('刷新网页'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    expect(platform.view.disposed, isTrue);
+  });
+
   testWidgets('silent native initialization failure has a bounded wait', (
     tester,
   ) async {
