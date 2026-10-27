@@ -103,6 +103,20 @@ void main() {
   });
 
   test(
+    'automatic display defaults on but a saved manual off remains authoritative',
+    () async {
+      await GStorage.resetSettings([SettingsKeys.danmakuEnabledByDefault]);
+      expect(GStorage.getSetting(SettingsKeys.danmakuEnabledByDefault), isTrue);
+      await GStorage.putSetting(SettingsKeys.danmakuEnabledByDefault, false);
+      expect(
+        GStorage.getSetting(SettingsKeys.danmakuEnabledByDefault),
+        isFalse,
+      );
+      await GStorage.resetSettings([SettingsKeys.danmakuEnabledByDefault]);
+    },
+  );
+
+  test(
     'exact subject mapping loads current episode and ignores PV list position',
     () async {
       final result = await matcher.load(_subject(), 2);

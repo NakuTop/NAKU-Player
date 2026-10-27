@@ -8,6 +8,7 @@ import 'cinema_navigation_preferences.dart';
 import 'cinema_tv_focus.dart';
 import 'cinema_lan_cast.dart';
 import 'package:kazumi/services/platform/naku_device.dart';
+import 'package:kazumi/services/platform/desktop_window_controls.dart';
 import 'cinema_download_sheet.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -132,6 +133,7 @@ class CinemaHomePage extends StatefulWidget {
     this.doubanThemeCatalog,
     this.animePageBuilder,
     this.navigationPreferences,
+    this.windowControls,
     this.playerPageBuilder,
     this.initialStartup = const CinemaStartupTarget(),
   });
@@ -152,6 +154,7 @@ class CinemaHomePage extends StatefulWidget {
   final DoubanThemeCatalog? doubanThemeCatalog;
   final Widget Function(BuildContext context, bool active)? animePageBuilder;
   final CinemaNavigationPreferences? navigationPreferences;
+  final DesktopWindowControls? windowControls;
 
   @override
   State<CinemaHomePage> createState() => _CinemaHomePageState();
@@ -2232,7 +2235,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                               child: Align(
                                 alignment: Alignment.centerLeft,
                                 child: InkWell(
-                                  onTap: _showDesktopAbout,
+                                  onTap: _toggleWindowTranslucency,
                                   borderRadius: BorderRadius.circular(6),
                                   child: Text(
                                     'NAKU播放器  $_applicationVersion',
@@ -2442,6 +2445,22 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         ),
       ),
     );
+  }
+
+  Future<void> _toggleWindowTranslucency() async {
+    final controls = widget.windowControls ?? DesktopWindowControls.instance;
+    await controls.initialize();
+    if (!mounted || controls.saving) return;
+    final updated = await controls.update(
+      controls.preferences.copyWith(
+        translucent: !controls.preferences.translucent,
+      ),
+    );
+    if (!updated && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(controls.error ?? '窗口透明度未生效，请重试。')),
+      );
+    }
   }
 
   void _showDesktopAbout() => showAboutDialog(
@@ -2671,26 +2690,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         Padding(
           padding: const EdgeInsets.fromLTRB(26, 12, 20, 25),
           child: InkWell(
-            onTap: () => showAboutDialog(
-              context: context,
-              applicationName: 'NAKU播放器',
-              applicationVersion: _applicationVersion,
-              applicationLegalese:
-                  '基于 Kazumi，GPL-3.0。\n个人电影、剧集与动漫客户端。\n片源及其内容由对应第三方提供。',
-              children: [
-                TextButton(
-                  onPressed: () =>
-                      launchUrl(Uri.parse(NakuUpdateService.repositoryUrl)),
-                  child: const Text('NAKU播放器源代码'),
-                ),
-                TextButton(
-                  onPressed: () => launchUrl(
-                    Uri.parse('https://github.com/Predidit/Kazumi'),
-                  ),
-                  child: const Text('查看 Kazumi 开源项目'),
-                ),
-              ],
-            ),
+            onTap: Platform.isMacOS
+                ? _toggleWindowTranslucency
+                : _showDesktopAbout,
             child: Text(
               'NAKU播放器  $_applicationVersion',
               key: const ValueKey('cinema-app-version'),

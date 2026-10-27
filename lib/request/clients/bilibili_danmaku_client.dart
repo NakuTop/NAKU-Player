@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:html/parser.dart' as html;
 import 'package:kazumi/modules/danmaku/danmaku_module.dart';
 import 'package:kazumi/request/core/dio_factory.dart';
@@ -81,11 +82,53 @@ class BilibiliDanmakuLink {
 }
 
 class BilibiliDanmakuClient {
-  BilibiliDanmakuClient({Dio? dio}) : _dio = dio;
+  BilibiliDanmakuClient({
+    Dio? dio,
+    Future<List<BilibiliAnimeCandidate>> Function(String)? animeSearchFallback,
+  }) : _dio = dio,
+       _animeSearchFallback = animeSearchFallback ?? _searchBundledCatalog;
   final Dio? _dio;
+  final Future<List<BilibiliAnimeCandidate>> Function(String)
+  _animeSearchFallback;
+  static Future<List<dynamic>>? _catalog;
+
+  static Future<List<BilibiliAnimeCandidate>> _searchBundledCatalog(
+    String query,
+  ) async {
+    final catalog = await (_catalog ??= rootBundle
+        .loadString('assets/data/bangumi_bilibili.json')
+        .then(
+          (value) => (jsonDecode(value) as Map)['catalog'] as List<dynamic>,
+        ));
+    String normalize(String value) => value.toLowerCase().replaceAll(
+      RegExp(r'[^\p{L}\p{N}]', unicode: true),
+      '',
+    );
+    final key = normalize(query);
+    if (key.isEmpty) return const [];
+    final matches = catalog.whereType<Map>().where(
+      (row) => (row['names'] as List).whereType<String>().any(
+        (name) =>
+            normalize(name) == key ||
+            (key.length >= 2 && normalize(name).contains(key)),
+      ),
+    );
+    return [
+      for (final row in matches.take(30))
+        BilibiliAnimeCandidate(
+          row['reference'] as String,
+          row['title'] as String,
+          originalTitle: row['originalTitle'] as String,
+          year: row['year'] as int?,
+        ),
+    ];
+  }
+
   Dio get _http => _dio ?? DioFactory.apiDio;
   static const _headers = {
-    'User-Agent': 'Mozilla/5.0',
+    'User-Agent':
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
     'Referer': 'https://www.bilibili.com/',
     'Accept-Encoding': 'identity',
   };
@@ -101,6 +144,27 @@ class BilibiliDanmakuClient {
   }) => _search(keyword, cancelToken: cancelToken, films: true);
 
   Future<List<BilibiliAnimeCandidate>> _search(
+    String keyword, {
+    CancelToken? cancelToken,
+    bool films = false,
+  }) async {
+    try {
+      return await _searchRemote(
+        keyword,
+        cancelToken: cancelToken,
+        films: films,
+      );
+    } catch (error) {
+      if (films || cancelToken?.isCancelled == true || keyword.trim().isEmpty) {
+        rethrow;
+      }
+      final local = await _animeSearchFallback(keyword.trim());
+      if (local.isNotEmpty) return local;
+      rethrow;
+    }
+  }
+
+  Future<List<BilibiliAnimeCandidate>> _searchRemote(
     String keyword, {
     CancelToken? cancelToken,
     bool films = false,

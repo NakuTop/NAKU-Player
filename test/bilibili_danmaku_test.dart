@@ -7,6 +7,7 @@ import 'package:kazumi/request/clients/bilibili_danmaku_client.dart';
 import 'package:kazumi/services/player/local_danmaku_store.dart';
 
 class _Adapter implements HttpClientAdapter {
+  bool blockSearch = false;
   final requests = <RequestOptions>[];
   @override
   Future<ResponseBody> fetch(
@@ -24,6 +25,7 @@ class _Adapter implements HttpClientAdapter {
       });
     }
     if (options.uri.path == '/x/web-interface/search/type') {
+      if (blockSearch) return ResponseBody.fromString('unavailable', 412);
       return _json({
         'code': 0,
         'data': {
@@ -151,8 +153,45 @@ void main() {
       final client = BilibiliDanmakuClient(dio: dio);
       final video = await client.video('md28339735');
       expect(adapter.requests[0].queryParameters, {'media_id': '28339735'});
+      expect(
+        adapter.requests[0].headers['User-Agent'],
+        contains('AppleWebKit/'),
+      );
+      expect(adapter.requests[0].headers['User-Agent'], isNot('Mozilla/5.0'));
       expect(adapter.requests[1].queryParameters, {'season_id': '42'});
       expect(video.pages.map((p) => p.episodeNumber), [1, 2, null]);
+    },
+  );
+  test(
+    'public search rejection falls back to an independent title index',
+    () async {
+      final adapter = _Adapter()..blockSearch = true;
+      final dio = Dio()..httpClientAdapter = adapter;
+      addTearDown(dio.close);
+      var fallbacks = 0;
+      final client = BilibiliDanmakuClient(
+        dio: dio,
+        animeSearchFallback: (query) async {
+          fallbacks++;
+          expect(query, '孤独摇滚');
+          return const [
+            BilibiliAnimeCandidate('md28339735', '孤独摇滚！', year: 2022),
+          ];
+        },
+      );
+      final found = await client.searchAnime('孤独摇滚');
+      expect(found.single.reference, 'md28339735');
+      expect(found.single.year, 2022);
+      expect(fallbacks, 1);
+      await expectLater(
+        client.searchFilms('孤独摇滚'),
+        throwsA(isA<DioException>()),
+      );
+      expect(
+        fallbacks,
+        1,
+        reason: 'Anime data must never replace a movie search',
+      );
     },
   );
   test('anime search decodes highlighted names, year and season IDs', () async {
