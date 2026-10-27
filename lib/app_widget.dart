@@ -284,6 +284,11 @@ class _AppWidgetState extends State<AppWidget>
   Future<void> _handleTray() async {
     if (Platform.isWindows) {
       await trayManager.setIcon('assets/images/logo/logo_lanczos.ico');
+    } else if (Platform.isMacOS) {
+      await trayManager.setIcon(
+        'assets/images/logo/naku_tray_template.png',
+        isTemplate: true,
+      );
     } else if (Platform.environment.containsKey('FLATPAK_ID') ||
         Platform.environment.containsKey('SNAP')) {
       await trayManager.setIcon('io.github.Predidit.Kazumi');
