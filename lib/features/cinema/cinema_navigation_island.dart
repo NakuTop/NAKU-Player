@@ -1,3 +1,4 @@
+import 'cinema_swipe_navigation.dart';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -125,7 +126,10 @@ class _CinemaNavigationIslandState<T extends Object>
   }
 
   @override
-  Widget build(BuildContext context) => Focus(
+  Widget build(BuildContext context) =>
+      CinemaSwipeExclusion(child: _buildIsland(context));
+
+  Widget _buildIsland(BuildContext context) => Focus(
     onKeyEvent: (_, event) {
       if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
         return KeyEventResult.ignored;

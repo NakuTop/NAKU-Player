@@ -1,3 +1,4 @@
+import 'cinema_swipe_navigation.dart';
 import 'package:kazumi/features/cinema/naku_update_service.dart';
 import 'package:kazumi/services/platform/desktop_fullscreen.dart';
 import 'dart:async';
@@ -71,11 +72,15 @@ class CinemaWebviewPage extends StatefulWidget {
     required this.title,
     required this.url,
     this.mediaToolsEnabled = true,
+    this.visible = true,
+    this.onClose,
   });
 
   final String title;
   final String url;
   final bool mediaToolsEnabled;
+  final bool visible;
+  final VoidCallback? onClose;
 
   @override
   State<CinemaWebviewPage> createState() => _CinemaWebviewPageState();
@@ -109,14 +114,46 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
   // releases its temporary window transport instead of retaining a child view.
   final Map<String, DateTime> _popupVetoes = {};
 
-  final _updatePlaybackLease = NakuPlaybackUpdateLease();
+  NakuPlaybackUpdateLease? _updatePlaybackLease;
 
   @override
   void initState() {
     super.initState();
-    unawaited(_updatePlaybackLease.start());
+    _syncLease();
     _windowControls.register(this, _visibilityChanged);
     _createWebView();
+  }
+
+  void _syncLease() {
+    if (!widget.visible) {
+      final lease = _updatePlaybackLease;
+      _updatePlaybackLease = null;
+      if (lease != null) unawaited(lease.close());
+    } else {
+      _updatePlaybackLease ??= NakuPlaybackUpdateLease();
+      unawaited(_updatePlaybackLease!.start());
+    }
+  }
+
+  @override
+  void didUpdateWidget(CinemaWebviewPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.visible != widget.visible) {
+      _syncLease();
+      unawaited(
+        _mediaLifecycle?.setHidden(
+          !widget.visible || _windowControls.blocksPlayback,
+        ),
+      );
+    }
+  }
+
+  void _closePage() {
+    if (widget.onClose != null) {
+      widget.onClose!();
+    } else {
+      Navigator.of(context).maybePop();
+    }
   }
 
   bool _active(int revision) => mounted && !_disposed && revision == _revision;
@@ -172,12 +209,13 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
             controller.addJavaScriptHandler(
               handlerName: 'nakuMoyuExport',
               callback: (args) async {
-                if (!_active(revision) || _exporting) {
+                if (!_active(revision) || !widget.visible || _exporting) {
                   return false;
                 }
                 final currentUrl = await controller.getUrl();
                 if (!mounted ||
                     !_active(revision) ||
+                    !widget.visible ||
                     _exporting ||
                     !cinemaIsMoyuUrl(currentUrl?.toString())) {
                   return false;
@@ -189,7 +227,9 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
                     dialogTitle: '保存摸鱼记录',
                     fileName: export.name,
                   );
-                  if (!_active(revision) || path == null) return false;
+                  if (!_active(revision) || !widget.visible || path == null) {
+                    return false;
+                  }
                   await File(path).writeAsBytes(export.bytes, flush: true);
                   return true;
                 } catch (_) {
@@ -228,7 +268,7 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
             suspend: (value) =>
                 controller.setAllMediaPlaybackSuspended(suspended: value),
           );
-          if (_windowControls.blocksPlayback) {
+          if (!widget.visible || _windowControls.blocksPlayback) {
             unawaited(_mediaLifecycle!.setHidden(true));
           }
           unawaited(_updateHistory(controller, revision));
@@ -461,7 +501,9 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
   }
 
   Future<void> _visibilityChanged(bool hidden) async {
-    await _mediaLifecycle?.setHidden(hidden && _windowControls.blocksPlayback);
+    await _mediaLifecycle?.setHidden(
+      !widget.visible || (hidden && _windowControls.blocksPlayback),
+    );
   }
 
   Future<void> _restoreVideoWindow() async {
@@ -642,7 +684,8 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
 
   @override
   void dispose() {
-    unawaited(_updatePlaybackLease.close());
+    final lease = _updatePlaybackLease;
+    if (lease != null) unawaited(lease.close());
     _disposed = true;
     if (_videoWindowBounds != null && !_videoWindowChanging) {
       unawaited(_restoreVideoWindow());
@@ -674,6 +717,11 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
 
   @override
   Widget build(BuildContext context) {
+    final page = _buildPage(context);
+    return widget.mediaToolsEnabled ? CinemaSwipeExclusion(child: page) : page;
+  }
+
+  Widget _buildPage(BuildContext context) {
     final controller = _controller;
     final uri = Uri.tryParse(_currentUrl);
     final host = uri?.host ?? '';
@@ -681,8 +729,7 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
     return CallbackShortcuts(
       bindings: {
         if (immersive)
-          const SingleActivator(LogicalKeyboardKey.escape): () =>
-              Navigator.of(context).maybePop(),
+          const SingleActivator(LogicalKeyboardKey.escape): _closePage,
       },
       child: Theme(
         data: CinemaTheme.of(context),
@@ -924,6 +971,24 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
                                     ),
                                 ],
                               ),
+                            ),
+                          ),
+                        ),
+                      if (immersive)
+                        Positioned(
+                          top: 16,
+                          right: 16,
+                          child: Material(
+                            color: const Color(0xD9282B30),
+                            shape: const CircleBorder(),
+                            elevation: 6,
+                            shadowColor: Colors.black38,
+                            child: IconButton(
+                              key: const ValueKey('cinema-moyu-hide'),
+                              tooltip: '返回首页（网页保留后台）',
+                              onPressed: _closePage,
+                              icon: const Icon(Icons.close_rounded, size: 20),
+                              color: Colors.white,
                             ),
                           ),
                         ),

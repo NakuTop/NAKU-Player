@@ -1,3 +1,5 @@
+import 'cinema_moyu_host.dart';
+import 'cinema_swipe_navigation.dart';
 import 'cinema_neon_decode.dart';
 import 'cinema_detail_artwork.dart';
 import 'cinema_poster_atmosphere.dart';
@@ -88,7 +90,6 @@ import 'cinema_header_frost.dart';
 import 'cinema_artwork_backdrop.dart';
 import 'cinema_route_motion.dart';
 import 'cinema_websites_page.dart';
-import 'cinema_webview_page.dart';
 import 'cinema_home_display_page.dart';
 
 enum _Section { movies, series, anime, favorites, history, settings }
@@ -164,6 +165,7 @@ class CinemaHomePage extends StatefulWidget {
 class _CinemaHomePageState extends State<CinemaHomePage>
     with KazumiDialogOwner {
   CinemaAnimeLibrary? _animeLibrary;
+  final _moyuSession = CinemaMoyuSession();
   final _health = CinemaSourceHealth.instance;
   List<CinemaSource> get _activeSources =>
       _health.available(_store.enabledSources);
@@ -825,15 +827,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     );
   }
 
-  void _openMoyu() => Navigator.of(context).push(
-    MaterialPageRoute<void>(
-      builder: (_) => const CinemaWebviewPage(
-        title: '摸鱼',
-        url: 'https://1in8b.life/zh-hans/',
-        mediaToolsEnabled: false,
-      ),
-    ),
-  );
+  void _openMoyu() => _moyuSession.show();
 
   void _openTools([int tab = 0]) {
     Navigator.of(context).push(
@@ -930,6 +924,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   @override
   void dispose() {
+    _moyuSession.dispose();
     _resources.dispose();
     if (Platform.isAndroid) unawaited(CinemaLanCast.instance.stop());
     _nasSync?.dispose();
@@ -1958,6 +1953,24 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   @override
   Widget build(BuildContext context) {
+    final sections = _Section.values
+        .where((section) => section != _Section.anime || _showAnimeDestination)
+        .toList();
+    final index = sections.indexOf(_section);
+    return CinemaMoyuHost(
+      session: _moyuSession,
+      child: CinemaSwipeNavigation(
+        key: const ValueKey('cinema-home-swipe'),
+        onBack: index > 0 ? () => _selectSection(sections[index - 1]) : null,
+        onForward: index >= 0 && index + 1 < sections.length
+            ? () => _selectSection(sections[index + 1])
+            : null,
+        child: _buildHome(context),
+      ),
+    );
+  }
+
+  Widget _buildHome(BuildContext context) {
     if (_showsCatalogSort &&
         _currentCatalogSort == CinemaCatalogSort.rating &&
         !_scrollActivity.value &&

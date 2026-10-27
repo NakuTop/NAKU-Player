@@ -1,3 +1,4 @@
+import 'cinema_swipe_navigation.dart';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -22,10 +23,19 @@ class CinemaPageTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
-    if (route.isFirst || route.settings.name == playerRouteName) {
+    final path = Uri.tryParse(route.settings.name ?? '')?.path ?? '';
+    if (route.isFirst ||
+        route.settings.name == playerRouteName ||
+        path == '/video' ||
+        path.startsWith('/video/')) {
       return child;
     }
-    return CinemaRouteMotion(animation: animation, child: child);
+    final swipe = CinemaSwipeNavigation(
+      enabled: route.isCurrent,
+      onBack: () => Navigator.of(context).maybePop(),
+      child: child,
+    );
+    return CinemaRouteMotion(animation: animation, child: swipe);
   }
 }
 

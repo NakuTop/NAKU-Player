@@ -1,3 +1,4 @@
+import 'cinema_swipe_navigation.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -278,7 +279,10 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      CinemaSwipeExclusion(child: _buildWall(context));
+
+  Widget _buildWall(BuildContext context) {
     if (widget.titles.isEmpty) return const SizedBox.shrink();
     final viewport = MediaQuery.sizeOf(context);
     final wide = viewport.width > 1200;

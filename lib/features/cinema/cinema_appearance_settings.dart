@@ -1,3 +1,4 @@
+import 'cinema_swipe_navigation.dart';
 import 'package:flutter/material.dart';
 import 'cinema_appearance.dart';
 import 'cinema_theme.dart';
@@ -76,20 +77,22 @@ class CinemaAppearanceSettings extends StatelessWidget {
                   height: 1.5,
                 ),
               ),
-              Slider(
-                value: transparent,
-                min: 0,
-                max: 1 - CinemaAppearance.minimumBackgroundOpacity,
-                divisions: 78,
-                label: '$percent%',
-                semanticFormatterCallback: (value) =>
-                    '背景透明度 ${(value * 100).round()}%',
-                onChanged: settings.reduceTransparency
-                    ? null
-                    : (value) => settings.setBackgroundOpacity(1 - value),
-                onChangeEnd: settings.reduceTransparency
-                    ? null
-                    : (_) => settings.flush(),
+              CinemaSwipeExclusion(
+                child: Slider(
+                  value: transparent,
+                  min: 0,
+                  max: 1 - CinemaAppearance.minimumBackgroundOpacity,
+                  divisions: 78,
+                  label: '$percent%',
+                  semanticFormatterCallback: (value) =>
+                      '背景透明度 ${(value * 100).round()}%',
+                  onChanged: settings.reduceTransparency
+                      ? null
+                      : (value) => settings.setBackgroundOpacity(1 - value),
+                  onChangeEnd: settings.reduceTransparency
+                      ? null
+                      : (_) => settings.flush(),
+                ),
               ),
               const Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,

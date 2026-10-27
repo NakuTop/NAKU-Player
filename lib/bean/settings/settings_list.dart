@@ -1,3 +1,4 @@
+import 'package:kazumi/bean/widget/navigation_gesture_exclusion.dart';
 import 'package:flutter/material.dart';
 
 import 'package:kazumi/bean/widget/content_section.dart';
@@ -6,11 +7,7 @@ import 'package:kazumi/bean/widget/split_list_row.dart';
 enum _TileKind { plain, toggle, radio }
 
 class SettingsList extends StatelessWidget {
-  const SettingsList({
-    super.key,
-    required this.sections,
-    this.maxWidth = 1000,
-  });
+  const SettingsList({super.key, required this.sections, this.maxWidth = 1000});
 
   final List<Widget> sections;
 
@@ -64,8 +61,9 @@ class SettingsSection extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: DefaultTextStyle.merge(
-                style: textTheme.bodySmall
-                    ?.copyWith(color: colorScheme.onSurfaceVariant),
+                style: textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
                 child: bottomInfo!,
               ),
             ),
@@ -200,8 +198,9 @@ class SettingsCategoryTile extends StatelessWidget {
                   const SizedBox(height: 2),
                   Text(
                     description,
-                    style: textTheme.bodySmall
-                        ?.copyWith(color: colorScheme.onSurfaceVariant),
+                    style: textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -264,8 +263,10 @@ class SettingsSliderTile extends StatelessWidget {
               ),
               const SizedBox(width: 12),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 decoration: BoxDecoration(
                   color: colorScheme.secondaryContainer,
                   borderRadius: BorderRadius.circular(8),
@@ -288,14 +289,16 @@ class SettingsSliderTile extends StatelessWidget {
           Overlay.wrap(
             alwaysSizeToContent: true,
             clipBehavior: Clip.none,
-            child: Slider(
-              value: value,
-              min: min,
-              max: max,
-              divisions: divisions,
-              showValueIndicator: ShowValueIndicator.never,
-              padding: EdgeInsets.zero,
-              onChanged: onChanged,
+            child: NavigationGestureExclusion(
+              child: Slider(
+                value: value,
+                min: min,
+                max: max,
+                divisions: divisions,
+                showValueIndicator: ShowValueIndicator.never,
+                padding: EdgeInsets.zero,
+                onChanged: onChanged,
+              ),
             ),
           ),
         ],
@@ -314,10 +317,10 @@ class SettingsTile<T> extends StatelessWidget {
     this.value,
     this.onPressed,
     this.enabled = true,
-  })  : _kind = _TileKind.plain,
-        onToggle = null,
-        initialValue = null,
-        radioValue = null;
+  }) : _kind = _TileKind.plain,
+       onToggle = null,
+       initialValue = null,
+       radioValue = null;
 
   /// Row taps pass null to [onToggle]; switch gestures pass the new value.
   const SettingsTile.switchTile({
@@ -328,11 +331,11 @@ class SettingsTile<T> extends StatelessWidget {
     this.leading,
     this.description,
     this.enabled = true,
-  })  : _kind = _TileKind.toggle,
-        trailing = null,
-        value = null,
-        onPressed = null,
-        radioValue = null;
+  }) : _kind = _TileKind.toggle,
+       trailing = null,
+       value = null,
+       onPressed = null,
+       radioValue = null;
 
   const SettingsTile.radioTile({
     super.key,
@@ -341,12 +344,12 @@ class SettingsTile<T> extends StatelessWidget {
     this.leading,
     this.description,
     this.enabled = true,
-  })  : _kind = _TileKind.radio,
-        trailing = null,
-        value = null,
-        onPressed = null,
-        onToggle = null,
-        initialValue = null;
+  }) : _kind = _TileKind.radio,
+       trailing = null,
+       value = null,
+       onPressed = null,
+       onToggle = null,
+       initialValue = null;
 
   final Widget title;
 
@@ -380,8 +383,9 @@ class SettingsTile<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    final secondary =
-        enabled ? colorScheme.onSurfaceVariant : _disabledOn(context);
+    final secondary = enabled
+        ? colorScheme.onSurfaceVariant
+        : _disabledOn(context);
 
     return InkWell(
       onTap: _tapHandler(context),

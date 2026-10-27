@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:kazumi/features/cinema/cinema_moyu_host.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_webview_page.dart';
@@ -48,6 +50,72 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     expect(platform.view.disposed, isTrue);
   });
+
+  testWidgets(
+    'floating close retains the document, pauses media and releases the update lease',
+    (tester) async {
+      final platform = _installFakeWebView();
+      final session = CinemaMoyuSession();
+      final sessions = <String, bool>{};
+      const updater = MethodChannel('naku/updater');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(updater, (call) async {
+        if (call.method == 'playbackSession') {
+          final args = Map<String, dynamic>.from(call.arguments as Map);
+          sessions[args['id'] as String] = args['active'] as bool;
+        }
+        return null;
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CinemaMoyuHost(
+            session: session,
+            child: const Scaffold(body: Text('home retained')),
+          ),
+        ),
+      );
+      expect(find.byType(CinemaWebviewPage), findsNothing);
+      session.show();
+      await tester.pumpAndSettle();
+      final document = platform.view;
+      document.params.onWebViewCreated!(platform.controller);
+      await tester.pumpAndSettle();
+      expect(sessions.values.where((v) => v), hasLength(1));
+      await tester.tap(find.byKey(const ValueKey('cinema-moyu-hide')));
+      await tester.pumpAndSettle();
+      expect(session.visible, isFalse);
+      expect(document.disposed, isFalse);
+      expect(platform.controller.suspensions.last, isTrue);
+      expect(sessions.values.where((v) => v), isEmpty);
+      expect(find.text('home retained'), findsOneWidget);
+      session.show();
+      await tester.pumpAndSettle();
+      expect(identical(platform.view, document), isTrue);
+      expect(platform.controller.suspensions.last, isFalse);
+      expect(sessions.values.where((v) => v), hasLength(1));
+      final navigator = Navigator.of(
+        tester.element(find.byType(CinemaMoyuHost)),
+      );
+      navigator.push(
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(body: Text('cover')),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(platform.controller.suspensions.last, isTrue);
+      expect(document.disposed, isFalse);
+      navigator.pop();
+      await tester.pumpAndSettle();
+      expect(platform.controller.suspensions.last, isFalse);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+      expect(document.disposed, isTrue);
+      expect(sessions.values.where((v) => v), isEmpty);
+      session.dispose();
+      messenger.setMockMethodCallHandler(updater, null);
+    },
+  );
 
   testWidgets('silent native initialization failure has a bounded wait', (
     tester,
@@ -242,4 +310,22 @@ class _FakeWebViewController extends PlatformInAppWebViewController {
     : super.implementation(
         const PlatformInAppWebViewControllerCreationParams(id: 'test'),
       );
+
+  final suspensions = <bool>[];
+  @override
+  void addJavaScriptHandler({
+    required String handlerName,
+    required JavaScriptHandlerCallback callback,
+  }) {}
+  @override
+  Future<void> pauseAllMediaPlayback() async {}
+  @override
+  Future<void> setAllMediaPlaybackSuspended({required bool suspended}) async {
+    suspensions.add(suspended);
+  }
+
+  @override
+  Future<bool> canGoBack() async => false;
+  @override
+  Future<bool> canGoForward() async => false;
 }

@@ -1,3 +1,4 @@
+import 'cinema_swipe_navigation.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
@@ -348,58 +349,64 @@ class _CinemaToolsSettingsPageState extends State<CinemaToolsSettingsPage> {
                                 ),
                         ),
                         Text('磁盘上限 ${prefs.quotaMB} MB'),
-                        Slider(
-                          value: prefs.quotaMB.toDouble(),
-                          min: 128,
-                          max: 8192,
-                          onChangeEnd: (_) {
-                            final prefs = _draftCache;
-                            if (prefs != null) _configure(prefs);
-                          },
-                          onChanged: (v) => setState(
-                            () => _draftCache = CinemaCachePreferences(
-                              enabled: prefs.enabled,
-                              quotaMB: v.round(),
-                              forwardSeconds: prefs.forwardSeconds,
-                              nextSeconds: prefs.nextSeconds,
+                        CinemaSwipeExclusion(
+                          child: Slider(
+                            value: prefs.quotaMB.toDouble(),
+                            min: 128,
+                            max: 8192,
+                            onChangeEnd: (_) {
+                              final prefs = _draftCache;
+                              if (prefs != null) _configure(prefs);
+                            },
+                            onChanged: (v) => setState(
+                              () => _draftCache = CinemaCachePreferences(
+                                enabled: prefs.enabled,
+                                quotaMB: v.round(),
+                                forwardSeconds: prefs.forwardSeconds,
+                                nextSeconds: prefs.nextSeconds,
+                              ),
                             ),
                           ),
                         ),
                         Text('向前预缓存 ${prefs.forwardSeconds} 秒'),
-                        Slider(
-                          value: prefs.forwardSeconds.toDouble(),
-                          min: 30,
-                          max: 900,
-                          divisions: 29,
-                          onChangeEnd: (_) {
-                            final prefs = _draftCache;
-                            if (prefs != null) _configure(prefs);
-                          },
-                          onChanged: (v) => setState(
-                            () => _draftCache = CinemaCachePreferences(
-                              enabled: prefs.enabled,
-                              quotaMB: prefs.quotaMB,
-                              forwardSeconds: v.round(),
-                              nextSeconds: prefs.nextSeconds,
+                        CinemaSwipeExclusion(
+                          child: Slider(
+                            value: prefs.forwardSeconds.toDouble(),
+                            min: 30,
+                            max: 900,
+                            divisions: 29,
+                            onChangeEnd: (_) {
+                              final prefs = _draftCache;
+                              if (prefs != null) _configure(prefs);
+                            },
+                            onChanged: (v) => setState(
+                              () => _draftCache = CinemaCachePreferences(
+                                enabled: prefs.enabled,
+                                quotaMB: prefs.quotaMB,
+                                forwardSeconds: v.round(),
+                                nextSeconds: prefs.nextSeconds,
+                              ),
                             ),
                           ),
                         ),
                         Text('下一集预热 ${prefs.nextSeconds} 秒'),
-                        Slider(
-                          value: prefs.nextSeconds.toDouble(),
-                          min: 0,
-                          max: 300,
-                          divisions: 10,
-                          onChangeEnd: (_) {
-                            final prefs = _draftCache;
-                            if (prefs != null) _configure(prefs);
-                          },
-                          onChanged: (v) => setState(
-                            () => _draftCache = CinemaCachePreferences(
-                              enabled: prefs.enabled,
-                              quotaMB: prefs.quotaMB,
-                              forwardSeconds: prefs.forwardSeconds,
-                              nextSeconds: v.round(),
+                        CinemaSwipeExclusion(
+                          child: Slider(
+                            value: prefs.nextSeconds.toDouble(),
+                            min: 0,
+                            max: 300,
+                            divisions: 10,
+                            onChangeEnd: (_) {
+                              final prefs = _draftCache;
+                              if (prefs != null) _configure(prefs);
+                            },
+                            onChanged: (v) => setState(
+                              () => _draftCache = CinemaCachePreferences(
+                                enabled: prefs.enabled,
+                                quotaMB: prefs.quotaMB,
+                                forwardSeconds: prefs.forwardSeconds,
+                                nextSeconds: v.round(),
+                              ),
                             ),
                           ),
                         ),

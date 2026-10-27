@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
 import 'package:kazumi/features/cinema/cinema_webview_page.dart';
+import 'package:kazumi/features/cinema/cinema_navigation_island.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 void main() {
@@ -133,6 +134,27 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets(
+    'home left/right swipes change the floating navigation destination',
+    (tester) async {
+      await mount(tester, '3.0.13', '92');
+      String destination() => tester
+          .widget<CinemaNavigationIsland>(
+            find.byKey(const ValueKey('cinema-floating-island')),
+          )
+          .value
+          .toString();
+      expect(destination(), contains('movies'));
+      await tester.dragFrom(const Offset(130, 260), const Offset(-170, 0));
+      await tester.pumpAndSettle();
+      expect(destination(), contains('series'));
+      await tester.dragFrom(const Offset(130, 260), const Offset(170, 0));
+      await tester.pumpAndSettle();
+      expect(destination(), contains('movies'));
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets('missing platform version does not invent an old release', (
     tester,
