@@ -10,6 +10,17 @@ import 'package:kazumi/request/core/network_config.dart';
 
 /// Bounded, proxy-aware requests shared by probes and the persistent HLS cache.
 class CinemaMediaTransport {
+  factory CinemaMediaTransport.direct() {
+    const config = NetworkConfig(followSystemProxy: false, enableLog: false);
+    return CinemaMediaTransport(
+      dio: Dio(
+        BaseOptions(
+          connectTimeout: config.connectTimeout,
+          receiveTimeout: config.receiveTimeout,
+        ),
+      )..httpClientAdapter = config.createAdapter(),
+    );
+  }
   CinemaMediaTransport({Dio? dio, CinemaMediaRouter? router})
     : dio = dio ?? _create(),
       router = router ?? (dio == null ? CinemaMediaRouter.instance : null);
@@ -424,10 +435,17 @@ class CinemaMediaProbe {
 }
 
 class CinemaHlsVariant {
-  const CinemaHlsVariant(this.uri, this.bitrate, this.width, this.height);
+  const CinemaHlsVariant(
+    this.uri,
+    this.bitrate,
+    this.width,
+    this.height, [
+    this.codec = '',
+  ]);
   final Uri uri;
   final int bitrate;
   final int? width, height;
+  final String codec;
 }
 
 List<CinemaHlsVariant> cinemaHlsVariants(String text, Uri base) {
@@ -449,8 +467,19 @@ List<CinemaHlsVariant> cinemaHlsVariants(String text, Uri base) {
         int.tryParse(rate?[1] ?? '') ?? 0,
         int.tryParse(resolution?[1] ?? ''),
         int.tryParse(resolution?[2] ?? ''),
+        _cinemaHlsVideoCodec(lines[i]),
       ),
     );
   }
   return result;
+}
+
+String _cinemaHlsVideoCodec(String line) {
+  final value =
+      RegExp(r'CODECS="([^"]+)"').firstMatch(line)?[1]?.toLowerCase() ?? '';
+  if (value.contains('avc1') || value.contains('avc3')) return 'AVC';
+  if (value.contains('hvc1') || value.contains('hev1')) return 'HEVC';
+  if (value.contains('av01')) return 'AV1';
+  if (value.contains('vp09')) return 'VP9';
+  return '';
 }

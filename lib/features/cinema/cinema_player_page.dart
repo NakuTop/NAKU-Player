@@ -18,11 +18,13 @@ import 'cinema_tracks_sheet.dart';
 import 'cinema_subtitle_appearance.dart';
 import 'cinema_online_subtitles.dart';
 import 'cinema_live_subtitles.dart';
+import 'cinema_tv_native_player.dart';
 import 'cinema_external_subtitles.dart';
 import 'cinema_season_subtitle_controller.dart';
 import 'cinema_mobile_playback_bar.dart';
 import 'cinema_media_cache.dart';
 import 'cinema_media_transport.dart';
+import 'cinema_media_routing.dart';
 import 'cinema_route_probe.dart';
 import 'cinema_source_health.dart';
 import 'package:dio/dio.dart';
@@ -76,6 +78,11 @@ import 'cinema_store.dart';
 import 'cinema_player_preferences.dart';
 import 'cinema_video_gestures.dart';
 import 'cinema_player_entrance.dart';
+import 'cinema_tv_player_controls.dart';
+import 'cinema_tv_media_policy.dart';
+import 'cinema_tv_session.dart';
+import 'cinema_optical_glass.dart';
+import 'cinema_pane_transition.dart';
 
 /// Locate the saved episode in a fresh catalogue without trusting old indexes.
 ({int routeIndex, int episodeIndex})? cinemaResumeSelection(
@@ -287,6 +294,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   final _health = CinemaSourceHealth.instance;
   late final _cache = widget.mediaCache ?? CinemaMediaCache.instance;
   final Map<String, CinemaMediaProbeResult> _probeResults = {};
+  final Map<String, Future<String>> _tvHlsPolicies = {};
+  final _tvHlsRejected = <String>{}, _tvHlsCodecRejected = <String>{};
+  String? _tvHlsSelectionKey, _tvHlsLastVariant, _tvHlsPreferred;
+  int _tvHlsDowngrades = 0, _tvHlsUpgradeProbes = 0;
+  bool _tvHlsUpgrading = false;
   late final _mediaProbe = widget.mediaProbe ?? CinemaMediaProbe();
   CancelToken? _routeProbeToken;
   CinemaPlaybackCandidate? _routeComparisonAnchor;
@@ -319,6 +331,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Timer? _historyTimer;
   Timer? _loadTimer;
   int _generation = 0;
+  Future<void>? _tvDecoderRetirement;
   int _routeIndex = 0;
   int _episodeIndex = 0;
   bool _requiresEpisodeSelection = false;
@@ -346,6 +359,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   late CinemaTitle _ratingsTitle = widget.title;
   CinemaNASPlaybackOptions? _nasOptions;
   String? _nasReference, _nasResolution;
+  final _tvNASRejectedProfiles = <String>{};
+  int _tvNASDowngrades = 0, _tvNASUpgradeProbes = 0;
+  DateTime? _tvNASHealthySince, _tvNASLastProgress, _tvNASQualityChanged;
+  bool _tvNASUpgrading = false;
+  CinemaMediaProbe? _tvNASMediaProbe;
+  CinemaMediaProbe get _nasProbe => _tvNASMediaProbe ??= CinemaMediaProbe(
+    transport: CinemaMediaTransport.direct(),
+  );
   int? _nasAudio, _nasSubtitle;
   final _playerFocus = FocusScopeNode(debugLabel: 'NAKU player');
   final _cinemaPageScroll = ScrollController();
@@ -413,37 +434,91 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   // Keep the existing native video output alive across fullscreen/PiP layouts.
   final _videoSurfaceKey = GlobalKey(debugLabel: 'cinema-video-surface');
   bool _tvControlsVisible = true;
+  bool _tvSheetOpen = false;
+  ({int generation, String message, CinemaPlaybackFailure failure})?
+  _tvDeferredFailure;
+  final _tvTimeline = CinemaTVSeekPreview();
+  final _tvTimelineFocus = FocusNode(debugLabel: 'TV timeline');
+  final _tvPlayFocus = FocusNode(debugLabel: 'TV play');
+  final _tvEpisodeFocus = FocusNode(debugLabel: 'TV episodes');
+  final _tvSubtitleFocus = FocusNode(debugLabel: 'TV subtitles');
+  final _tvDanmakuFocus = FocusNode(debugLabel: 'TV danmaku');
+  Duration? _tvHeldSeek;
+  LogicalKeyboardKey? _tvHeldDirection;
   bool _androidPip = false;
   Timer? _tvControlsTimer;
   void _scheduleTVControlsHide() {
     _tvControlsTimer?.cancel();
-    _tvControlsTimer = Timer(const Duration(seconds: 8), () {
+    if (!NakuDevice.isTV ||
+        _tvSheetOpen ||
+        _tvTimeline.active ||
+        _loading ||
+        _error != null ||
+        _playback?.player.state.playing != true) {
+      return;
+    }
+    _tvControlsTimer = Timer(const Duration(seconds: 5), () {
       if (mounted &&
           NakuDevice.isTV &&
           ModalRoute.of(context)?.isCurrent == true) {
         setState(() => _tvControlsVisible = false);
+        _playerFocus.requestFocus();
       }
     });
   }
 
   KeyEventResult _tvRemoteKey(KeyEvent event) {
     if (!NakuDevice.isTV ||
-        event is! KeyDownEvent ||
+        _closing ||
+        _tvSheetOpen ||
         ModalRoute.of(context)?.isCurrent != true) {
       return KeyEventResult.ignored;
     }
-    if (!_tvControlsVisible &&
-        {
-          LogicalKeyboardKey.select,
-          LogicalKeyboardKey.enter,
-          LogicalKeyboardKey.arrowLeft,
-          LogicalKeyboardKey.arrowRight,
-          LogicalKeyboardKey.arrowUp,
-          LogicalKeyboardKey.arrowDown,
-        }.contains(event.logicalKey)) {
-      setState(() => _tvControlsVisible = true);
-      _scheduleTVControlsHide();
-      return KeyEventResult.handled;
+    final key = event.logicalKey;
+    if (event is KeyUpEvent) {
+      if (_tvHeldDirection == key) {
+        final target = _tvHeldSeek;
+        _tvHeldDirection = null;
+        if (target != null) {
+          setState(() => _tvHeldSeek = null);
+          _seekTV(target);
+        }
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    if (!_tvControlsVisible) {
+      if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter) {
+        if (event is KeyDownEvent) unawaited(_togglePlayback());
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowLeft ||
+          key == LogicalKeyboardKey.arrowRight) {
+        final playback = _playback;
+        if (playback?.ready != true) return KeyEventResult.handled;
+        _tvHeldDirection = key;
+        final seconds = key == LogicalKeyboardKey.arrowLeft ? -10 : 10;
+        if (event is KeyRepeatEvent) {
+          setState(
+            () => _tvHeldSeek = Duration(
+              seconds:
+                  ((_tvHeldSeek ?? playback!.position).inSeconds + seconds * 3)
+                      .clamp(0, playback!.duration.inSeconds),
+            ),
+          );
+        } else {
+          _seekBy(seconds);
+        }
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowUp ||
+          key == LogicalKeyboardKey.arrowDown) {
+        _showTVControls();
+        return KeyEventResult.handled;
+      }
     }
     _scheduleTVControlsHide();
     return KeyEventResult.ignored;
@@ -452,17 +527,85 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Completer<void>? _fullscreenTransition;
   final _panelRevision = ValueNotifier<int>(0);
 
+  void _syncTVActivity() {
+    if (!NakuDevice.isTV) return;
+    final playback = _playback;
+    CinemaTVPlaybackActivity.instance.setWatching(
+      this,
+      !_closing &&
+          !_backgroundPaused &&
+          _error == null &&
+          (playback?.completed != true) &&
+          ((_loading && _pendingPlayIntent) ||
+              (playback != null &&
+                  (playback.player.state.playing ||
+                      playback.player.state.buffering &&
+                          !_tvSheetOpen &&
+                          _pendingPlayIntent))),
+    );
+  }
+
+  void _showTVControls() {
+    if (!mounted || _closing) return;
+    setState(() => _tvControlsVisible = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !_tvSheetOpen) _tvPlayFocus.requestFocus();
+    });
+    _scheduleTVControlsHide();
+  }
+
+  void _seekTV(Duration target) {
+    final playback = _playback;
+    if (playback == null || !playback.ready) return;
+    playback.watchdog.reset();
+    unawaited(playback.player.seek(target));
+  }
+
+  Future<void> _showTVAction(
+    Future<void> Function() open,
+    FocusNode restore,
+  ) async {
+    if (_tvSheetOpen) return;
+    _tvSheetOpen = true;
+    _tvControlsTimer?.cancel();
+    try {
+      await open();
+    } finally {
+      _tvSheetOpen = false;
+      if (mounted && !_closing) {
+        _pendingPlayIntent = _playback?.player.state.playing ?? false;
+        setState(() => _tvControlsVisible = true);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !_closing) restore.requestFocus();
+        });
+        _scheduleTVControlsHide();
+        final deferred = _tvDeferredFailure;
+        _tvDeferredFailure = null;
+        if (deferred != null) {
+          _fail(
+            deferred.generation,
+            deferred.message,
+            failure: deferred.failure,
+          );
+        }
+      }
+    }
+  }
+
   @override
   void setState(VoidCallback fn) {
     super.setState(fn);
     // The route sheet shares this live state, including automatic source changes.
     _panelRevision.value++;
+    _syncTVActivity();
   }
 
   Future<void> _setFullscreen(bool next) async {
     if (Platform.isAndroid || Platform.isIOS) {
       await SystemChrome.setEnabledSystemUIMode(
-        next ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+        next || NakuDevice.isTV
+            ? SystemUiMode.immersiveSticky
+            : SystemUiMode.edgeToEdge,
       );
       if (!NakuDevice.isTV) {
         await SystemChrome.setPreferredOrientations(
@@ -528,18 +671,53 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   @override
   void onWindowLeaveFullScreen() => _fullscreenChanged(false);
 
-  Future<void> _showEpisodes() => showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    constraints: const BoxConstraints(maxWidth: 820),
-    builder: (sheetContext) => SizedBox(
-      height: MediaQuery.sizeOf(sheetContext).height * .78,
-      child: ValueListenableBuilder<int>(
-        valueListenable: _panelRevision,
-        builder: (_, _, _) => _episodePanel(),
+  Future<void> _showEpisodes() {
+    if (NakuDevice.isTV) {
+      final episodes = _route?.episodes ?? const <CinemaEpisode>[];
+      if (episodes.isEmpty) return Future.value();
+      return showDialog<void>(
+        context: context,
+        builder: (dialog) => Dialog(
+          backgroundColor: Colors.transparent,
+          alignment: Alignment.centerRight,
+          insetPadding: const EdgeInsets.all(24),
+          child: SizedBox(
+            width: (MediaQuery.sizeOf(dialog).width * .44).clamp(360, 640),
+            height: MediaQuery.sizeOf(dialog).height * .86,
+            child: CinemaOpticalGlass(
+              opacity: .88,
+              padding: const EdgeInsets.all(24),
+              child: CinemaPaneTransition(
+                destination: 'tv-episodes',
+                child: CinemaTVEpisodePicker(
+                  labels: episodes.map((e) => e.name).toList(),
+                  current: _episodeIndex,
+                  onSelected: (index) {
+                    Navigator.pop(dialog);
+                    unawaited(
+                      _playEpisode(_routeIndex, index, playWhenReady: true),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      constraints: const BoxConstraints(maxWidth: 820),
+      builder: (sheetContext) => SizedBox(
+        height: MediaQuery.sizeOf(sheetContext).height * .78,
+        child: ValueListenableBuilder<int>(
+          valueListenable: _panelRevision,
+          builder: (_, _, _) => _episodePanel(),
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   Future<void> _toggleFavorite() async {
     try {
@@ -752,6 +930,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
     if (NakuDevice.isTV) {
       FocusManager.instance.addEarlyKeyEventHandler(_tvRemoteKey);
+      _tvTimeline.addListener(_scheduleTVControlsHide);
       _scheduleTVControlsHide();
     }
     unawaited(_updatePlaybackLease.start());
@@ -768,7 +947,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _autoBestRoute =
         _source.id != cinemaNASSource.id &&
         (widget.autoSelectBestRoute ??
-            widget.store.extras['autoBestRoute'] != false);
+            (NakuDevice.isTV || widget.store.extras['autoBestRoute'] != false));
     _automaticProbePending = _autoBestRoute && widget.offlinePaths == null;
     final cachePrefs = widget.store.extras['mediaCache'];
     if (cachePrefs is Map) {
@@ -781,7 +960,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     unawaited(_together.initialize());
     WidgetsBinding.instance.addObserver(this);
     if (!Platform.isAndroid && !Platform.isIOS) windowManager.addListener(this);
-    if (!Platform.isAndroid && !Platform.isIOS) {
+    if (!Platform.isAndroid && !Platform.isIOS && !NakuDevice.isTV) {
       unawaited(
         DesktopFullscreen.isFullScreen().then((value) {
           if (mounted && !_closing) setState(() => _fullscreen = value);
@@ -871,7 +1050,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _recoveryTimer = null;
     _pendingPlayIntent =
         playWhenReady ??
-        (automatic ? _pendingPlayIntent : _preferences.autoPlay);
+        (automatic
+            ? _pendingPlayIntent
+            : NakuDevice.isTV && initial
+            ? true
+            : _preferences.autoPlay);
     if (_closing || selectedTitle.routes.isEmpty) return;
     final route = selectedTitle.routes[routeIndex];
     final offset =
@@ -880,6 +1063,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final watch = Stopwatch()..start();
     if (!automatic && !initial) _automaticProbePending = false;
     _cancelRouteProbe();
+    _tvHlsPolicies.clear();
     _warmTimer?.cancel();
     for (final token in _probeTokens) {
       token.cancel('播放选择已变化');
@@ -896,7 +1080,20 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       old.subtitles?.close();
       _volume = old.player.state.volume;
       unawaited(_persistProgress(old));
-      unawaited(old.dispose());
+      final disposal = old.dispose();
+      if (old.player is CinemaTVNativePlayer) {
+        final previous = _tvDecoderRetirement;
+        _tvDecoderRetirement = () async {
+          try {
+            await previous;
+            await disposal;
+          } catch (_) {
+            // A failed old decoder must not retain ownership of the next one.
+          }
+        }();
+      } else {
+        unawaited(disposal);
+      }
     }
     setState(() {
       _title = selectedTitle;
@@ -926,6 +1123,19 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       routeIndex: routeIndex,
       episodeIndex: episodeIndex,
     );
+    if (_tvHlsSelectionKey != selection.key) {
+      _tvHlsRejected.clear();
+      _tvHlsCodecRejected.clear();
+      _tvHlsDowngrades = 0;
+      _tvHlsUpgradeProbes = 0;
+      _tvHlsSelectionKey = selection.key;
+      _tvHlsPreferred = null;
+    }
+    _tvHlsLastVariant = null;
+    _tvDeferredFailure = null;
+    _tvTimeline.cancel();
+    _tvHeldSeek = null;
+    _tvHeldDirection = null;
     if (!automatic) {
       _recovery.reset();
       _attempts = CinemaFailoverAttempts();
@@ -965,25 +1175,41 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       final nas = localFile == null && isNASMediaReference(episode.url);
       if (nas) {
         setState(() => _phase = '正在准备 NAS 播放流');
+        if (NakuDevice.isTV) await CinemaTVMediaEnvironment.instance.refresh();
+        if (!_isCurrent(generation)) return;
         if (_nasReference != episode.url || _nasOptions == null) {
           final options = await _nasPlayback.options(episode.url);
           if (!_isCurrent(generation)) return;
           setState(() {
             _nasOptions = options;
             _nasReference = episode.url;
-            _nasResolution = options.defaultProfile;
+            _tvNASRejectedProfiles.clear();
+            _tvNASDowngrades = 0;
+            _tvNASUpgradeProbes = 0;
+            _tvNASHealthySince = null;
+            _tvNASLastProgress = null;
+            _tvNASQualityChanged = null;
+            _nasResolution = NakuDevice.isTV
+                ? nasOriginalFileProfile
+                : options.defaultProfile;
             _nasAudio = null;
             _nasSubtitle = -1;
           });
         }
+        if (NakuDevice.isTV && _nasResolution == null) {
+          throw const FormatException('NAS 未提供这台电视可解码的播放档位。');
+        }
         if (_nasResolution != nasOriginalFileProfile) {
-          pendingNAS = await _nasPlayback.start(
-            episode.url,
-            resolution: _nasResolution,
-            audio: _nasAudio,
-            subtitle: _nasSubtitle,
-          );
+          pendingNAS = NakuDevice.isTV
+              ? await _startTVNAS(episode.url, generation)
+              : await _nasPlayback.start(
+                  episode.url,
+                  resolution: _nasResolution,
+                  audio: _nasAudio,
+                  subtitle: _nasSubtitle,
+                );
           if (!_isCurrent(generation)) return;
+          if (pendingNAS == null) return;
           mediaUrl = pendingNAS.url;
           mediaHeaders = pendingNAS.headers;
           mediaFormat = VideoSourceFormat.hls;
@@ -1123,10 +1349,24 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           !_cacheBypass.contains(selection.key) &&
           widget.createPlayer == null) {
         try {
+          final upstreamHeaders = Map<String, String>.unmodifiable(
+            mediaHeaders,
+          );
           final cached = await _cache.open(
             mediaUrl,
-            mediaHeaders,
+            upstreamHeaders,
             hls: mediaFormat == VideoSourceFormat.hls,
+            manifestPolicy: NakuDevice.isTV
+                ? (text, base) => _tvHlsPolicies.putIfAbsent(
+                    '$base\n$text',
+                    () => _chooseTVHlsManifest(
+                      text,
+                      base,
+                      upstreamHeaders,
+                      generation,
+                    ),
+                  )
+                : null,
           );
           if (!_isCurrent(generation)) {
             await cached?.session.close();
@@ -1143,6 +1383,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         }
       }
 
+      if (candidate.player is CinemaTVNativePlayer) {
+        await _tvDecoderRetirement;
+        if (!_isCurrent(generation)) return;
+      }
       candidate.logStage('player-created');
       _listenTo(candidate, generation);
       setState(
@@ -1179,6 +1423,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           mediaHeaders: mediaHeaders,
         );
         if (!_isCurrent(generation)) return;
+        if (NakuDevice.isTV && nas) await native.setProperty('http-proxy', '');
         // Probe each input independently. Forcing HLS globally also forces
         // external SRT/ASS inputs through the HLS demuxer and rejects them.
         try {
@@ -1191,6 +1436,18 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         candidate.logStage('native-config-ready');
       }
       candidate.logStage('open-start');
+      if (candidate.player case final CinemaTVNativePlayer television) {
+        television.mediaMimeType = mediaFormat == VideoSourceFormat.hls
+            ? 'application/x-mpegURL'
+            : null;
+        television.httpProxy = nas || localFile != null
+            ? null
+            : (await CinemaMediaRouter.instance.select(
+                Uri.parse(mediaUrl),
+                mediaHeaders,
+              )).proxy;
+        if (!_isCurrent(generation)) return;
+      }
       await candidate.player.open(
         Media(
           mediaUrl,
@@ -1198,7 +1455,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           httpHeaders: mediaHeaders,
         ),
         play:
-            (playWhenReady ?? _preferences.autoPlay) &&
+            (NakuDevice.isTV
+                ? _pendingPlayIntent
+                : playWhenReady ?? _preferences.autoPlay) &&
             !_backgroundPaused &&
             !_windowControls.blocksPlayback,
       );
@@ -1232,6 +1491,407 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       );
     } finally {
       await pendingNAS?.close();
+    }
+  }
+
+  List<String> get _tvNASProfiles {
+    final size = CinemaTVMediaEnvironment.instance.maximumSize;
+    return _nasOptions?.tvProfiles(
+          maxWidth: size.width,
+          maxHeight: size.height,
+        ) ??
+        const [];
+  }
+
+  Future<String> _chooseTVHlsManifest(
+    String text,
+    Uri base,
+    Map<String, String> headers,
+    int generation,
+  ) async {
+    final variants = cinemaHlsVariants(text, base);
+    if (variants.isEmpty) return text;
+    final environment = CinemaTVMediaEnvironment.instance;
+    await environment.refresh();
+    if (!_isCurrent(generation)) throw const FormatException('播放选择已更新');
+    final candidates = variants
+        .where(
+          (variant) =>
+              !_tvHlsRejected.contains(variant.uri.toString()) &&
+              environment.supports(
+                CinemaMediaProbeResult(
+                  ok: true,
+                  elapsedMs: 0,
+                  width: variant.width,
+                  height: variant.height,
+                  codec: variant.codec,
+                ),
+              ),
+        )
+        .toList();
+    if (candidates.isEmpty) throw const FormatException('没有这台电视可解码的 HLS 画质');
+    candidates.sort((a, b) {
+      final pa = (a.width ?? 0) * (a.height ?? 0),
+          pb = (b.width ?? 0) * (b.height ?? 0);
+      return pa == pb ? b.bitrate.compareTo(a.bitrate) : pb.compareTo(pa);
+    });
+    CinemaHlsVariant? selected;
+    if (_tvHlsPreferred != null) {
+      selected = candidates
+          .where((candidate) => candidate.uri.toString() == _tvHlsPreferred)
+          .firstOrNull;
+      if (selected != null) _tvHlsPreferred = null;
+    }
+    final token = CancelToken();
+    _probeTokens.add(token);
+    try {
+      for (final candidate
+          in selected == null
+              ? candidates.take(2)
+              : const <CinemaHlsVariant>[]) {
+        final sample = await _mediaProbe.measure(
+          candidate.uri.toString(),
+          headers,
+          hls: true,
+          cancel: token,
+          timeout: const Duration(seconds: 6),
+        );
+        if (!_isCurrent(generation) || token.isCancelled) {
+          throw const FormatException('播放选择已更新');
+        }
+        if (!sample.ok ||
+            !environment.supports(sample) ||
+            sample.mbps == null) {
+          continue;
+        }
+        final sustainable = candidates.where(
+          (v) =>
+              v.bitrate <= 0 ||
+              sample.mbps! * 1000000 >= v.bitrate * 1.3 * _rate,
+        );
+        selected = sustainable.firstOrNull ?? candidates.last;
+        break;
+      }
+      selected ??= candidates.last;
+      _tvHlsLastVariant = selected.uri.toString();
+      return cinemaTVSelectHlsVariant(text, base, selected.uri);
+    } finally {
+      _probeTokens.remove(token);
+    }
+  }
+
+  bool _downgradeTVHLS(CinemaPlaybackFailure failure) {
+    if (!NakuDevice.isTV ||
+        _tvSheetOpen ||
+        _usesNASPlayback ||
+        _tvHlsLastVariant == null ||
+        _tvHlsDowngrades >= 3 ||
+        {
+          CinemaPlaybackFailure.accessDenied,
+          CinemaPlaybackFailure.unavailable,
+        }.contains(failure)) {
+      return false;
+    }
+    final variant = _tvHlsLastVariant!;
+    if (!_tvHlsRejected.add(variant)) return false;
+    if (failure == CinemaPlaybackFailure.decoder ||
+        failure == CinemaPlaybackFailure.format) {
+      _tvHlsCodecRejected.add(variant);
+    }
+    _tvHlsDowngrades++;
+    _tvNASHealthySince = null;
+    unawaited(
+      _playEpisode(
+        _routeIndex,
+        _episodeIndex,
+        resumeAt: _positionForEpisode(_routeIndex, _episodeIndex),
+        automatic: true,
+        playWhenReady: _pendingPlayIntent,
+        selectionNotice: '正在自动调整播放画质，保留进度',
+      ),
+    );
+    return true;
+  }
+
+  Future<void> _considerTVHlsUpgrade(
+    _CinemaPlayback playback,
+    int generation,
+  ) async {
+    if (!NakuDevice.isTV ||
+        _tvSheetOpen ||
+        _usesNASPlayback ||
+        _tvHlsUpgrading ||
+        _tvHlsUpgradeProbes >= 2 ||
+        _tvHlsRejected.isEmpty ||
+        _tvHlsLastVariant == null ||
+        _tvNASHealthySince == null ||
+        DateTime.now().difference(_tvNASHealthySince!).inSeconds < 120 ||
+        playback.mediaFormat != VideoSourceFormat.hls ||
+        playback.mediaUrl == null) {
+      return;
+    }
+    _tvHlsUpgrading = true;
+    _tvHlsUpgradeProbes++;
+    _tvNASHealthySince = null;
+    final token = CancelToken();
+    _probeTokens.add(token);
+    try {
+      final document = await _mediaProbe.transport.document(
+        Uri.parse(playback.mediaUrl!),
+        playback.mediaHeaders,
+        cancel: token,
+      );
+      final variants = cinemaHlsVariants(document.text, document.uri);
+      final current = variants
+          .where((v) => v.uri.toString() == _tvHlsLastVariant)
+          .firstOrNull;
+      if (current == null) return;
+      final higher =
+          variants
+              .where(
+                (v) =>
+                    v.bitrate > current.bitrate &&
+                    !_tvHlsCodecRejected.contains(v.uri.toString()) &&
+                    CinemaTVMediaEnvironment.instance.supports(
+                      CinemaMediaProbeResult(
+                        ok: true,
+                        elapsedMs: 0,
+                        width: v.width,
+                        height: v.height,
+                        codec: v.codec,
+                      ),
+                    ),
+              )
+              .toList()
+            ..sort((a, b) => a.bitrate.compareTo(b.bitrate));
+      if (higher.isEmpty) return;
+      final candidate = higher.first;
+      final sample = await _mediaProbe.measure(
+        candidate.uri.toString(),
+        playback.mediaHeaders,
+        hls: true,
+        cancel: token,
+        timeout: const Duration(seconds: 6),
+      );
+      if (!_isCurrent(generation) ||
+          !identical(_playback, playback) ||
+          token.isCancelled ||
+          !playback.player.state.playing ||
+          !sample.ok ||
+          !CinemaTVMediaEnvironment.instance.supports(sample) ||
+          candidate.bitrate <= 0 ||
+          (sample.mbps ?? 0) * 1000000 < candidate.bitrate * 1.6) {
+        return;
+      }
+      _tvHlsRejected.remove(candidate.uri.toString());
+      _tvHlsPreferred = candidate.uri.toString();
+      await _playEpisode(
+        _routeIndex,
+        _episodeIndex,
+        resumeAt: playback.position.inSeconds,
+        automatic: true,
+        playWhenReady: playback.player.state.playing,
+        selectionNotice: '已确认更高画质可流畅播放，正在自动优化',
+      );
+    } catch (_) {
+      // Background comparisons are optional and cannot fail active playback.
+    } finally {
+      _probeTokens.remove(token);
+      _tvHlsUpgrading = false;
+    }
+  }
+
+  String? _lowerTVNASProfile() {
+    final profiles = _tvNASProfiles;
+    if (_nasResolution == nasOriginalFileProfile) {
+      return profiles
+          .where((p) => !_tvNASRejectedProfiles.contains(p))
+          .firstOrNull;
+    }
+    final at = profiles.indexOf(_nasResolution ?? '');
+    if (at < 0) return null;
+    return profiles
+        .skip(at + 1)
+        .where((p) => !_tvNASRejectedProfiles.contains(p))
+        .firstOrNull;
+  }
+
+  Future<CinemaNASPlaybackSession?> _startTVNAS(
+    String reference,
+    int generation,
+  ) async {
+    for (var attempt = 0; attempt < 3; attempt++) {
+      final session = await _nasPlayback.start(
+        reference,
+        resolution: _nasResolution,
+        audio: _nasAudio,
+        subtitle: _nasSubtitle,
+      );
+      if (!_isCurrent(generation)) {
+        await session.close();
+        return null;
+      }
+      final token = CancelToken();
+      _probeTokens.add(token);
+      CinemaMediaProbeResult? result;
+      try {
+        result = await _nasProbe.measure(
+          session.url,
+          session.headers,
+          hls: true,
+          cancel: token,
+          timeout: const Duration(seconds: 6),
+        );
+      } finally {
+        _probeTokens.remove(token);
+      }
+      if (!_isCurrent(generation) || token.isCancelled) {
+        await session.close();
+        return null;
+      }
+      final unsupported =
+          result.ok && !CinemaTVMediaEnvironment.instance.supports(result);
+      final bitrate = result.bitrate ?? session.bitrate;
+      final insufficient =
+          result.ok &&
+          bitrate > 0 &&
+          result.mbps != null &&
+          result.mbps! * 1000000 < bitrate * 1.3;
+      if (unsupported) _tvNASRejectedProfiles.add(_nasResolution!);
+      final lower = _lowerTVNASProfile();
+      if ((unsupported || insufficient) &&
+          lower != null &&
+          attempt < 2 &&
+          _tvNASDowngrades < 3) {
+        await session.close();
+        _tvNASDowngrades++;
+        _tvNASQualityChanged = DateTime.now();
+        setState(() {
+          _nasResolution = lower;
+          _phase = '正在自动选择更稳定的 NAS 画质';
+        });
+        continue;
+      }
+      if (unsupported) {
+        await session.close();
+        throw const FormatException('当前 NAS 视频编码超出这台电视的解码能力。');
+      }
+      return session;
+    }
+    return null;
+  }
+
+  bool _downgradeTVNAS(int generation, CinemaPlaybackFailure failure) {
+    if (!NakuDevice.isTV ||
+        _tvSheetOpen ||
+        !_usesNASPlayback ||
+        _tvNASDowngrades >= 3 ||
+        {
+          CinemaPlaybackFailure.accessDenied,
+          CinemaPlaybackFailure.unavailable,
+        }.contains(failure)) {
+      return false;
+    }
+    if (failure == CinemaPlaybackFailure.decoder ||
+        failure == CinemaPlaybackFailure.format) {
+      _tvNASRejectedProfiles.add(_nasResolution ?? '');
+    }
+    final next = _lowerTVNASProfile();
+    if (next == null) return false;
+    final at = _positionForEpisode(_routeIndex, _episodeIndex);
+    _tvNASDowngrades++;
+    _tvNASHealthySince = null;
+    _tvNASQualityChanged = DateTime.now();
+    _nasResolution = next;
+    unawaited(
+      _playEpisode(
+        _routeIndex,
+        _episodeIndex,
+        resumeAt: at,
+        automatic: true,
+        playWhenReady: _pendingPlayIntent,
+        selectionNotice: '正在自动优化 NAS 播放，保留进度',
+      ),
+    );
+    return true;
+  }
+
+  Future<void> _considerTVNASUpgrade(
+    _CinemaPlayback playback,
+    int generation,
+  ) async {
+    if (!NakuDevice.isTV ||
+        _tvSheetOpen ||
+        !_usesNASPlayback ||
+        _tvNASUpgrading ||
+        _tvNASUpgradeProbes >= 2 ||
+        _tvNASHealthySince == null ||
+        DateTime.now().difference(_tvNASHealthySince!).inSeconds < 120 ||
+        _nasReference == null) {
+      return;
+    }
+    final profiles = _tvNASProfiles;
+    final at = profiles.indexOf(_nasResolution ?? '');
+    if (at <= 0) return;
+    final higher = profiles
+        .take(at)
+        .where((p) => !_tvNASRejectedProfiles.contains(p))
+        .lastOrNull;
+    if (higher == null ||
+        _tvNASQualityChanged != null &&
+            DateTime.now().difference(_tvNASQualityChanged!).inSeconds < 120) {
+      return;
+    }
+    _tvNASUpgrading = true;
+    _tvNASUpgradeProbes++;
+    _tvNASHealthySince = null;
+    CinemaNASPlaybackSession? probe;
+    final token = CancelToken();
+    _probeTokens.add(token);
+    try {
+      probe = await _nasPlayback.start(
+        _nasReference!,
+        resolution: higher,
+        audio: _nasAudio,
+        subtitle: _nasSubtitle,
+      );
+      if (!_isCurrent(generation) || !identical(_playback, playback)) return;
+      final result = await _nasProbe.measure(
+        probe.url,
+        probe.headers,
+        hls: true,
+        cancel: token,
+        timeout: const Duration(seconds: 6),
+      );
+      final bitrate = result.bitrate ?? probe.bitrate;
+      if (!_isCurrent(generation) ||
+          !identical(_playback, playback) ||
+          token.isCancelled ||
+          !playback.player.state.playing ||
+          !result.ok ||
+          !CinemaTVMediaEnvironment.instance.supports(result) ||
+          bitrate <= 0 ||
+          (result.mbps ?? 0) * 1000000 < bitrate * 1.6) {
+        return;
+      }
+      await probe.close();
+      probe = null;
+      _nasResolution = higher;
+      _tvNASQualityChanged = DateTime.now();
+      await _playEpisode(
+        _routeIndex,
+        _episodeIndex,
+        resumeAt: playback.position.inSeconds,
+        automatic: true,
+        playWhenReady: playback.player.state.playing,
+        selectionNotice: '已确认更高画质可稳定播放，正在自动优化',
+      );
+    } catch (_) {
+      // A background quality check never interrupts a working stream.
+    } finally {
+      _probeTokens.remove(token);
+      await probe?.close();
+      _tvNASUpgrading = false;
     }
   }
 
@@ -1308,7 +1968,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return;
     }
     final position = _positionForEpisode(_routeIndex, _episodeIndex);
-    final play = playback?.ready == true
+    final play =
+        playback?.ready == true &&
+            (!NakuDevice.isTV || !playback!.player.state.buffering)
         ? playback!.player.state.playing
         : _pendingPlayIntent;
     _nasResolution = choice.resolution;
@@ -1339,7 +2001,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       episodeNumber: _episodeIndex + 1,
       onSubtitleApplied: (selection) => _rememberSubtitle(playback, selection),
       nasControls:
-          _usesNASPlayback &&
+          !NakuDevice.isTV &&
+              _usesNASPlayback &&
               _nasOptions != null &&
               _nasResolution != nasOriginalFileProfile
           ? CinemaNASInlinePlaybackControls(
@@ -1703,6 +2366,23 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           }
         }
         playback.position = position;
+        if (NakuDevice.isTV &&
+            playback.ready &&
+            playback.player.state.playing &&
+            !playback.player.state.buffering) {
+          final now = DateTime.now();
+          if (_tvNASLastProgress == null ||
+              now.difference(_tvNASLastProgress!).inSeconds > 3) {
+            _tvNASHealthySince = now;
+          }
+          _tvNASHealthySince ??= now;
+          _tvNASLastProgress = now;
+          if (_usesNASPlayback) {
+            unawaited(_considerTVNASUpgrade(playback, generation));
+          } else {
+            unawaited(_considerTVHlsUpgrade(playback, generation));
+          }
+        }
         playback.cacheSession?.update(
           position,
           buffering: playback.player.state.buffering || _probingRoutes,
@@ -1725,10 +2405,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           buffering: value || _probingRoutes,
           rate: _rate,
         );
+        if (value) _tvNASHealthySince = null;
+        _syncTVActivity();
       }),
       playback.player.stream.playing.listen((playing) {
         if (!current()) return;
         playback.watchdog.reset();
+        _syncTVActivity();
+        if (NakuDevice.isTV) {
+          if (!playing) _tvNASHealthySince = null;
+          _scheduleTVControlsHide();
+        }
         if (Platform.isAndroid && !NakuDevice.isTV) {
           unawaited(
             PipUtils.updateAndroidPIPActions(
@@ -1794,6 +2481,23 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }),
       playback.player.stream.error.listen((message) {
         if (!current()) return;
+        if (playback.player is CinemaTVNativePlayer) {
+          final code = int.tryParse(
+            RegExp(r'（(\d+)）').firstMatch(message)?[1] ?? '',
+          );
+          _fail(
+            generation,
+            '当前视频无法在电视上正常解码或连接，正在检查可用播放方式。',
+            failure: code != null && code >= 4000 && code < 5000
+                ? CinemaPlaybackFailure.decoder
+                : code != null && code >= 3000 && code < 4000
+                ? CinemaPlaybackFailure.format
+                : code != null && code >= 2000 && code < 3000
+                ? CinemaPlaybackFailure.transientNetwork
+                : CinemaPlaybackFailure.unknown,
+          );
+          return;
+        }
         observeFailure(message);
         // libmpv emits decoder fallback and transient TCP errors here too.
         // Keep playback running; a log line alone does not prove termination.
@@ -1820,23 +2524,27 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return;
     }
     unawaited(
-      playback.controller.waitUntilFirstFrameRendered.then<void>(
-        (_) {
-          if (!_isCurrent(playback.generation) ||
-              !identical(_playback, playback)) {
-            return;
-          }
-          playback.firstFrameTimer?.cancel();
-          setState(() => playback.firstFrameRendered = true);
-          playback.logStage('first-frame-rendered');
-        },
-        onError: (Object error, StackTrace _) {
-          if (_isCurrent(playback.generation) &&
-              identical(_playback, playback)) {
-            _fail(playback.generation, '视频画面未能初始化，请重试或更换线路。');
-          }
-        },
-      ),
+      (playback.player is CinemaTVNativePlayer
+              ? (playback.player as CinemaTVNativePlayer)
+                    .waitUntilFirstFrameRendered
+              : playback.controller.waitUntilFirstFrameRendered)
+          .then<void>(
+            (_) {
+              if (!_isCurrent(playback.generation) ||
+                  !identical(_playback, playback)) {
+                return;
+              }
+              playback.firstFrameTimer?.cancel();
+              setState(() => playback.firstFrameRendered = true);
+              playback.logStage('first-frame-rendered');
+            },
+            onError: (Object error, StackTrace _) {
+              if (_isCurrent(playback.generation) &&
+                  identical(_playback, playback)) {
+                _fail(playback.generation, '视频画面未能初始化，请重试或更换线路。');
+              }
+            },
+          ),
     );
   }
 
@@ -1848,7 +2556,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return;
     }
     playback.ready = true;
-    if (_usesMacCinemaLayout &&
+    if ((_usesMacCinemaLayout || NakuDevice.isTV) &&
         widget.videoSurfaceBuilder == null &&
         !playback.firstFrameRendered) {
       playback.firstFrameTimer = Timer(const Duration(seconds: 30), () {
@@ -1913,6 +2621,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }
     });
     setState(() => _loading = false);
+    _scheduleTVControlsHide();
     if (_automaticProbePending) {
       _automaticProbePending = false;
       unawaited(_probeRoutes(automatic: true));
@@ -1925,8 +2634,24 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     CinemaPlaybackFailure failure = CinemaPlaybackFailure.unknown,
   }) {
     if (!_isCurrent(generation) || _recoveryTimer != null) return;
+    if (NakuDevice.isTV && _tvSheetOpen) {
+      _tvDeferredFailure = (
+        generation: generation,
+        message: message,
+        failure: failure,
+      );
+      return;
+    }
     final selection = _selection;
-    if (_playback?.cacheSession != null &&
+    if (NakuDevice.isTV) {
+      _mediaProbe.invalidate();
+      final uri = Uri.tryParse(_playback?.mediaUrl ?? '');
+      if (uri != null && uri.hasAuthority) {
+        _mediaProbe.transport.router?.invalidate(uri);
+      }
+    }
+    if (!NakuDevice.isTV &&
+        _playback?.cacheSession != null &&
         failure != CinemaPlaybackFailure.accessDenied &&
         failure != CinemaPlaybackFailure.unavailable &&
         selection != null &&
@@ -1948,7 +2673,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       final at = _positionForEpisode(_routeIndex, _episodeIndex);
       final playback = _playback;
       if (playback?.ready == true) {
-        _pendingPlayIntent = playback!.player.state.playing;
+        if (!NakuDevice.isTV || !playback!.player.state.buffering) {
+          _pendingPlayIntent = playback!.player.state.playing;
+        }
       }
       setState(() {
         _loading = true;
@@ -1972,6 +2699,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return;
     }
     _health.observe(_source, ok: false, media: true, reason: '视频未能继续');
+    if (_downgradeTVHLS(failure) || _downgradeTVNAS(generation, failure)) {
+      return;
+    }
     if (selection != null && _probeResults.containsKey(selection.key)) {
       setState(
         () => _probeResults[selection.key] = const CinemaMediaProbeResult(
@@ -2071,7 +2801,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       final limited = _attempts.exhausted || _detailAttempts.length >= 8;
       _error =
           '$message\n${limited ? '已达本轮自动尝试上限' : '已尝试所有能确认同集的可用线路'}'
-          '（${_attempts.count} 条）。可重试或在播放列表中手动选择片源与集数。';
+          '（${_attempts.count} 条）。${NakuDevice.isTV ? '可重新自动查找或返回片库。' : '可重试或在播放列表中手动选择片源与集数。'}';
     });
   }
 
@@ -2158,12 +2888,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
     final token = CancelToken();
     _probeTokens.add(token);
-    final result = await _mediaProbe.measure(
-      playback.mediaUrl!,
-      playback.mediaHeaders,
-      cancel: token,
-      hls: playback.mediaFormat == VideoSourceFormat.hls,
-    );
+    final result =
+        await (NakuDevice.isTV && _usesNASPlayback ? _nasProbe : _mediaProbe)
+            .measure(
+              playback.mediaUrl!,
+              playback.mediaHeaders,
+              cancel: token,
+              hls: playback.mediaFormat == VideoSourceFormat.hls,
+            );
     _probeTokens.remove(token);
     if (!_isCurrent(generation) || token.isCancelled) return;
     final key = _selection?.key;
@@ -2233,14 +2965,20 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             anchor.episodeIndex) {
       return null;
     }
-    return cinemaBestMeasuredRoute([
+    final measurements = [
       for (final candidate in [
         current,
         ..._catalogue.matching(current).where((c) => c.key != current.key),
       ])
         if (_probeResults[candidate.key] case final result?)
           CinemaRouteMeasurement(candidate, result, playbackRate: _rate),
-    ]);
+    ];
+    return NakuDevice.isTV
+        ? cinemaBestMeasuredTVRoute(
+            measurements,
+            supported: CinemaTVMediaEnvironment.instance.supports,
+          )
+        : cinemaBestMeasuredRoute(measurements);
   }
 
   Future<void> _useBestRoute(
@@ -2248,8 +2986,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     bool automatic = false,
   }) async {
     if (_closing || _selection?.key == best.candidate.key) return;
+    if (NakuDevice.isTV && _tvSheetOpen) return;
     final position = _positionForEpisode(_routeIndex, _episodeIndex);
-    final play = _playback?.opened == true
+    final play = NakuDevice.isTV && _playback?.player.state.buffering == true
+        ? _pendingPlayIntent
+        : _playback?.opened == true
         ? (_together.session.waitingForBuffer
               ? _together.session.intendedPlaying
               : _playback!.player.state.playing)
@@ -2351,7 +3092,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         },
       );
       if (!_isCurrent(generation) || token.isCancelled) return;
-      final best = cinemaBestMeasuredRoute(measurements);
+      final best = NakuDevice.isTV
+          ? cinemaBestMeasuredTVRoute(
+              measurements,
+              supported: CinemaTVMediaEnvironment.instance.supports,
+            )
+          : cinemaBestMeasuredRoute(measurements);
       setState(() {
         _probingRoutes = false;
         _probeStatus = best == null
@@ -2571,6 +3317,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       await playback.player.playOrPause();
       if (identical(playback, _playback)) {
         _pendingPlayIntent = intendedPlaying;
+        _syncTVActivity();
+        if (NakuDevice.isTV) {
+          if (!intendedPlaying) {
+            _showTVControls();
+          } else {
+            _scheduleTVControlsHide();
+          }
+        }
       }
     } finally {
       _manualPlaybackChanging = false;
@@ -2609,6 +3363,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Future<void> _saveBeforeApplicationExit() async {
     if (!mounted) return;
     _closing = true;
+    _syncTVActivity();
     _recoveryTimer?.cancel();
     _recoveryTimer = null;
     ++_generation;
@@ -2645,6 +3400,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _exitCrtRequested = true;
     _closing = true;
     _recoveryTimer?.cancel();
+    _syncTVActivity();
     _recoveryTimer = null;
     // Silence the existing backend first, retaining its final video texture for
     // the CRT contraction. The backend is disposed by the same cleanup below.
@@ -2674,7 +3430,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _playback = null;
     if (old != null) await old.dispose();
     if (mounted) {
-      if (_usesMacCinemaLayout) {
+      if (_usesMacCinemaLayout || NakuDevice.isTV) {
         setState(() => _allowPlayerPop = true);
         await WidgetsBinding.instance.endOfFrame;
       }
@@ -2689,7 +3445,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     if (!_fullscreenChanging &&
         _fullscreenTransition == null &&
         !_pipChanging &&
-        !_preferences.backgroundPlayback &&
+        (NakuDevice.isTV || !_preferences.backgroundPlayback) &&
         (state == AppLifecycleState.hidden ||
             state == AppLifecycleState.paused) &&
         !_pip &&
@@ -2715,6 +3471,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     if (!_windowControls.blocksPlayback) return;
     _backgroundPaused = true;
     await _playback?.player.pause();
+    _syncTVActivity();
     await _persistProgress();
   }
 
@@ -2734,6 +3491,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   @override
   void dispose() {
+    CinemaTVPlaybackActivity.instance.release(this);
     _stopEntranceSound();
     _tvControlsTimer?.cancel();
     FocusManager.instance.removeEarlyKeyEventHandler(_tvRemoteKey);
@@ -2756,6 +3514,16 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
     _panelRevision.dispose();
     _playerFocus.dispose();
+    _tvTimeline.dispose();
+    for (final node in [
+      _tvTimelineFocus,
+      _tvPlayFocus,
+      _tvEpisodeFocus,
+      _tvSubtitleFocus,
+      _tvDanmakuFocus,
+    ]) {
+      node.dispose();
+    }
     _cinemaPageScroll.dispose();
     _warmTimer?.cancel();
     _cancelRouteProbe();
@@ -2764,6 +3532,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
     _probeTokens.clear();
     if (widget.mediaProbe == null) _mediaProbe.transport.dio.close(force: true);
+    _tvNASMediaProbe?.transport.dio.close(force: true);
     _volumeSaveTimer?.cancel();
     unawaited(_saveVolume());
     unawaited(_together.detachPlayback(_syncOwner));
@@ -2789,17 +3558,23 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Widget build(BuildContext context) => PopScope(
     canPop: _usesMacCinemaLayout
         ? _allowPlayerPop
-        : !NakuDevice.isTV || !_fullscreen,
+        : NakuDevice.isTV
+        ? _allowPlayerPop
+        : true,
     onPopInvokedWithResult: (didPop, _) {
       if (!didPop && _usesMacCinemaLayout && !_allowPlayerPop) {
         unawaited(_leave());
         return;
       }
       if (!didPop && NakuDevice.isTV && _fullscreen) {
-        if (_tvControlsVisible) {
+        if (_tvTimeline.active) {
+          _tvTimeline.cancel();
+        } else if (_tvControlsVisible && !_loading && _error == null) {
           setState(() => _tvControlsVisible = false);
+          _playerFocus.requestFocus();
         } else {
-          unawaited(_setFullscreen(false));
+          setState(() => _allowPlayerPop = true);
+          unawaited(_leave());
         }
       }
     },
@@ -2879,7 +3654,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     if (_androidPip) {
       return Scaffold(backgroundColor: Colors.black, body: _videoSurface());
     }
-    if (_fullscreen) {
+    if (_fullscreen || NakuDevice.isTV) {
       return Theme(
         data: CinemaTheme.of(context),
         child: Scaffold(backgroundColor: Colors.black, body: _videoSurface()),
@@ -3193,11 +3968,215 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     ],
   );
 
+  Widget _tvControlOverlay(_CinemaPlayback playback) => CinemaTVControlSurface(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                _title.title,
+                style: const TextStyle(
+                  fontSize: 23,
+                  fontWeight: FontWeight.w600,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 24),
+            Text(
+              _probingRoutes ? '正在自动优选' : '自动播放优化',
+              style: const TextStyle(fontSize: 16, color: _muted),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        if (_episode != null)
+          Text(
+            _episode!.name,
+            style: const TextStyle(fontSize: 16, color: _muted),
+          ),
+        const SizedBox(height: 8),
+        StreamBuilder<Duration>(
+          stream: playback.player.stream.position,
+          initialData: playback.position,
+          builder: (_, position) => CinemaTVTimeline(
+            position: position.data ?? playback.position,
+            duration: playback.duration,
+            preview: _tvTimeline,
+            focusNode: _tvTimelineFocus,
+            onCommit: _seekTV,
+            onActivity: _scheduleTVControlsHide,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            StreamBuilder<bool>(
+              stream: playback.player.stream.playing,
+              initialData: playback.player.state.playing,
+              builder: (_, playing) => FilledButton.icon(
+                focusNode: _tvPlayFocus,
+                autofocus: true,
+                onPressed: _togglePlayback,
+                style: _tvButtonStyle(primary: true),
+                icon: Icon(
+                  playing.data == true
+                      ? Icons.pause_rounded
+                      : Icons.play_arrow_rounded,
+                  size: 26,
+                ),
+                label: Text(
+                  playing.data == true ? '暂停' : '播放',
+                  style: const TextStyle(fontSize: 19),
+                ),
+              ),
+            ),
+            if ((_route?.episodes.length ?? 0) > 1) ...[
+              const SizedBox(width: 14),
+              OutlinedButton.icon(
+                focusNode: _tvEpisodeFocus,
+                style: _tvButtonStyle(),
+                onPressed: () => _showTVAction(_showEpisodes, _tvEpisodeFocus),
+                icon: const Icon(Icons.playlist_play_rounded, size: 25),
+                label: const Text('选集', style: TextStyle(fontSize: 19)),
+              ),
+            ],
+            const Spacer(),
+            OutlinedButton.icon(
+              focusNode: _tvSubtitleFocus,
+              style: _tvButtonStyle(),
+              onPressed: () => _showTVAction(_showTracks, _tvSubtitleFocus),
+              icon: const Icon(Icons.subtitles_outlined, size: 24),
+              label: const Text('字幕', style: TextStyle(fontSize: 19)),
+            ),
+            const SizedBox(width: 14),
+            OutlinedButton.icon(
+              focusNode: _tvDanmakuFocus,
+              style: _tvButtonStyle(),
+              onPressed: playback.danmaku == null
+                  ? null
+                  : () => _showTVAction(_showDanmaku, _tvDanmakuFocus),
+              icon: const Icon(Icons.comment_outlined, size: 23),
+              label: const Text('弹幕', style: TextStyle(fontSize: 19)),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+  ButtonStyle _tvButtonStyle({bool primary = false}) => ButtonStyle(
+    padding: const WidgetStatePropertyAll(
+      EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+    ),
+    minimumSize: const WidgetStatePropertyAll(Size(100, 52)),
+    side: WidgetStateProperty.resolveWith(
+      (states) => BorderSide(
+        color: states.contains(WidgetState.focused)
+            ? Colors.white
+            : primary
+            ? Colors.transparent
+            : _line,
+        width: states.contains(WidgetState.focused) ? 3 : 1,
+      ),
+    ),
+  );
+  Widget _tvLoadOrError() => ColoredBox(
+    color: const Color(0xB009090B),
+    child: Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: CinemaOpticalGlass(
+            opacity: .76,
+            padding: const EdgeInsets.all(30),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_error == null)
+                  const Icon(
+                    Icons.hourglass_top_rounded,
+                    color: _copper,
+                    size: 38,
+                  )
+                else
+                  const Icon(
+                    Icons.error_outline_rounded,
+                    color: _copper,
+                    size: 38,
+                  ),
+                const SizedBox(height: 22),
+                Text(
+                  _error ?? (_loading ? _phase : '正在等待视频首帧'),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 21, height: 1.5),
+                ),
+                const SizedBox(height: 22),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    if (_error != null && _episode != null)
+                      FilledButton.icon(
+                        autofocus: true,
+                        style: _tvButtonStyle(primary: true),
+                        onPressed: _retryTVAutomatically,
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text(
+                          '重新自动查找',
+                          style: TextStyle(fontSize: 19),
+                        ),
+                      ),
+                    if (_error != null && _episode != null)
+                      const SizedBox(width: 16),
+                    OutlinedButton(
+                      style: _tvButtonStyle(),
+                      autofocus: _loading || _episode == null,
+                      onPressed: _leave,
+                      child: const Text('返回', style: TextStyle(fontSize: 19)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  void _retryTVAutomatically() {
+    _attempts = CinemaFailoverAttempts();
+    _detailAttempts.clear();
+    _recovery.reset();
+    _mediaProbe.invalidate();
+    _cacheBypass.clear();
+    _tvNASRejectedProfiles.clear();
+    _tvHlsRejected.clear();
+    _tvHlsCodecRejected.clear();
+    _tvHlsDowngrades = 0;
+    _tvHlsUpgradeProbes = 0;
+    _tvNASDowngrades = 0;
+    _tvNASUpgradeProbes = 0;
+    _automaticProbePending = _source.id != cinemaNASSource.id;
+    unawaited(
+      _playEpisode(
+        _routeIndex,
+        _episodeIndex,
+        resumeAt: _positionForEpisode(_routeIndex, _episodeIndex),
+        playWhenReady: true,
+        initial: true,
+      ),
+    );
+  }
+
   Widget _videoSurface() => LayoutBuilder(
     key: _videoSurfaceKey,
     builder: (context, constraints) {
       final wide = constraints.maxWidth >= 850;
-      final nativeCinema = _usesMacCinemaLayout && !_pip;
+      final nativeCinema = (_usesMacCinemaLayout || NakuDevice.isTV) && !_pip;
       final mobile =
           widget.mobileControls ??
           (!NakuDevice.isTV && (Platform.isAndroid || Platform.isIOS));
@@ -3687,7 +4666,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   (playback?.width ?? 0) > 0 &&
                   (playback?.height ?? 0) > 0,
               hasError: _error != null || (_closing && !_exitCrtRequested),
-              enabled: nativeCinema,
+              enabled: nativeCinema && !NakuDevice.isTV,
               onReveal: () => _playEntranceSound(entranceGeneration),
               onCancel: () => _stopEntranceSound(entranceGeneration),
               reduceMotion:
@@ -3716,33 +4695,43 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                               context,
                               playback.player,
                             ) ??
-                            ListenableBuilder(
-                              listenable: Listenable.merge([
-                                widget.store,
-                                cinemaExternalSubtitleState(
-                                  playback.player,
-                                ).active,
-                              ]),
-                              builder: (context, _) => Video(
-                                key: ValueKey(playback),
-                                controller: playback.controller,
-                                fit: _preferences.aspectRatio.fit,
-                                aspectRatio:
-                                    _preferences.aspectRatio.frameAspectRatio,
-                                controls: NakuDevice.isTV || _androidPip
-                                    ? NoVideoControls
-                                    : MaterialDesktopVideoControls,
-                                subtitleViewConfiguration:
-                                    CinemaSubtitleAppearance.from(
-                                      widget.store.extras['subtitleAppearance'],
-                                    ).configurationFor(
-                                      visible: !cinemaExternalSubtitleState(
+                            (playback.player is CinemaTVNativePlayer
+                                ? CinemaTVNativeVideo(
+                                    key: ValueKey(playback),
+                                    player:
+                                        playback.player as CinemaTVNativePlayer,
+                                  )
+                                : ListenableBuilder(
+                                    listenable: Listenable.merge([
+                                      widget.store,
+                                      cinemaExternalSubtitleState(
                                         playback.player,
-                                      ).active.value,
+                                      ).active,
+                                    ]),
+                                    builder: (context, _) => Video(
+                                      key: ValueKey(playback),
+                                      controller: playback.controller,
+                                      fit: _preferences.aspectRatio.fit,
+                                      aspectRatio: _preferences
+                                          .aspectRatio
+                                          .frameAspectRatio,
+                                      controls: NakuDevice.isTV || _androidPip
+                                          ? NoVideoControls
+                                          : MaterialDesktopVideoControls,
+                                      subtitleViewConfiguration:
+                                          CinemaSubtitleAppearance.from(
+                                            widget
+                                                .store
+                                                .extras['subtitleAppearance'],
+                                          ).configurationFor(
+                                            visible:
+                                                !cinemaExternalSubtitleState(
+                                                  playback.player,
+                                                ).active.value,
+                                          ),
+                                      pauseUponEnteringBackgroundMode: false,
                                     ),
-                                pauseUponEnteringBackgroundMode: false,
-                              ),
-                            ),
+                                  )),
                       ),
                     ),
                   if (nativeCinema)
@@ -3830,180 +4819,137 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                 _error == null)
               Align(
                 alignment: Alignment.bottomCenter,
-                child: Container(
-                  color: const Color(0xD9000000),
-                  padding: const EdgeInsets.fromLTRB(32, 12, 32, 24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      StreamBuilder<Duration>(
-                        stream: playback.player.stream.position,
-                        initialData: playback.position,
-                        builder: (_, snapshot) => Text(
-                          '${_title.title} · ${snapshot.data?.toString().split('.').first ?? '0:00:00'}',
-                          style: const TextStyle(fontSize: 18),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          IconButton(
-                            tooltip: '后退 10 秒',
-                            onPressed: () => _seekBy(-10),
-                            icon: const Icon(Icons.replay_10, size: 32),
-                          ),
-                          FilledButton.icon(
-                            autofocus: true,
-                            onPressed: _togglePlayback,
-                            icon: const Icon(Icons.play_arrow),
-                            label: const Text('播放 / 暂停'),
-                          ),
-                          IconButton(
-                            tooltip: '前进 10 秒',
-                            onPressed: () => _seekBy(10),
-                            icon: const Icon(Icons.forward_10, size: 32),
-                          ),
-                          const Spacer(),
-                          TextButton(
-                            onPressed: _showEpisodes,
-                            child: const Text('选集 / 线路'),
-                          ),
-                          TextButton(
-                            onPressed: _showSpeedOptions,
-                            child: const Text('倍速'),
-                          ),
-                          if (_fullscreen)
-                            TextButton(
-                              onPressed: () => _setFullscreen(false),
-                              child: const Text('影片详情'),
-                            ),
-                          TextButton(
-                            onPressed: _toggleFavorite,
-                            child: Text(
-                              widget.store.isFavorite(_title) ? '已收藏' : '收藏',
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (_usesNASPlayback) _playbackTools(overlay: true),
-                    ],
+                child: _tvControlOverlay(playback),
+              ),
+            if (NakuDevice.isTV && _tvHeldSeek != null)
+              Center(
+                child: CinemaOpticalGlass(
+                  opacity: .8,
+                  padding: const EdgeInsets.all(18),
+                  child: Text(
+                    CinemaTVTimeline.time(_tvHeldSeek!),
+                    style: const TextStyle(fontSize: 30),
                   ),
                 ),
               ),
             if (_error != null ||
-                (!nativeCinema && (_loading || waitingForFirstFrame)))
-              ColoredBox(
-                color: nativeCinema && _error == null
-                    ? Colors.transparent
-                    : const Color(0xEE0B0C0D),
-                child: Align(
-                  alignment: nativeCinema
-                      ? const Alignment(0, .56)
-                      : Alignment.center,
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (_loading || waitingForFirstFrame)
-                          const SizedBox(
-                            width: 28,
-                            height: 28,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
+                ((NakuDevice.isTV || !nativeCinema) &&
+                    (_loading || waitingForFirstFrame)))
+              if (NakuDevice.isTV)
+                _tvLoadOrError()
+              else
+                ColoredBox(
+                  color: nativeCinema && _error == null
+                      ? Colors.transparent
+                      : const Color(0xEE0B0C0D),
+                  child: Align(
+                    alignment: nativeCinema
+                        ? const Alignment(0, .56)
+                        : Alignment.center,
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_loading || waitingForFirstFrame)
+                            const SizedBox(
+                              width: 28,
+                              height: 28,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: _copper,
+                              ),
+                            )
+                          else
+                            const Icon(
+                              Icons.error_outline_rounded,
                               color: _copper,
+                              size: 30,
                             ),
-                          )
-                        else
-                          const Icon(
-                            Icons.error_outline_rounded,
-                            color: _copper,
-                            size: 30,
+                          const SizedBox(height: 16),
+                          Text(
+                            _error ??
+                                (waitingForFirstFrame ? '正在等待视频首帧' : _phase),
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: _text, fontSize: 14),
                           ),
-                        const SizedBox(height: 16),
-                        Text(
-                          _error ??
-                              (waitingForFirstFrame ? '正在等待视频首帧' : _phase),
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: _text, fontSize: 14),
-                        ),
-                        const SizedBox(height: 16),
-                        if (_usesNASPlayback && _nasOptions != null)
-                          CinemaNASInlinePlaybackControls(
-                            options: _nasOptions!,
-                            resolution:
-                                _nasResolution ?? _nasOptions!.defaultProfile,
-                            audio: _nasAudio,
-                            subtitle: _nasSubtitle,
-                            enabled: !_closing,
-                            onPlayerTracks: playback == null
-                                ? null
-                                : _showTracks,
-                            onApply: (choice) =>
-                                unawaited(_applyNASPlaybackChoice(choice)),
-                          ),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          alignment: WrapAlignment.center,
-                          children: [
-                            OutlinedButton.icon(
-                              onPressed: _showEpisodes,
-                              icon: const Icon(Icons.playlist_play),
-                              label: Text(nativeCinema ? '选集与片源' : '线路 / 选集'),
+                          const SizedBox(height: 16),
+                          if (_usesNASPlayback && _nasOptions != null)
+                            CinemaNASInlinePlaybackControls(
+                              options: _nasOptions!,
+                              resolution:
+                                  _nasResolution ?? _nasOptions!.defaultProfile,
+                              audio: _nasAudio,
+                              subtitle: _nasSubtitle,
+                              enabled: !_closing,
+                              onPlayerTracks: playback == null
+                                  ? null
+                                  : _showTracks,
+                              onApply: (choice) =>
+                                  unawaited(_applyNASPlaybackChoice(choice)),
                             ),
-                            if (_canRetryDirect)
-                              OutlinedButton.icon(
-                                onPressed: _retryDirect,
-                                icon: const Icon(Icons.network_check_rounded),
-                                label: const Text('启用视频直连并重试'),
-                              ),
-                            if (_fullscreen)
-                              OutlinedButton.icon(
-                                onPressed: _toggleFullscreen,
-                                icon: const Icon(Icons.fullscreen_exit),
-                                label: const Text('退出全屏'),
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        if (_loading || waitingForFirstFrame)
-                          TextButton(
-                            onPressed: _cancelLoading,
-                            child: const Text('取消'),
-                          )
-                        else if (_episode != null)
                           Wrap(
-                            spacing: 12,
+                            spacing: 8,
                             runSpacing: 8,
                             alignment: WrapAlignment.center,
                             children: [
-                              FilledButton.tonalIcon(
-                                onPressed: () => _playEpisode(
-                                  _routeIndex,
-                                  _episodeIndex,
-                                  resumeAt: playback?.ready == true
-                                      ? playback!.position.inSeconds
-                                      : null,
-                                ),
-                                icon: const Icon(
-                                  Icons.refresh_rounded,
-                                  size: 18,
-                                ),
-                                label: const Text('重试'),
+                              OutlinedButton.icon(
+                                onPressed: _showEpisodes,
+                                icon: const Icon(Icons.playlist_play),
+                                label: Text(nativeCinema ? '选集与片源' : '线路 / 选集'),
                               ),
-                              if (_title.routes.length > 1)
-                                OutlinedButton(
-                                  onPressed: _tryNextRoute,
-                                  child: const Text('更换线路'),
+                              if (_canRetryDirect)
+                                OutlinedButton.icon(
+                                  onPressed: _retryDirect,
+                                  icon: const Icon(Icons.network_check_rounded),
+                                  label: const Text('启用视频直连并重试'),
+                                ),
+                              if (_fullscreen)
+                                OutlinedButton.icon(
+                                  onPressed: _toggleFullscreen,
+                                  icon: const Icon(Icons.fullscreen_exit),
+                                  label: const Text('退出全屏'),
                                 ),
                             ],
                           ),
-                      ],
+                          const SizedBox(height: 12),
+                          if (_loading || waitingForFirstFrame)
+                            TextButton(
+                              onPressed: _cancelLoading,
+                              child: const Text('取消'),
+                            )
+                          else if (_episode != null)
+                            Wrap(
+                              spacing: 12,
+                              runSpacing: 8,
+                              alignment: WrapAlignment.center,
+                              children: [
+                                FilledButton.tonalIcon(
+                                  onPressed: () => _playEpisode(
+                                    _routeIndex,
+                                    _episodeIndex,
+                                    resumeAt: playback?.ready == true
+                                        ? playback!.position.inSeconds
+                                        : null,
+                                  ),
+                                  icon: const Icon(
+                                    Icons.refresh_rounded,
+                                    size: 18,
+                                  ),
+                                  label: const Text('重试'),
+                                ),
+                                if (_title.routes.length > 1)
+                                  OutlinedButton(
+                                    onPressed: _tryNextRoute,
+                                    child: const Text('更换线路'),
+                                  ),
+                              ],
+                            ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
-              ),
           ],
         ),
       );
@@ -4548,7 +5494,9 @@ class _CinemaPlayback {
   final Player Function(PlayerConfiguration configuration)? createPlayer;
   late final player =
       createPlayer?.call(preferences.playerConfiguration) ??
-      Player(configuration: preferences.playerConfiguration);
+      (Platform.isAndroid && NakuDevice.isTV
+          ? CinemaTVNativePlayer(configuration: preferences.playerConfiguration)
+          : Player(configuration: preferences.playerConfiguration));
   late final controller = VideoController(
     player,
     configuration: preferences.videoConfiguration,
@@ -4568,6 +5516,7 @@ class _CinemaPlayback {
   }
 
   void observeControllerInitialization() {
+    if (player is CinemaTVNativePlayer) return;
     if (_controllerDiagnosticsAttached) return;
     _controllerDiagnosticsAttached = true;
     // Observe when the video surface first needs the lazy controller, without
@@ -4620,6 +5569,13 @@ class _CinemaPlayback {
   Future<void> dispose() => _disposal ??= _dispose();
   Future<void> _dispose() async {
     firstFrameTimer?.cancel();
+    if (player is CinemaTVNativePlayer) {
+      try {
+        await player.stop();
+      } catch (_) {
+        // Release below still closes a terminal MediaCodec error.
+      }
+    }
     await keyboardTransport?.close();
     try {
       await subtitles?.flush();
@@ -4632,7 +5588,11 @@ class _CinemaPlayback {
     cancelNextWarmup('播放已结束，取消下一集预热');
     liveSubtitles.dispose();
     bufferMonitor.dispose();
-    await closeCinemaExternalSubtitles(player);
+    // External close detaches its listeners synchronously. Persistence and
+    // cancellation completion must not delay decoder or NAS task release.
+    final closingExternal = closeCinemaExternalSubtitles(player);
+    // Keep early errors observed while still awaiting/reporting them below.
+    closingExternal.ignore();
     final closingNAS = nasSession?.close();
     try {
       await cacheSession?.close();
@@ -4644,7 +5604,11 @@ class _CinemaPlayback {
       subscriptions.clear();
       await player.dispose();
     } finally {
-      await closingNAS;
+      try {
+        await closingExternal;
+      } finally {
+        await closingNAS;
+      }
     }
   }
 }

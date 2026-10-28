@@ -6,6 +6,8 @@ import 'package:kazumi/bean/widget/image_preview.dart';
 import 'package:kazumi/pages/collect/collect_module.dart';
 import 'package:kazumi/pages/index_page.dart';
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
+import 'package:kazumi/features/cinema/cinema_tv_application.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:kazumi/features/cinema/anime/cinema_anime_page.dart';
 import 'package:kazumi/pages/info/info_module.dart';
 import 'package:kazumi/pages/init_page.dart';
@@ -87,9 +89,15 @@ final indexModule = createModule(
       ..route(
         '/cinema',
         provide: provideCinemaAnimeControllers,
-        child: (context, state) => CinemaHomePage(
-          initialStartup: CinemaStartupTarget.fromStored(state.uri.toString()),
-        ),
+        child: (context, state) => NakuDevice.isTV
+            ? const CinemaTVApplication(
+                home: CinemaHomePage(enableWatchTogether: false),
+              )
+            : CinemaHomePage(
+                initialStartup: CinemaStartupTarget.fromStored(
+                  state.uri.toString(),
+                ),
+              ),
         transition: TransitionType.none,
       )
       ..route(

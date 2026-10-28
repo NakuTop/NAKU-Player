@@ -56,6 +56,10 @@ class CinemaNASPage extends StatefulWidget {
     this.sync,
     this.onRecommendationSelected,
     this.onSyncSettings,
+    this.embedded = false,
+    this.initialKeyword = '',
+    this.onTitleSelected,
+    this.active = true,
   });
   final ValueChanged<DoubanRecommendation>? onRecommendationSelected;
   final VoidCallback? onSyncSettings;
@@ -63,6 +67,10 @@ class CinemaNASPage extends StatefulWidget {
   final CinemaNASSync? sync;
   final CinemaNASClient? client;
   final CinemaNASPageCache? cache;
+  final bool embedded;
+  final String initialKeyword;
+  final Future<void> Function(CinemaTitle)? onTitleSelected;
+  final bool active;
   @override
   State<CinemaNASPage> createState() => _CinemaNASPageState();
 }
@@ -155,6 +163,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   @override
   void initState() {
     super.initState();
+    _search.text = widget.initialKeyword.trim();
     if (NakuDevice.personalNASAddress.isNotEmpty) {
       _address.text = NakuDevice.personalNASAddress;
       _remoteAddress = NakuDevice.personalNASAddress;
@@ -162,7 +171,9 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     final cached = widget.cache?._snapshot;
     if (cached != null &&
         cached['namespace'] == _client.namespace &&
-        _client.namespace.isNotEmpty) {
+        _client.namespace.isNotEmpty &&
+        (widget.initialKeyword.trim().isEmpty ||
+            cached['search'] == widget.initialKeyword.trim())) {
       _loggedIn = true;
       _hasSaved = true;
       _name = cached['name'];
@@ -185,17 +196,48 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       _scroll = ScrollController(initialScrollOffset: cached['offset']);
       unawaited(_refreshCachedSession());
     } else {
-      widget.cache?.clear();
+      if (widget.initialKeyword.trim().isEmpty) widget.cache?.clear();
       _scroll = ScrollController();
       unawaited(_restore());
     }
   }
 
+  @override
+  void didUpdateWidget(covariant CinemaNASPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialKeyword != widget.initialKeyword) {
+      _search.text = widget.initialKeyword.trim();
+      _library = 0;
+      if (_loggedIn) {
+        ++_generation;
+        _busy = false;
+        _items = [];
+        unawaited(_load());
+      }
+    }
+    if (!oldWidget.active && widget.active && _loggedIn) {
+      unawaited(_refreshCachedSession());
+    } else if (!oldWidget.active &&
+        widget.active &&
+        NakuDevice.isTV &&
+        !_loggedIn &&
+        !_busy &&
+        !_hasSaved &&
+        !_qrOpening) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.active && !_loggedIn && !_busy) {
+          unawaited(_qrLogin());
+        }
+      });
+    }
+  }
+
   Future<void> _refreshCachedSession() async {
     try {
+      final expectedNamespace = _client.namespace;
       final active = await _client.call('currentSession');
       if (!mounted || _endingSession) return;
-      if (active['namespace'] != _client.namespace) {
+      if (active['namespace'] != expectedNamespace) {
         widget.cache?.clear();
         setState(() {
           _loggedIn = false;
@@ -215,6 +257,9 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   }
 
   void _savePageCache() {
+    // A temporary NAS search in the global TV search view must not overwrite
+    // the main NAS tab's catalogue/filter/scroll snapshot.
+    if (widget.initialKeyword.trim().isNotEmpty) return;
     if (!_loggedIn || _endingSession) {
       widget.cache?.clear();
       return;
@@ -360,9 +405,11 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       if (!mounted) return;
       if (saved.isEmpty) {
         setState(() => _busy = false);
-        if (NakuDevice.isTV) {
+        if (NakuDevice.isTV && widget.active) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && !_loggedIn && !_busy) unawaited(_qrLogin());
+            if (mounted && widget.active && !_loggedIn && !_busy) {
+              unawaited(_qrLogin());
+            }
           });
         }
         return;
@@ -535,7 +582,10 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     }
   }
 
-  Future<void> _details(Map<String, dynamic> row) async {
+  Future<void> _details(
+    Map<String, dynamic> row, {
+    bool chooseTVSeason = true,
+  }) async {
     if (_busy) return;
     if (nasInt(row['type']) == 3) {
       await _collection(row);
@@ -559,8 +609,30 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
           ? Map<String, dynamic>.from(detail['video_info'])
           : row;
       setState(() => _busy = false);
+      if (NakuDevice.isTV && widget.onTitleSelected != null) {
+        final seasons = nasRows(
+          detail['season_info'],
+        ).where((season) => nasInt(season['ug_video_info_id']) > 0).toList();
+        if (chooseTVSeason && seasons.length > 1) {
+          final selected = await _chooseTVSeason(row, seasons);
+          if (!mounted || selected == null) return;
+          await _details({
+            ...row,
+            'ug_video_info_id': selected['ug_video_info_id'],
+          }, chooseTVSeason: false);
+          return;
+        }
+        if (files.isEmpty) {
+          setState(() => _error = 'NAS 尚未返回可播放文件，请检查影视中心的文件识别。');
+          return;
+        }
+        await widget.onTitleSelected!(title);
+        return;
+      }
       selectedSeason = await showDialog<Map<String, dynamic>>(
         context: context,
+        useRootNavigator: !NakuDevice.isTV,
+        animationStyle: NakuDevice.isTV ? AnimationStyle.noAnimation : null,
         builder: (dialogContext) => AlertDialog(
           title: Text(
             info['name']?.toString() ?? row['name']?.toString() ?? '影片详情',
@@ -674,6 +746,47 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     }
   }
 
+  Future<Map<String, dynamic>?> _chooseTVSeason(
+    Map<String, dynamic> row,
+    List<Map<String, dynamic>> seasons,
+  ) => showDialog<Map<String, dynamic>>(
+    context: context,
+    useRootNavigator: !NakuDevice.isTV,
+    animationStyle: NakuDevice.isTV ? AnimationStyle.noAnimation : null,
+    builder: (dialogContext) => AlertDialog(
+      title: Text('${row['name'] ?? '剧集'} · 选择季度'),
+      content: SizedBox(
+        width: 560,
+        height: (seasons.length * 66.0).clamp(80, 360),
+        child: FocusTraversalGroup(
+          child: ListView.separated(
+            itemCount: seasons.length,
+            separatorBuilder: (_, _) => const SizedBox(height: 10),
+            itemBuilder: (_, index) {
+              final season = seasons[index],
+                  number = nasInt(season['season_num']);
+              return FilledButton.tonal(
+                autofocus: index == 0,
+                onPressed: () => Navigator.pop(dialogContext, season),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(56),
+                  textStyle: const TextStyle(fontSize: 20),
+                ),
+                child: Text(number > 0 ? '第 $number 季' : '特别篇'),
+              );
+            },
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext),
+          child: const Text('返回'),
+        ),
+      ],
+    ),
+  );
+
   Future<void> _collection(Map<String, dynamic> row) async {
     setState(() {
       _busy = true;
@@ -692,6 +805,8 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       setState(() => _busy = false);
       selected = await showDialog<Map<String, dynamic>>(
         context: context,
+        useRootNavigator: !NakuDevice.isTV,
+        animationStyle: NakuDevice.isTV ? AnimationStyle.noAnimation : null,
         builder: (ctx) => AlertDialog(
           title: Text(row['name']?.toString() ?? '影视合集'),
           content: SizedBox(
@@ -730,7 +845,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   }
 
   Future<void> _qrLogin() async {
-    if (_busy || _qrOpening) return;
+    if (_busy || _qrOpening || !widget.active) return;
     _qrOpening = true;
     setState(() {
       _busy = false;
@@ -739,6 +854,8 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     try {
       final info = await showDialog<Map<String, dynamic>>(
         context: context,
+        useRootNavigator: !NakuDevice.isTV,
+        animationStyle: NakuDevice.isTV ? AnimationStyle.noAnimation : null,
         builder: (_) => _NASQRDialog(
           client: _client,
           address: _address.text.trim(),
@@ -828,50 +945,34 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: CinemaTheme.background,
-    appBar: AppBar(
-      title: Text(_loggedIn ? '$_name · 影视中心' : 'NAS 影视中心'),
-      actions: [
-        if (_loggedIn)
-          IconButton(
-            tooltip: '刷新',
-            onPressed: _busy ? null : () => _load(),
-            icon: const Icon(Icons.refresh),
+    appBar: widget.embedded
+        ? null
+        : AppBar(
+            title: Text(_loggedIn ? '$_name · 影视中心' : 'NAS 影视中心'),
+            actions: [
+              if (NakuDevice.isTV && (_loggedIn || _hasSaved))
+                TextButton(
+                  onPressed: _busy ? null : _tvAccount,
+                  child: const Text('账号'),
+                ),
+              if (!NakuDevice.isTV && _loggedIn)
+                IconButton(
+                  tooltip: '刷新',
+                  onPressed: _busy ? null : () => _load(),
+                  icon: const Icon(Icons.refresh),
+                ),
+              if (!NakuDevice.isTV && _loggedIn)
+                TextButton(
+                  onPressed: _busy ? null : _changeConnection,
+                  child: const Text('连接设置'),
+                ),
+              if (!NakuDevice.isTV && (_loggedIn || _hasSaved))
+                TextButton(
+                  onPressed: _busy ? null : _forgetAccount,
+                  child: const Text('退出并忘记账号'),
+                ),
+            ],
           ),
-        if (_loggedIn)
-          TextButton(
-            onPressed: _busy ? null : _changeConnection,
-            child: const Text('连接设置'),
-          ),
-        if (_loggedIn || _hasSaved)
-          TextButton(
-            onPressed: _busy
-                ? null
-                : () async {
-                    _endingSession = true;
-                    widget.cache?.clear();
-                    widget.sync?.pause();
-                    _generation++;
-                    _collectionCache.clear();
-                    _collectionFailed.clear();
-                    await CinemaWatchTogether.instance.pauseNASPairing();
-                    await _client.call('forget');
-                    if (mounted) {
-                      setState(() {
-                        _loggedIn = false;
-                        _hasSaved = false;
-                        _username.clear();
-                        _items = [];
-                        _libraries = [];
-                        _search.clear();
-                        _library = 0;
-                        _error = null;
-                      });
-                    }
-                  },
-            child: const Text('退出并忘记账号'),
-          ),
-      ],
-    ),
     body: Column(
       children: [
         if (_busy) const LinearProgressIndicator(minHeight: 2),
@@ -1056,125 +1157,178 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     ),
   );
 
-  Widget _syncPanel() => Padding(
-    padding: const EdgeInsets.only(top: 8),
-    child: TextButton.icon(
-      onPressed: widget.onSyncSettings,
-      icon: const Icon(Icons.manage_accounts_outlined, size: 18),
-      label: const Text('账号与统一同步设置'),
-    ),
-  );
+  Future<void> _forgetAccount() async {
+    _endingSession = true;
+    widget.cache?.clear();
+    widget.sync?.pause();
+    _generation++;
+    _collectionCache.clear();
+    _collectionFailed.clear();
+    await CinemaWatchTogether.instance.pauseNASPairing();
+    await _client.call('forget');
+    if (!mounted) return;
+    setState(() {
+      _loggedIn = false;
+      _hasSaved = false;
+      _username.clear();
+      _items = [];
+      _libraries = [];
+      _search.clear();
+      _library = 0;
+      _error = null;
+    });
+  }
 
-  Widget _catalog() => CustomScrollView(
-    controller: _scroll,
-    slivers: [
-      SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(28, 20, 28, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+  Future<void> _tvAccount() async {
+    final action = await showDialog<String>(
+      context: context,
+      useRootNavigator: false,
+      animationStyle: AnimationStyle.noAnimation,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(_name),
+        content: SizedBox(
+          width: 520,
+          height: (MediaQuery.sizeOf(context).height * .58).clamp(220.0, 400.0),
+          child: ListView(
             children: [
-              Text('家中的收藏', style: Theme.of(context).textTheme.headlineLarge),
-              const SizedBox(height: 8),
+              Text(_username.text, style: const TextStyle(fontSize: 20)),
+              const SizedBox(height: 10),
               Text(
-                '自动连接 · ${_mode == 'lan' ? '局域网直连' : '远程 UGlink'} · ${_address.text}',
-                style: const TextStyle(color: CinemaTheme.muted, fontSize: 12),
-              ),
-              const SizedBox(height: 8),
-              if (_connectionNote.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Text(
-                    _connectionNote,
-                    style: const TextStyle(
-                      color: CinemaTheme.muted,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-              Text(
-                _total > 0 ? '影视中心 · $_total 部资源' : '影视中心已有资源',
+                _mode == 'lan' ? '局域网直连' : '远程连接',
                 style: const TextStyle(color: CinemaTheme.muted),
               ),
-              if (widget.sync != null) _syncPanel(),
-              const SizedBox(height: 24),
-              TextField(
-                controller: _search,
-                enabled: !_busy,
-                onSubmitted: (_) => _load(),
-                decoration: InputDecoration(
-                  hintText: '搜索全部 NAS 影视资源',
-                  prefixIcon: const Icon(Icons.search),
-                  suffixIcon: IconButton(
-                    tooltip: '搜索',
-                    onPressed: _busy ? null : () => _load(),
-                    icon: const Icon(Icons.arrow_forward),
-                  ),
+              const SizedBox(height: 18),
+              for (final option in [
+                ('refresh', '刷新片库'),
+                if (_libraries.length > 1) ('library', '选择媒体库'),
+                if (widget.onSyncSettings != null) ('sync', '账号与同步'),
+                ('reconnect', '连接其他 NAS'),
+                ('forget', '退出并忘记账号'),
+              ])
+                ListTile(
+                  autofocus: option.$1 == 'refresh',
+                  title: Text(option.$2, style: const TextStyle(fontSize: 19)),
+                  onTap: () => Navigator.of(dialogContext).pop(option.$1),
                 ),
-              ),
-              const SizedBox(height: 20),
-              Wrap(
-                spacing: 10,
-                runSpacing: 8,
-                children: [
-                  for (final library in [
-                    {'media_lib_set_id': 0, 'media_name': '全部'},
-                    ..._libraries,
-                  ])
-                    ChoiceChip(
-                      label: Text(library['media_name']?.toString() ?? '媒体库'),
-                      selected: _library == nasInt(library['media_lib_set_id']),
-                      onSelected: _busy
-                          ? null
-                          : (_) {
-                              setState(() {
-                                _library = nasInt(library['media_lib_set_id']);
-                                _search.clear();
-                              });
-                              _load();
-                            },
-                    ),
-                ],
-              ),
             ],
           ),
         ),
       ),
-      if (_items.isEmpty && !_busy)
-        const SliverToBoxAdapter(
-          child: Padding(
-            padding: EdgeInsets.all(48),
-            child: Center(child: Text('此处暂无影片。可切换媒体库或重新搜索。')),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'refresh':
+        await _load();
+      case 'library':
+        await _tvChooseLibrary();
+      case 'sync':
+        widget.onSyncSettings?.call();
+      case 'reconnect':
+        await _changeConnection();
+        if (mounted && !_busy) await _qrLogin();
+      case 'forget':
+        await _forgetAccount();
+    }
+  }
+
+  Future<void> _tvChooseLibrary() async {
+    final selected = await showDialog<int>(
+      context: context,
+      useRootNavigator: false,
+      animationStyle: AnimationStyle.noAnimation,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('选择媒体库'),
+        content: SizedBox(
+          width: 520,
+          height: 320,
+          child: ListView(
+            children: [
+              for (final library in [
+                {'media_lib_set_id': 0, 'media_name': '全部'},
+                ..._libraries,
+              ])
+                ListTile(
+                  autofocus: _library == nasInt(library['media_lib_set_id']),
+                  selected: _library == nasInt(library['media_lib_set_id']),
+                  title: Text(
+                    library['media_name']?.toString() ?? '媒体库',
+                    style: const TextStyle(fontSize: 20),
+                  ),
+                  onTap: () => Navigator.of(
+                    dialogContext,
+                  ).pop(nasInt(library['media_lib_set_id'])),
+                ),
+            ],
           ),
         ),
-      SliverPadding(
-        padding: const EdgeInsets.symmetric(horizontal: 28),
-        sliver: SliverLayoutBuilder(
-          builder: (context, constraints) => SliverGrid(
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: (constraints.crossAxisExtent / 180).floor().clamp(
-                2,
-                8,
-              ),
-              mainAxisSpacing: 24,
-              crossAxisSpacing: 18,
-              childAspectRatio: .57,
+      ),
+    );
+    if (!mounted || selected == null || selected == _library) return;
+    setState(() {
+      _library = selected;
+      _search.clear();
+    });
+    await _load();
+  }
+
+  Widget _tvCatalog() {
+    final width = MediaQuery.sizeOf(context).width;
+    final gutter = (width * .04).clamp(32.0, 64.0);
+    return CustomScrollView(
+      controller: _scroll,
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(gutter, 24, gutter, 24),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    widget.initialKeyword.isEmpty ? 'NAS' : 'NAS · 搜索结果',
+                    style: const TextStyle(
+                      fontSize: 34,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                if (widget.embedded)
+                  TextButton.icon(
+                    key: const ValueKey('tv-nas-account'),
+                    onPressed: _busy ? null : _tvAccount,
+                    icon: const Icon(Icons.person_outline_rounded),
+                    label: const Text('账号'),
+                    style: TextButton.styleFrom(
+                      textStyle: const TextStyle(fontSize: 18),
+                    ),
+                  ),
+              ],
             ),
-            delegate: SliverChildBuilderDelegate((context, index) {
-              final row = _items[index];
-              final type = nasInt(row['type']);
-              final year = nasInt(row['year']);
-              final subtitle = [
-                if (type != 3 && year >= 1000 && year <= 9999) '$year',
-                switch (type) {
-                  2 => '剧集',
-                  3 => _collectionLabel(row),
-                  _ => '电影',
-                },
-              ].join(' · ');
+          ),
+        ),
+        if (_items.isEmpty && !_busy)
+          const SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(
+              child: Text('暂时没有影片', style: TextStyle(fontSize: 22)),
+            ),
+          ),
+        SliverPadding(
+          padding: EdgeInsets.symmetric(horizontal: gutter),
+          sliver: SliverGrid.builder(
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: width >= 1100 ? 4 : 3,
+              mainAxisSpacing: 28,
+              crossAxisSpacing: 24,
+              childAspectRatio: .61,
+            ),
+            itemCount: _items.length,
+            itemBuilder: (_, index) {
+              final row = _items[index],
+                  type = nasInt(_items[index]['type']),
+                  year = nasInt(_items[index]['year']);
               return CinemaTVFocus(
                 child: InkWell(
-                  borderRadius: BorderRadius.circular(12),
+                  key: ValueKey('tv-nas-card-${row['ug_video_info_id']}'),
                   onTap: _busy ? null : () => _details(row),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1199,42 +1353,244 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                         row['name']?.toString() ?? '未命名影片',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        subtitle,
+                        [
+                          if (type != 3 && year >= 1000 && year <= 9999)
+                            '$year',
+                          switch (type) {
+                            2 => '剧集',
+                            3 => _collectionLabel(row),
+                            _ => '电影',
+                          },
+                        ].join(' · '),
                         style: const TextStyle(
+                          fontSize: 14,
                           color: CinemaTheme.muted,
-                          fontSize: 12,
                         ),
                       ),
                     ],
                   ),
                 ),
               );
-            }, childCount: _items.length),
+            },
           ),
         ),
-      ),
-      SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.all(28),
-          child: Center(
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
             child: !_last
-                ? OutlinedButton(
-                    onPressed: _busy ? null : () => _load(more: true),
-                    child: const Text('加载更多'),
+                ? Center(
+                    child: TextButton(
+                      onPressed: _busy ? null : () => _load(more: true),
+                      child: const Text('更多影片'),
+                    ),
                   )
-                : Text(
-                    _items.isEmpty ? '' : '已显示全部',
-                    style: const TextStyle(color: CinemaTheme.muted),
-                  ),
+                : const SizedBox.shrink(),
           ),
         ),
-      ),
-    ],
+      ],
+    );
+  }
+
+  Widget _syncPanel() => Padding(
+    padding: const EdgeInsets.only(top: 8),
+    child: TextButton.icon(
+      onPressed: widget.onSyncSettings,
+      icon: const Icon(Icons.manage_accounts_outlined, size: 18),
+      label: const Text('账号与统一同步设置'),
+    ),
   );
+
+  Widget _catalog() => NakuDevice.isTV
+      ? _tvCatalog()
+      : CustomScrollView(
+          controller: _scroll,
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(28, 20, 28, 24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '家中的收藏',
+                      style: Theme.of(context).textTheme.headlineLarge,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '自动连接 · ${_mode == 'lan' ? '局域网直连' : '远程 UGlink'} · ${_address.text}',
+                      style: const TextStyle(
+                        color: CinemaTheme.muted,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    if (_connectionNote.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          _connectionNote,
+                          style: const TextStyle(
+                            color: CinemaTheme.muted,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    Text(
+                      _total > 0 ? '影视中心 · $_total 部资源' : '影视中心已有资源',
+                      style: const TextStyle(color: CinemaTheme.muted),
+                    ),
+                    if (widget.sync != null) _syncPanel(),
+                    const SizedBox(height: 24),
+                    TextField(
+                      controller: _search,
+                      enabled: !_busy,
+                      onSubmitted: (_) => _load(),
+                      decoration: InputDecoration(
+                        hintText: '搜索全部 NAS 影视资源',
+                        prefixIcon: const Icon(Icons.search),
+                        suffixIcon: IconButton(
+                          tooltip: '搜索',
+                          onPressed: _busy ? null : () => _load(),
+                          icon: const Icon(Icons.arrow_forward),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 8,
+                      children: [
+                        for (final library in [
+                          {'media_lib_set_id': 0, 'media_name': '全部'},
+                          ..._libraries,
+                        ])
+                          ChoiceChip(
+                            label: Text(
+                              library['media_name']?.toString() ?? '媒体库',
+                            ),
+                            selected:
+                                _library == nasInt(library['media_lib_set_id']),
+                            onSelected: _busy
+                                ? null
+                                : (_) {
+                                    setState(() {
+                                      _library = nasInt(
+                                        library['media_lib_set_id'],
+                                      );
+                                      _search.clear();
+                                    });
+                                    _load();
+                                  },
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (_items.isEmpty && !_busy)
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.all(48),
+                  child: Center(child: Text('此处暂无影片。可切换媒体库或重新搜索。')),
+                ),
+              ),
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: 28),
+              sliver: SliverLayoutBuilder(
+                builder: (context, constraints) => SliverGrid(
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: (constraints.crossAxisExtent / 180)
+                        .floor()
+                        .clamp(2, 8),
+                    mainAxisSpacing: 24,
+                    crossAxisSpacing: 18,
+                    childAspectRatio: .57,
+                  ),
+                  delegate: SliverChildBuilderDelegate((context, index) {
+                    final row = _items[index];
+                    final type = nasInt(row['type']);
+                    final year = nasInt(row['year']);
+                    final subtitle = [
+                      if (type != 3 && year >= 1000 && year <= 9999) '$year',
+                      switch (type) {
+                        2 => '剧集',
+                        3 => _collectionLabel(row),
+                        _ => '电影',
+                      },
+                    ].join(' · ');
+                    return CinemaTVFocus(
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: _busy ? null : () => _details(row),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(10),
+                                child: SizedBox(
+                                  width: double.infinity,
+                                  child: _NASPoster(
+                                    key: ValueKey(
+                                      '${row['ug_video_info_id']}-${row['poster_path']}',
+                                    ),
+                                    client: _client,
+                                    row: row,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              row['name']?.toString() ?? '未命名影片',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              subtitle,
+                              style: const TextStyle(
+                                color: CinemaTheme.muted,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }, childCount: _items.length),
+                ),
+              ),
+            ),
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(28),
+                child: Center(
+                  child: !_last
+                      ? OutlinedButton(
+                          onPressed: _busy ? null : () => _load(more: true),
+                          child: const Text('加载更多'),
+                        )
+                      : Text(
+                          _items.isEmpty ? '' : '已显示全部',
+                          style: const TextStyle(color: CinemaTheme.muted),
+                        ),
+                ),
+              ),
+            ),
+          ],
+        );
 }
 
 class _NASPoster extends StatefulWidget {
@@ -1264,6 +1620,10 @@ class _NASPosterState extends State<_NASPoster> {
       if (!snapshot.hasData || snapshot.data!.isEmpty) return _placeholder();
       return Image.network(
         snapshot.data!,
+        cacheWidth: NakuDevice.isTV ? 640 : null,
+        filterQuality: NakuDevice.isTV
+            ? FilterQuality.low
+            : FilterQuality.medium,
         fit: BoxFit.cover,
         excludeFromSemantics: true,
         errorBuilder: (_, _, _) => _placeholder(),

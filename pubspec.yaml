@@ -108,6 +108,7 @@ dependencies:
       path: ./media_kit_video
   macos_secure_bookmarks: ^0.2.1
   brotli: ^0.6.0
+  archive: ^4.0.9
 
 dev_dependencies:
   integration_test:
@@ -184,6 +185,9 @@ flutter:
     - licenses/ech_http/
     - licenses/libfvad/
     - licenses/danmu_api/
+    - licenses/junrar-LICENSE.txt
+    - licenses/slf4j-LICENSE.txt
+    - licenses/android_tv/
   fonts:
     - family: MI_Sans_Regular
       fonts:

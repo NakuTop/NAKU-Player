@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'cinema_nas_address.dart';
+import 'cinema_home_display_authorization.dart';
+import 'cinema_home_display_snapshot.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -27,6 +30,20 @@ class CinemaAndroidNAS {
   Timer? _heartbeat;
   String _task = '';
   int _qrGeneration = 0;
+  int _homeDisplayGeneration = 0;
+  late final String _homeDisplayClientID = cinemaHomeDisplayWireClientId(
+    _hex(16),
+  );
+  late final _homeDisplayAuthorization = CinemaHomeDisplayAuthorizer(
+    proof: _homeDisplayProof,
+    exchange: _exchangeHomeDisplay,
+    hasSession: () => _token.isNotEmpty && _namespace.isNotEmpty,
+    revision: () => _homeDisplayGeneration,
+    cookies: _homeDisplayCookies,
+  );
+  late final _homeDisplayCookies = CinemaHomeDisplaySnapshotSession(
+    webCookies: NakuDevice.isTV ? null : CinemaHomeDisplayPlatformCookies(),
+  );
   String _qrCode = '', _qrOrigin = '', _qrHint = '';
   String _qrCloud = 'https://api.ugnas.com/api/';
 
@@ -37,6 +54,12 @@ class CinemaAndroidNAS {
   // Serialize account changes with requests, so responses cannot adopt another
   // account's data after logout. The socket heartbeat runs independently.
   Future<dynamic> invoke(String method, [Map<String, dynamic>? arguments]) {
+    if ({'login', 'logout', 'forget'}.contains(method)) {
+      // Invalidate an in-flight display exchange as soon as logout/account
+      // change is requested, even while the ordinary NAS queue is busy.
+      ++_homeDisplayGeneration;
+      unawaited(_homeDisplayAuthorization.invalidate().catchError((_) {}));
+    }
     if (method == 'qrCancel' || method == 'qrCreate') _qrGeneration++;
     final requestedQRGeneration = _qrGeneration;
     final completed = Completer<dynamic>();
@@ -229,6 +252,12 @@ class CinemaAndroidNAS {
           'address': _base,
         };
   Future<void> _logout() async {
+    ++_homeDisplayGeneration;
+    try {
+      await _homeDisplayAuthorization.invalidate();
+    } catch (_) {
+      // WebView may not have been initialized. No other site's cookies change.
+    }
     await _close();
     _base = '';
     _token = '';
@@ -586,6 +615,93 @@ class CinemaAndroidNAS {
     }
     _check(r);
     return _map(r['data']);
+  }
+
+  Future<Map<String, String>> _homeDisplayProof(
+    Map<String, String> parameters,
+  ) async {
+    if (_token.isEmpty || _namespace.isEmpty || _key.isEmpty) _fail();
+    final token = _token, publicKey = _key, key = _hex(16);
+    final values = {...parameters};
+    final proof = <String, String>{
+      'responseKey': key,
+      'securityKey': md5.convert(utf8.encode(token)).toString(),
+      'securityCode': await _crypto('rsa', key, publicKey),
+    };
+    if (_auth == 'header') {
+      proof['token'] = await _crypto('rsa', token, publicKey);
+    } else {
+      values['token'] = token;
+    }
+    final names = values.keys.toList()..sort();
+    final query = names
+        .map(
+          (name) =>
+              '${Uri.encodeComponent(name)}=${Uri.encodeComponent(values[name]!)}',
+        )
+        .join('&');
+    proof['query'] = await _crypto('seal', query, key);
+    return proof;
+  }
+
+  Future<CinemaHomeDisplayExchangeResponse> _exchangeHomeDisplay(
+    Map<String, dynamic> body,
+  ) async {
+    // Fixed destination, no redirects, no NAS headers or plaintext token. The
+    // server verifies both encrypted GET proofs against its configured NAS.
+    const timeout = Duration(seconds: 18);
+    final request = await _http
+        .postUrl(cinemaHomeDisplayExchangeEndpoint)
+        .timeout(timeout);
+    request.followRedirects = false;
+    request.headers.contentType = ContentType.json;
+    request.headers.set('Origin', cinemaHomeDisplayOrigin);
+    request.add(utf8.encode(jsonEncode(body)));
+    final response = await request.close().timeout(timeout);
+    final bytes = <int>[];
+    await for (final chunk in response.timeout(timeout)) {
+      bytes.addAll(chunk);
+      if (bytes.length > 4096) {
+        request.abort();
+        throw const CinemaHomeDisplayAuthFailure(
+          'authorization_response_invalid',
+          'response_origin_or_size',
+        );
+      }
+    }
+    return CinemaHomeDisplayExchangeResponse(
+      status: response.statusCode,
+      bytes: bytes,
+      setCookies: response.headers[HttpHeaders.setCookieHeader] ?? const [],
+      url: cinemaHomeDisplayExchangeEndpoint,
+    );
+  }
+
+  Future<Map<String, dynamic>> _authorizeHomeDisplay() async {
+    if (_token.isEmpty || _namespace.isEmpty) {
+      // Startup/login owns restoration. An unattended screensaver must not
+      // silently sign a user back in after an explicit NAS logout.
+      return {'authenticated': false, 'reason': 'nas_login_required'};
+    }
+    return _homeDisplayAuthorization.authorize(_homeDisplayClientID);
+  }
+
+  Future<Map<String, dynamic>> _homeDisplaySnapshot() async {
+    final generation = _homeDisplayGeneration;
+    if (_token.isEmpty || _namespace.isEmpty) {
+      return {'ok': false, 'reason': 'nas_login_required'};
+    }
+    if (!_homeDisplayCookies.ready) {
+      final access = await _authorizeHomeDisplay();
+      if (access['authenticated'] != true) {
+        return {'ok': false, 'reason': access['reason']};
+      }
+    }
+    final data = await _homeDisplayCookies.snapshot();
+    if (generation != _homeDisplayGeneration || _token.isEmpty) {
+      return {'ok': false, 'reason': 'nas_session_expired'};
+    }
+    return data;
   }
 
   Future<({Uri url, Map<String, String> headers})> _authorized(
@@ -1150,6 +1266,10 @@ class CinemaAndroidNAS {
       } catch (_) {}
     }
     switch (method) {
+      case 'homeDisplayAuthorize':
+        return _authorizeHomeDisplay();
+      case 'homeDisplaySnapshot':
+        return _homeDisplaySnapshot();
       case 'qrCreate':
         return _createQR('${a['address'] ?? ''}');
       case 'qrPoll':

@@ -53,10 +53,16 @@ class _Segment {
 }
 
 class CinemaCacheSession {
-  CinemaCacheSession._(this.cache, this.id, this.headers);
+  CinemaCacheSession._(
+    this.cache,
+    this.id,
+    this.headers, {
+    this.manifestPolicy,
+  });
   final CinemaMediaCache cache;
   final String id;
   final Map<String, String> headers;
+  final Future<String> Function(String manifest, Uri base)? manifestPolicy;
   final Map<String, _Resource> _resources = {};
   final Map<String, String> _ids = {};
   final Map<String, List<_Segment>> _playlists = {};
@@ -162,6 +168,7 @@ class CinemaMediaCache extends ChangeNotifier {
     String url,
     Map<String, String> headers, {
     bool hls = false,
+    Future<String> Function(String manifest, Uri base)? manifestPolicy,
   }) async {
     final uri = Uri.tryParse(url);
     if ((!preferences.enabled && transport.router?.active != true) ||
@@ -175,6 +182,7 @@ class CinemaMediaCache extends ChangeNotifier {
       this,
       '${++_serial}',
       Map.unmodifiable(headers),
+      manifestPolicy: manifestPolicy,
     );
     _sessions[session.id] = session;
     session._timer = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -321,7 +329,13 @@ class CinemaMediaCache extends ChangeNotifier {
         if (!text.trimLeft().startsWith('#EXTM3U')) {
           throw const FormatException('媒体清单无效');
         }
-        final rewritten = _rewrite(session, document.uri, text);
+        final selected =
+            await session.manifestPolicy?.call(text, document.uri) ?? text;
+        if (session.closed) {
+          response.statusCode = 410;
+          return;
+        }
+        final rewritten = _rewrite(session, document.uri, selected);
         response.headers.contentType = ContentType(
           'application',
           'vnd.apple.mpegurl',

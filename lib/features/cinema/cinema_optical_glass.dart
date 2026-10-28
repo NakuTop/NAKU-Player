@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
 
 /// A local native glass surface. Light moves across the material underneath its
 /// contents; text, hit targets and the surrounding layout never bend or move.
@@ -54,7 +55,11 @@ class CinemaOpticalGlassState extends State<CinemaOpticalGlass>
   double get debugRippleAge => _field.rippleAge;
 
   bool get _canAnimate =>
-      widget.interactive && _foreground && _tickerEnabled && !_reduced;
+      !NakuDevice.isTV &&
+      widget.interactive &&
+      _foreground &&
+      _tickerEnabled &&
+      !_reduced;
 
   @override
   void initState() {
@@ -181,6 +186,16 @@ class CinemaOpticalGlassState extends State<CinemaOpticalGlass>
 
   @override
   Widget build(BuildContext context) {
+    if (NakuDevice.isTV) {
+      return Container(
+        padding: widget.padding,
+        decoration: BoxDecoration(
+          color: const Color(0xFF19191D),
+          borderRadius: BorderRadius.circular(widget.radius),
+        ),
+        child: widget.child,
+      );
+    }
     final opaque = widget.reduceTransparency || widget.opacity >= .999;
     final radius = BorderRadius.circular(widget.radius);
     final content = Stack(

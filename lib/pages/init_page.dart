@@ -147,7 +147,11 @@ class _InitPageState extends State<InitPage> {
     if (!mounted) {
       return;
     }
-    context.navigate(const CinemaStartupPreferences().read().location);
+    context.navigate(
+      NakuDevice.isTV
+          ? const CinemaStartupTarget().location
+          : const CinemaStartupPreferences().read().location,
+    );
   }
 
   // migrate collect from old version (favorites)

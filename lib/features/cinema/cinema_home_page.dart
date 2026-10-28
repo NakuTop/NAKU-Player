@@ -91,8 +91,13 @@ import 'cinema_artwork_backdrop.dart';
 import 'cinema_route_motion.dart';
 import 'cinema_websites_page.dart';
 import 'cinema_home_display_page.dart';
+import 'cinema_tv_application.dart';
+import 'cinema_tv_cast_receiver.dart';
+import 'cinema_tv_update_page.dart';
 
 enum _Section { movies, series, anime, favorites, history, settings }
+
+enum _TVDestination { home, movies, series, nas, mine, search }
 
 /// Each sidebar destination owns its catalogue, search and scroll state.
 /// Requests may finish offscreen, but can only update the state they started in.
@@ -208,6 +213,15 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   late final _together = widget.watchTogether ?? CinemaWatchTogether.instance;
   StreamSubscription<String>? _togetherNotices;
   _Section _section = _Section.movies;
+  _TVDestination _tvDestination = _TVDestination.home;
+  bool _tvHistory = false, _tvAccount = false, _tvNASOpened = false;
+  CinemaTVCastReceiver? _tvCastReceiver;
+  String _tvSearchFilter = 'all', _tvSubmittedQuery = '';
+  final _tvQuery = TextEditingController();
+  final _tvSearchFocus = FocusNode(debugLabel: 'tv-search-input');
+  final _tvHomeFocus = FocusNode(debugLabel: 'tv-home-nav');
+  Map<String, dynamic> _tvSession = {};
+  Timer? _tvSessionTimer;
   final _sectionSwipe = ValueNotifier<double>(0);
   int _sectionRevision = 0, _desktopSearchRevision = 0;
   bool _showSourceManager = false;
@@ -294,54 +308,122 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     super.initState();
     if (Platform.isAndroid) {
       final cast = CinemaLanCast.instance;
-      cast.onPlay = (title, source, road, episode, position) async {
-        if (!mounted) return;
-        final homeRoute = ModalRoute.of(context);
-        final accepted = homeRoute?.isCurrent == true
-            ? true
-            : await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: Text('手机发送了「${title.title}」'),
-                  content: const Text('在电视上开始播放？'),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx, false),
-                      child: const Text('取消'),
+      if (NakuDevice.isTV) {
+        _tvCastReceiver = CinemaTVCastReceiver(
+          client: _nasPageCache.client,
+          isActive: () =>
+              mounted &&
+              (WidgetsBinding.instance.lifecycleState == null ||
+                  WidgetsBinding.instance.lifecycleState ==
+                      AppLifecycleState.resumed),
+          wakeScreensaver: () async =>
+              CinemaTVApplication.maybeOf(context)?.dismissScreensaver(),
+          confirm: (title, source, road, episode, position) async {
+            if (!mounted) return false;
+            return await showDialog<bool>(
+                  context: context,
+                  useRootNavigator: false,
+                  builder: (dialogContext) => AlertDialog(
+                    title: Text('手机发送了「${title.title}」'),
+                    content: const Text('是否在这台电视上播放？确认前保留当前观看内容。'),
+                    actions: [
+                      TextButton(
+                        autofocus: true,
+                        onPressed: () => Navigator.pop(dialogContext, false),
+                        child: const Text('暂不播放'),
+                      ),
+                      FilledButton(
+                        onPressed: () => Navigator.pop(dialogContext, true),
+                        child: const Text('播放'),
+                      ),
+                    ],
+                  ),
+                ) ??
+                false;
+          },
+          play: (title, source, road, episode, position) {
+            if (!mounted) return;
+            final homeRoute = ModalRoute.of(context);
+            if (homeRoute != null) {
+              Navigator.of(
+                context,
+              ).popUntil((route) => identical(route, homeRoute));
+            }
+            unawaited(
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  settings: const RouteSettings(
+                    name: CinemaPageTransitionsBuilder.playerRouteName,
+                  ),
+                  builder: (_) => Theme(
+                    data: CinemaTheme.of(context),
+                    child: _buildPlayerPage(
+                      CinemaPlayerPage(
+                        title: title,
+                        source: source,
+                        store: _store,
+                        routeIndex: road,
+                        episodeIndex: episode,
+                        initialPositionSeconds: position,
+                      ),
                     ),
-                    FilledButton(
-                      autofocus: true,
-                      onPressed: () => Navigator.pop(ctx, true),
-                      child: const Text('播放'),
-                    ),
-                  ],
+                  ),
                 ),
-              );
-        if (!mounted || accepted != true) return;
-        if (homeRoute != null) {
-          Navigator.of(
-            context,
-          ).popUntil((route) => identical(route, homeRoute));
-        }
-        await Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            settings: const RouteSettings(
-              name: CinemaPageTransitionsBuilder.playerRouteName,
-            ),
-            builder: (_) => Theme(
-              data: CinemaTheme.of(context),
-              child: CinemaPlayerPage(
-                title: title,
-                source: source,
-                store: _store,
-                routeIndex: road,
-                episodeIndex: episode,
-                initialPositionSeconds: position,
+              ),
+            );
+          },
+        );
+        cast.onPlay = _tvCastReceiver!.receive;
+      } else {
+        cast.onPlay = (title, source, road, episode, position) async {
+          if (!mounted) return;
+          final homeRoute = ModalRoute.of(context);
+          final accepted = homeRoute?.isCurrent == true
+              ? true
+              : await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: Text('手机发送了「${title.title}」'),
+                    content: const Text('在电视上开始播放？'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text('取消'),
+                      ),
+                      FilledButton(
+                        autofocus: true,
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text('播放'),
+                      ),
+                    ],
+                  ),
+                );
+          if (!mounted || accepted != true) return;
+          if (homeRoute != null) {
+            Navigator.of(
+              context,
+            ).popUntil((route) => identical(route, homeRoute));
+          }
+          await Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              settings: const RouteSettings(
+                name: CinemaPageTransitionsBuilder.playerRouteName,
+              ),
+              builder: (_) => Theme(
+                data: CinemaTheme.of(context),
+                child: CinemaPlayerPage(
+                  title: title,
+                  source: source,
+                  store: _store,
+                  routeIndex: road,
+                  episodeIndex: episode,
+                  initialPositionSeconds: position,
+                ),
               ),
             ),
-          ),
-        );
-      };
+          );
+        };
+      }
       cast.start();
     }
 
@@ -402,6 +484,13 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     }
     unawaited(_readApplicationVersion());
     unawaited(_initialize());
+    if (NakuDevice.isTV) {
+      unawaited(_restoreTVSession());
+      _tvSessionTimer = Timer.periodic(
+        const Duration(seconds: 15),
+        (_) => unawaited(_refreshTVSession()),
+      );
+    }
   }
 
   Future<void> _openDouban() async {
@@ -925,6 +1014,10 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   @override
   void dispose() {
+    _tvSessionTimer?.cancel();
+    _tvQuery.dispose();
+    _tvSearchFocus.dispose();
+    _tvHomeFocus.dispose();
     _sectionSwipe.dispose();
     _moyuSession.dispose();
     _resources.dispose();
@@ -1036,8 +1129,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   bool _ordinaryCategory(String name) => cinemaOrdinaryCategory(name);
 
   bool _unifiedSearchSection(_Section section) =>
-      Platform.isMacOS &&
-      !NakuDevice.isTV &&
+      ((Platform.isMacOS && !NakuDevice.isTV) ||
+          (NakuDevice.isTV && _tvDestination == _TVDestination.search)) &&
       (section == _Section.movies || section == _Section.series);
 
   bool _searchCategoryMatches(String name, _Section section) =>
@@ -1736,6 +1829,12 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     List<CinemaTitle> variants = const [],
     bool keepBrowseRoute = false,
   }) async {
+    if (NakuDevice.isTV &&
+        title.sourceId == cinemaNASSource.id &&
+        resume == null) {
+      await _openTVNASTitle(title);
+      return;
+    }
     // Continue Watching should work immediately without catalogue access when
     // this exact episode has already been saved.
     if (resume != null) {
@@ -1896,7 +1995,17 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         );
       },
     );
-    if (Platform.isMacOS && MediaQuery.sizeOf(context).width >= 900) {
+    if (NakuDevice.isTV) {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          settings: const RouteSettings(name: '/tv/details'),
+          builder: (detailsContext) => Scaffold(
+            backgroundColor: CinemaTheme.background,
+            body: buildDetails(detailsContext),
+          ),
+        ),
+      );
+    } else if (Platform.isMacOS && MediaQuery.sizeOf(context).width >= 900) {
       await showDialog<void>(
         context: context,
         barrierColor: const Color(0x22000000),
@@ -1958,6 +2067,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   @override
   Widget build(BuildContext context) {
+    if (NakuDevice.isTV) return _buildHome(context);
     final sections = _Section.values
         .where((section) => section != _Section.anime || _showAnimeDestination)
         .toList();
@@ -2003,6 +2113,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         builder: (context) {
           final wide =
               NakuDevice.isTV || MediaQuery.sizeOf(context).width >= 860;
+          if (NakuDevice.isTV) return _tvScaffold();
           if (wide && Platform.isMacOS && !NakuDevice.isTV) {
             return _desktopCinemaScaffold();
           }
@@ -2183,6 +2294,703 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             ),
           );
         },
+      ),
+    );
+  }
+
+  Future<void> _restoreTVSession() async {
+    try {
+      await _store.load();
+      var session = await _nasPageCache.client.call('currentSession');
+      if ((session['namespace'] as String? ?? '').isEmpty) {
+        final saved = await _nasPageCache.client.call('savedLogin');
+        if (saved.isNotEmpty) {
+          session = await _nasPageCache.client.call('restore');
+        }
+      }
+      if (!mounted) return;
+      setState(() => _tvSession = session);
+      final namespace = session['namespace'] as String? ?? '';
+      if (namespace.isNotEmpty) await _nasSync?.bind(namespace);
+    } catch (_) {
+      // Saved credentials and the existing sync document remain intact offline.
+      if (mounted) setState(() => _tvSession = {'saved': true});
+    }
+  }
+
+  Future<void> _refreshTVSession() async {
+    try {
+      final session = await _nasPageCache.client.call('currentSession');
+      if (!mounted) return;
+      if (jsonEncode(session) != jsonEncode(_tvSession)) {
+        setState(() => _tvSession = session);
+      }
+      final namespace = session['namespace'] as String? ?? '';
+      if (namespace.isNotEmpty &&
+          (_nasSync?.account != namespace || _nasSync?.paused == true)) {
+        await _nasSync?.bind(namespace);
+      }
+    } catch (_) {
+      // A transient network failure is not an account logout.
+    }
+  }
+
+  Future<void> _tvSelect(_TVDestination destination) async {
+    setState(() {
+      _tvDestination = destination;
+      if (destination == _TVDestination.nas) _tvNASOpened = true;
+    });
+    if (destination == _TVDestination.nas) return;
+    if (destination == _TVDestination.mine) {
+      await _selectSection(_tvHistory ? _Section.history : _Section.favorites);
+      unawaited(_refreshTVSession());
+      return;
+    }
+    await _selectSection(
+      destination == _TVDestination.series ? _Section.series : _Section.movies,
+    );
+    if (destination == _TVDestination.search) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _tvSearchFocus.requestFocus();
+      });
+      if (_tvQuery.text.trim().isNotEmpty) await _tvRunSearch();
+    } else if (_catalog.searching) {
+      await _browse();
+    }
+  }
+
+  Future<void> _tvRunSearch() async {
+    final query = _tvQuery.text.trim();
+    setState(() => _tvSubmittedQuery = query);
+    if (query.isEmpty) return;
+    _tvSearchFocus.unfocus();
+    _search.text = query;
+    if (_tvSearchFilter != 'nas') await _runSearch();
+  }
+
+  bool _tvTitleVisible(CinemaTitle title) =>
+      _ordinaryCategory(title.category) &&
+      !RegExp('动漫|番剧|里番').hasMatch(title.category);
+
+  Widget _tvNav(
+    String label,
+    VoidCallback onPressed, {
+    bool selected = false,
+    Key? key,
+    FocusNode? focusNode,
+    bool autofocus = false,
+  }) => CinemaTVFocus(
+    child: TextButton(
+      key: key,
+      focusNode: focusNode,
+      autofocus: autofocus,
+      onPressed: onPressed,
+      style: TextButton.styleFrom(
+        foregroundColor: selected ? Colors.white : CinemaTheme.muted,
+        backgroundColor: selected
+            ? const Color(0xFF252528)
+            : Colors.transparent,
+        textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      ),
+      child: Text(label),
+    ),
+  );
+
+  Widget _tvScaffold() => PopScope<void>(
+    canPop: _tvDestination == _TVDestination.home,
+    onPopInvokedWithResult: (didPop, _) {
+      if (!didPop) {
+        unawaited(_tvSelect(_TVDestination.home));
+        _tvHomeFocus.requestFocus();
+      }
+    },
+    child: Scaffold(
+      backgroundColor: CinemaTheme.background,
+      body: SafeArea(
+        child: Column(
+          children: [
+            Container(
+              color: CinemaTheme.background,
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 10),
+              child: Row(
+                children: [
+                  const Text(
+                    'NAKU',
+                    style: TextStyle(
+                      fontSize: 25,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -1,
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                  const Text(
+                    'TV',
+                    style: TextStyle(color: CinemaTheme.copper, fontSize: 11),
+                  ),
+                  const SizedBox(width: 24),
+                  Expanded(
+                    child: FocusTraversalGroup(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            _tvNav(
+                              '搜索',
+                              () => unawaited(_tvSelect(_TVDestination.search)),
+                              selected: _tvDestination == _TVDestination.search,
+                              key: const ValueKey('tv-nav-search'),
+                            ),
+                            _tvNav(
+                              '首页',
+                              () => unawaited(_tvSelect(_TVDestination.home)),
+                              selected: _tvDestination == _TVDestination.home,
+                              focusNode: _tvHomeFocus,
+                              autofocus: true,
+                              key: const ValueKey('tv-nav-home'),
+                            ),
+                            _tvNav(
+                              '电影',
+                              () => unawaited(_tvSelect(_TVDestination.movies)),
+                              selected: _tvDestination == _TVDestination.movies,
+                              key: const ValueKey('tv-nav-movies'),
+                            ),
+                            _tvNav(
+                              '剧集',
+                              () => unawaited(_tvSelect(_TVDestination.series)),
+                              selected: _tvDestination == _TVDestination.series,
+                              key: const ValueKey('tv-nav-series'),
+                            ),
+                            _tvNav(
+                              'NAS',
+                              () => unawaited(_tvSelect(_TVDestination.nas)),
+                              selected: _tvDestination == _TVDestination.nas,
+                              key: const ValueKey('tv-nav-nas'),
+                            ),
+                            _tvNav(
+                              '我的',
+                              () => unawaited(_tvSelect(_TVDestination.mine)),
+                              selected: _tvDestination == _TVDestination.mine,
+                              key: const ValueKey('tv-nav-mine'),
+                            ),
+                            _tvNav(
+                              '屏保',
+                              () => unawaited(
+                                CinemaTVApplication.maybeOf(
+                                      context,
+                                    )?.showScreensaver() ??
+                                    Future<void>.value(),
+                              ),
+                              key: const ValueKey('tv-nav-screensaver'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: IndexedStack(
+                index: _tvDestination == _TVDestination.nas ? 1 : 0,
+                children: [
+                  TickerMode(
+                    enabled: _tvDestination != _TVDestination.nas,
+                    child: CinemaScrollNotifications(
+                      activity: _scrollActivity,
+                      child: _tvBody(),
+                    ),
+                  ),
+                  if (_tvNASOpened)
+                    TickerMode(
+                      enabled: _tvDestination == _TVDestination.nas,
+                      child: CinemaNASPage(
+                        key: const ValueKey('tv-nas-library'),
+                        embedded: true,
+                        active: _tvDestination == _TVDestination.nas,
+                        cache: _nasPageCache,
+                        store: _store,
+                        sync: _nasSync,
+                        onTitleSelected: _openTVNASTitle,
+                      ),
+                    )
+                  else
+                    const SizedBox.shrink(),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  Widget _tvBody() => switch (_tvDestination) {
+    _TVDestination.home => _tvHome(),
+    _TVDestination.movies || _TVDestination.series => _tvCatalogue(),
+    _TVDestination.search => _tvSearchBody(),
+    _TVDestination.mine => _tvMine(),
+    _TVDestination.nas => const SizedBox.shrink(),
+  };
+
+  // Keep the TV surface static: old televisions spend their budget decoding
+  // video and drawing artwork, rather than compositing blur and page effects.
+  double get _tvGutter =>
+      (MediaQuery.sizeOf(context).width * .04).clamp(32, 64);
+  int get _tvColumns => MediaQuery.sizeOf(context).width >= 1100 ? 4 : 3;
+  double get _tvPosterWidth =>
+      (MediaQuery.sizeOf(context).width -
+          _tvGutter * 2 -
+          24 * (_tvColumns - 1)) /
+      _tvColumns;
+
+  SliverPadding _tvPosterSliver(List<CinemaTitle> titles) => SliverPadding(
+    padding: EdgeInsets.fromLTRB(_tvGutter, 8, _tvGutter, 40),
+    sliver: SliverGrid.builder(
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: _tvColumns,
+        childAspectRatio: .61,
+        crossAxisSpacing: 24,
+        mainAxisSpacing: 28,
+      ),
+      itemCount: titles.length,
+      itemBuilder: (_, i) => _titleCard(
+        titles[i],
+        variants: _catalogView.variants[titles[i].key] ?? const [],
+      ),
+    ),
+  );
+
+  Widget _tvRail(
+    String heading,
+    List<CinemaTitle> titles, {
+    bool history = false,
+  }) {
+    final width = _tvPosterWidth;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: EdgeInsets.fromLTRB(_tvGutter, 24, _tvGutter, 12),
+          child: Text(
+            heading,
+            style: const TextStyle(fontSize: 25, fontWeight: FontWeight.w600),
+          ),
+        ),
+        SizedBox(
+          height: width / .61 + 24,
+          child: ListView.separated(
+            key: PageStorageKey('tv-rail-$heading'),
+            padding: EdgeInsets.fromLTRB(_tvGutter, 6, _tvGutter, 18),
+            scrollDirection: Axis.horizontal,
+            itemCount: titles.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 24),
+            itemBuilder: (_, i) => SizedBox(
+              width: width,
+              child: _titleCard(
+                titles[i],
+                variants: _catalogView.variants[titles[i].key] ?? const [],
+                onOpen: history
+                    ? () => _openTitle(
+                        titles[i],
+                        resume: _store.historyFor(titles[i]),
+                      )
+                    : null,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _tvHome() {
+    final titles = _catalogView.visible
+        .where(_tvTitleVisible)
+        .take(16)
+        .toList();
+    final history = _store.history
+        .where(
+          (h) =>
+              _tvTitleVisible(h.title) &&
+              h.positionSeconds > 0 &&
+              (h.durationSeconds <= 0 ||
+                  h.positionSeconds < h.durationSeconds * .95),
+        )
+        .take(12)
+        .map((h) => h.title)
+        .toList();
+    return CustomScrollView(
+      key: const PageStorageKey('tv-home-content'),
+      slivers: [
+        if (titles.isNotEmpty)
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: MediaQuery.sizeOf(context).height * .76,
+              child: CinemaFeaturedWall(
+                key: const ValueKey('tv-featured-original'),
+                titles: titles.take(4).toList(),
+                artworkRepository: widget.artworkRepository,
+                artworkChanges: _ratings.changes,
+                artworkIdentity: (title) =>
+                    _ratings.peek(title)?.identity ?? const RatingIdentity(),
+                onOpen: (title) => _openTitle(
+                  title,
+                  variants: _catalogView.variants[title.key] ?? const [],
+                ),
+              ),
+            ),
+          ),
+        if (history.isNotEmpty)
+          SliverToBoxAdapter(child: _tvRail('继续观看', history, history: true)),
+        if (titles.isNotEmpty)
+          SliverToBoxAdapter(child: _tvRail('为你推荐', titles)),
+        if (_loading && titles.isEmpty)
+          const SliverFillRemaining(
+            child: Center(child: CircularProgressIndicator()),
+          ),
+        if (titles.isEmpty && !_loading)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: _empty(
+              '片库暂时未能加载',
+              '仍可从 NAS 或我的收藏继续观看。',
+              action: FilledButton(
+                onPressed: () => _browse(refresh: true),
+                child: const Text('重试'),
+              ),
+            ),
+          ),
+        const SliverToBoxAdapter(child: SizedBox(height: 24)),
+      ],
+    );
+  }
+
+  Widget _tvCatalogue() {
+    final titles = _catalogView.visible.where(_tvTitleVisible).toList();
+    final aggregated = _aggregates(_section) && !_searching;
+    final hasMore = aggregated
+        ? _aggregateFor(_section).snapshot.hasMore
+        : _page < _pageCount;
+    return CustomScrollView(
+      key: PageStorageKey('tv-catalogue-${_tvDestination.name}'),
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(_tvGutter, 28, _tvGutter, 20),
+            child: Text(
+              _tvDestination == _TVDestination.series ? '剧集' : '电影',
+              style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ),
+        if (titles.isNotEmpty) _tvPosterSliver(titles),
+        if (_loading)
+          const SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.all(28),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+          ),
+        if (!_loading && titles.isEmpty)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: _empty(
+              '暂时没有作品',
+              '稍后重试，或前往 NAS 观看你的片库。',
+              action: FilledButton(
+                onPressed: () => _browse(refresh: true),
+                child: const Text('重试'),
+              ),
+            ),
+          ),
+        if (hasMore && titles.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 32),
+              child: Center(
+                child: TextButton(
+                  onPressed: _loading
+                      ? null
+                      : () => aggregated
+                            ? _aggregateFor(_section).loadMore()
+                            : _browse(page: _page + 1, append: true),
+                  child: const Text('更多作品'),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _tvSearchBody() {
+    final visible = _catalogView.visible
+        .where(_tvTitleVisible)
+        .where(
+          (title) =>
+              _tvSearchFilter == 'all' ||
+              _matchesCategory(
+                title.category,
+                _tvSearchFilter == 'series' ? _Section.series : _Section.movies,
+              ),
+        )
+        .toList();
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(32, 24, 32, 12),
+          child: TextField(
+            key: const ValueKey('tv-search-field'),
+            controller: _tvQuery,
+            focusNode: _tvSearchFocus,
+            textInputAction: TextInputAction.search,
+            onSubmitted: (_) => _tvRunSearch(),
+            style: const TextStyle(fontSize: 20),
+            decoration: InputDecoration(
+              hintText: '搜索电影、剧集与 NAS',
+              prefixIcon: const Icon(Icons.search),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(26, 0, 26, 12),
+          child: Row(
+            children: [
+              for (final option in const [
+                ('all', '全部'),
+                ('movie', '电影'),
+                ('series', '剧集'),
+                ('nas', 'NAS'),
+              ])
+                _tvNav(option.$2, () {
+                  setState(() => _tvSearchFilter = option.$1);
+                  if (option.$1 != 'nas' && _tvSubmittedQuery.isNotEmpty) {
+                    unawaited(_tvRunSearch());
+                  }
+                }, selected: _tvSearchFilter == option.$1),
+            ],
+          ),
+        ),
+        Expanded(
+          child: _tvSubmittedQuery.isEmpty
+              ? _empty('想看什么？', '输入片名后按确定；支持电视系统键盘。')
+              : _tvSearchFilter == 'nas'
+              ? CinemaNASPage(
+                  key: ValueKey('tv-nas-search:$_tvSubmittedQuery'),
+                  embedded: true,
+                  initialKeyword: _tvSubmittedQuery,
+                  client: _nasPageCache.client,
+                  store: _store,
+                  sync: _nasSync,
+                  onTitleSelected: _openTVNASTitle,
+                )
+              : Column(
+                  children: [
+                    if (_loading) const LinearProgressIndicator(minHeight: 2),
+                    Expanded(
+                      child: visible.isEmpty && !_loading
+                          ? _empty('没有找到在线结果', '可换个片名，或切换 NAS 搜索自己的片库。')
+                          : _tvGrid(visible),
+                    ),
+                    if (_searchMore.isNotEmpty)
+                      TextButton(
+                        onPressed: _loading
+                            ? null
+                            : () => _runSearch(loadMore: true),
+                        child: const Text('加载更多'),
+                      ),
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _tvGrid(
+    List<CinemaTitle> titles, {
+    bool history = false,
+  }) => GridView.builder(
+    key: PageStorageKey(
+      'tv-library-${_tvDestination.name}-$_tvHistory-$_tvSearchFilter-$_tvSubmittedQuery',
+    ),
+    padding: EdgeInsets.fromLTRB(_tvGutter, 8, _tvGutter, 32),
+    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+      crossAxisCount: _tvColumns,
+      childAspectRatio: .61,
+      crossAxisSpacing: 24,
+      mainAxisSpacing: 28,
+    ),
+    itemCount: titles.length,
+    itemBuilder: (_, i) => _titleCard(
+      titles[i],
+      variants: _catalogView.variants[titles[i].key] ?? const [],
+      onOpen: history
+          ? () => _openTitle(titles[i], resume: _store.historyFor(titles[i]))
+          : null,
+    ),
+  );
+
+  Widget _tvMine() => Column(
+    children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(26, 20, 26, 16),
+        child: Row(
+          children: [
+            _tvNav(
+              '我的收藏',
+              () => setState(() {
+                _tvAccount = false;
+                _tvHistory = false;
+                _section = _Section.favorites;
+              }),
+              selected: !_tvAccount && !_tvHistory,
+            ),
+            _tvNav(
+              '观看历史',
+              () => setState(() {
+                _tvAccount = false;
+                _tvHistory = true;
+                _section = _Section.history;
+              }),
+              selected: !_tvAccount && _tvHistory,
+            ),
+            _tvNav('账号与连接', () {
+              setState(() => _tvAccount = true);
+              unawaited(_refreshTVSession());
+            }, selected: _tvAccount),
+          ],
+        ),
+      ),
+      Expanded(
+        child: _tvAccount
+            ? Padding(
+                padding: const EdgeInsets.fromLTRB(32, 8, 32, 32),
+                child: Container(
+                  color: const Color(0xFF161618),
+                  padding: const EdgeInsets.all(28),
+                  child: ListView(
+                    children: [
+                      Text(
+                        (_tvSession['namespace'] as String? ?? '').isNotEmpty
+                            ? '${_tvSession['username'] ?? 'NAS 用户'} · ${_tvSession['name'] ?? '我的 NAS'}'
+                            : '连接 NAS，同步你的收藏与历史',
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      const Text(
+                        '收藏与观看记录会自动同步。',
+                        style: TextStyle(
+                          color: CinemaTheme.muted,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      if (_nasSync != null)
+                        ListenableBuilder(
+                          listenable: _nasSync!,
+                          builder: (_, _) => Text(
+                            _nasSync!.status,
+                            style: const TextStyle(
+                              color: CinemaTheme.copper,
+                              fontSize: 15,
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 24),
+                      Wrap(
+                        spacing: 14,
+                        runSpacing: 14,
+                        children: [
+                          FilledButton(
+                            onPressed: () async {
+                              await _openNAS();
+                              await _refreshTVSession();
+                            },
+                            child: const Text('NAS 账号与连接'),
+                          ),
+                          if (_nasSync != null)
+                            OutlinedButton(
+                              onPressed: () => _nasSync!.sync(),
+                              child: const Text('立即同步'),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 18),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          key: const ValueKey('tv-software-update'),
+                          onPressed: () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const CinemaTVUpdatePage(),
+                            ),
+                          ),
+                          icon: const Icon(Icons.system_update_alt_rounded),
+                          label: const Text('软件更新'),
+                        ),
+                      ),
+                      const SizedBox(height: 26),
+                      ListenableBuilder(
+                        listenable: CinemaLanCast.instance,
+                        builder: (_, _) => Text(
+                          CinemaLanCast.instance.status,
+                          style: const TextStyle(
+                            color: CinemaTheme.muted,
+                            fontSize: 15,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            : Builder(
+                builder: (_) {
+                  final titles =
+                      (_tvHistory
+                              ? _store.history.map((h) => h.title)
+                              : _store.favorites)
+                          .where(_tvTitleVisible)
+                          .toList();
+                  return titles.isEmpty
+                      ? _empty(
+                          _tvHistory ? '还没有观看历史' : '还没有收藏',
+                          '在影片详情收藏，或连接同一 NAS 账号同步已有记录。',
+                        )
+                      : _tvGrid(titles, history: _tvHistory);
+                },
+              ),
+      ),
+    ],
+  );
+
+  Future<void> _openTVNASTitle(CinemaTitle title) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        settings: const RouteSettings(name: '/tv/details'),
+        builder: (detailsContext) => Scaffold(
+          backgroundColor: CinemaTheme.background,
+          body: _TitleDetails(
+            title: title,
+            source: cinemaNASSource,
+            repository: _repository,
+            store: _store,
+            resolvedDetail: true,
+            resume: _store.historyFor(title),
+            ratingsRepository: widget.ratingsRepository,
+            artworkRepository: widget.artworkRepository,
+            onRecommendationSelected: (_) {},
+            onPlay: (detail, source, road, episode, variants) {
+              Navigator.of(detailsContext).pop();
+              _playTitle(detail, source, road, episode, variants);
+            },
+          ),
+        ),
       ),
     );
   }
@@ -2961,7 +3769,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     final representatives = view.representatives;
     final visibleItems = view.visible;
     final variantsByKey = view.variants;
-    final immersive = wide && Platform.isMacOS && !NakuDevice.isTV;
+    final immersive = wide && (Platform.isMacOS || NakuDevice.isTV);
     final featured = immersive && aggregated && visibleItems.length >= 8
         ? visibleItems.take(4).toList()
         : <CinemaTitle>[];
@@ -3444,7 +4252,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 ? _posterFallback(title.title)
                 : CachedNetworkImage(
                     cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
-                    memCacheWidth: 480,
+                    memCacheWidth: NakuDevice.isTV ? 640 : 480,
                     fadeInDuration: Duration.zero,
                     fadeOutDuration: Duration.zero,
                     imageUrl: title.poster,
@@ -3499,7 +4307,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   );
 
   Widget _posterCardSurface({required Widget child}) =>
-      Platform.isMacOS && !NakuDevice.isTV
+      Platform.isMacOS || NakuDevice.isTV
       ? child
       : CinemaGlass(
           blur: false,
@@ -3567,10 +4375,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   Widget _titleCard(
     CinemaTitle title, {
     List<CinemaTitle> variants = const [],
+    VoidCallback? onOpen,
   }) => CinemaTVFocus(
     child: InkWell(
       key: ValueKey('title-card:${title.key}'),
-      onTap: () => _openTitle(title, variants: variants),
+      onTap: onOpen ?? () => _openTitle(title, variants: variants),
       borderRadius: BorderRadius.circular(10),
       child: _posterCardSurface(
         child: Column(
@@ -3581,8 +4390,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 fit: StackFit.expand,
                 children: [
                   _poster(title, null, null),
-                  if (title.sourceId == 'douban-discovery' ||
-                      (_isCatalog && !_searching))
+                  if (!NakuDevice.isTV &&
+                      (title.sourceId == 'douban-discovery' ||
+                          (_isCatalog && !_searching)))
                     Positioned(
                       top: 8,
                       left: 8,
@@ -3596,7 +4406,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         ),
                       ),
                     ),
-                  if (title.remarks.isNotEmpty)
+                  if (!NakuDevice.isTV && title.remarks.isNotEmpty)
                     Positioned(
                       bottom: 8,
                       left: 8,
@@ -3632,27 +4442,35 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               cinemaMediaBaseTitle(title.title),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              style: TextStyle(
+                fontSize: NakuDevice.isTV ? 18 : 13,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 4),
             Text(
               [
                 title.year,
-                title.sourceId == 'douban-discovery'
-                    ? '查找全部片源'
-                    : variants
-                              .where((v) => v.sourceId != 'douban-discovery')
-                              .length >
-                          1
-                    ? '${variants.where((v) => v.sourceId != 'douban-discovery').length} 个片源版本'
-                    : _findSource(title.sourceId)?.name ?? title.category,
+                if (NakuDevice.isTV) title.category,
+                if (!NakuDevice.isTV)
+                  title.sourceId == 'douban-discovery'
+                      ? '查找全部片源'
+                      : variants
+                                .where((v) => v.sourceId != 'douban-discovery')
+                                .length >
+                            1
+                      ? '${variants.where((v) => v.sourceId != 'douban-discovery').length} 个片源版本'
+                      : _findSource(title.sourceId)?.name ?? title.category,
               ].where((e) => e.isNotEmpty).join(' · '),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 10, color: CinemaTheme.muted),
+              style: TextStyle(
+                fontSize: NakuDevice.isTV ? 14 : 10,
+                color: CinemaTheme.muted,
+              ),
             ),
             const SizedBox(height: 5),
-            if (!title.isDirectMedia)
+            if (!NakuDevice.isTV && !title.isDirectMedia)
               CinemaCardRatings(
                 title: title,
                 repository: _ratings,
@@ -4204,6 +5022,7 @@ class _TitleDetails extends StatefulWidget {
     required this.onPlay,
     required this.onRecommendationSelected,
     this.resume,
+    this.resolvedDetail = false,
   });
   final CinemaTitle title;
   final CinemaSource source;
@@ -4213,6 +5032,7 @@ class _TitleDetails extends StatefulWidget {
   final CinemaRepository repository;
   final CinemaStore store;
   final CinemaHistory? resume;
+  final bool resolvedDetail;
   final ValueChanged<DoubanRecommendation> onRecommendationSelected;
   final void Function(CinemaTitle, CinemaSource, int, int, List<CinemaTitle>)
   onPlay;
@@ -4223,10 +5043,9 @@ class _TitleDetails extends StatefulWidget {
 class _TitleDetailsState extends State<_TitleDetails> {
   late CinemaTitle _selectedTitle = widget.title;
   late CinemaSource _selectedSource = widget.source;
-  late Future<CinemaTitle> _detail = widget.repository.detail(
-    _selectedSource,
-    _selectedTitle,
-  );
+  late Future<CinemaTitle> _detail = widget.resolvedDetail
+      ? Future.value(_selectedTitle)
+      : widget.repository.detail(_selectedSource, _selectedTitle);
   int _road = 0;
   int _informationTab = 0;
   CinemaTitle? _resolvedInput, _resolvedTitle;
@@ -4258,10 +5077,12 @@ class _TitleDetailsState extends State<_TitleDetails> {
       _variants,
       widget.store.enabledSources.map((source) => source.id),
     );
-    if (widget.resume == null && _variants.isNotEmpty) {
+    if (widget.resolvedDetail) {
+      _discovering = false;
+    } else if (widget.resume == null && _variants.isNotEmpty) {
       _selectVariant(_variants.first, automatic: true);
     }
-    _discover();
+    if (!widget.resolvedDetail) _discover();
   }
 
   void _discover() {
@@ -4411,8 +5232,8 @@ class _TitleDetailsState extends State<_TitleDetails> {
         cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
         headers: artwork.headers.isEmpty ? null : artwork.headers,
       ),
-      width: 3200,
-      height: 2400,
+      width: NakuDevice.isTV ? 1280 : 3200,
+      height: NakuDevice.isTV ? 720 : 2400,
       policy: ResizeImagePolicy.fit,
     );
     final stream = _posterStream = _posterProvider!.resolve(
@@ -4446,7 +5267,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
     ) {
       // This clones the frame before the listener releases it, and only reads
       // back a 36x24 thumbnail once. Motion never samples artwork pixels.
-      unawaited(_samplePosterPalette(frame.image, ticket));
+      if (!NakuDevice.isTV) {
+        unawaited(_samplePosterPalette(frame.image, ticket));
+      }
       frame.dispose();
       terminal(failed: false);
     }, onError: (Object error, StackTrace? stack) => terminal(failed: true));
@@ -4539,6 +5362,10 @@ class _TitleDetailsState extends State<_TitleDetails> {
 
   Widget _actions(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
     final playable = snapshot.hasData && _preferredRoad(title) >= 0;
+    final saved = widget.resume ?? widget.store.historyFor(title);
+    final tvResume = NakuDevice.isTV && saved != null && playable
+        ? cinemaResumeSelection(title, saved)
+        : null;
     final route = title.routes.isEmpty
         ? 0
         : (_routeChosen ? _road : _preferredRoad(title)).clamp(
@@ -4552,22 +5379,26 @@ class _TitleDetailsState extends State<_TitleDetails> {
       children: [
         FilledButton.icon(
           key: const ValueKey('cinema-detail-primary-play'),
+          autofocus: NakuDevice.isTV,
           style: FilledButton.styleFrom(
             backgroundColor: Colors.white,
             foregroundColor: const Color(0xFF111114),
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
+            textStyle: NakuDevice.isTV
+                ? const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)
+                : null,
           ),
           onPressed: playable
               ? () => widget.onPlay(
                   title,
                   _selectedSource,
-                  _preferredRoad(title),
-                  0,
+                  tvResume?.routeIndex ?? _preferredRoad(title),
+                  tvResume?.episodeIndex ?? 0,
                   _variants,
                 )
               : null,
           icon: const Icon(Icons.play_arrow_rounded, size: 25),
-          label: const Text('开始观看'),
+          label: Text(tvResume != null ? '继续观看' : '开始观看'),
         ),
         if (NakuDevice.canDownload && playable)
           IconButton(
@@ -4580,19 +5411,36 @@ class _TitleDetailsState extends State<_TitleDetails> {
             ),
             icon: const Icon(Icons.download_rounded, size: 21),
           ),
-        IconButton(
-          tooltip: widget.store.isFavorite(title) ? '取消收藏' : '收藏',
-          onPressed: () async {
-            await widget.store.toggleFavorite(title);
-            if (mounted) setState(() {});
-          },
-          icon: Icon(
-            widget.store.isFavorite(title)
-                ? Icons.bookmark_rounded
-                : Icons.bookmark_border_rounded,
-            size: 20,
+        if (NakuDevice.isTV)
+          TextButton.icon(
+            style: TextButton.styleFrom(
+              textStyle: const TextStyle(fontSize: 18),
+            ),
+            onPressed: () async {
+              await widget.store.toggleFavorite(title);
+              if (mounted) setState(() {});
+            },
+            icon: Icon(
+              widget.store.isFavorite(title)
+                  ? Icons.bookmark_rounded
+                  : Icons.bookmark_border_rounded,
+            ),
+            label: Text(widget.store.isFavorite(title) ? '已收藏' : '收藏'),
+          )
+        else
+          IconButton(
+            tooltip: widget.store.isFavorite(title) ? '取消收藏' : '收藏',
+            onPressed: () async {
+              await widget.store.toggleFavorite(title);
+              if (mounted) setState(() {});
+            },
+            icon: Icon(
+              widget.store.isFavorite(title)
+                  ? Icons.bookmark_rounded
+                  : Icons.bookmark_border_rounded,
+              size: 20,
+            ),
           ),
-        ),
         if (Platform.isAndroid && !NakuDevice.isTV && playable)
           IconButton(
             tooltip: '发送到电视',
@@ -4604,7 +5452,8 @@ class _TitleDetailsState extends State<_TitleDetails> {
             ),
             icon: const Icon(Icons.cast, size: 20),
           ),
-        if (widget.resume != null &&
+        if (!NakuDevice.isTV &&
+            widget.resume != null &&
             widget.resume!.title.key == _selectedTitle.key &&
             snapshot.hasData &&
             title.routes.isNotEmpty)
@@ -4637,6 +5486,21 @@ class _TitleDetailsState extends State<_TitleDetails> {
     CinemaTitle title,
     AsyncSnapshot<CinemaTitle> snapshot,
   ) {
+    if (NakuDevice.isTV) {
+      final road = _preferredRoad(title);
+      if (road < 0 ||
+          road >= title.routes.length ||
+          title.routes[road].episodes.length < 2) {
+        return const SizedBox.shrink();
+      }
+      return TextButton.icon(
+        key: const ValueKey('tv-detail-episodes'),
+        style: TextButton.styleFrom(textStyle: const TextStyle(fontSize: 18)),
+        onPressed: () => _tvSelectEpisode(title, road),
+        icon: const Icon(Icons.video_library_outlined),
+        label: Text('选集 · ${title.routes[road].episodes.length} 集'),
+      );
+    }
     final road = title.routes.isEmpty
         ? 0
         : (_routeChosen ? _road : _preferredRoad(title)).clamp(
@@ -5028,11 +5892,158 @@ class _TitleDetailsState extends State<_TitleDetails> {
     },
   );
 
+  Future<void> _tvSelectEpisode(CinemaTitle title, int road) async {
+    final episodes = title.routes[road].episodes;
+    final selected = await showDialog<int>(
+      context: context,
+      useRootNavigator: false,
+      animationStyle: AnimationStyle.noAnimation,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: const Color(0xFF171719),
+        child: SizedBox(
+          width: 700,
+          height: MediaQuery.sizeOf(context).height * .72,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text('选择集数', style: const TextStyle(fontSize: 24)),
+              ),
+              Expanded(
+                child: ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                  itemCount: episodes.length,
+                  itemBuilder: (_, i) => CinemaTVFocus(
+                    child: ListTile(
+                      autofocus: i == 0,
+                      title: Text(
+                        episodes[i].name,
+                        style: const TextStyle(fontSize: 20),
+                      ),
+                      onTap: () => Navigator.of(dialogContext).pop(i),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (selected != null && mounted) {
+      widget.onPlay(title, _selectedSource, road, selected, _variants);
+    }
+  }
+
+  Widget _tvDetail(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
+    final viewport = MediaQuery.sizeOf(context);
+    final gutter = (viewport.width * .045).clamp(32.0, 72.0);
+    final ratings =
+        _artworkRatings
+            .peek(title)
+            ?.ratings
+            .where((r) => r.value != null)
+            .map((r) => '${r.provider} ${r.value!.toStringAsFixed(1)}')
+            .take(3)
+            .join('   ·   ') ??
+        '';
+    return ColoredBox(
+      key: const ValueKey('tv-static-detail'),
+      color: CinemaTheme.background,
+      child: ListView(
+        key: const ValueKey('cinema-title-detail-layout'),
+        children: [
+          SizedBox(
+            height: viewport.height * .52,
+            width: double.infinity,
+            child: _posterProvider == null
+                ? const ColoredBox(color: Color(0xFF161618))
+                : Image(
+                    image: _posterProvider!,
+                    fit: BoxFit.cover,
+                    alignment: const Alignment(0, -.35),
+                    errorBuilder: (_, _, _) =>
+                        const ColoredBox(color: Color(0xFF161618)),
+                  ),
+          ),
+          Padding(
+            padding: EdgeInsets.fromLTRB(gutter, 22, gutter, 40),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  cinemaMediaBaseTitle(title.title),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: viewport.height < 600 ? 30 : 38,
+                    height: 1.12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  [
+                    title.year,
+                    title.category,
+                    title.durationText,
+                  ].where((s) => s.isNotEmpty).join(' · '),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    color: CinemaTheme.muted,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Wrap(
+                  spacing: 16,
+                  runSpacing: 10,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    _actions(title, snapshot),
+                    _sourceControls(title, snapshot),
+                  ],
+                ),
+                if (ratings.isNotEmpty) ...[
+                  const SizedBox(height: 20),
+                  Text(
+                    ratings,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      color: CinemaTheme.muted,
+                    ),
+                  ),
+                ],
+                if (title.description.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1050),
+                    child: Text(
+                      title.description,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        height: 1.6,
+                        color: CinemaTheme.muted,
+                      ),
+                    ),
+                  ),
+                ],
+                if (snapshot.hasError && title.routes.isEmpty) ...[
+                  const SizedBox(height: 20),
+                  const Text('暂时未能读取影片，请返回后重试。'),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => Theme(
     data: CinemaTheme.of(context),
     child: SizedBox(
-      height: MediaQuery.sizeOf(context).height * .88,
+      height: MediaQuery.sizeOf(context).height * (NakuDevice.isTV ? 1 : .88),
       child: FutureBuilder<CinemaTitle>(
         key: ValueKey(_selectedTitle.key),
         future: _detail,
@@ -5061,6 +6072,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
             _informationTerminal = false;
           }
           _watchPoster(title);
+          if (NakuDevice.isTV) return _tvDetail(title, snapshot);
           final generation = _detailGeneration;
           final ratingTicket = _ratingTicket;
           final sourceTerminal =

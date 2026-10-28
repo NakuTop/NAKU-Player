@@ -1,4 +1,5 @@
 import 'cinema_swipe_navigation.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -163,6 +164,7 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
 
   bool get _canRotate =>
       mounted &&
+      !NakuDevice.isTV &&
       _active &&
       _tickerMode &&
       !_reduced &&
@@ -279,8 +281,138 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
   }
 
   @override
-  Widget build(BuildContext context) =>
-      CinemaSwipeExclusion(child: _buildWall(context));
+  Widget build(BuildContext context) => NakuDevice.isTV
+      ? _tvWall(context)
+      : CinemaSwipeExclusion(child: _buildWall(context));
+
+  Widget _tvWall(BuildContext context) {
+    if (widget.titles.isEmpty) return const SizedBox.shrink();
+    final viewport = MediaQuery.sizeOf(context);
+    final title = widget.titles[_index.clamp(0, widget.titles.length - 1)];
+    final artwork = _artworkWindow.artworkFor(
+      title,
+      identity: widget.artworkIdentity?.call(title) ?? const RatingIdentity(),
+    );
+    final decodeWidth =
+        (viewport.width * MediaQuery.devicePixelRatioOf(context)).round().clamp(
+          640,
+          1600,
+        );
+    void select(int index) {
+      final next = index.clamp(0, widget.titles.length - 1);
+      if (next == _index) return;
+      setState(() => _index = next);
+      _updateArtworkWindow();
+    }
+
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: (_, event) {
+        if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+          return KeyEventResult.ignored;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+          select(_index - 1);
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+          select(_index + 1);
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: Stack(
+        key: const ValueKey('tv-static-featured'),
+        fit: StackFit.expand,
+        children: [
+          const ColoredBox(color: Color(0xFF111113)),
+          if (artwork.url.isNotEmpty)
+            Image(
+              image:
+                  widget.artworkImageProvider?.call(artwork, decodeWidth) ??
+                  ResizeImage(
+                    CachedNetworkImageProvider(
+                      artwork.url,
+                      cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
+                      headers: artwork.headers.isEmpty ? null : artwork.headers,
+                    ),
+                    width: decodeWidth,
+                    policy: ResizeImagePolicy.fit,
+                  ),
+              fit: BoxFit.cover,
+              alignment: const Alignment(.3, 0),
+              errorBuilder: (_, _, _) =>
+                  const ColoredBox(color: Color(0xFF111113)),
+            ),
+          Positioned(
+            left: (viewport.width * .04).clamp(32.0, 64.0),
+            bottom: 30,
+            child: Container(
+              constraints: BoxConstraints(maxWidth: viewport.width * .58),
+              color: const Color(0xDF111113),
+              padding: const EdgeInsets.all(22),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    cinemaMediaBaseTitle(title.title),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: viewport.height < 600 ? 34 : 44,
+                      height: 1.12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    [
+                      title.year,
+                      title.category,
+                    ].where((s) => s.isNotEmpty).join(' · '),
+                    style: const TextStyle(
+                      fontSize: 16,
+                      color: CinemaTheme.muted,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  FilledButton.icon(
+                    key: const ValueKey('tv-featured-open'),
+                    onPressed: () => widget.onOpen(title),
+                    icon: const Icon(Icons.play_arrow_rounded, size: 26),
+                    label: const Text('查看影片'),
+                    style: FilledButton.styleFrom(
+                      foregroundColor: const Color(0xFF151515),
+                      backgroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 18,
+                      ),
+                      textStyle: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (widget.titles.length > 1)
+            Positioned(
+              right: 40,
+              bottom: 32,
+              child: Text(
+                '${_index + 1} / ${widget.titles.length}',
+                style: const TextStyle(fontSize: 16, color: Colors.white70),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildWall(BuildContext context) {
     if (widget.titles.isEmpty) return const SizedBox.shrink();

@@ -30,6 +30,23 @@ class CinemaNASPlaybackOptions {
                 .firstOrNull?['label']
                 ?.toString() ??
             value;
+
+  /// Numeric NAS profiles, never inferred from display labels or list order.
+  List<String> tvProfiles({int maxWidth = 1920, int maxHeight = 1080}) {
+    final rows = <({String id, int pixels})>[];
+    for (final profile in profiles) {
+      final id = '${profile['id'] ?? ''}';
+      final size = RegExp(r'^(\d+)x(\d+)$').firstMatch(id);
+      if (size == null) continue;
+      final width = int.parse(size[1]!), height = int.parse(size[2]!);
+      if (width <= 0 || height <= 0 || width > maxWidth || height > maxHeight) {
+        continue;
+      }
+      rows.add((id: id, pixels: width * height));
+    }
+    rows.sort((a, b) => b.pixels.compareTo(a.pixels));
+    return rows.map((r) => r.id).toList();
+  }
 }
 
 class CinemaNASPlaybackSession {

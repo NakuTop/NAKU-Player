@@ -8,6 +8,9 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:kazumi/services/platform/desktop_fullscreen.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
+import 'package:kazumi/features/cinema/cinema_tv_session.dart';
+import 'package:kazumi/features/cinema/cinema_tv_native_player.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -468,6 +471,8 @@ void main() {
     CinemaMediaCache? cache,
     int? initialPosition,
     CinemaTitle? selectedTitle,
+    CinemaSource? selectedSource,
+    Player Function(PlayerConfiguration)? playerFactory,
     CinemaNASPlaybackClient? nasPlayback,
     Future<CinemaTitle> Function(CinemaTitle)? resolveNASRatings,
     CinemaOnlineSubtitles Function()? subtitleClientFactory,
@@ -502,22 +507,24 @@ void main() {
       mediaCache: cache,
       initialPositionSeconds: initialPosition,
       offlinePaths: offlinePaths,
-      source: _source,
+      source: selectedSource ?? _source,
       store: store,
       watchTogether: together,
       repository: _Repository(),
       ratingsRepository: _Ratings(),
       preferences: prefs,
       windowControls: windowControls,
-      createPlayer: (config) {
-        final backend = _Backend(
-          config,
-          failOpen: failFirst && backends.isEmpty,
-          emitVideo: !(stallFirst && backends.isEmpty),
-        );
-        backends.add(backend);
-        return _Player(backend);
-      },
+      createPlayer:
+          playerFactory ??
+          (config) {
+            final backend = _Backend(
+              config,
+              failOpen: failFirst && backends.isEmpty,
+              emitVideo: !(stallFirst && backends.isEmpty),
+            );
+            backends.add(backend);
+            return _Player(backend);
+          },
       videoSurfaceBuilder: (_, player) => renderToolbar
           ? Builder(
               builder: (context) => Column(
@@ -2224,6 +2231,271 @@ void main() {
       expect(backends.last.opened!.start, const Duration(seconds: 64));
       expect(store.history, isEmpty);
       expect(find.text('隐身模式已开启，本次不会保存观看记录。'), findsOneWidget);
+      await unmount(tester);
+    },
+  );
+  testWidgets(
+    'TV NAS prefers original direct movie despite available transcodes and shows flat loading',
+    (tester) async {
+      final wasTV = NakuDevice.isTV;
+      NakuDevice.isTV = true;
+      addTearDown(() => NakuDevice.isTV = wasTV);
+      final nas = _NAS();
+      final nativeCalls = <MethodCall>[];
+      final original = Completer<String>();
+      messenger.setMockMethodCallHandler(CinemaNASClient.channel, (call) async {
+        nativeCalls.add(call);
+        if (call.method == 'ensure') return {'namespace': 'a' * 64};
+        if (call.method == 'asset') return original.future;
+        throw StateError('Unexpected original NAS call: ${call.method}');
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(CinemaNASClient.channel, null),
+      );
+      final reference = nasMediaReference(
+        namespace: 'a' * 64,
+        id: 1,
+        library: 1,
+        path: '/original-dolby-movie.mkv',
+      );
+      final title = CinemaTitle(
+        id: 'tv-original',
+        sourceId: cinemaNASSource.id,
+        title: 'TV 原画直连',
+        routes: [
+          CinemaRoute(
+            name: 'NAS',
+            episodes: [CinemaEpisode(name: '电影', url: reference)],
+          ),
+        ],
+      );
+      await mount(
+        tester,
+        {'autoPlay': false},
+        viewport: const Size(1280, 720),
+        stallFirst: true,
+        selectedTitle: title,
+        selectedSource: cinemaNASSource,
+        initialPosition: 123,
+        nasPlayback: CinemaNASPlaybackClient(client: nas),
+        resolveNASRatings: (value) async => value,
+      );
+      for (
+        var i = 0;
+        i < 8 && !nativeCalls.any((c) => c.method == 'asset');
+        i++
+      ) {
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      expect(nas.calls, contains('playbackOptions'));
+      expect(
+        nativeCalls.map((c) => c.method),
+        containsAllInOrder(['ensure', 'asset']),
+      );
+      expect(nativeCalls.last.arguments['path'], '/original-dolby-movie.mkv');
+      expect(
+        nas.starts,
+        isEmpty,
+        reason: 'available NAS transcodes must not replace original playback',
+      );
+      expect(find.byIcon(Icons.hourglass_top_rounded), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      final entrance = tester.widget<CinemaPlayerEntrance>(
+        find.byType(CinemaPlayerEntrance),
+      );
+      expect(entrance.enabled, false);
+      expect(find.text('画质'), findsNothing);
+      original.complete('http://192.168.1.9/original.mkv');
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      expect(backends.single.opened!.uri, 'http://192.168.1.9/original.mkv');
+      expect(backends.single.opened!.start, const Duration(seconds: 123));
+      expect(
+        backends.single.state.playing,
+        true,
+        reason: 'explicit TV entry must honor play intent',
+      );
+      expect(nas.starts, isEmpty);
+      backends.single.emitVideoDimensions();
+      await tester.pump();
+      expect(find.byIcon(Icons.hourglass_top_rounded), findsNothing);
+      await unmount(tester);
+    },
+  );
+  testWidgets(
+    'TV episode switch retires old native decoder before next player opens',
+    (tester) async {
+      final wasTV = NakuDevice.isTV;
+      NakuDevice.isTV = true;
+      addTearDown(() => NakuDevice.isTV = wasTV);
+      const nativeChannel = MethodChannel('test/tv-retirement');
+      final events = StreamController<dynamic>.broadcast();
+      final calls = <MethodCall>[];
+      final releaseOldStop = Completer<void>();
+      int? firstId;
+      messenger.setMockMethodCallHandler(nativeChannel, (call) async {
+        calls.add(call);
+        final args = call.arguments as Map;
+        final id = args['id'] as int;
+        if (call.method == 'create') firstId ??= id;
+        if (call.method == 'stop' && id == firstId) {
+          await releaseOldStop.future;
+        }
+        if (call.method == 'open') {
+          events.add({
+            'id': id,
+            'width': 1920,
+            'height': 1080,
+            'durationMs': 1200000,
+            'positionMs': args['positionMs'],
+            'playing': args['play'],
+            'buffering': false,
+            'completed': false,
+            'firstFrame': true,
+          });
+        }
+        return null;
+      });
+      addTearDown(() async {
+        if (!releaseOldStop.isCompleted) releaseOldStop.complete();
+        await events.close();
+        messenger.setMockMethodCallHandler(nativeChannel, null);
+      });
+      await mount(
+        tester,
+        {'autoPlay': true},
+        viewport: const Size(1280, 720),
+        playerFactory: (configuration) => CinemaTVNativePlayer(
+          configuration: configuration,
+          channel: nativeChannel,
+          events: events.stream,
+        ),
+      );
+      expect(calls.where((c) => c.method == 'open'), hasLength(1));
+      await tester.tap(find.text('选集'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('第2集').last);
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      expect(calls.where((c) => c.method == 'stop'), hasLength(1));
+      expect(
+        calls.where((c) => c.method == 'open'),
+        hasLength(1),
+        reason:
+            'second episode must wait for exclusive hardware decoder retirement',
+      );
+      releaseOldStop.complete();
+      for (
+        var i = 0;
+        i < 20 && calls.where((c) => c.method == 'open').length < 2;
+        i++
+      ) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 5)),
+        );
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      expect(
+        calls.where((c) => c.method == 'open'),
+        hasLength(2),
+        reason: calls.map((c) => c.method).join(','),
+      );
+      final retiredAt = calls.indexWhere(
+        (c) => c.method == 'dispose' && c.arguments['id'] == firstId,
+      );
+      final nextOpenAt = calls.indexWhere(
+        (c) => c.method == 'open' && c.arguments['id'] != firstId,
+      );
+      expect(retiredAt, greaterThanOrEqualTo(0));
+      expect(nextOpenAt, greaterThan(retiredAt));
+      expect(
+        calls[nextOpenAt].arguments['url'],
+        'https://fixture.invalid/2.mp4',
+      );
+      await unmount(tester);
+    },
+  );
+  testWidgets(
+    'TV hidden controls accept immediate seek and pause without manual source UI',
+    (tester) async {
+      final wasTV = NakuDevice.isTV;
+      NakuDevice.isTV = true;
+      addTearDown(() => NakuDevice.isTV = wasTV);
+      await mount(tester, {'autoPlay': true}, initialPosition: 20);
+      expect(CinemaTVPlaybackActivity.instance.isWatching, true);
+      expect(find.text('音轨'), findsNothing);
+      expect(find.text('画质'), findsNothing);
+      expect(find.text('选集 / 线路'), findsNothing);
+      await tester.pump(const Duration(seconds: 6));
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(backends.single.state.position, const Duration(seconds: 30));
+      expect(backends.single.state.playing, true);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      expect(backends.single.state.playing, false);
+      expect(backends.single.state.position, const Duration(seconds: 30));
+      expect(CinemaTVPlaybackActivity.instance.isWatching, false);
+      await unmount(tester);
+      expect(CinemaTVPlaybackActivity.instance.isWatching, false);
+    },
+  );
+  testWidgets('TV Back first hides controls then returns directly to library', (
+    tester,
+  ) async {
+    final wasTV = NakuDevice.isTV;
+    NakuDevice.isTV = true;
+    addTearDown(() => NakuDevice.isTV = wasTV);
+    await mount(tester, {'autoPlay': true}, withLibraryRoute: true);
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    expect(find.text('测试片库'), findsNothing);
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 550));
+    for (
+      var i = 0;
+      i < 40 && find.byType(CinemaPlayerPage).evaluate().isNotEmpty;
+      i++
+    ) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 5)),
+      );
+      await tester.pump();
+    }
+    expect(find.text('测试片库'), findsOneWidget);
+    expect(CinemaTVPlaybackActivity.instance.isWatching, false);
+    await unmount(tester);
+  });
+  testWidgets(
+    'TV explicit entry plays with inherited autoplay off and auto route keeps later pause',
+    (tester) async {
+      final wasTV = NakuDevice.isTV;
+      NakuDevice.isTV = true;
+      addTearDown(() => NakuDevice.isTV = wasTV);
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {'autoPlay': false},
+        autoBest: true,
+        probe: probe,
+        initialPosition: 77,
+      );
+      await waitForProbe(tester, probe);
+      expect(backends.single.state.playing, true);
+      await backends.single.seek(const Duration(seconds: 88));
+      await tester.tap(find.text('暂停'));
+      await tester.pump();
+      expect(backends.single.state.playing, false);
+      probe.complete();
+      await tester.pumpAndSettle();
+      expect(backends, hasLength(2));
+      expect(backends.last.opened!.uri, 'https://fixture.invalid/backup.mp4');
+      expect(backends.last.opened!.start, const Duration(seconds: 88));
+      expect(backends.last.state.playing, false);
       await unmount(tester);
     },
   );

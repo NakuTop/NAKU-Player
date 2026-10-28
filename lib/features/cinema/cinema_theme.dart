@@ -16,17 +16,22 @@ abstract final class CinemaTheme {
   static Color get raised => raisedFor(CinemaAppearance.instance);
   static Color backgroundFor(CinemaAppearance appearance) =>
       const Color(0xFF09090B).withValues(
-        alpha: defaultTargetPlatform == TargetPlatform.windows
+        alpha:
+            NakuDevice.isTV || defaultTargetPlatform == TargetPlatform.windows
             ? 1
             : appearance.effectiveBackgroundOpacity,
       );
   static Color surfaceFor(CinemaAppearance appearance) =>
       const Color(0xFF1B1B1D).withValues(
-        alpha: _panelAlpha(appearance.effectiveBackgroundOpacity, .38, .56),
+        alpha: NakuDevice.isTV
+            ? 1
+            : _panelAlpha(appearance.effectiveBackgroundOpacity, .38, .56),
       );
   static Color raisedFor(CinemaAppearance appearance) =>
       const Color(0xFF242426).withValues(
-        alpha: _panelAlpha(appearance.effectiveBackgroundOpacity, .30, .68),
+        alpha: NakuDevice.isTV
+            ? 1
+            : _panelAlpha(appearance.effectiveBackgroundOpacity, .30, .68),
       );
   static double _panelAlpha(double opacity, double base, double scale) =>
       opacity >= .999 ? 1 : base + opacity * scale;
@@ -38,6 +43,7 @@ abstract final class CinemaTheme {
   static double? _cachedOpacity;
   static String? _cachedFont;
   static TargetPlatform? _cachedPlatform;
+  static bool? _cachedTV;
   static String get _fontFamily {
     try {
       return GStorage.getSetting(SettingsKeys.useSystemFont)
@@ -58,6 +64,7 @@ abstract final class CinemaTheme {
     if (_cached != null &&
         _cachedOpacity == opacity &&
         _cachedFont == fontFamily &&
+        _cachedTV == NakuDevice.isTV &&
         _cachedPlatform == platform) {
       return _cached!;
     }
@@ -66,8 +73,12 @@ abstract final class CinemaTheme {
     _cachedOpacity = opacity;
     _cachedFont = fontFamily;
     _cachedPlatform = platform;
+    _cachedTV = NakuDevice.isTV;
     return _cached = ThemeData(
       useMaterial3: true,
+      splashFactory: NakuDevice.isTV
+          ? NoSplash.splashFactory
+          : InkRipple.splashFactory,
       focusColor: NakuDevice.isTV
           ? copper.withValues(alpha: .45)
           : const Color(0x24FFFFFF),
@@ -80,7 +91,18 @@ abstract final class CinemaTheme {
       brightness: Brightness.dark,
       fontFamily: fontFamily,
       fontFamilyFallback: const ['MI_Sans_Regular'],
-      pageTransitionsTheme: pageTransitionsTheme2024,
+      pageTransitionsTheme: NakuDevice.isTV
+          ? const PageTransitionsTheme(
+              builders: {
+                TargetPlatform.android: _CinemaTVStaticTransitions(),
+                TargetPlatform.macOS: _CinemaTVStaticTransitions(),
+                TargetPlatform.linux: _CinemaTVStaticTransitions(),
+                TargetPlatform.windows: _CinemaTVStaticTransitions(),
+                TargetPlatform.iOS: _CinemaTVStaticTransitions(),
+                TargetPlatform.fuchsia: _CinemaTVStaticTransitions(),
+              },
+            )
+          : pageTransitionsTheme2024,
       scaffoldBackgroundColor: background,
       colorScheme: ColorScheme.dark(
         primary: copper,
@@ -128,8 +150,11 @@ abstract final class CinemaTheme {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: const Color(0xF01B1B1D),
+        backgroundColor: NakuDevice.isTV
+            ? const Color(0xFF1B1B1D)
+            : const Color(0xF01B1B1D),
         surfaceTintColor: Colors.transparent,
+        elevation: NakuDevice.isTV ? 0 : null,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       ),
       bottomSheetTheme: const BottomSheetThemeData(
@@ -138,9 +163,11 @@ abstract final class CinemaTheme {
         showDragHandle: true,
       ),
       popupMenuTheme: PopupMenuThemeData(
-        color: const Color(0xF01B1B1D),
+        color: NakuDevice.isTV
+            ? const Color(0xFF1B1B1D)
+            : const Color(0xF01B1B1D),
         surfaceTintColor: Colors.transparent,
-        elevation: 8,
+        elevation: NakuDevice.isTV ? 0 : 8,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
       tabBarTheme: platform == TargetPlatform.macOS
@@ -444,4 +471,16 @@ class _CinemaAppearanceInherited extends InheritedNotifier<CinemaAppearance> {
     required super.notifier,
     required super.child,
   });
+}
+
+class _CinemaTVStaticTransitions extends PageTransitionsBuilder {
+  const _CinemaTVStaticTransitions();
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) => child;
 }

@@ -12,6 +12,8 @@ import 'cinema_subtitle_appearance.dart';
 import 'cinema_live_subtitles.dart';
 import 'cinema_external_subtitles.dart';
 import 'cinema_subtitle_sync_panel.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
+import 'cinema_tv_auxiliary.dart';
 
 Future<void> applyCinemaTrackPreferences(
   Player player,
@@ -48,28 +50,46 @@ Future<void> showCinemaTracksSheet(
   CinemaSubtitleAutoSync? autoSync,
   Future<void> Function(CinemaOnlineSubtitleSelection selection)?
   onSubtitleApplied,
-}) => showModalBottomSheet<void>(
-  context: context,
-  isScrollControlled: true,
-  constraints: const BoxConstraints(maxWidth: 680),
-  builder: (_) => SizedBox(
-    height: MediaQuery.sizeOf(context).height * .85,
-    child: CinemaTracksPanel(
-      player: player,
-      store: store,
-      title: title,
-      imdbId: imdbId,
-      nasControls: nasControls,
-      liveSubtitles: liveSubtitles,
-      category: category,
-      episodeName: episodeName,
-      episodeNumber: episodeNumber,
-      automation: automation,
-      autoSync: autoSync,
-      onSubtitleApplied: onSubtitleApplied,
-    ),
-  ),
-);
+}) => NakuDevice.isTV
+    ? showCinemaTVPanel<void>(
+        context,
+        title: '字幕',
+        builder: (_) => CinemaTracksPanel(
+          player: player,
+          store: store,
+          title: title,
+          imdbId: imdbId,
+          liveSubtitles: liveSubtitles,
+          category: category,
+          episodeName: episodeName,
+          episodeNumber: episodeNumber,
+          automation: automation,
+          autoSync: autoSync,
+          onSubtitleApplied: onSubtitleApplied,
+        ),
+      )
+    : showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        constraints: const BoxConstraints(maxWidth: 680),
+        builder: (_) => SizedBox(
+          height: MediaQuery.sizeOf(context).height * .85,
+          child: CinemaTracksPanel(
+            player: player,
+            store: store,
+            title: title,
+            imdbId: imdbId,
+            nasControls: nasControls,
+            liveSubtitles: liveSubtitles,
+            category: category,
+            episodeName: episodeName,
+            episodeNumber: episodeNumber,
+            automation: automation,
+            autoSync: autoSync,
+            onSubtitleApplied: onSubtitleApplied,
+          ),
+        ),
+      );
 
 class CinemaTracksPanel extends StatefulWidget {
   const CinemaTracksPanel({
@@ -194,6 +214,8 @@ class _CinemaTracksPanelState extends State<CinemaTracksPanel> {
     final field = TextEditingController();
     final url = await showDialog<String>(
       context: context,
+      useRootNavigator: !NakuDevice.isTV,
+      animationStyle: NakuDevice.isTV ? AnimationStyle.noAnimation : null,
       builder: (context) => AlertDialog(
         title: const Text('加载字幕链接'),
         content: TextField(
@@ -702,6 +724,139 @@ class _CinemaTracksPanelState extends State<CinemaTracksPanel> {
         ),
     ],
   );
+  Future<void> _tvDelay(double? shift) => _act(() async {
+    widget.autoSync?.cancel();
+    final session = cinemaExternalSubtitleState(widget.player);
+    final external = session.active.value && session.cues.isNotEmpty;
+    final value =
+        (shift == null ? 0.0 : (external ? session.delay : _delay) + shift)
+            .clamp(-21600.0, 21600.0);
+    if (external) {
+      session.setDelay(value);
+    } else if (widget.player.platform case final NativePlayer native) {
+      await native.setProperty('sub-delay', '$value');
+    } else {
+      throw const FormatException('当前播放器暂不支持字幕偏移');
+    }
+    if (mounted) setState(() => _delay = value);
+  });
+
+  Widget _tvTracks(Tracks available, Track current, bool external) {
+    final session = cinemaExternalSubtitleState(widget.player);
+    final tracks = available.subtitle.where(
+      (t) => !['auto', 'no'].contains(t.id) && !session.ownsTrack(t),
+    );
+    return ValueListenableBuilder(
+      valueListenable: session.timing,
+      builder: (context, timing, _) => ListView(
+        padding: const EdgeInsets.fromLTRB(24, 6, 24, 24),
+        children: [
+          Text(
+            external
+                ? '当前：${session.title}'
+                : current.subtitle.id == 'no'
+                ? '字幕已关闭'
+                : current.subtitle.id == 'auto'
+                ? '当前：自动选择内嵌字幕'
+                : '当前：${current.subtitle.title ?? '内嵌字幕'}',
+            style: const TextStyle(fontSize: 18),
+          ),
+          const SizedBox(height: 12),
+          CinemaTVAuxiliaryAction(
+            key: const ValueKey('tv-online-subtitle-entry'),
+            autofocus: true,
+            label: '在线搜索字幕',
+            subtitle: '自动带入片名和当前季集；搜索期间保持暂停',
+            onPressed: _busy
+                ? null
+                : () async {
+                    widget.automation?.beginManualSelection();
+                    await showCinemaOnlineSubtitles(
+                      context,
+                      widget.player,
+                      title: widget.title,
+                      imdbId: widget.imdbId,
+                      category: widget.category,
+                      episodeName: widget.episodeName,
+                      episodeNumber: widget.episodeNumber,
+                      onApplied: widget.onSubtitleApplied,
+                    );
+                    if (mounted) setState(() {});
+                  },
+          ),
+          CinemaTVAuxiliaryAction(
+            label: '关闭字幕',
+            selected: !external && current.subtitle.id == 'no',
+            onPressed: _busy
+                ? null
+                : () => _act(() => _selectNativeSubtitle(SubtitleTrack.no())),
+          ),
+          CinemaTVAuxiliaryAction(
+            label: '自动选择内嵌字幕',
+            selected: !external && current.subtitle.id == 'auto',
+            onPressed: _busy
+                ? null
+                : () => _act(() => _selectNativeSubtitle(SubtitleTrack.auto())),
+          ),
+          for (final track in tracks)
+            CinemaTVAuxiliaryAction(
+              key: ValueKey('tv-subtitle-${track.id}'),
+              label: track.title ?? '内嵌字幕 ${track.id}',
+              subtitle: track.language,
+              selected: !external && current.subtitle.id == track.id,
+              onPressed: _busy
+                  ? null
+                  : () => _act(() => _selectNativeSubtitle(track)),
+            ),
+          if (external || widget.player.platform is NativePlayer) ...[
+            const SizedBox(height: 16),
+            Text(
+              '字幕偏移 ${(external ? session.delay : _delay).toStringAsFixed(1)} 秒',
+              style: const TextStyle(fontSize: 19),
+            ),
+            CinemaTVAuxiliaryAction(
+              label: '提前 0.5 秒',
+              onPressed: _busy ? null : () => _tvDelay(-.5),
+            ),
+            CinemaTVAuxiliaryAction(
+              label: '延后 0.5 秒',
+              onPressed: _busy ? null : () => _tvDelay(.5),
+            ),
+            CinemaTVAuxiliaryAction(
+              label: '偏移归零',
+              onPressed: _busy ? null : () => _tvDelay(null),
+            ),
+          ],
+          if (widget.automation case final automation?)
+            ValueListenableBuilder<String>(
+              valueListenable: automation.status,
+              builder: (context, status, _) => CinemaTVAuxiliaryAction(
+                label: '记住字幕与整季续载：${automation.automaticEnabled ? '开启' : '关闭'}',
+                subtitle: status,
+                selected: automation.automaticEnabled,
+                onPressed: _busy
+                    ? null
+                    : () => _act(
+                        () => automation.setAutomaticEnabled(
+                          !automation.automaticEnabled,
+                        ),
+                      ),
+              ),
+            ),
+          if (_busy) const LinearProgressIndicator(),
+          if (_error != null)
+            Semantics(
+              liveRegion: true,
+              child: Text(
+                _error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => ValueListenableBuilder<bool>(
     valueListenable: cinemaExternalSubtitleState(widget.player).active,
@@ -714,6 +869,7 @@ class _CinemaTracksPanelState extends State<CinemaTracksPanel> {
         builder: (context, selected) {
           final available = tracks.data ?? const Tracks(),
               current = selected.data ?? const Track();
+          if (NakuDevice.isTV) return _tvTracks(available, current, external);
           return Column(
             children: [
               Padding(

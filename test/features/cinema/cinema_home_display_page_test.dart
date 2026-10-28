@@ -1,8 +1,8 @@
 import 'dart:async';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_home_display_bridge.dart';
@@ -13,6 +13,90 @@ import 'package:kazumi/features/cinema/cinema_player_entrance.dart';
 import 'package:kazumi/services/platform/desktop_window_controls.dart';
 
 void main() {
+  testWidgets(
+    'TV screensaver is full display with no desktop chrome or native focus',
+    (tester) async {
+      final platform = _installFakeWebView();
+      final observer = _PopObserver();
+      var wakes = 0;
+      await _pushDisplay(
+        tester,
+        platform,
+        screensaver: true,
+        onWake: () => wakes++,
+        observer: observer,
+      );
+      expect(
+        find.byKey(const ValueKey('home-display-floating-controls')),
+        findsNothing,
+      );
+      expect(find.byTooltip('全屏'), findsNothing);
+      expect(platform.view.params.initialSettings!.needInitialFocus, false);
+      expect(platform.view.params.initialUserScripts, hasLength(2));
+      expect(
+        platform.view.params.initialUserScripts!.last.source,
+        contains('.home-display__footer button'),
+      );
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.select);
+      await tester.pump();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.select);
+      expect(find.byType(CinemaHomeDisplayPage), findsNothing);
+      expect(find.text('电影墙'), findsOneWidget);
+      expect(wakes, 1);
+      expect(observer.pops, 1);
+      expect(platform.controller.screenshotCalls, 0);
+      expect(platform.view.disposed, true);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('unattended screensaver falls back without a NAS login prompt', (
+    tester,
+  ) async {
+    final platform = _installFakeWebView();
+    var loginRequests = 0;
+    await _mount(
+      tester,
+      screensaver: true,
+      client: CinemaNASClient(
+        invoke: (_, _) async => {
+          'authenticated': false,
+          'reason': 'nas_login_required',
+        },
+      ),
+      onOpenNAS: () async {
+        ++loginRequests;
+      },
+    );
+    expect(find.text('Home Display 暂时离线'), findsOneWidget);
+    expect(find.text('按任意键返回'), findsOneWidget);
+    expect(find.text('登录 NAS'), findsNothing);
+    expect(find.text('重试'), findsNothing);
+    expect(platform.views, isEmpty);
+    expect(loginRequests, 0);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'pointer wake notifies once and returns without an exit snapshot',
+    (tester) async {
+      final platform = _installFakeWebView();
+      var wakes = 0;
+      await _pushDisplay(
+        tester,
+        platform,
+        screensaver: true,
+        onWake: () => wakes++,
+      );
+      await tester.tap(find.byType(CinemaHomeDisplayPage));
+      await tester.pump();
+      expect(find.byType(CinemaHomeDisplayPage), findsNothing);
+      expect(wakes, 1);
+      expect(platform.controller.screenshotCalls, 0);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   test('authorization distinguishes expired NAS from a backend failure', () {
     const validNAS = {
       'authenticated': false,
@@ -868,6 +952,8 @@ Future<GlobalKey<NavigatorState>> _pushDisplay(
   _FakeWebViewPlatform platform, {
   bool reduced = false,
   NavigatorObserver? observer,
+  bool screensaver = false,
+  VoidCallback? onWake,
 }) async {
   final navigator = GlobalKey<NavigatorState>();
   await tester.pumpWidget(
@@ -889,6 +975,8 @@ Future<GlobalKey<NavigatorState>> _pushDisplay(
               invoke: (_, _) async => {'authenticated': true},
             ),
             windowControls: _FakeWindowControls(),
+            screensaver: screensaver,
+            onWake: onWake,
           ),
         ),
       ),
@@ -924,6 +1012,7 @@ Future<void> _mount(
   required CinemaNASClient client,
   Future<void> Function()? onOpenNAS,
   _FakeWindowControls? windowControls,
+  bool screensaver = false,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -931,6 +1020,7 @@ Future<void> _mount(
         client: client,
         onOpenNAS: onOpenNAS,
         windowControls: windowControls ?? _FakeWindowControls(),
+        screensaver: screensaver,
       ),
     ),
   );

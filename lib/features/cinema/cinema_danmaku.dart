@@ -17,6 +17,8 @@ import 'package:kazumi/request/core/network_config.dart';
 import 'cinema_logvar_client.dart';
 import 'cinema_direct_danmaku.dart';
 import 'package:kazumi/services/platform/logvar_credential_store.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
+import 'cinema_tv_auxiliary.dart';
 
 /// Only public platform page URLs can leave the player. Private playback URLs,
 /// NAS paths, signed query strings and arbitrary hosts are not source IDs.
@@ -175,6 +177,7 @@ class CinemaDanmakuController extends ChangeNotifier {
     enabled = store.extras['cinemaDanmakuEnabled'] is bool
         ? store.extras['cinemaDanmakuEnabled'] == true
         : store.extras['danmakuAutoMatch'] != false;
+    if (NakuDevice.isTV) fontSize = 28;
     final style = store.extras['cinemaDanmakuStyle'];
     if (style is Map) {
       double read(String key, double fallback, double min, double max) {
@@ -185,7 +188,7 @@ class CinemaDanmakuController extends ChangeNotifier {
       }
 
       opacity = read('opacity', .75, .2, 1);
-      fontSize = read('fontSize', 20, 14, 36);
+      fontSize = read('fontSize', fontSize, 14, 36);
       area = read('area', .5, .25, .75);
       duration = read('duration', 8, 4, 16);
     }
@@ -745,7 +748,9 @@ class CinemaDanmakuOverlay extends StatelessWidget {
     child: ListenableBuilder(
       listenable: controller,
       builder: (_, _) => Visibility(
-        visible: controller.enabled,
+        visible:
+            controller.enabled &&
+            (!NakuDevice.isTV || controller.entries.isNotEmpty),
         maintainState: true,
         child: canvas.DanmakuScreen(
           key: ObjectKey(controller),
@@ -761,15 +766,22 @@ Future<void> showCinemaDanmakuSheet(
   BuildContext context,
   CinemaDanmakuController controller, {
   String title = '',
-}) => showModalBottomSheet<void>(
-  context: context,
-  isScrollControlled: true,
-  constraints: const BoxConstraints(maxWidth: 480),
-  builder: (_) => SizedBox(
-    height: (MediaQuery.sizeOf(context).height * .8).clamp(0, 510),
-    child: CinemaDanmakuStylePanel(controller: controller),
-  ),
-);
+}) => NakuDevice.isTV
+    ? showCinemaTVPanel<void>(
+        context,
+        title: '弹幕',
+        width: 580,
+        builder: (_) => CinemaDanmakuStylePanel(controller: controller),
+      )
+    : showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        constraints: const BoxConstraints(maxWidth: 480),
+        builder: (_) => SizedBox(
+          height: (MediaQuery.sizeOf(context).height * .8).clamp(0, 510),
+          child: CinemaDanmakuStylePanel(controller: controller),
+        ),
+      );
 
 /// Display controls stay compact; correcting a match opens a separate dialog.
 class CinemaDanmakuStylePanel extends StatelessWidget {
@@ -781,6 +793,7 @@ class CinemaDanmakuStylePanel extends StatelessWidget {
     listenable: controller,
     builder: (context, _) {
       final c = controller;
+      if (NakuDevice.isTV) return _CinemaTVDanmakuPanel(controller: c);
       Widget slider(
         String label,
         String value,
@@ -920,6 +933,94 @@ class CinemaDanmakuStylePanel extends StatelessWidget {
   );
 }
 
+class _CinemaTVDanmakuPanel extends StatelessWidget {
+  const _CinemaTVDanmakuPanel({required this.controller});
+  final CinemaDanmakuController controller;
+  double _next(double value, List<double> values) =>
+      values.firstWhere((v) => v > value + .01, orElse: () => values.first);
+  @override
+  Widget build(BuildContext context) {
+    final c = controller;
+    final query = c.matchQuery;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+      children: [
+        Semantics(
+          liveRegion: true,
+          child: Text(
+            c.matching
+                ? c.matchMessage
+                : c.entries.isNotEmpty
+                ? '已自动加载 ${c.entries.length} 条弹幕'
+                : c.matchMessage.isNotEmpty
+                ? c.matchMessage
+                : '可用时自动匹配正片弹幕',
+            style: const TextStyle(fontSize: 18),
+          ),
+        ),
+        if (query != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Text(
+              '${cinemaMediaBaseTitle(query.title)}${query.year.isEmpty ? '' : ' · ${query.year}'}${query.series ? ' · 第 ${query.season} 季 第 ${query.episode} 集' : ''}',
+              style: const TextStyle(fontSize: 16),
+            ),
+          ),
+        CinemaTVAuxiliaryAction(
+          key: const ValueKey('tv-danmaku-enabled'),
+          autofocus: true,
+          label: c.enabled ? '弹幕已开启' : '弹幕已关闭',
+          selected: c.enabled,
+          subtitle: c.enabled ? '后台自动匹配，底部为字幕留空' : '显示和自动加载均已关闭',
+          onPressed: () => unawaited(c.setEnabled(!c.enabled)),
+        ),
+        CinemaTVAuxiliaryAction(
+          key: const ValueKey('tv-danmaku-rematch'),
+          label: c.matching ? '正在自动匹配…' : '重新自动匹配',
+          onPressed: c.enabled
+              ? () {
+                  if (!c.matching) unawaited(c.loadAutomatic(force: true));
+                }
+              : null,
+        ),
+        if (query != null)
+          CinemaTVAuxiliaryAction(
+            key: const ValueKey('tv-danmaku-correct'),
+            label: '更正片名 / 年份',
+            subtitle: '季集跟随当前视频，不匹配预告或影评',
+            onPressed: c.enabled
+                ? () => showCinemaDanmakuMatchDialog(context, c)
+                : null,
+          ),
+        CinemaTVAuxiliaryAction(
+          label: '字号：${c.fontSize.round()}',
+          onPressed: c.enabled
+              ? () => c.setFontSize(_next(c.fontSize, [24, 30, 36]))
+              : null,
+        ),
+        CinemaTVAuxiliaryAction(
+          label: '不透明度：${(c.opacity * 100).round()}%',
+          onPressed: c.enabled
+              ? () => c.setOpacity(_next(c.opacity, [.45, .65, .85, 1]))
+              : null,
+        ),
+        CinemaTVAuxiliaryAction(
+          label: '区域：上方 ${(c.area * 100).round()}%',
+          onPressed: c.enabled
+              ? () => c.setArea(_next(c.area, [.25, .5, .75]))
+              : null,
+        ),
+        CinemaTVAuxiliaryAction(
+          label: '滚动时长：${c.duration.round()} 秒',
+          onPressed: c.enabled
+              ? () => c.setDuration(_next(c.duration, [8, 12, 16]))
+              : null,
+        ),
+      ],
+    );
+  }
+}
+
 Future<void> showCinemaDanmakuMatchDialog(
   BuildContext context,
   CinemaDanmakuController controller,
@@ -928,6 +1029,8 @@ Future<void> showCinemaDanmakuMatchDialog(
   if (query == null) return;
   final edit = await showDialog<({CinemaLogvarQuery? query})>(
     context: context,
+    useRootNavigator: !NakuDevice.isTV,
+    animationStyle: NakuDevice.isTV ? AnimationStyle.noAnimation : null,
     builder: (_) => _DanmakuMatchDialog(
       query: query,
       originalTitle: controller.autoQuery!.title,

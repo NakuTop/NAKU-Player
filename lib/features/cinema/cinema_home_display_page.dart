@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
 import 'package:kazumi/services/platform/desktop_fullscreen.dart';
 import 'package:kazumi/services/platform/desktop_window_controls.dart';
@@ -67,11 +69,18 @@ class CinemaHomeDisplayPage extends StatefulWidget {
     this.client,
     this.onOpenNAS,
     this.windowControls,
+    this.screensaver = false,
+    this.onWake,
   });
 
   final CinemaNASClient? client;
   final Future<void> Function()? onOpenNAS;
   final DesktopWindowControls? windowControls;
+  final bool screensaver;
+
+  /// Notification only. The page dismisses itself; a TV host can retain the
+  /// waking physical keys until key-up to prevent repeats reaching the list.
+  final VoidCallback? onWake;
 
   @override
   State<CinemaHomeDisplayPage> createState() => _CinemaHomeDisplayPageState();
@@ -89,6 +98,10 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
   final _exitSurface = GlobalKey<CinemaPlayerEntranceState>();
   bool _closing = false, _allowDisplayPop = false;
   Timer? _timeout, _captureTimer, _settleTimer, _renewTimer;
+  Timer? _clockTimer;
+  DateTime _clock = DateTime.now();
+  final _screensaverFocus = FocusNode(debugLabel: 'Home Display screensaver');
+  bool get _android => Platform.isAndroid;
   bool _loading = true, _overlay = true, _hidden = false;
   bool _occluded = false, _minimized = false;
   bool _backgrounded = false;
@@ -114,22 +127,36 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     super.initState();
     _backgrounded = _isBackground(WidgetsBinding.instance.lifecycleState);
     WidgetsBinding.instance.addObserver(this);
-    windowManager.addListener(this);
-    _windowControls.register(this, _nativeVisibilityChanged);
+    if (!_android) {
+      windowManager.addListener(this);
+      _windowControls.register(this, _nativeVisibilityChanged);
+    }
+    _startScreensaverClock();
     unawaited(_initializeVisibility());
   }
 
   Future<void> _initializeVisibility() async {
-    await _windowControls.initialize();
+    if (!_android) await _windowControls.initialize();
     if (!mounted) return;
     // A route opened while already hidden must not depend on pause-on-hide
     // playback preferences to receive its initial native visibility state.
-    _hidden = _windowControls.hidden || _minimized;
+    _hidden = !_android && (_windowControls.hidden || _minimized);
     await _open();
   }
 
   Future<void> _nativeVisibilityChanged(bool hidden) =>
       _visibility(hidden || _minimized);
+
+  void _startScreensaverClock() {
+    _clockTimer?.cancel();
+    if (!widget.screensaver || _suspended) return;
+    _clock = DateTime.now();
+    _clockTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted && !_suspended && !_closing) {
+        setState(() => _clock = DateTime.now());
+      }
+    });
+  }
 
   Future<void> _open() async {
     if (_authorizing || _closing) return;
@@ -183,12 +210,12 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     _renewTimer?.cancel();
     // Revalidate with the NAS before the short, read-only web session expires.
     _renewTimer = Timer(const Duration(minutes: 4), () async {
-      if (!_active(generation) || _hidden) return;
+      if (!_active(generation) || _hidden || (_android && _suspended)) return;
       try {
         final access = await _client
             .call('homeDisplayAuthorize')
             .timeout(const Duration(seconds: 35));
-        if (!_active(generation)) return;
+        if (!_active(generation) || (_android && _suspended)) return;
         if (access['authenticated'] != true) {
           _needsNAS = cinemaHomeDisplayNeedsNAS(access);
           _showError(cinemaHomeDisplayAuthorizationMessage(access));
@@ -216,6 +243,12 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
             injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
             forMainFrameOnly: true,
           ),
+          if (widget.screensaver)
+            UserScript(
+              source: _screensaverDocumentSource,
+              injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+              forMainFrameOnly: true,
+            ),
         ]),
         initialSettings: InAppWebViewSettings(
           javaScriptEnabled: true,
@@ -227,10 +260,18 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
           allowsBackForwardNavigationGestures: false,
           mediaPlaybackRequiresUserGesture: true,
           isInspectable: false,
+          needInitialFocus: !widget.screensaver,
+          disableContextMenu: widget.screensaver,
+          supportZoom: !widget.screensaver,
         ),
         onWebViewCreated: (controller) {
           if (!_active(generation)) return;
           _controller = controller;
+          if (widget.screensaver) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (_active(generation)) _screensaverFocus.requestFocus();
+            });
+          }
           controller.addJavaScriptHandler(
             handlerName: cinemaHomeDisplayBridgeHandlerName,
             callback: (args) {
@@ -569,7 +610,14 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
       _timeout?.cancel();
       _captureTimer?.cancel();
       _captureTimer = null;
+      _clockTimer?.cancel();
+      if (_android) {
+        _renewTimer?.cancel();
+        _retireAndroidDocument();
+        return;
+      }
     } else if (_webView == null) {
+      _startScreensaverClock();
       await _open();
       return;
     } else if (_loading) {
@@ -582,6 +630,23 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
       );
       if (!occluded) await _replayBridge();
     } catch (_) {}
+  }
+
+  void _retireAndroidDocument() {
+    final previous = _webView, controller = _controller;
+    _webView = null;
+    _controller = null;
+    // Disposing this Android WebView stops its page timers and polling without
+    // WebView.pauseTimers(), whose Android behavior affects every WebView.
+    if (controller != null) {
+      unawaited(
+        controller
+            .evaluateJavascript(source: 'window.__nakuHomeDisplay?.destroy()')
+            .catchError((_) => null),
+      );
+    }
+    previous?.dispose();
+    if (mounted && !_closing) setState(() {});
   }
 
   @override
@@ -608,7 +673,8 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
       unawaited(_occlusion(true));
     } else if (state == AppLifecycleState.resumed) {
       unawaited(_occlusion(false));
-      unawaited(_windowControls.refreshVisibility());
+      if (!_android) unawaited(_windowControls.refreshVisibility());
+      _startScreensaverClock();
     }
   }
 
@@ -618,9 +684,12 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     ++_generation;
     _cancelLoadingTimers();
     _renewTimer?.cancel();
+    _clockTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
-    windowManager.removeListener(this);
-    _windowControls.unregister(this);
+    if (!_android) {
+      windowManager.removeListener(this);
+      _windowControls.unregister(this);
+    }
     // Disposing the native page releases its WebGL contexts and website polling.
     _webView?.dispose();
     _controller = null;
@@ -628,6 +697,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     _releasePreview();
     _retirePreview(_exitPreview);
     _exitPreview = null;
+    _screensaverFocus.dispose();
     super.dispose();
   }
 
@@ -725,6 +795,19 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
 
   Future<void> _leave() async {
     if (_closing || !Navigator.of(context).canPop()) return;
+    if (widget.screensaver) {
+      setState(() {
+        _closing = true;
+        _allowDisplayPop = true;
+      });
+      ++_generation;
+      _cancelLoadingTimers();
+      _renewTimer?.cancel();
+      _clockTimer?.cancel();
+      if (_android) _retireAndroidDocument();
+      Navigator.of(context).pop();
+      return;
+    }
     setState(() => _closing = true);
     final generation = ++_generation;
     final interruption = _exitInterrupted = Completer<void>();
@@ -763,115 +846,218 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     }
   }
 
+  void _wake() {
+    if (_closing) return;
+    widget.onWake?.call();
+    unawaited(_leave());
+  }
+
   @override
   Widget build(BuildContext context) => PopScope(
     canPop: _allowDisplayPop,
     onPopInvokedWithResult: (didPop, _) {
-      if (!didPop) unawaited(_leave());
+      if (!didPop) {
+        if (widget.screensaver) {
+          _wake();
+        } else {
+          unawaited(_leave());
+        }
+      }
     },
-    child: Theme(
-      data: CinemaTheme.of(context),
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        body: IgnorePointer(
-          ignoring: _closing,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              if (_webView != null)
-                Offstage(
-                  offstage: _exitPreview != null,
-                  child: _webView!.build(context),
-                ),
-              if (_overlay && _error == null && !_closing)
-                IgnorePointer(
-                  child: CinemaNeonDecode(
-                    loading: _loading,
-                    progress: (_progress / 100) * .75,
-                    snapshotRendering: true,
-                    rasterSnapshot: _preview,
-                    // Until a real preview exists the native page itself remains
-                    // visible. The overlay never substitutes generated tile colors.
-                    child: const SizedBox.expand(),
-                  ),
-                ),
-              if (_error != null)
-                ColoredBox(
-                  color: CinemaTheme.background,
-                  child: Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(_error!, textAlign: TextAlign.center),
-                        const SizedBox(height: 16),
-                        if (_needsNAS && widget.onOpenNAS != null)
-                          FilledButton(
-                            onPressed: () async {
-                              await widget.onOpenNAS!();
-                              if (mounted) await _open();
-                            },
-                            child: const Text('登录 NAS'),
-                          )
-                        else
-                          TextButton(
-                            onPressed: _authorizing ? null : _open,
-                            child: const Text('重试'),
+    child: Focus(
+      focusNode: _screensaverFocus,
+      autofocus: widget.screensaver,
+      skipTraversal: true,
+      onKeyEvent: (_, event) {
+        if (!widget.screensaver) return KeyEventResult.ignored;
+        if (event is KeyDownEvent || event is KeyRepeatEvent) _wake();
+        return KeyEventResult.handled;
+      },
+      child: GestureDetector(
+        behavior: widget.screensaver
+            ? HitTestBehavior.opaque
+            : HitTestBehavior.deferToChild,
+        onTap: widget.screensaver ? _wake : null,
+        child: Theme(
+          data: CinemaTheme.of(context),
+          child: Scaffold(
+            backgroundColor: Colors.transparent,
+            body: IgnorePointer(
+              ignoring: _closing,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (widget.screensaver) _screensaverFallback(),
+                  if (_webView != null)
+                    Offstage(
+                      offstage: _exitPreview != null,
+                      child: IgnorePointer(
+                        ignoring: widget.screensaver,
+                        child: _webView!.build(context),
+                      ),
+                    ),
+                  if (_overlay && _error == null && !_closing)
+                    IgnorePointer(
+                      child: CinemaNeonDecode(
+                        loading: _loading,
+                        progress: (_progress / 100) * .75,
+                        snapshotRendering: true,
+                        rasterSnapshot: _preview,
+                        // Until a real preview exists the native page itself remains
+                        // visible. The overlay never substitutes generated tile colors.
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
+                  if (_error != null && !widget.screensaver)
+                    ColoredBox(
+                      color: CinemaTheme.background,
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(_error!, textAlign: TextAlign.center),
+                            const SizedBox(height: 16),
+                            if (_needsNAS && widget.onOpenNAS != null)
+                              FilledButton(
+                                onPressed: () async {
+                                  await widget.onOpenNAS!();
+                                  if (mounted) await _open();
+                                },
+                                child: const Text('登录 NAS'),
+                              )
+                            else
+                              TextButton(
+                                onPressed: _authorizing ? null : _open,
+                                child: const Text('重试'),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  if (!widget.screensaver)
+                    Positioned(
+                      key: const ValueKey('home-display-floating-controls'),
+                      top: MediaQuery.paddingOf(context).top + 34,
+                      left: 12,
+                      right: 12,
+                      child: Row(
+                        children: [
+                          _displayControl(
+                            tooltip: '返回',
+                            icon: Icons.chevron_left_rounded,
+                            onPressed: () => unawaited(_leave()),
                           ),
-                      ],
+                          const Spacer(),
+                          _displayControl(
+                            tooltip: '刷新',
+                            icon: Icons.refresh_rounded,
+                            onPressed: _authorizing ? null : _open,
+                          ),
+                          const SizedBox(width: 4),
+                          _displayControl(
+                            tooltip: '全屏',
+                            icon: Icons.fullscreen_rounded,
+                            onPressed: () async {
+                              try {
+                                await DesktopFullscreen.setFullScreen(
+                                  !await DesktopFullscreen.isFullScreen(),
+                                );
+                              } catch (_) {}
+                            },
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                ),
-              Positioned(
-                key: const ValueKey('home-display-floating-controls'),
-                top: MediaQuery.paddingOf(context).top + 34,
-                left: 12,
-                right: 12,
-                child: Row(
-                  children: [
-                    _displayControl(
-                      tooltip: '返回',
-                      icon: Icons.chevron_left_rounded,
-                      onPressed: () => unawaited(_leave()),
+                  if (_exitPreview != null)
+                    Positioned.fill(
+                      child: CinemaPlayerEntrance(
+                        key: _exitSurface,
+                        generation: 0,
+                        ready: true,
+                        animateOnEntry: false,
+                        child: RawImage(
+                          image: _exitPreview,
+                          fit: BoxFit.fill,
+                          filterQuality: FilterQuality.low,
+                        ),
+                      ),
                     ),
-                    const Spacer(),
-                    _displayControl(
-                      tooltip: '刷新',
-                      icon: Icons.refresh_rounded,
-                      onPressed: _authorizing ? null : _open,
-                    ),
-                    const SizedBox(width: 4),
-                    _displayControl(
-                      tooltip: '全屏',
-                      icon: Icons.fullscreen_rounded,
-                      onPressed: () async {
-                        try {
-                          await DesktopFullscreen.setFullScreen(
-                            !await DesktopFullscreen.isFullScreen(),
-                          );
-                        } catch (_) {}
-                      },
-                    ),
-                  ],
-                ),
+                ],
               ),
-              if (_exitPreview != null)
-                Positioned.fill(
-                  child: CinemaPlayerEntrance(
-                    key: _exitSurface,
-                    generation: 0,
-                    ready: true,
-                    animateOnEntry: false,
-                    child: RawImage(
-                      image: _exitPreview,
-                      fit: BoxFit.fill,
-                      filterQuality: FilterQuality.low,
-                    ),
-                  ),
-                ),
-            ],
+            ),
           ),
         ),
       ),
+    ),
+  );
+
+  Widget _screensaverFallback() => Semantics(
+    label: 'Home Display 屏保，按任意键返回',
+    child: Stack(
+      fit: StackFit.expand,
+      children: [
+        Image.asset(
+          'assets/images/tv_home_display.jpg',
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => const ColoredBox(color: Colors.black),
+        ),
+        const DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Color(0x40000000),
+                Colors.transparent,
+                Color(0xD9000000),
+              ],
+              stops: [0, .6, 1],
+            ),
+          ),
+        ),
+        Positioned(
+          top: 24,
+          left: 32,
+          child: Text(
+            'HOME DISPLAY',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: .7),
+              fontSize: 16,
+              letterSpacing: 3,
+            ),
+          ),
+        ),
+        Positioned(
+          top: 24,
+          right: 32,
+          child: Text(
+            '${_clock.hour.toString().padLeft(2, '0')}:${_clock.minute.toString().padLeft(2, '0')}',
+            style: const TextStyle(color: Colors.white, fontSize: 26),
+          ),
+        ),
+        Positioned(
+          bottom: 26,
+          left: 32,
+          child: Text(
+            _error == null ? '正在连接 Home Display…' : 'Home Display 暂时离线',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: .5),
+              fontSize: 14,
+            ),
+          ),
+        ),
+        Positioned(
+          bottom: 26,
+          right: 32,
+          child: Text(
+            '按任意键返回',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: .65),
+              fontSize: 14,
+            ),
+          ),
+        ),
+      ],
     ),
   );
 
@@ -899,3 +1085,13 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     ),
   );
 }
+
+const _screensaverDocumentSource = r'''
+(() => {
+  if (window.top !== window || location.origin !== 'https://between-us-home.pages.dev') return;
+  const style = document.createElement('style');
+  style.id = 'naku-tv-screensaver';
+  style.textContent = '.home-display__footer button{visibility:hidden!important;pointer-events:none!important}';
+  (document.head || document.documentElement).appendChild(style);
+})();
+''';

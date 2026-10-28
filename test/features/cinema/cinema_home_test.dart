@@ -652,21 +652,74 @@ void main() {
     },
   );
   testWidgets(
-    'TV has a remote navigation rail and no downloads; phone keeps downloads',
+    'TV has a horizontal remote header and no downloads; phone keeps downloads',
     (tester) async {
       NakuDevice.isTV = true;
       addTearDown(() => NakuDevice.isTV = false);
-      await mount(tester, width: 800);
-      expect(find.text('NAS 影视'), findsOneWidget);
+      // The TV home keeps its large artwork and horizontal remote header.
+      // Desktop sort/source controls are absent from every TV catalogue.
+      await mount(tester, width: 800, recentHot: true);
+      const destinations = [
+        ('search', '搜索'),
+        ('home', '首页'),
+        ('movies', '电影'),
+        ('series', '剧集'),
+        ('nas', 'NAS'),
+        ('mine', '我的'),
+        ('screensaver', '屏保'),
+      ];
+      Rect? previous;
+      for (final (key, label) in destinations) {
+        final button = find.byKey(ValueKey('tv-nav-$key'));
+        expect(button, findsOneWidget);
+        expect(
+          find.descendant(of: button, matching: find.text(label)),
+          findsOneWidget,
+        );
+        final rect = tester.getRect(button);
+        if (previous != null) {
+          expect(rect.left, greaterThanOrEqualTo(previous.right));
+          expect(rect.center.dy, closeTo(previous.center.dy, .1));
+        }
+        previous = rect;
+      }
+      expect(find.byType(NavigationRail), findsNothing);
+      expect(find.byTooltip('下载管理'), findsNothing);
       expect(find.text('下载管理'), findsNothing);
-      expect(find.text('NAKU · TV'), findsOneWidget);
       expect(find.text('动漫'), findsNothing);
+      expect(find.text('设置'), findsNothing);
       expect(find.text('网页影院'), findsNothing);
       expect(find.byIcon(Icons.menu_rounded), findsNothing);
+      expect(
+        find.byKey(const ValueKey('tv-featured-original')),
+        findsOneWidget,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      expect(
+        Focus.of(
+          tester.element(find.byKey(const ValueKey('tv-nav-movies'))),
+        ).hasFocus,
+        isTrue,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('电影较早热门'), findsWidgets);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      expect(
+        Focus.of(
+          tester.element(find.byKey(const ValueKey('tv-nav-series'))),
+        ).hasFocus,
+        isTrue,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('剧集较早热门'), findsWidgets);
+      expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       NakuDevice.isTV = false;
       await mount(tester);
       expect(find.byTooltip('下载管理'), findsOneWidget);
+      expect(find.byKey(const ValueKey('tv-nav-screensaver')), findsNothing);
     },
   );
 

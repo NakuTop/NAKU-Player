@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
 
 import 'cinema_models.dart';
 import 'cinema_repository.dart';
@@ -24,6 +25,7 @@ Future<List<CinemaTitle>?> resolveCinemaDiscoverySources(
   );
   return showDialog<List<CinemaTitle>>(
     context: context,
+    useRootNavigator: !NakuDevice.isTV,
     barrierDismissible: true,
     builder: (dialogContext) => Theme(
       data: CinemaTheme.of(dialogContext),

@@ -1,14 +1,21 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:ui' as ui;
+import 'package:flutter/rendering.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_nas_page.dart';
+import 'package:kazumi/features/cinema/cinema_nas_media.dart';
+import 'package:kazumi/features/cinema/cinema_models.dart';
+import 'package:kazumi/features/cinema/cinema_theme.dart';
 import 'package:kazumi/services/platform/naku_device.dart';
 
 class FakeNAS extends CinemaNASClient {
   final calls = <(String, Map<String, dynamic>?)>[];
-  bool reject = false, saved = false, collection = false;
+  bool reject = false, saved = false, collection = false, series = false;
+  List<Map<String, dynamic>> seasons = [];
   String qrState = "scanned";
   int collectionSize = 1, collectionType = 2;
   bool collectionFails = false;
@@ -16,6 +23,7 @@ class FakeNAS extends CinemaNASClient {
   int logouts = 0;
   bool active = false, libraryFails = false;
   Completer<Map<String, dynamic>>? delayedLogin, delayedCatalog;
+  Completer<Map<String, dynamic>>? delayedSaved;
   Map<String, dynamic>? videoInfo;
   String savedAddress = 'https://nas.test';
   Map<String, dynamic> connectionInfo = {};
@@ -36,6 +44,7 @@ class FakeNAS extends CinemaNASClient {
           : {};
     }
     if (method == 'savedLogin') {
+      if (delayedSaved != null) return delayedSaved!.future;
       return saved ? {'address': savedAddress, 'username': 'saved-user'} : {};
     }
     if (method == 'forget') {
@@ -73,6 +82,7 @@ class FakeNAS extends CinemaNASClient {
     }
     if (method == 'details') {
       return {
+        if (seasons.isNotEmpty) 'season_info': seasons,
         if (videoInfo != null) 'video_info': videoInfo,
         'tv_info': [
           {
@@ -103,7 +113,11 @@ class FakeNAS extends CinemaNASClient {
           {
             'ug_video_info_id': args?['page'],
             'name': '测试影片 ${args?['page']}',
-            'type': collection ? 3 : 1,
+            'type': collection
+                ? 3
+                : series
+                ? 2
+                : 1,
             if (collection) 'collection_id': 'collection-identity',
             'year': collection ? 0 : 2026,
             'media_lib_set_id': 2,
@@ -129,7 +143,188 @@ class FakeNAS extends CinemaNASClient {
   }
 }
 
+class _DialogObserver extends NavigatorObserver {
+  int dialogs = 0;
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    if (route is PopupRoute) dialogs++;
+  }
+}
+
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async {
+    const capture = String.fromEnvironment('NAKU_TV_UI_OUTPUT');
+    if (capture.isEmpty) return;
+    final font = await rootBundle.load('assets/fonts/MiSans-Regular.ttf');
+    for (final family in ['.AppleSystemUIFont', 'MI_Sans_Regular', 'Ahem']) {
+      await (FontLoader(family)..addFont(Future.value(font))).load();
+    }
+    final icons = await rootBundle.load('fonts/MaterialIcons-Regular.otf');
+    await (FontLoader('MaterialIcons')..addFont(Future.value(icons))).load();
+  });
+  testWidgets('TV QR dialog belongs to the inner TV navigator', (tester) async {
+    NakuDevice.isTV = true;
+    addTearDown(() => NakuDevice.isTV = false);
+    final outer = _DialogObserver(), inner = _DialogObserver();
+    final client = FakeNAS();
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorObservers: [outer],
+        home: Navigator(
+          observers: [inner],
+          onGenerateRoute: (_) => MaterialPageRoute<void>(
+            builder: (_) => CinemaNASPage(client: client, embedded: true),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(outer.dialogs, 0);
+    expect(inner.dialogs, 1);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'hidden retained TV NAS cannot present a late automatic QR dialog',
+    (tester) async {
+      NakuDevice.isTV = true;
+      addTearDown(() => NakuDevice.isTV = false);
+      final saved = Completer<Map<String, dynamic>>();
+      final client = FakeNAS()..delayedSaved = saved;
+      await tester.pumpWidget(
+        MaterialApp(home: CinemaNASPage(client: client, embedded: true)),
+      );
+      await tester.pump();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CinemaNASPage(client: client, embedded: true, active: false),
+        ),
+      );
+      saved.complete({});
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      await tester.pumpWidget(
+        MaterialApp(home: CinemaNASPage(client: client, embedded: true)),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsOneWidget);
+      expect(find.text('生成二维码'), findsOneWidget);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'embedded NAS uses initial keyword on its first catalogue request',
+    (tester) async {
+      final client = FakeNAS()..active = true;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CinemaNASPage(
+            client: client,
+            embedded: true,
+            initialKeyword: '星际穿越',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(AppBar), findsNothing);
+      final request = client.calls.firstWhere((call) => call.$1 == 'catalog');
+      expect(request.$2?['keyword'], '星际穿越');
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '星际穿越',
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'TV NAS delegates resolved title and real stable references to shared detail',
+    (tester) async {
+      NakuDevice.isTV = true;
+      addTearDown(() => NakuDevice.isTV = false);
+      final client = FakeNAS()..active = true;
+      CinemaTitle? chosen;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CinemaNASPage(
+            client: client,
+            embedded: true,
+            onTitleSelected: (title) async {
+              chosen = title;
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('测试影片 1'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('测试影片 1'));
+      await tester.pumpAndSettle();
+      expect(chosen, isNotNull);
+      expect(chosen!.sourceId, cinemaNASSource.id);
+      expect(
+        parseNASMediaReference(chosen!.routes.single.episodes.single.url)['id'],
+        '1',
+      );
+      expect(find.byType(AlertDialog), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('TV NAS retains a real season choice before shared details', (
+    tester,
+  ) async {
+    NakuDevice.isTV = true;
+    addTearDown(() => NakuDevice.isTV = false);
+    final client = FakeNAS()
+      ..active = true
+      ..series = true
+      ..seasons = [
+        {'ug_video_info_id': 1, 'season_num': 1},
+        {'ug_video_info_id': 2, 'season_num': 2},
+      ];
+    CinemaTitle? chosen;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CinemaNASPage(
+          client: client,
+          embedded: true,
+          onTitleSelected: (title) async {
+            chosen = title;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('测试影片 1'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('测试影片 1'));
+    await tester.pumpAndSettle();
+    expect(chosen, isNull);
+    await tester.tap(find.text('第 2 季'));
+    await tester.pumpAndSettle();
+    expect(chosen!.id, endsWith(':2'));
+    expect(chosen!.category, '电视剧');
+    expect(
+      client.calls
+          .where((call) => call.$1 == 'details')
+          .map((call) => call.$2?['id']),
+      [1, 2],
+    );
+    expect(
+      parseNASMediaReference(chosen!.routes.single.episodes.single.url)['id'],
+      '2',
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'TV QR requests target address before creating a bound login code',
     (tester) async {
@@ -673,4 +868,70 @@ void main() {
     expect(client.calls.where((c) => c.$1 == 'restoreAt'), isEmpty);
     await tester.pumpWidget(const SizedBox());
   });
+  for (final size in const [Size(960, 540), Size(1280, 720)]) {
+    testWidgets(
+      'connected TV NAS has large posters and one account action at ${size.width}',
+      (tester) async {
+        NakuDevice.isTV = true;
+        addTearDown(() => NakuDevice.isTV = false);
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = size;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final client = FakeNAS()..active = true;
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: CinemaTheme.data,
+            home: RepaintBoundary(
+              key: const ValueKey('nas-tv-capture'),
+              child: CinemaNASPage(client: client, embedded: true),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('tv-nas-account')), findsOneWidget);
+        expect(find.byType(TextField), findsNothing);
+        expect(find.byType(ChoiceChip), findsNothing);
+        expect(find.textContaining('自动连接 ·'), findsNothing);
+        expect(find.textContaining('影视中心 ·'), findsNothing);
+        expect(find.text('账号与统一同步设置'), findsNothing);
+        expect(find.byTooltip('刷新'), findsNothing);
+        expect(find.byType(BackdropFilter), findsNothing);
+        final card = find.byKey(const ValueKey('tv-nas-card-1'));
+        expect(card, findsOneWidget);
+        expect(tester.getRect(card).width, greaterThan(260));
+        expect(tester.takeException(), isNull);
+        const capture = String.fromEnvironment('NAKU_TV_UI_OUTPUT');
+        if (capture.isNotEmpty) {
+          await tester.runAsync(() async {
+            final boundary = tester.renderObject<RenderRepaintBoundary>(
+              find.byKey(const ValueKey('nas-tv-capture')),
+            );
+            final image = await boundary.toImage(pixelRatio: 1);
+            final bytes = await image.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            final file = File(
+              '$capture/tv-nas-fixture-${size.width.toInt()}x${size.height.toInt()}.png',
+            );
+            await file.parent.create(recursive: true);
+            await file.writeAsBytes(bytes!.buffer.asUint8List());
+            image.dispose();
+          });
+        }
+        await tester.tap(find.byKey(const ValueKey('tv-nas-account')));
+        await tester.pumpAndSettle();
+        expect(find.text('刷新片库'), findsOneWidget);
+        expect(find.text('连接其他 NAS'), findsOneWidget);
+        expect(find.text('退出并忘记账号'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        await tester.tap(find.text('刷新片库'));
+        await tester.pumpAndSettle();
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(find.text('测试影片 1'), findsOneWidget);
+        expect(client.active, isTrue);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
 }

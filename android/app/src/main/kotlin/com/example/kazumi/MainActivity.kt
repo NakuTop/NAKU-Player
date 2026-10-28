@@ -35,6 +35,8 @@ class MainActivity: AudioServiceActivity() {
     private val STORAGE_CHANNEL = "com.predidit.kazumi/storage"
     private val PIP_CHANNEL = "com.predidit.kazumi/pip"
     private var nakuDiscovery: NakuDiscovery? = null
+    private var nakuTVPlayer: NakuTVPlayer? = null
+    private var nakuTVUpdater: NakuTVUpdater? = null
     private var intentChannel: MethodChannel? = null
     private var pipChannel: MethodChannel? = null
 
@@ -72,10 +74,18 @@ class MainActivity: AudioServiceActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (packageName == "com.nakutop.nakuplayer.tv") {
+            systemBarsHidden = true
+            applySystemBarsState()
+        }
         registerPipActionReceiverIfNeeded()
     }
 
     override fun onDestroy() {
+        nakuTVPlayer?.dispose()
+        nakuTVPlayer = null
+        nakuTVUpdater?.dispose()
+        nakuTVUpdater = null
         nakuDiscovery?.dispose()
         nakuDiscovery = null
         unregisterPipActionReceiverIfNeeded()
@@ -105,12 +115,21 @@ class MainActivity: AudioServiceActivity() {
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        nakuTVPlayer?.dispose()
+        nakuTVPlayer = NakuTVPlayer(this, flutterEngine)
+        nakuTVUpdater?.dispose()
+        nakuTVUpdater = NakuTVUpdater(this).also {
+            it.register(flutterEngine.dartExecutor.binaryMessenger)
+        }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "naku/device").setMethodCallHandler { call, result ->
             if (call.method == "info") {
                 val television = (resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK) == Configuration.UI_MODE_TYPE_TELEVISION || packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
                 result.success(mapOf("television" to television))
+            } else if (call.method == "mediaNetwork") {
+                result.success(NakuTVCapabilities.read(this))
             } else result.notImplemented()
         }
+        NakuSubtitleArchive.register(flutterEngine.dartExecutor.binaryMessenger)
         NakuSecureBridge(applicationContext).register(flutterEngine.dartExecutor.binaryMessenger)
         nakuDiscovery?.dispose()
         nakuDiscovery = NakuDiscovery(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
@@ -130,7 +149,8 @@ class MainActivity: AudioServiceActivity() {
                 val sdkVersion = getAndroidSdkVersion()
                 result.success(sdkVersion)
             } else if (call.method == "setSystemBarsHidden") {
-                systemBarsHidden = call.arguments as? Boolean ?: false
+                systemBarsHidden = packageName == "com.nakutop.nakuplayer.tv" ||
+                    (call.arguments as? Boolean ?: false)
                 applySystemBarsState()
                 result.success(null)
             } else {

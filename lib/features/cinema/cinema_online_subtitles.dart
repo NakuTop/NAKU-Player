@@ -15,6 +15,9 @@ import 'package:kazumi/request/core/network_config.dart';
 import 'package:kazumi/services/network/system_proxy_service.dart';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
+import 'cinema_tv_auxiliary.dart';
+import 'cinema_subtitle_archive.dart';
 
 /// Parse locally; never send a NAS path or playback URL to a public catalog.
 class CinemaSubtitleQuery {
@@ -399,6 +402,7 @@ class CinemaOnlineSubtitles {
   }
 
   static Future<List<String>> listArchiveSubtitles(List<int> bytes) async {
+    if (Platform.isAndroid) return CinemaSubtitleArchive.list(bytes);
     if ((!Platform.isMacOS && !Platform.isWindows) ||
         bytes.length > 8 * 1024 * 1024) {
       throw const FormatException('该字幕压缩格式暂不可读取');
@@ -840,7 +844,7 @@ class CinemaOnlineSubtitles {
     if (archiveEntry != null) {
       bytes = await extractSubtitle(bytes, archiveEntry);
     }
-    final text = decodeSubtitle(bytes);
+    final text = await _decodeDownloadedSubtitle(bytes);
     _verified[key] = text;
     // Season prefetch reuses this client across many episodes. Keep complete
     // season archives reusable without retaining every verified file in RAM.
@@ -856,6 +860,25 @@ class CinemaOnlineSubtitles {
       characters -= _verified.remove(first)!.length;
     }
     return text;
+  }
+
+  static Future<String> _decodeDownloadedSubtitle(List<int> bytes) async {
+    final utf16 =
+        bytes.length >= 2 &&
+        ((bytes[0] == 0xff && bytes[1] == 0xfe) ||
+            (bytes[0] == 0xfe && bytes[1] == 0xff));
+    if (Platform.isAndroid && !utf16) {
+      try {
+        utf8.decode(bytes);
+      } on FormatException {
+        // Android's strict GB18030 decoder replaces the desktop native FFI;
+        // cue/HTML validation is still applied after conversion.
+        return decodeSubtitle(
+          utf8.encode(await CinemaSubtitleArchive.decodeChinese(bytes)),
+        );
+      }
+    }
+    return decodeSubtitle(bytes);
   }
 
   Future<List<int>> _downloadBytes(String url) async {
@@ -887,6 +910,7 @@ class CinemaOnlineSubtitles {
     List<int> bytes,
     String entry,
   ) async {
+    if (Platform.isAndroid) return CinemaSubtitleArchive.extract(bytes, entry);
     if ((!Platform.isWindows && !Platform.isMacOS) ||
         entry.startsWith('/') ||
         entry.contains(':') ||
@@ -1097,6 +1121,23 @@ Future<void> showCinemaOnlineSubtitles(
     return;
   }
   if (!context.mounted) return;
+  if (NakuDevice.isTV) {
+    await showCinemaTVPanel<void>(
+      context,
+      title: '在线搜索字幕',
+      width: 760,
+      builder: (_) => CinemaOnlineSubtitlesPanel(
+        player: player,
+        title: title,
+        imdbId: imdbId,
+        category: category,
+        episodeName: episodeName,
+        episodeNumber: episodeNumber,
+        onApplied: onApplied,
+      ),
+    );
+    return;
+  }
   await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -1165,6 +1206,8 @@ class _CinemaOnlineSubtitlesPanelState
   bool _busy = false, _applying = false;
   bool _applyToSeason = true;
   int _searchGeneration = 0;
+  final _tvSearchFocus = FocusNode(debugLabel: 'tv-subtitle-search');
+  final _tvResultFocus = FocusNode(debugLabel: 'tv-subtitle-result');
   late final Future<bool> _openingPause;
   CinemaSubtitleQuery? _resultQuery;
   String _resultImdbId = '';
@@ -1195,6 +1238,8 @@ class _CinemaOnlineSubtitlesPanelState
   @override
   void dispose() {
     ++_searchGeneration;
+    _tvSearchFocus.dispose();
+    _tvResultFocus.dispose();
     if (widget.client == null) _client.close();
     _query.dispose();
     _season.dispose();
@@ -1295,6 +1340,7 @@ class _CinemaOnlineSubtitlesPanelState
             _resultQuery = snapshot;
             _resultImdbId = imdbId;
           });
+          _focusTVResult(generation);
         }
       },
     );
@@ -1307,6 +1353,7 @@ class _CinemaOnlineSubtitlesPanelState
         _sourceStatus = result.status;
         if (result.rows.isEmpty) _error = '未找到可直接加载的当前语言字幕。不可下载的候选资源已过滤。';
       });
+      _focusTVResult(generation);
     }
   });
   bool _matches(Map<String, dynamic> row) {
@@ -1323,9 +1370,236 @@ class _CinemaOnlineSubtitlesPanelState
     _resultImdbId = '';
   });
 
+  void _focusTVResult(int generation) {
+    if (!NakuDevice.isTV || !_tvSearchFocus.hasFocus) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_currentSearch(generation) &&
+          _tvSearchFocus.hasFocus &&
+          _subtitles.any(_matches)) {
+        _tvResultFocus.requestFocus();
+      }
+    });
+  }
+
+  Future<void> _applyRow(Map<String, dynamic> row) async {
+    final snapshot = _resultQuery;
+    if (snapshot == null || _applying) return;
+    final selection = CinemaOnlineSubtitleSelection(
+      query: snapshot,
+      imdbId: _resultImdbId,
+      row: Map<String, dynamic>.unmodifiable(row),
+      applyToSeason: snapshot.type == 'series' && _applyToSeason,
+    );
+    ++_searchGeneration;
+    setState(() {
+      _applying = true;
+      _busy = false;
+      _error = null;
+    });
+    var applied = false;
+    try {
+      if (!await _pausePlayback()) return;
+      final text = await _client.download(
+        '${row['url']}',
+        archiveEntry: row['archiveEntry'] as String?,
+      );
+      if (!mounted) return;
+      await applyCinemaExternalSubtitle(
+        widget.player,
+        text,
+        title: '${row['subtitleFileName'] ?? '在线字幕'}',
+        language: '${row['lang']}',
+        isCurrent: () => mounted,
+      );
+      applied = true;
+      if (!mounted) return;
+      await widget.onApplied?.call(selection);
+      if (mounted) Navigator.pop(context);
+    } catch (error) {
+      if (mounted) {
+        setState(
+          () => _error = applied
+              ? '字幕已加载，但后续同季设置保存失败：$error'
+              : error is FormatException
+              ? '字幕加载失败：${error.message}'
+              : '播放器未能接收字幕：$error',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _applying = false);
+    }
+  }
+
+  void _tvStep(TextEditingController controller, int delta, {int minimum = 1}) {
+    controller.text = ((int.tryParse(controller.text) ?? minimum) + delta)
+        .clamp(minimum, 999)
+        .toString();
+    _clearResults('');
+  }
+
+  Widget _tvBuild(List<Map<String, dynamic>> rows) => ListView(
+    padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+    children: [
+      Text(
+        _type == 'series'
+            ? '当前：第 ${_season.text} 季 · 第 ${_episode.text} 集'
+            : '当前：电影',
+        style: const TextStyle(fontSize: 18),
+      ),
+      const SizedBox(height: 8),
+      const Text('搜索期间保持暂停，结束后按播放键继续。', style: TextStyle(fontSize: 16)),
+      const SizedBox(height: 16),
+      TextField(
+        key: const ValueKey('tv-subtitle-query'),
+        controller: _query,
+        enabled: !_busy && !_applying,
+        style: const TextStyle(fontSize: 21),
+        textInputAction: TextInputAction.search,
+        decoration: const InputDecoration(
+          labelText: '片名或 IMDb ID',
+          hintText: '自动带入当前影片，可用系统键盘修改',
+        ),
+        onChanged: _clearResults,
+        onSubmitted: (_) {
+          _tvSearchFocus.requestFocus();
+          unawaited(_search());
+        },
+      ),
+      const SizedBox(height: 12),
+      CinemaTVAuxiliaryAction(
+        key: const ValueKey('tv-subtitle-search'),
+        label: _busy ? '搜索中…' : '搜索字幕',
+        autofocus: true,
+        focusNode: _tvSearchFocus,
+        onPressed: _applying
+            ? null
+            : () {
+                if (!_busy) unawaited(_search());
+              },
+      ),
+      CinemaTVAuxiliaryAction(
+        label:
+            '语言：${_language == 'zh'
+                ? '中文'
+                : _language == 'eng'
+                ? 'English'
+                : '中文 + English'}',
+        onPressed: _busy || _applying
+            ? null
+            : () {
+                setState(
+                  () => _language = switch (_language) {
+                    'zh-eng' => 'zh',
+                    'zh' => 'eng',
+                    _ => 'zh-eng',
+                  },
+                );
+                _clearResults('');
+              },
+      ),
+      CinemaTVAuxiliaryAction(
+        label: '作品类型：${_type == 'series' ? '剧集' : '电影'}',
+        onPressed: _busy || _applying
+            ? null
+            : () {
+                setState(() => _type = _type == 'series' ? 'movie' : 'series');
+                _clearResults('');
+              },
+      ),
+      if (_type == 'series') ...[
+        Row(
+          children: [
+            Expanded(
+              child: CinemaTVAuxiliaryAction(
+                label: '上一季',
+                onPressed: _busy || _applying
+                    ? null
+                    : () => _tvStep(_season, -1, minimum: 0),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: CinemaTVAuxiliaryAction(
+                label: '下一季',
+                onPressed: _busy || _applying
+                    ? null
+                    : () => _tvStep(_season, 1, minimum: 0),
+              ),
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: CinemaTVAuxiliaryAction(
+                label: '上一集',
+                onPressed: _busy || _applying
+                    ? null
+                    : () => _tvStep(_episode, -1),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: CinemaTVAuxiliaryAction(
+                label: '下一集',
+                onPressed: _busy || _applying
+                    ? null
+                    : () => _tvStep(_episode, 1),
+              ),
+            ),
+          ],
+        ),
+        if (widget.onApplied != null)
+          CinemaTVAuxiliaryAction(
+            label: '本季字幕续载：${_applyToSeason ? '开启' : '关闭'}',
+            selected: _applyToSeason,
+            onPressed: _applying
+                ? null
+                : () => setState(() => _applyToSeason = !_applyToSeason),
+          ),
+      ],
+      if (_busy || _applying) const LinearProgressIndicator(),
+      if (_error != null)
+        Semantics(
+          liveRegion: true,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Text(
+              _error!,
+              style: TextStyle(
+                fontSize: 18,
+                color: Theme.of(context).colorScheme.error,
+              ),
+            ),
+          ),
+        ),
+      if (_selected != null)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          child: Text(
+            '${rows.length} 条字幕 · 选择结果加载',
+            style: const TextStyle(fontSize: 19),
+          ),
+        ),
+      for (var i = 0; i < rows.length; i++)
+        CinemaTVAuxiliaryAction(
+          key: ValueKey(
+            'tv-subtitle-result-${rows[i]['url']}-${rows[i]['archiveEntry']}',
+          ),
+          focusNode: i == 0 ? _tvResultFocus : null,
+          label:
+              '${rows[i]['subtitleFileName'] ?? rows[i]['movieReleaseName'] ?? '在线字幕'}',
+          subtitle:
+              '${rows[i]['provider'] ?? '在线字幕'} · ${cinemaSubtitleLanguageLabel(rows[i])}\n${(rows[i]['releaseScore'] as int? ?? 0) > 0 ? '含当前发行版本标记 · ' : ''}已校验对白与格式，时间轴仍需匹配片源',
+          onPressed: _applying ? null : () => _applyRow(rows[i]),
+        ),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) {
     final rows = _subtitles.where(_matches).toList();
+    if (NakuDevice.isTV) return _tvBuild(rows);
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
@@ -1471,59 +1745,7 @@ class _CinemaOnlineSubtitlesPanelState
               '${(row['releaseScore'] as int? ?? 0) > 0 ? '含当前片源版本标记 · ' : ''}时间轴需匹配片源；不同发行版请使用字幕校准',
             ),
             trailing: const Icon(Icons.download_done),
-            onTap: _applying
-                ? null
-                : () async {
-                    final snapshot = _resultQuery;
-                    if (snapshot == null) return;
-                    final selection = CinemaOnlineSubtitleSelection(
-                      query: snapshot,
-                      imdbId: _resultImdbId,
-                      row: Map<String, dynamic>.unmodifiable(row),
-                      applyToSeason:
-                          snapshot.type == 'series' && _applyToSeason,
-                    );
-                    // A verified row can be chosen before slower sources finish.
-                    // Their eventual result must not replace this selection.
-                    ++_searchGeneration;
-                    setState(() {
-                      _applying = true;
-                      _busy = false;
-                      _error = null;
-                    });
-                    var applied = false;
-                    try {
-                      if (!await _pausePlayback()) return;
-                      final text = await _client.download(
-                        '${row['url']}',
-                        archiveEntry: row['archiveEntry'] as String?,
-                      );
-                      if (!mounted) return;
-                      await applyCinemaExternalSubtitle(
-                        widget.player,
-                        text,
-                        title: '${row['subtitleFileName'] ?? '在线字幕'}',
-                        language: '${row['lang']}',
-                        isCurrent: () => mounted,
-                      );
-                      applied = true;
-                      if (!mounted) return;
-                      await widget.onApplied?.call(selection);
-                      if (context.mounted) Navigator.pop(context);
-                    } catch (error) {
-                      if (mounted) {
-                        setState(
-                          () => _error = applied
-                              ? '字幕已加载，但后续同季设置保存失败：$error'
-                              : error is FormatException
-                              ? '字幕加载失败：${error.message}'
-                              : '播放器未能接收字幕：$error',
-                        );
-                      }
-                    } finally {
-                      if (mounted) setState(() => _applying = false);
-                    }
-                  },
+            onTap: _applying ? null : () => _applyRow(row),
           ),
       ],
     );

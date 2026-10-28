@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'cinema_subtitle_appearance.dart';
 import 'cinema_subtitle_timing.dart';
+import 'cinema_subtitle_clock.dart';
 
 class CinemaSubtitleCue {
   const CinemaSubtitleCue(this.start, this.end, this.text);
@@ -150,6 +151,11 @@ class CinemaExternalSubtitleState {
   CinemaExternalSubtitleState(this.player) {
     if (player.platform is NativePlayer) {
       (player.platform as NativePlayer).release.add(close);
+    }
+    if (player.platform is NativePlayer ||
+        player is CinemaSubtitlePlaybackClock) {
+      // Native backends drive timed text from their own playback clock.
+      // Custom/manual players explicitly opt in to automatic subscriptions.
       _subscriptions.add(
         player.stream.position.listen((position) {
           _position = position;
@@ -170,6 +176,8 @@ class CinemaExternalSubtitleState {
           }
         }),
       );
+    }
+    if (player.platform is NativePlayer) {
       _subscriptions.add(
         player.stream.subtitle.listen((lines) {
           _secondary = lines.length > 1 ? lines[1] : '';
@@ -178,6 +186,7 @@ class CinemaExternalSubtitleState {
       );
     }
   }
+
   final Player player;
   final active = ValueNotifier<bool>(false);
   final text = ValueNotifier<String>('');
@@ -208,6 +217,8 @@ class CinemaExternalSubtitleState {
   saveTiming;
   String fingerprint = '';
   bool _closed = false;
+  Future<void>? _closing;
+  bool _cleanupComplete = false;
   Directory? folder;
   final files = <File>[];
   void select(
@@ -283,37 +294,45 @@ class CinemaExternalSubtitleState {
     if (text.value != value) text.value = value;
   }
 
-  Future<void> close() async {
-    if (_closed) return;
-    await flush();
-    if (_closed) return;
+  Future<void> close() =>
+      _cleanupComplete ? Future<void>.value() : (_closing ??= _close());
+
+  Future<void> _close() async {
+    // Stop listeners immediately. Subtitle preference writes may outlive the
+    // route, but cannot keep its playback streams or widgets attached.
     _closed = true;
     readSavedTiming = null;
     saveTiming = null;
     disableSavedSelection = null;
-    for (final subscription in _subscriptions) {
-      await subscription.cancel();
-    }
-    for (final file in files) {
-      try {
-        if (await file.exists()) await file.delete();
-      } on FileSystemException {
-        /* MPV may still be releasing a handle. */
-      }
-    }
-    final directory = folder;
+    final stopping = Future.wait<void>([
+      for (final subscription in _subscriptions) subscription.cancel(),
+    ]);
+    _subscriptions.clear();
     try {
-      if (directory != null && await directory.exists()) {
-        await directory.delete();
+      await Future.wait<void>([flush(), stopping]);
+    } finally {
+      for (final file in files) {
+        try {
+          if (await file.exists()) await file.delete();
+        } on FileSystemException {
+          /* MPV may still be releasing a handle. */
+        }
       }
-    } on FileSystemException {
-      /* Never recursively delete a directory with unexpected content. */
+      final directory = folder;
+      try {
+        if (directory != null && await directory.exists()) {
+          await directory.delete();
+        }
+      } on FileSystemException {
+        /* Never recursively delete a directory with unexpected content. */
+      }
+      active.dispose();
+      text.dispose();
+      timing.dispose();
+      saveError.dispose();
+      sourceLabel.dispose();
+      _cleanupComplete = true;
     }
-    active.dispose();
-    text.dispose();
-    timing.dispose();
-    saveError.dispose();
-    sourceLabel.dispose();
   }
 }
 

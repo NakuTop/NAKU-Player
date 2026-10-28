@@ -6,6 +6,8 @@ import 'package:kazumi/request/core/network_config.dart';
 import 'package:kazumi/services/platform/logvar_credential_store.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
+import 'package:kazumi/services/platform/naku_device.dart';
+import 'cinema_tv_media_policy.dart';
 
 class CinemaMediaRoute {
   const CinemaMediaRoute(this.proxy);
@@ -40,7 +42,10 @@ class CinemaMediaRouter {
   final Object Function()? networkIdentity;
   Object? _observedNetwork;
   Object get networkRevision =>
-      networkIdentity?.call() ?? MacOSSystemProxy.revision;
+      networkIdentity?.call() ??
+      (CinemaTVMediaEnvironment.instance.available
+          ? CinemaTVMediaEnvironment.instance.revision
+          : MacOSSystemProxy.revision);
 
   void _refreshNetwork() {
     final current = networkRevision;
@@ -60,6 +65,7 @@ class CinemaMediaRouter {
 
   bool get active {
     if (enabled != null) return enabled!();
+    if (Platform.isAndroid && NakuDevice.isTV) return true;
     if (!Platform.isMacOS) return false;
     try {
       return GStorage.getSetting(SettingsKeys.mediaAutoRouting);
@@ -109,9 +115,10 @@ class CinemaMediaRouter {
     Map<String, String> headers, {
     bool metadata = false,
   }) async {
+    if (active) await CinemaTVMediaEnvironment.instance.refresh();
     _refreshNetwork();
     final network = networkRevision;
-    final proxy = _config.proxyForUri(uri);
+    final proxy = _proxyFor(uri);
     if (!active ||
         proxy == null ||
         LogvarConfiguration.isPrivateHost(uri.host)) {
@@ -137,6 +144,9 @@ class CinemaMediaRouter {
     }
     return result;
   }
+
+  Uri? _proxyFor(Uri uri) =>
+      CinemaTVMediaEnvironment.instance.proxyFor(uri, _config);
 
   Future<CinemaMediaRoute> _race(
     Uri uri,
@@ -224,13 +234,13 @@ class CinemaMediaRouter {
 
   String labelFor(Uri uri, {bool metadata = false}) {
     _refreshNetwork();
-    final proxy = _config.proxyForUri(uri);
+    final proxy = _proxyFor(uri);
     return _choices[_key(uri, proxy, metadata: metadata)]?.route.label ??
         (proxy == null ? '直连' : '');
   }
 
   void reconsiderAfterStall(Uri uri) {
-    final proxy = _config.proxyForUri(uri);
+    final proxy = _proxyFor(uri);
     final choice = _choices[_key(uri, proxy)];
     if (choice != null &&
         DateTime.now().difference(choice.at).inSeconds >= 30) {
@@ -256,7 +266,7 @@ class CinemaMediaRouter {
             selected,
             cancel.whenCancel.then<CinemaMediaRoute>((e) => throw e),
           ]);
-    final proxy = _config.proxyForUri(uri);
+    final proxy = _proxyFor(uri);
     var chosen = route;
     final requestWatch = Stopwatch()..start();
     Response<ResponseBody> response;

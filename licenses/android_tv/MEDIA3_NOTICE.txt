@@ -1,0 +1,14 @@
+AndroidX Media3 1.11.1
+
+This application uses AndroidX Media3 ExoPlayer, HLS, DASH, UI and OkHttp data-source modules.
+
+Copyright (C) 2016 The Android Open Source Project
+Copyright The Android Open Source Project and contributors; individual source files retain their respective notices.
+
+Licensed under the Apache License, Version 2.0. The complete license is included in Apache-2.0.txt in this directory and in this application's license registry.
+
+Upstream source: https://github.com/androidx/media/tree/1.11.1
+Upstream license: https://github.com/androidx/media/blob/1.11.1/LICENSE
+ExoPlayer attribution: https://github.com/androidx/media/blob/1.11.1/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/ExoPlayer.java
+
+These native Android libraries are used for TV media decoding, rendering, transport and subtitle presentation. This notice does not imply endorsement by the upstream authors.

@@ -17,14 +17,26 @@ class _CinemaTVFocusState extends State<CinemaTVFocus> {
     return Focus(
       canRequestFocus: false,
       skipTraversal: true,
-      onFocusChange: (v) => setState(() => _focused = v),
+      onFocusChange: (v) {
+        setState(() => _focused = v);
+        if (v) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _focused) {
+              Scrollable.ensureVisible(
+                context,
+                duration: Duration.zero,
+                alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+              );
+            }
+          });
+        }
+      },
       child: Stack(
         children: [
           widget.child,
           Positioned.fill(
             child: IgnorePointer(
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 120),
+              child: Container(
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
