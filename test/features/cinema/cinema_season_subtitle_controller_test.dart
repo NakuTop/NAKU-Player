@@ -134,6 +134,7 @@ void main() {
       <({Player player, String text, String title, String language})>[];
   Completer<void>? applyGate;
   Completer<void>? applyEntered;
+  Completer<void>? applyCompleted;
   var applyStarted = 0;
 
   Future<void> apply(
@@ -156,6 +157,9 @@ void main() {
       '${applied.length}',
       0,
     );
+    if (applyCompleted case final signal? when !signal.isCompleted) {
+      signal.complete();
+    }
   }
 
   CinemaSeasonSubtitleController controller(
@@ -221,6 +225,7 @@ void main() {
     applied.clear();
     applyGate = null;
     applyEntered = null;
+    applyCompleted = null;
     applyStarted = 0;
   });
 
@@ -609,10 +614,10 @@ void main() {
         ..emitEarly = true
         ..aggregateGate = gate;
       final next = controller(3, client: client);
+      applyCompleted = Completer<void>();
       final pending = next.load();
-      for (var index = 0; index < 8; index++) {
-        await Future<void>.delayed(Duration.zero);
-      }
+      // Wait for the actual apply boundary, including asynchronous file IO.
+      await applyCompleted!.future.timeout(const Duration(seconds: 5));
       expect(applied, hasLength(1));
       gate.complete();
       await pending;

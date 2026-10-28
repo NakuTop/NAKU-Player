@@ -5,9 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:kazumi/bean/widget/navigation_gesture_exclusion.dart';
 
 import 'cinema_theme.dart';
+import 'cinema_swipe_navigation.dart';
 
-/// History rows own their horizontal gesture. A swipe only exposes the action;
-/// deleting still requires an explicit button press and uses the caller's undo.
+/// A closed history row's first left swipe only exposes its delete action. The
+/// next left swipe, or a right swipe, can hand off to adjacent-page navigation.
+/// Deleting always requires an explicit button press and uses the caller's undo.
 class CinemaHistorySwipeActions extends StatefulWidget {
   const CinemaHistorySwipeActions({
     super.key,
@@ -39,6 +41,8 @@ class _HistorySwipeScope {
 
 enum _SwipeAxis { pending, horizontal, vertical }
 
+enum _SwipePurpose { pending, row, back, forward }
+
 class _CinemaHistorySwipeActionsState extends State<CinemaHistorySwipeActions>
     with SingleTickerProviderStateMixin {
   static const _extent = 92.0;
@@ -54,6 +58,8 @@ class _CinemaHistorySwipeActionsState extends State<CinemaHistorySwipeActions>
   ScrollPosition? _scrollPosition;
   Timer? _wheelEnd;
   _SwipeAxis _axis = _SwipeAxis.pending;
+  _SwipePurpose _purpose = _SwipePurpose.pending;
+  CinemaSwipeNavigationIntent? _navigation;
   bool _tracking = false;
   bool _deleting = false;
   bool _nativeStream = false;
@@ -72,6 +78,7 @@ class _CinemaHistorySwipeActionsState extends State<CinemaHistorySwipeActions>
       if (_tracking) _guardMomentum();
       if (identical(_scope.active, this)) _scope.active = null;
       _wheelEnd?.cancel();
+      _cancelNavigation(defer: true);
       _tracking = false;
       _motion.value = 0;
     }
@@ -103,11 +110,14 @@ class _CinemaHistorySwipeActionsState extends State<CinemaHistorySwipeActions>
 
   void _begin({PointerEvent? event}) {
     if (_deleting) return;
+    if (_tracking) _finish(cancel: true);
     _motion.stop();
     _tracking = true;
     _startOffset = _motion.value;
     _distance = 0;
     _axis = _SwipeAxis.pending;
+    _purpose = _SwipePurpose.pending;
+    _navigation = CinemaSwipeNavigationIntent.maybeOf(context);
     _nativeStream = event != null;
     if (event != null) {
       _device = event.device;
@@ -117,9 +127,33 @@ class _CinemaHistorySwipeActionsState extends State<CinemaHistorySwipeActions>
 
   void _move(double delta) {
     if (!_tracking || _deleting) return;
-    _scope.activate(this);
     _distance += delta;
-    _motion.value = (_startOffset + _distance).clamp(-_extent, 0.0);
+    if (_purpose == _SwipePurpose.pending) {
+      if (_distance.abs() < 10) return;
+      final startedOpen = _startOffset < -_extent / 2;
+      _purpose = _distance > 0 && _navigation?.canBack == true
+          ? _SwipePurpose.back
+          : _distance < 0 && startedOpen && _navigation?.canForward == true
+          ? _SwipePurpose.forward
+          : _SwipePurpose.row;
+      _scope.activate(this);
+    }
+    if (_purpose == _SwipePurpose.row) {
+      _motion.value = (_startOffset + _distance).clamp(-_extent, 0.0);
+    } else {
+      final preview = _purpose == _SwipePurpose.back
+          ? _distance.clamp(0.0, 260.0)
+          : _distance.clamp(-260.0, 0.0);
+      _navigation?.preview(
+        preview,
+        device: _nativeStream ? _device : null,
+        timeStamp: _nativeStream ? _lastEvent : null,
+        owner: this,
+      );
+      if (_purpose == _SwipePurpose.back) {
+        _motion.value = (_startOffset + preview).clamp(-_extent, 0.0);
+      }
+    }
   }
 
   void _settle(bool open) {
@@ -140,26 +174,63 @@ class _CinemaHistorySwipeActionsState extends State<CinemaHistorySwipeActions>
     }
   }
 
-  void _finish({bool cancel = false}) {
+  void _finish({bool cancel = false, double velocity = 0}) {
     _wheelEnd?.cancel();
     if (!_tracking) return;
     _tracking = false;
     _guardMomentum();
     final startedOpen = _startOffset < -_extent / 2;
-    _settle(
-      cancel
-          ? startedOpen
-          : startedOpen
-          ? _distance < 32
-          : _distance <= -32,
-    );
+    final navigation = _navigation;
+    _navigation = null;
+    final navigating =
+        _purpose == _SwipePurpose.back || _purpose == _SwipePurpose.forward;
+    final correctDirection = _purpose == _SwipePurpose.back
+        ? _distance > 0
+        : _distance < 0;
+    final commit =
+        navigating &&
+        !cancel &&
+        correctDirection &&
+        (_distance.abs() >= 105 ||
+            (_distance.abs() >= 48 &&
+                velocity.abs() > 650 &&
+                velocity.sign == _distance.sign));
+    final rowOpen = commit
+        ? false
+        : cancel
+        ? startedOpen
+        : _purpose == _SwipePurpose.back
+        ? startedOpen && _distance < 32
+        : _purpose == _SwipePurpose.forward
+        ? startedOpen
+        : startedOpen
+        ? _distance < 32
+        : _distance <= -32;
+    _settle(rowOpen);
+    if (navigating) navigation?.finish(commit: commit, owner: this);
+    _purpose = _SwipePurpose.pending;
   }
 
   void _close() {
     _wheelEnd?.cancel();
     if (_tracking) _guardMomentum();
+    _cancelNavigation();
     _tracking = false;
     _settle(false);
+  }
+
+  void _cancelNavigation({bool defer = false}) {
+    final navigation = _navigation;
+    final navigating =
+        _purpose == _SwipePurpose.back || _purpose == _SwipePurpose.forward;
+    _navigation = null;
+    _purpose = _SwipePurpose.pending;
+    if (navigation == null || !navigating) return;
+    if (defer) {
+      scheduleMicrotask(() => navigation.finish(owner: this));
+    } else {
+      navigation.finish(owner: this);
+    }
   }
 
   void _guardMomentum() {
@@ -207,7 +278,9 @@ class _CinemaHistorySwipeActionsState extends State<CinemaHistorySwipeActions>
   }
 
   void _panStart(PointerPanZoomStartEvent event) {
-    if (!_deleting && !_momentum(event)) _begin(event: event);
+    // A new phased trackpad sequence means the fingers lifted and returned.
+    // Unlike an unphased wheel tail, this is fresh user intent.
+    if (!_deleting) _begin(event: event);
   }
 
   void _panUpdate(PointerPanZoomUpdateEvent event) {
@@ -236,6 +309,7 @@ class _CinemaHistorySwipeActionsState extends State<CinemaHistorySwipeActions>
   Future<void> _delete() async {
     if (_deleting) return;
     _wheelEnd?.cancel();
+    _cancelNavigation();
     _tracking = false;
     setState(() => _deleting = true);
     try {
@@ -254,6 +328,7 @@ class _CinemaHistorySwipeActionsState extends State<CinemaHistorySwipeActions>
   void dispose() {
     _wheelEnd?.cancel();
     if (_tracking) _guardMomentum();
+    _cancelNavigation(defer: true);
     _scrollPosition?.isScrollingNotifier.removeListener(_onScrolling);
     if (identical(_scope.active, this)) _scope.active = null;
     _motion.dispose();
@@ -268,6 +343,7 @@ class _CinemaHistorySwipeActionsState extends State<CinemaHistorySwipeActions>
       onPointerPanZoomStart: _panStart,
       onPointerPanZoomUpdate: _panUpdate,
       onPointerPanZoomEnd: (_) => _finish(),
+      onPointerCancel: (_) => _finish(cancel: true),
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         supportedDevices: const {
@@ -284,8 +360,10 @@ class _CinemaHistorySwipeActionsState extends State<CinemaHistorySwipeActions>
         onHorizontalDragUpdate: (event) {
           if (!_nativeStream) _move(event.delta.dx);
         },
-        onHorizontalDragEnd: (_) {
-          if (!_nativeStream) _finish();
+        onHorizontalDragEnd: (event) {
+          if (!_nativeStream) {
+            _finish(velocity: event.primaryVelocity ?? 0);
+          }
         },
         onHorizontalDragCancel: () => _finish(cancel: true),
         child: AnimatedBuilder(

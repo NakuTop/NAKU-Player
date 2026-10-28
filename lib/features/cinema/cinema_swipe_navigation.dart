@@ -7,6 +7,44 @@ import 'package:flutter/rendering.dart';
 
 typedef CinemaSwipeExclusion = NavigationGestureExclusion;
 
+/// Lets an excluded control hand off an intentional navigation gesture after
+/// its own action has been resolved. Raw pointer events remain with the control.
+class CinemaSwipeNavigationIntent extends InheritedWidget {
+  const CinemaSwipeNavigationIntent({
+    super.key,
+    required this.canBack,
+    required this.canForward,
+    required this.destination,
+    required this.onPreview,
+    required this.onFinish,
+    required super.child,
+  });
+
+  final bool canBack;
+  final bool canForward;
+  final Object? destination;
+  final void Function(double, int?, Duration?, Object?) onPreview;
+  final void Function(bool, Object?) onFinish;
+
+  static CinemaSwipeNavigationIntent? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<CinemaSwipeNavigationIntent>();
+
+  void preview(
+    double distance, {
+    int? device,
+    Duration? timeStamp,
+    Object? owner,
+  }) => onPreview(distance, device, timeStamp, owner);
+
+  void finish({bool commit = false, Object? owner}) => onFinish(commit, owner);
+
+  @override
+  bool updateShouldNotify(CinemaSwipeNavigationIntent oldWidget) =>
+      canBack != oldWidget.canBack ||
+      canForward != oldWidget.canForward ||
+      destination != oldWidget.destination;
+}
+
 /// Browser-like navigation without taking vertical scrolling or mouse drags.
 /// Nested horizontal viewports, text editing and sliders retain their gestures.
 class CinemaSwipeNavigation extends StatefulWidget {
@@ -53,19 +91,26 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
   Offset _pan = Offset.zero;
   bool _horizontal = false;
   bool _wheelSuppressed = false;
+  bool _delegating = false;
+  int? _delegatedDevice;
+  Duration? _delegatedTime;
+  Object? _delegateOwner;
+  int _intentEpoch = 0;
 
   @override
   void didUpdateWidget(CinemaSwipeNavigation oldWidget) {
     super.didUpdateWidget(oldWidget);
     if ((!widget.enabled && oldWidget.enabled) ||
         widget.destination != oldWidget.destination) {
+      _intentEpoch++;
       _finish(cancel: true);
+      _finishDelegated(false);
     }
   }
 
   bool _blocked(PointerEvent event) {
     if (!widget.enabled) return true;
-    if ((event is PointerScrollEvent || event is PointerPanZoomStartEvent) &&
+    if (event is PointerScrollEvent &&
         event.timeStamp < (_momentumUntil[event.device] ?? Duration.zero)) {
       _momentumUntil[event.device] =
           event.timeStamp + const Duration(milliseconds: 450);
@@ -98,6 +143,7 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
   }
 
   void _begin(PointerEvent event) {
+    _finishDelegated(false);
     _device = event.device;
     _lastEventTime = event.timeStamp;
     _trackpadStream =
@@ -112,11 +158,48 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
   void _move(double dx) {
     if (!_tracking) return;
     _distance = (_distance + dx).clamp(-260.0, 260.0);
+    _showDistance();
+  }
+
+  void _showDistance() {
     final allowed = _distance > 0
         ? widget.onBack != null
         : widget.onForward != null;
     _motion.value = allowed ? _distance.clamp(-150.0, 150.0) : _distance * .12;
     widget.onProgress?.call(allowed ? (_distance / 105).clamp(-1.0, 1.0) : 0);
+  }
+
+  void _previewDelegated(
+    double distance,
+    int? device,
+    Duration? timeStamp,
+    Object? owner,
+  ) {
+    if (!mounted || !widget.enabled || _tracking) return;
+    _delegating = true;
+    _delegateOwner = owner;
+    _delegatedDevice = device;
+    _delegatedTime = timeStamp;
+    _distance = distance.clamp(-260.0, 260.0);
+    _motion.stop();
+    _showDistance();
+  }
+
+  void _finishDelegated(bool commit, [Object? owner]) {
+    if (!mounted || !_delegating) return;
+    if (owner != null && !identical(owner, _delegateOwner)) return;
+    _delegating = false;
+    _delegateOwner = null;
+    widget.onProgress?.call(0);
+    final action = _distance > 0 ? widget.onBack : widget.onForward;
+    if (commit && widget.enabled && action != null) {
+      if (_delegatedDevice != null && _delegatedTime != null) {
+        _momentumUntil[_delegatedDevice!] =
+            _delegatedTime! + const Duration(milliseconds: 450);
+      }
+      action();
+    }
+    _returnToRest();
   }
 
   void _finish({bool cancel = false, double velocity = 0}) {
@@ -139,6 +222,10 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
       }
       action();
     }
+    _returnToRest();
+  }
+
+  void _returnToRest() {
     if (MediaQuery.disableAnimationsOf(context)) {
       _motion.value = 0;
       return;
@@ -187,9 +274,28 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
 
   @override
   void dispose() {
+    _intentEpoch++;
     _wheelEnd?.cancel();
     _motion.dispose();
     super.dispose();
+  }
+
+  Widget _intentChild() {
+    final epoch = _intentEpoch;
+    return CinemaSwipeNavigationIntent(
+      canBack: widget.enabled && widget.onBack != null,
+      canForward: widget.enabled && widget.onForward != null,
+      destination: widget.destination,
+      onPreview: (distance, device, timeStamp, owner) {
+        if (epoch == _intentEpoch) {
+          _previewDelegated(distance, device, timeStamp, owner);
+        }
+      },
+      onFinish: (commit, owner) {
+        if (epoch == _intentEpoch) _finishDelegated(commit, owner);
+      },
+      child: RepaintBoundary(child: widget.child),
+    );
   }
 
   @override
@@ -236,7 +342,7 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
       onHorizontalDragCancel: () => _finish(cancel: true),
       child: AnimatedBuilder(
         animation: _motion,
-        child: RepaintBoundary(child: widget.child),
+        child: _intentChild(),
         builder: (context, child) {
           final progress = (_motion.value.abs() / 105).clamp(0.0, 1.0);
           final right = _motion.value >= 0;

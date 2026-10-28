@@ -8,6 +8,7 @@ import 'package:kazumi/features/cinema/cinema_home_page.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
 import 'package:kazumi/features/cinema/cinema_webview_page.dart';
 import 'package:kazumi/features/cinema/cinema_navigation_island.dart';
+import 'package:kazumi/features/cinema/cinema_navigation_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 void main() {
@@ -58,7 +59,12 @@ void main() {
     await directory.delete(recursive: true);
   });
 
-  Future<void> mount(WidgetTester tester, String version, String build) async {
+  Future<void> mount(
+    WidgetTester tester,
+    String version,
+    String build, {
+    bool showAnime = false,
+  }) async {
     PackageInfo.setMockInitialValues(
       appName: 'NAKU播放器',
       packageName: 'com.shenminghao.yingchuan',
@@ -70,6 +76,11 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    final navigation = CinemaNavigationPreferences(
+      readValue: () => showAnime,
+      writeValue: (_) async {},
+    );
+    addTearDown(navigation.dispose);
     await tester.pumpWidget(
       MaterialApp(
         home: CinemaHomePage(
@@ -77,6 +88,8 @@ void main() {
           windowControls: controls,
           enableWatchTogether: false,
           enableSearchDiscovery: false,
+          navigationPreferences: navigation,
+          animePageBuilder: (_, _) => const SizedBox.expand(),
         ),
       ),
     );
@@ -115,6 +128,29 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  for (final showAnime in [true, false]) {
+    testWidgets(
+      'history right swipe returns to ${showAnime ? 'anime' : 'series'}',
+      (tester) async {
+        await mount(tester, '3.0.14', '94', showAnime: showAnime);
+        await tester.tap(
+          find.byKey(const ValueKey('cinema-destination-history')),
+        );
+        await tester.pumpAndSettle();
+        await tester.dragFrom(const Offset(130, 260), const Offset(170, 0));
+        await tester.pumpAndSettle();
+        final destination = tester
+            .widget<CinemaNavigationIsland>(
+              find.byKey(const ValueKey('cinema-floating-island')),
+            )
+            .value
+            .toString();
+        expect(destination, contains(showAnime ? 'anime' : 'series'));
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
 
   testWidgets('fish toolbar entry opens the requested site inside the app', (
     tester,

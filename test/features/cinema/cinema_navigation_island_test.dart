@@ -97,7 +97,7 @@ void main() {
     await gesture.panZoomStart(start, timeStamp: const Duration(seconds: 1));
     await gesture.panZoomUpdate(
       start,
-      pan: const Offset(-65, 1),
+      pan: const Offset(65, 1),
       timeStamp: const Duration(milliseconds: 1040),
     );
     await tester.pump();
@@ -106,7 +106,7 @@ void main() {
     expect(committed, isEmpty);
     await gesture.panZoomUpdate(
       start,
-      pan: const Offset(-600, 1),
+      pan: const Offset(600, 1),
       timeStamp: const Duration(milliseconds: 1080),
     );
     await gesture.panZoomEnd(timeStamp: const Duration(milliseconds: 1100));
@@ -130,25 +130,111 @@ void main() {
             scrollDelta: delta,
           ),
         );
-    await wheel(1000, const Offset(65, 0));
+    await wheel(1000, const Offset(-65, 0));
     await tester.pump();
     expect(thumbX(tester), greaterThan(start.dx + 50));
     expect(committed, isEmpty);
     await tester.pump(const Duration(milliseconds: 140));
     expect(current, 2);
     expect(committed, [2]);
-    await wheel(1150, const Offset(80, 0));
+    await wheel(1150, const Offset(-80, 0));
     await tester.pump(const Duration(milliseconds: 150));
-    await wheel(1300, const Offset(70, 0));
+    await wheel(1300, const Offset(-70, 0));
     await tester.pumpAndSettle();
     expect(current, 2);
     expect(committed, [2]);
-    await wheel(2000, const Offset(65, 0));
+    await wheel(2000, const Offset(-65, 0));
     await tester.pump(const Duration(milliseconds: 140));
     await tester.pumpAndSettle();
     expect(current, 3);
     expect(committed, [2, 3]);
   });
+
+  testWidgets(
+    'a fresh native trackpad gesture can immediately reverse direction',
+    (tester) async {
+      await mount(tester, initial: 2);
+      final gesture = await tester.createGesture(
+        kind: PointerDeviceKind.trackpad,
+      );
+      final first = center(tester, 2);
+      await gesture.panZoomStart(
+        first,
+        timeStamp: const Duration(milliseconds: 1000),
+      );
+      await gesture.panZoomUpdate(
+        first,
+        pan: const Offset(70, 0),
+        timeStamp: const Duration(milliseconds: 1040),
+      );
+      await gesture.panZoomEnd(timeStamp: const Duration(milliseconds: 1050));
+      await tester.pump();
+      expect(current, 3);
+      expect(committed, [3]);
+
+      final second = center(tester, 3);
+      await gesture.panZoomStart(
+        second,
+        timeStamp: const Duration(milliseconds: 1100),
+      );
+      await gesture.panZoomUpdate(
+        second,
+        pan: const Offset(-70, 0),
+        timeStamp: const Duration(milliseconds: 1140),
+      );
+      await gesture.panZoomEnd(timeStamp: const Duration(milliseconds: 1150));
+      await tester.pumpAndSettle();
+      expect(current, 2);
+      expect(committed, [3, 2]);
+      expect(thumbX(tester), closeTo(center(tester, 2).dx, 1));
+    },
+  );
+
+  for (final direction in [-1, 1]) {
+    testWidgets('trackpad physical direction $direction scrubs the thumb', (
+      tester,
+    ) async {
+      await mount(tester, initial: 2);
+      final start = center(tester, 2);
+      final gesture = await tester.createGesture(
+        kind: PointerDeviceKind.trackpad,
+      );
+      await gesture.panZoomStart(start);
+      await gesture.panZoomUpdate(start, pan: Offset(direction * 70.0, 0));
+      await tester.pump();
+      expect((thumbX(tester) - start.dx).sign, direction.toDouble());
+      expect(current, 2);
+      expect(committed, isEmpty);
+      await gesture.panZoomEnd();
+      await tester.pumpAndSettle();
+      expect(current, 2 + direction);
+      expect(committed, [2 + direction]);
+      expect(thumbX(tester), closeTo(center(tester, 2 + direction).dx, 1));
+    });
+
+    testWidgets(
+      'wheel scroll direction $direction normalizes physical scrubbing',
+      (tester) async {
+        await mount(tester, initial: 2);
+        final start = center(tester, 2);
+        await tester.sendEventToBinding(
+          PointerScrollEvent(
+            position: start,
+            scrollDelta: Offset(direction * 70.0, 0),
+          ),
+        );
+        await tester.pump();
+        expect((thumbX(tester) - start.dx).sign, -direction.toDouble());
+        expect(current, 2);
+        expect(committed, isEmpty);
+        await tester.pump(const Duration(milliseconds: 140));
+        await tester.pumpAndSettle();
+        expect(current, 2 - direction);
+        expect(committed, [2 - direction]);
+        expect(thumbX(tester), closeTo(center(tester, 2 - direction).dx, 1));
+      },
+    );
+  }
 
   testWidgets(
     'vertical wheel locks its stream and short horizontal pan returns',
@@ -169,7 +255,7 @@ void main() {
       await gesture.panZoomStart(start);
       await gesture.panZoomUpdate(start, pan: const Offset(-25, 0));
       await tester.pump();
-      expect(thumbX(tester), greaterThan(start.dx));
+      expect(thumbX(tester), lessThan(start.dx));
       await gesture.panZoomEnd();
       await tester.pumpAndSettle();
       expect(current, 2);

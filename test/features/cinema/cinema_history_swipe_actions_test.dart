@@ -7,11 +7,18 @@ import 'package:kazumi/features/cinema/cinema_history_swipe_actions.dart';
 import 'package:kazumi/features/cinema/cinema_swipe_navigation.dart';
 
 void main() {
-  var opened = 0, deleted = 0, navigated = 0;
+  var opened = 0, deleted = 0, navigated = 0, backs = 0, forwards = 0;
+  final previews = <double>[];
   late Future<bool> Function() remove;
 
-  Future<void> mount(WidgetTester tester, {bool reduced = false}) async {
+  Future<void> mount(
+    WidgetTester tester, {
+    bool reduced = false,
+    bool navigation = false,
+  }) async {
     opened = deleted = navigated = 0;
+    backs = forwards = 0;
+    previews.clear();
     remove = () async {
       deleted++;
       return true;
@@ -22,8 +29,19 @@ void main() {
           data: MediaQueryData(disableAnimations: reduced),
           child: Scaffold(
             body: CinemaSwipeNavigation(
-              onBack: () => navigated++,
-              onForward: () => navigated++,
+              onProgress: previews.add,
+              onBack: navigation
+                  ? () {
+                      backs++;
+                      navigated++;
+                    }
+                  : null,
+              onForward: navigation
+                  ? () {
+                      forwards++;
+                      navigated++;
+                    }
+                  : null,
               child: ListView(
                 children: [
                   const SizedBox(height: 80, child: Text('header')),
@@ -89,14 +107,16 @@ void main() {
     Offset delta, {
     double scale = 1,
     double rotation = 0,
+    int? nativeDevice,
+    int stamp = 10000,
   }) async {
     final point = tester.getCenter(row(index));
-    final id = device++;
+    final id = nativeDevice ?? device++;
     await tester.sendEventToBinding(
       PointerPanZoomStartEvent(
         pointer: id,
         device: id,
-        timeStamp: const Duration(seconds: 10),
+        timeStamp: Duration(milliseconds: stamp),
         position: point,
       ),
     );
@@ -104,7 +124,7 @@ void main() {
       PointerPanZoomUpdateEvent(
         pointer: id,
         device: id,
-        timeStamp: const Duration(milliseconds: 10020),
+        timeStamp: Duration(milliseconds: stamp + 20),
         position: point,
         pan: delta,
         panDelta: delta,
@@ -116,7 +136,7 @@ void main() {
       PointerPanZoomEndEvent(
         pointer: id,
         device: id,
-        timeStamp: const Duration(milliseconds: 10040),
+        timeStamp: Duration(milliseconds: stamp + 40),
         position: point,
       ),
     );
@@ -369,17 +389,208 @@ void main() {
   testWidgets('horizontal swipe outside rows still changes destination', (
     tester,
   ) async {
-    await mount(tester);
+    await mount(tester, navigation: true);
     await tester.dragFrom(const Offset(300, 40), const Offset(-180, 0));
     await tester.pumpAndSettle();
     expect(navigated, 1);
     expect(deleted, 0);
   });
 
+  testWidgets('closed left swipe reveals; next left swipe navigates once', (
+    tester,
+  ) async {
+    await mount(tester, navigation: true);
+    await swipe(tester, 0, const Offset(-400, 0));
+    expect(action(0), findsOneWidget);
+    expect(navigated, 0);
+    expect(previews.where((value) => value != 0), isEmpty);
+    await swipe(tester, 0, const Offset(-160, 0));
+    expect(forwards, 1);
+    expect(backs, 0);
+    expect(deleted, 0);
+    expect(action(0), findsNothing);
+    expect(previews, contains(-1));
+    expect(previews.last, 0);
+  });
+
+  testWidgets(
+    'right swipe on a closed row immediately previews previous page',
+    (tester) async {
+      await mount(tester, navigation: true);
+      await swipe(tester, 0, const Offset(180, 0));
+      expect(backs, 1);
+      expect(forwards, 0);
+      expect(action(0), findsNothing);
+      expect(previews, contains(1));
+      expect(previews.last, 0);
+      expect(opened, 0);
+      expect(deleted, 0);
+    },
+  );
+
+  testWidgets('short, canceled and vertical handoffs never navigate', (
+    tester,
+  ) async {
+    await mount(tester, navigation: true);
+    await swipe(tester, 0, const Offset(-180, 0));
+    await tester.timedDrag(
+      row(0),
+      const Offset(-60, 0),
+      const Duration(seconds: 1),
+    );
+    await tester.pumpAndSettle();
+    expect(forwards, 0);
+    expect(action(0), findsOneWidget);
+    final gesture = await tester.startGesture(tester.getCenter(row(0)));
+    await gesture.moveBy(const Offset(-160, 0));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('cinema-swipe-feedback')), findsOneWidget);
+    await gesture.cancel();
+    await tester.pumpAndSettle();
+    expect(forwards, 0);
+    expect(previews.last, 0);
+    expect(action(0), findsOneWidget);
+    await swipe(tester, 0, const Offset(0, -60));
+    expect(navigated, 0);
+    expect(action(0), findsNothing);
+  });
+
+  testWidgets('one stream cannot change its purpose by reversing direction', (
+    tester,
+  ) async {
+    await mount(tester, navigation: true);
+    var gesture = await tester.startGesture(tester.getCenter(row(0)));
+    await gesture.moveBy(const Offset(-160, 0));
+    await gesture.moveBy(const Offset(320, 0));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(navigated, 0);
+    expect(action(0), findsNothing);
+    await swipe(tester, 0, const Offset(-160, 0));
+    gesture = await tester.startGesture(tester.getCenter(row(0)));
+    await gesture.moveBy(const Offset(-100, 0));
+    await gesture.moveBy(const Offset(240, 0));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(navigated, 0);
+    expect(action(0), findsOneWidget);
+    expect(previews.last, 0);
+  });
+
+  testWidgets('short right swipe closes an open row without changing page', (
+    tester,
+  ) async {
+    await mount(tester, navigation: true);
+    await swipe(tester, 0, const Offset(-160, 0));
+    await tester.timedDrag(
+      row(0),
+      const Offset(65, 0),
+      const Duration(seconds: 1),
+    );
+    await tester.pumpAndSettle();
+    expect(navigated, 0);
+    expect(action(0), findsNothing);
+  });
+
+  testWidgets('consecutive phased trackpad gestures reveal then navigate', (
+    tester,
+  ) async {
+    await mount(tester, navigation: true);
+    final id = device++;
+    await pan(tester, 0, const Offset(-180, 0), nativeDevice: id, stamp: 80000);
+    expect(action(0), findsOneWidget);
+    expect(forwards, 0);
+    await pan(tester, 0, const Offset(-180, 0), nativeDevice: id, stamp: 80050);
+    expect(forwards, 1);
+    expect(backs, 0);
+    expect(deleted, 0);
+  });
+
+  for (final phased in [false, true]) {
+    testWidgets(
+      'native handoff (phased:$phased) guards next page against momentum',
+      (tester) async {
+        var page = 0, switches = 0;
+        final id = device++;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: StatefulBuilder(
+                builder: (context, update) {
+                  return CinemaSwipeNavigation(
+                    destination: page,
+                    onBack: () => update(() {
+                      page--;
+                      switches++;
+                    }),
+                    onForward: () => update(() {
+                      page++;
+                      switches++;
+                    }),
+                    child: page == 0
+                        ? ListView(
+                            children: [
+                              const SizedBox(height: 80),
+                              CinemaHistorySwipeActions(
+                                key: const ValueKey('row-0'),
+                                onDelete: () async => true,
+                                child: const SizedBox(height: 100),
+                              ),
+                            ],
+                          )
+                        : const SizedBox.expand(key: ValueKey('next-screen')),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        if (phased) {
+          await pan(
+            tester,
+            0,
+            const Offset(-180, 0),
+            nativeDevice: id,
+            stamp: 90000,
+          );
+        } else {
+          await wheel(tester, 0, const Offset(180, 0), id: id, stamp: 90000);
+        }
+        expect(switches, 0);
+        if (phased) {
+          await pan(
+            tester,
+            0,
+            const Offset(-180, 0),
+            nativeDevice: id,
+            stamp: 90050,
+          );
+        } else {
+          await wheel(tester, 0, const Offset(180, 0), id: id, stamp: 91000);
+        }
+        expect(switches, 1);
+        expect(find.byKey(const ValueKey('next-screen')), findsOneWidget);
+        await tester.sendEventToBinding(
+          PointerScrollEvent(
+            device: id,
+            timeStamp: Duration(milliseconds: phased ? 90200 : 91200),
+            position: const Offset(300, 130),
+            scrollDelta: const Offset(180, 0),
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pumpAndSettle();
+        expect(switches, 1);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets('native wheel outside rows retains page navigation', (
     tester,
   ) async {
-    await mount(tester);
+    await mount(tester, navigation: true);
     await tester.sendEventToBinding(
       PointerScrollEvent(
         device: device++,

@@ -334,4 +334,213 @@ void main() {
       preview.dispose();
     },
   );
+
+  group('excluded-control navigation intent lifecycle', () {
+    late CinemaSwipeNavigationIntent intent;
+    late StateSetter update;
+    var destination = 0;
+    var enabled = true;
+    var progress = 0.0;
+    final previews = <double>[];
+    final commits = <(String, double)>[];
+
+    Future<void> mountIntent(WidgetTester tester) async {
+      destination = 0;
+      enabled = true;
+      progress = 0;
+      previews.clear();
+      commits.clear();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                update = setState;
+                return CinemaSwipeNavigation(
+                  destination: destination,
+                  enabled: enabled,
+                  backLabel: '动漫',
+                  forwardLabel: '设置',
+                  onProgress: (value) {
+                    progress = value;
+                    previews.add(value);
+                  },
+                  onBack: () => setState(() {
+                    commits.add(('back', progress));
+                    destination--;
+                  }),
+                  onForward: () => setState(() {
+                    commits.add(('forward', progress));
+                    destination++;
+                  }),
+                  child: Builder(
+                    builder: (context) {
+                      intent = CinemaSwipeNavigationIntent.maybeOf(context)!;
+                      return const ColoredBox(
+                        color: Colors.black,
+                        child: SizedBox.expand(),
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    testWidgets('delegated preview shows target and commits once after reset', (
+      tester,
+    ) async {
+      await mountIntent(tester);
+      final owner = Object();
+      intent.preview(-70, owner: owner);
+      await tester.pump();
+      expect(progress, closeTo(-70 / 105, .001));
+      expect(find.text('设置'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('cinema-swipe-feedback')),
+        findsOneWidget,
+      );
+      expect(commits, isEmpty);
+      intent.finish(commit: true, owner: owner);
+      intent.finish(commit: true, owner: owner);
+      await tester.pumpAndSettle();
+      expect(progress, 0);
+      expect(commits, [('forward', 0)]);
+      expect(destination, 1);
+      expect(find.byKey(const ValueKey('cinema-swipe-feedback')), findsNothing);
+    });
+
+    testWidgets('old owner cleanup cannot reset or commit the new owner', (
+      tester,
+    ) async {
+      await mountIntent(tester);
+      final firstOwner = Object();
+      final secondOwner = Object();
+      intent.preview(50, owner: firstOwner);
+      intent.preview(-80, owner: secondOwner);
+      final newProgress = progress;
+      final previewCount = previews.length;
+      intent.finish(owner: firstOwner);
+      intent.finish(commit: true, owner: firstOwner);
+      await tester.pump();
+      expect(progress, newProgress);
+      expect(previews, hasLength(previewCount));
+      expect(find.text('设置'), findsOneWidget);
+      expect(commits, isEmpty);
+      intent.finish(commit: true, owner: secondOwner);
+      await tester.pumpAndSettle();
+      expect(progress, 0);
+      expect(commits, [('forward', 0)]);
+    });
+
+    testWidgets('destination change invalidates previously captured intent', (
+      tester,
+    ) async {
+      await mountIntent(tester);
+      final oldIntent = intent;
+      final owner = Object();
+      oldIntent.preview(70, owner: owner);
+      update(() => destination = 8);
+      await tester.pumpAndSettle();
+      expect(progress, 0);
+      expect(intent.destination, 8);
+      final count = previews.length;
+      oldIntent.preview(-180, owner: owner);
+      oldIntent.finish(commit: true, owner: owner);
+      await tester.pumpAndSettle();
+      expect(previews, hasLength(count));
+      expect(commits, isEmpty);
+      expect(destination, 8);
+      expect(find.byKey(const ValueKey('cinema-swipe-feedback')), findsNothing);
+      intent.preview(80, owner: owner);
+      intent.finish(commit: true, owner: owner);
+      await tester.pumpAndSettle();
+      expect(commits, [('back', 0)]);
+      expect(destination, 7);
+    });
+
+    testWidgets(
+      'native delegated commit suppresses momentum on new destination',
+      (tester) async {
+        await mountIntent(tester);
+        final owner = Object();
+        intent.preview(
+          -120,
+          owner: owner,
+          device: 982,
+          timeStamp: const Duration(seconds: 30),
+        );
+        intent.finish(commit: true, owner: owner);
+        await tester.pumpAndSettle();
+        expect(destination, 1);
+        Future<void> wheel(int milliseconds) => tester.sendEventToBinding(
+          PointerScrollEvent(
+            device: 982,
+            position: const Offset(200, 200),
+            timeStamp: Duration(milliseconds: milliseconds),
+            scrollDelta: const Offset(140, 0),
+          ),
+        );
+        await wheel(30100);
+        await tester.pump(const Duration(milliseconds: 160));
+        await wheel(30260);
+        await tester.pumpAndSettle(const Duration(milliseconds: 160));
+        expect(commits, [('forward', 0)]);
+        expect(destination, 1);
+        await wheel(31000);
+        await tester.pumpAndSettle(const Duration(milliseconds: 160));
+        expect(commits, [('forward', 0), ('forward', 0)]);
+        expect(destination, 2);
+      },
+    );
+
+    testWidgets(
+      'disabled scope blocks previews and invalidates prior callbacks',
+      (tester) async {
+        await mountIntent(tester);
+        final oldIntent = intent;
+        final owner = Object();
+        oldIntent.preview(-80, owner: owner);
+        update(() => enabled = false);
+        await tester.pumpAndSettle();
+        expect(progress, 0);
+        expect(intent.canBack, isFalse);
+        expect(intent.canForward, isFalse);
+        final count = previews.length;
+        oldIntent.preview(160, owner: owner);
+        oldIntent.finish(commit: true, owner: owner);
+        intent.preview(-160, owner: owner);
+        intent.finish(commit: true, owner: owner);
+        await tester.pumpAndSettle();
+        expect(progress, 0);
+        expect(previews, hasLength(count));
+        expect(commits, isEmpty);
+        expect(
+          find.byKey(const ValueKey('cinema-swipe-feedback')),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets('disposed scope safely ignores delayed row callbacks', (
+      tester,
+    ) async {
+      await mountIntent(tester);
+      final oldIntent = intent;
+      final owner = Object();
+      oldIntent.preview(40, owner: owner);
+      await tester.pumpWidget(const SizedBox());
+      final count = previews.length;
+      oldIntent.preview(-160, owner: owner);
+      oldIntent.finish(commit: true, owner: owner);
+      await tester.pump();
+      expect(previews, hasLength(count));
+      expect(commits, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+  });
 }

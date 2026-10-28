@@ -194,7 +194,10 @@ class _CinemaNavigationIslandState<T extends Object>
 
   bool _startStream(PointerEvent event, {required bool wheel}) {
     if (_dragging || widget.destinations.isEmpty) return false;
-    if (event.timeStamp < (_momentumUntil[event.device] ?? Duration.zero)) {
+    // A native pan/zoom start is an explicit new finger gesture. Only wheel
+    // streams need quiet time to distinguish a new gesture from inertia.
+    if (wheel &&
+        event.timeStamp < (_momentumUntil[event.device] ?? Duration.zero)) {
       _momentumUntil[event.device] =
           event.timeStamp + const Duration(milliseconds: 450);
       return false;
@@ -214,7 +217,9 @@ class _CinemaNavigationIslandState<T extends Object>
   void _moveStream(Offset delta) {
     if (!_streamActive) return;
     _streamPan += delta;
-    var movement = -delta.dx;
+    // Scrub the thumb in the physical direction of the finger, just like a
+    // direct mouse drag. Wheel deltas are normalized by _wheel below.
+    var movement = delta.dx;
     if (_streamAxis == 0) {
       if (_streamPan.dy.abs() > 8 &&
           _streamPan.dy.abs() > _streamPan.dx.abs() * 1.2) {
@@ -222,7 +227,7 @@ class _CinemaNavigationIslandState<T extends Object>
       } else if (_streamPan.dx.abs() > 8 &&
           _streamPan.dx.abs() > _streamPan.dy.abs() * 1.5) {
         setState(() => _streamAxis = 1);
-        movement = -_streamPan.dx;
+        movement = _streamPan.dx;
       }
     }
     if (_streamAxis != 1) return;

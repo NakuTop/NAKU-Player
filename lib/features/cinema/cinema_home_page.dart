@@ -1962,17 +1962,22 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         .where((section) => section != _Section.anime || _showAnimeDestination)
         .toList();
     final index = sections.indexOf(_section);
+    final previous = _section == _Section.history
+        ? (_showAnimeDestination ? _Section.anime : _Section.series)
+        : index > 0
+        ? sections[index - 1]
+        : null;
     return CinemaMoyuHost(
       session: _moyuSession,
       child: CinemaSwipeNavigation(
         key: const ValueKey('cinema-home-swipe'),
         destination: (_section, _showAnimeDestination, _showSourceManager),
         onProgress: (progress) => _sectionSwipe.value = progress,
-        backLabel: index > 0 ? _sectionLabel(sections[index - 1]) : null,
+        backLabel: previous != null ? _sectionLabel(previous) : null,
         forwardLabel: index >= 0 && index + 1 < sections.length
             ? _sectionLabel(sections[index + 1])
             : null,
-        onBack: index > 0 ? () => _selectSection(sections[index - 1]) : null,
+        onBack: previous != null ? () => _selectSection(previous) : null,
         onForward: index >= 0 && index + 1 < sections.length
             ? () => _selectSection(sections[index + 1])
             : null,
