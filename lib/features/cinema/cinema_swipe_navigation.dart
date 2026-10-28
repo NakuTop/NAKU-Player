@@ -17,12 +17,23 @@ class CinemaSwipeNavigation extends StatefulWidget {
     this.onForward,
     this.enabled = true,
     this.edgeOnly = false,
+    this.onProgress,
+    this.backLabel,
+    this.forwardLabel,
+    this.destination,
   });
   final Widget child;
   final VoidCallback? onBack;
   final VoidCallback? onForward;
   final bool enabled;
   final bool edgeOnly;
+
+  /// Signed preview of the adjacent destination: positive is back/previous.
+  /// Reset before committing so the receiving control can settle from here.
+  final ValueChanged<double>? onProgress;
+  final String? backLabel;
+  final String? forwardLabel;
+  final Object? destination;
 
   @override
   State<CinemaSwipeNavigation> createState() => _CinemaSwipeNavigationState();
@@ -40,6 +51,17 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
   bool _tracking = false;
   double _distance = 0;
   Offset _pan = Offset.zero;
+  bool _horizontal = false;
+  bool _wheelSuppressed = false;
+
+  @override
+  void didUpdateWidget(CinemaSwipeNavigation oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if ((!widget.enabled && oldWidget.enabled) ||
+        widget.destination != oldWidget.destination) {
+      _finish(cancel: true);
+    }
+  }
 
   bool _blocked(PointerEvent event) {
     if (!widget.enabled) return true;
@@ -83,6 +105,7 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
     _motion.stop();
     _distance = 0;
     _pan = Offset.zero;
+    _horizontal = false;
     _tracking = true;
   }
 
@@ -93,24 +116,32 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
         ? widget.onBack != null
         : widget.onForward != null;
     _motion.value = allowed ? _distance.clamp(-150.0, 150.0) : _distance * .12;
+    widget.onProgress?.call(allowed ? (_distance / 105).clamp(-1.0, 1.0) : 0);
   }
 
   void _finish({bool cancel = false, double velocity = 0}) {
     _wheelEnd?.cancel();
     if (!_tracking) return;
     _tracking = false;
+    widget.onProgress?.call(0);
     final action = _distance > 0 ? widget.onBack : widget.onForward;
     final committed =
         !cancel &&
         action != null &&
         (_distance.abs() >= 105 ||
-            (_distance.abs() >= 48 && velocity.abs() > 650));
+            (_distance.abs() >= 48 &&
+                velocity.abs() > 650 &&
+                velocity.sign == _distance.sign));
     if (committed) {
       if (_trackpadStream) {
         _momentumUntil[_device] =
             _lastEventTime + const Duration(milliseconds: 450);
       }
       action();
+    }
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _motion.value = 0;
+      return;
     }
     _motion.animateTo(
       0,
@@ -121,9 +152,19 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
 
   void _wheel(PointerSignalEvent event) {
     if (event is! PointerScrollEvent) return;
+    // A vertical/excluded scroll stream keeps its owner until it goes quiet;
+    // diagonal trackpad tails must not turn a list scroll into page navigation.
+    if (_wheelSuppressed) {
+      _endWheelLater();
+      return;
+    }
     final delta = event.scrollDelta;
-    if (delta.dx.abs() < 2 || delta.dx.abs() < delta.dy.abs() * 1.8) {
+    if ((!_tracking && _blocked(event)) ||
+        (!_horizontal &&
+            (delta.dx.abs() < 2 || delta.dx.abs() < delta.dy.abs() * 1.8))) {
       if (_tracking) _finish(cancel: true);
+      _wheelSuppressed = true;
+      _endWheelLater();
       return;
     }
     if (!_tracking) {
@@ -131,9 +172,17 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
       _begin(event);
     }
     _lastEventTime = event.timeStamp;
+    _horizontal = true;
     _move(-delta.dx);
+    _endWheelLater();
+  }
+
+  void _endWheelLater() {
     _wheelEnd?.cancel();
-    _wheelEnd = Timer(const Duration(milliseconds: 125), _finish);
+    _wheelEnd = Timer(const Duration(milliseconds: 125), () {
+      _finish();
+      _wheelSuppressed = false;
+    });
   }
 
   @override
@@ -167,9 +216,13 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
         return;
       }
       _pan = event.pan;
-      if (_pan.dy.abs() > _pan.dx.abs() * 1.2 && _pan.dy.abs() > 12) {
+      if (!_horizontal &&
+          _pan.dy.abs() > _pan.dx.abs() * 1.2 &&
+          _pan.dy.abs() > 12) {
         _finish(cancel: true);
-      } else if (_pan.dx.abs() > _pan.dy.abs() * 1.5) {
+      } else if (_horizontal ||
+          (_pan.dx.abs() > 12 && _pan.dx.abs() > _pan.dy.abs() * 1.5)) {
+        _horizontal = true;
         _move(event.panDelta.dx);
       }
     },
@@ -187,6 +240,10 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
         builder: (context, child) {
           final progress = (_motion.value.abs() / 105).clamp(0.0, 1.0);
           final right = _motion.value >= 0;
+          final allowed = right
+              ? widget.onBack != null
+              : widget.onForward != null;
+          final label = right ? widget.backLabel : widget.forwardLabel;
           final reduced = MediaQuery.disableAnimationsOf(context);
           return Stack(
             fit: StackFit.passthrough,
@@ -195,37 +252,83 @@ class _CinemaSwipeNavigationState extends State<CinemaSwipeNavigation>
                 offset: Offset(reduced ? 0 : _motion.value * .16, 0),
                 child: child,
               ),
-              if (progress > .01)
+              if (progress > .01 && allowed)
                 Positioned.fill(
                   child: IgnorePointer(
-                    child: Align(
-                      alignment: right
-                          ? Alignment.centerLeft
-                          : Alignment.centerRight,
-                      child: Opacity(
-                        opacity: progress,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16),
-                          child: DecoratedBox(
-                            decoration: BoxDecoration(
-                              color: const Color(0xE026292E),
-                              borderRadius: BorderRadius.circular(24),
-                              boxShadow: const [
-                                BoxShadow(
-                                  color: Color(0x40000000),
-                                  blurRadius: 20,
+                    child: ExcludeSemantics(
+                      child: Align(
+                        alignment: right
+                            ? Alignment.centerLeft
+                            : Alignment.centerRight,
+                        child: Opacity(
+                          opacity: progress,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            child: Transform.translate(
+                              offset: Offset(
+                                (right ? -1 : 1) * (1 - progress) * 12,
+                                0,
+                              ),
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: const Color(0xE026292E),
+                                  borderRadius: BorderRadius.circular(24),
+                                  boxShadow: const [
+                                    BoxShadow(
+                                      color: Color(0x40000000),
+                                      blurRadius: 20,
+                                    ),
+                                  ],
                                 ),
-                              ],
-                            ),
-                            child: Padding(
-                              padding: const EdgeInsets.all(11),
-                              child: Icon(
-                                right
-                                    ? Icons.arrow_back_rounded
-                                    : Icons.arrow_forward_rounded,
-                                key: const ValueKey('cinema-swipe-feedback'),
-                                size: 20,
-                                color: Colors.white,
+                                child: Padding(
+                                  padding: const EdgeInsets.all(9),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      SizedBox(
+                                        width: 28,
+                                        height: 28,
+                                        child: Stack(
+                                          alignment: Alignment.center,
+                                          children: [
+                                            CircularProgressIndicator(
+                                              value: progress,
+                                              strokeWidth: 1.5,
+                                              color: progress >= 1
+                                                  ? Colors.white
+                                                  : const Color(0x99FFFFFF),
+                                              backgroundColor: const Color(
+                                                0x15FFFFFF,
+                                              ),
+                                            ),
+                                            Icon(
+                                              right
+                                                  ? Icons.arrow_back_rounded
+                                                  : Icons.arrow_forward_rounded,
+                                              key: const ValueKey(
+                                                'cinema-swipe-feedback',
+                                              ),
+                                              size: 18,
+                                              color: Colors.white,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      if (label != null) ...[
+                                        const SizedBox(width: 9),
+                                        Text(
+                                          label,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 5),
+                                      ],
+                                    ],
+                                  ),
+                                ),
                               ),
                             ),
                           ),

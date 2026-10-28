@@ -241,8 +241,9 @@ void main() {
     expect(opened, 0);
   });
 
-  testWidgets('deletion feedback expires and leaves the remaining row usable',
-      (tester) async {
+  testWidgets('deletion feedback expires and leaves the remaining row usable', (
+    tester,
+  ) async {
     await mount(tester, history: true);
     await rightClick(tester, find.text(_first.title));
     await tester.tap(find.widgetWithText(PopupMenuItem<bool>, '删除记录'));
@@ -260,8 +261,9 @@ void main() {
     expect(opened, 1);
   });
 
-  testWidgets('late undo restores a removed card through its live messenger',
-      (tester) async {
+  testWidgets('late undo restores a removed card through its live messenger', (
+    tester,
+  ) async {
     await mount(tester);
     await rightClick(tester, find.text(_first.title));
     await tester.tap(find.text('取消收藏'));
@@ -292,26 +294,30 @@ void main() {
     },
   );
 
-  testWidgets('history swipe deletes and undo keeps its original progress', (
-    tester,
-  ) async {
-    await mount(tester, history: true);
-    await tester.drag(
-      find.byKey(ValueKey('open:${_first.key}')),
-      const Offset(-600, 0),
-    );
-    await tester.pumpAndSettle();
-    await flush(tester);
-    expect(store.history.single.title.key, _second.key);
-    expect(opened, 0);
-    expect(find.text('撤销'), findsOneWidget);
-    await tester.tap(find.text('撤销'));
-    await flush(tester);
-    expect(store.historyForWork(_variant)?.positionSeconds, 321);
-    expect(store.historyForWork(_variant)?.routeIndex, 2);
-    expect(store.historyForWork(_variant)?.episodeIndex, 3);
-    expect(opened, 0);
-  });
+  testWidgets(
+    'history reveal requires delete and undo keeps original progress',
+    (tester) async {
+      await mount(tester, history: true);
+      await tester.drag(
+        find.byKey(ValueKey('open:${_first.key}')),
+        const Offset(-600, 0),
+      );
+      await tester.pumpAndSettle();
+      expect(store.history, hasLength(2));
+      expect(opened, 0);
+      await tester.tap(find.byKey(const ValueKey('cinema-history-delete')));
+      await flush(tester);
+      expect(store.history.single.title.key, _second.key);
+      expect(opened, 0);
+      expect(find.text('撤销'), findsOneWidget);
+      await tester.tap(find.text('撤销'));
+      await flush(tester);
+      expect(store.historyForWork(_variant)?.positionSeconds, 321);
+      expect(store.historyForWork(_variant)?.routeIndex, 2);
+      expect(store.historyForWork(_variant)?.episodeIndex, 3);
+      expect(opened, 0);
+    },
+  );
 
   testWidgets('short swipe cancels without deleting or opening a title', (
     tester,
@@ -319,18 +325,19 @@ void main() {
     await mount(tester, history: true);
     await tester.timedDrag(
       find.byKey(ValueKey('open:${_first.key}')),
-      const Offset(-60, 0),
+      const Offset(-24, 0),
       const Duration(seconds: 1),
     );
     await tester.pumpAndSettle();
     expect(store.history, hasLength(2));
+    expect(find.byKey(const ValueKey('cinema-history-delete')), findsNothing);
     expect(opened, 0);
     expect(find.text('撤销'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
   testWidgets(
-    'failed swipe write restores an interactive row without dismissal errors',
+    'failed revealed deletion leaves an interactive row and can be retried',
     (tester) async {
       final before = await tester.runAsync(file.readAsString);
       await tester.runAsync(() => Directory('${file.path}.tmp').create());
@@ -340,6 +347,7 @@ void main() {
         const Offset(-600, 0),
       );
       await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('cinema-history-delete')));
       final failure = find.text('未能保存删除操作，记录已保留');
       for (var i = 0; i < 100 && failure.evaluate().isEmpty; i++) {
         await tester.runAsync(
@@ -362,6 +370,8 @@ void main() {
         find.byKey(ValueKey('open:${_first.key}')),
         const Offset(-600, 0),
       );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('cinema-history-delete')));
       await flush(tester);
       expect(store.history.single.title.key, _second.key);
       expect(tester.takeException(), isNull);

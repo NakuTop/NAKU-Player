@@ -208,6 +208,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   late final _together = widget.watchTogether ?? CinemaWatchTogether.instance;
   StreamSubscription<String>? _togetherNotices;
   _Section _section = _Section.movies;
+  final _sectionSwipe = ValueNotifier<double>(0);
   int _sectionRevision = 0, _desktopSearchRevision = 0;
   bool _showSourceManager = false;
   bool _animeOpened = false;
@@ -924,6 +925,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   @override
   void dispose() {
+    _sectionSwipe.dispose();
     _moyuSession.dispose();
     _resources.dispose();
     if (Platform.isAndroid) unawaited(CinemaLanCast.instance.stop());
@@ -958,7 +960,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     super.dispose();
   }
 
-  String get _heading => switch (_section) {
+  String _sectionLabel(_Section section) => switch (section) {
     _Section.movies => '电影',
     _Section.series => '剧集',
     _Section.anime => '动漫',
@@ -966,6 +968,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     _Section.history => '继续观看',
     _Section.settings => _showSourceManager ? '片源管理' : '设置',
   };
+
+  String get _heading => _sectionLabel(_section);
 
   bool get _isCatalog =>
       _section == _Section.movies || _section == _Section.series;
@@ -1085,6 +1089,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   }
 
   Future<void> _selectSection(_Section value) async {
+    _sectionSwipe.value = 0;
     if (value == _section && !_showSourceManager) return;
     ++_sectionRevision;
     _scrollActivity.reset();
@@ -1961,6 +1966,12 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       session: _moyuSession,
       child: CinemaSwipeNavigation(
         key: const ValueKey('cinema-home-swipe'),
+        destination: (_section, _showAnimeDestination, _showSourceManager),
+        onProgress: (progress) => _sectionSwipe.value = progress,
+        backLabel: index > 0 ? _sectionLabel(sections[index - 1]) : null,
+        forwardLabel: index >= 0 && index + 1 < sections.length
+            ? _sectionLabel(sections[index + 1])
+            : null,
         onBack: index > 0 ? () => _selectSection(sections[index - 1]) : null,
         onForward: index >= 0 && index + 1 < sections.length
             ? () => _selectSection(sections[index + 1])
@@ -2448,25 +2459,28 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 right: 0,
                 bottom: 16,
                 child: Center(
-                  child: CinemaNavigationIsland<_Section>(
-                    key: const ValueKey('cinema-floating-island'),
-                    value: _section,
-                    onChanged: _selectSection,
-                    keyFor: (section) =>
-                        ValueKey('cinema-destination-${section.name}'),
-                    destinations: [
-                      (_Section.movies, Icons.local_movies_outlined, '电影'),
-                      (_Section.series, Icons.tv_rounded, '剧集'),
-                      if (_showAnimeDestination)
-                        (_Section.anime, Icons.animation_rounded, '动漫'),
-                      (
-                        _Section.favorites,
-                        Icons.bookmark_border_rounded,
-                        '我的收藏',
-                      ),
-                      (_Section.history, Icons.history_rounded, '继续观看'),
-                      (_Section.settings, Icons.settings_outlined, '设置'),
-                    ],
+                  child: RepaintBoundary(
+                    child: CinemaNavigationIsland<_Section>(
+                      key: const ValueKey('cinema-floating-island'),
+                      value: _section,
+                      swipeProgress: _sectionSwipe,
+                      onChanged: _selectSection,
+                      keyFor: (section) =>
+                          ValueKey('cinema-destination-${section.name}'),
+                      destinations: [
+                        (_Section.movies, Icons.local_movies_outlined, '电影'),
+                        (_Section.series, Icons.tv_rounded, '剧集'),
+                        if (_showAnimeDestination)
+                          (_Section.anime, Icons.animation_rounded, '动漫'),
+                        (
+                          _Section.favorites,
+                          Icons.bookmark_border_rounded,
+                          '我的收藏',
+                        ),
+                        (_Section.history, Icons.history_rounded, '继续观看'),
+                        (_Section.settings, Icons.settings_outlined, '设置'),
+                      ],
+                    ),
                   ),
                 ),
               ),

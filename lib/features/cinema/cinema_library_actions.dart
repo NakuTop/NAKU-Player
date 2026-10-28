@@ -5,6 +5,7 @@ import 'package:flutter/semantics.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 
 import 'cinema_models.dart';
+import 'cinema_history_swipe_actions.dart';
 import 'cinema_store.dart';
 import 'cinema_theme.dart';
 
@@ -121,7 +122,7 @@ class _CinemaLibraryActionsState extends State<CinemaLibraryActions> {
 
   @override
   Widget build(BuildContext context) {
-    final child = Semantics(
+    return Semantics(
       customSemanticsActions: {
         CustomSemanticsAction(label: _label): () => unawaited(_remove()),
       },
@@ -131,37 +132,14 @@ class _CinemaLibraryActionsState extends State<CinemaLibraryActions> {
             unawaited(_showMenu(details.globalPosition)),
         onLongPressStart: (details) =>
             unawaited(_showMenu(details.globalPosition)),
-        child: widget.child,
+        child: widget.history
+            ? CinemaHistorySwipeActions(
+                key: ValueKey('swipe-history:${widget.title.key}'),
+                onDelete: _remove,
+                child: widget.child,
+              )
+            : widget.child,
       ),
-    );
-    if (!widget.history) return child;
-    final reduceMotion = MediaQuery.disableAnimationsOf(context);
-    return Dismissible(
-      key: ValueKey('dismiss-history:${widget.title.key}'),
-      direction: DismissDirection.endToStart,
-      dismissThresholds: const {DismissDirection.endToStart: .35},
-      movementDuration: Duration(milliseconds: reduceMotion ? 0 : 180),
-      resizeDuration: Duration(milliseconds: reduceMotion ? 0 : 140),
-      // Keep the row reversible until its atomic storage write succeeds. A
-      // failure may restore the same key before the next frame.
-      confirmDismiss: (_) => _remove(),
-      background: Container(
-        alignment: AlignmentDirectional.centerEnd,
-        padding: const EdgeInsetsDirectional.only(end: 20),
-        decoration: BoxDecoration(
-          color: CinemaTheme.copper.withValues(alpha: .18),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.delete_outline_rounded, color: CinemaTheme.copper),
-            SizedBox(width: 8),
-            Text('删除记录', style: TextStyle(color: CinemaTheme.copper)),
-          ],
-        ),
-      ),
-      child: child,
     );
   }
 }
