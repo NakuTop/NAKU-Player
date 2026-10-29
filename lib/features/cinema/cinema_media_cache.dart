@@ -58,7 +58,8 @@ class CinemaCacheSession {
     this.id,
     this.headers, {
     this.manifestPolicy,
-  });
+    bool backgroundPrefetchAllowed = true,
+  }) : _backgroundPrefetchAllowed = backgroundPrefetchAllowed;
   final CinemaMediaCache cache;
   final String id;
   final Map<String, String> headers;
@@ -67,6 +68,20 @@ class CinemaCacheSession {
   final Map<String, String> _ids = {};
   final Map<String, List<_Segment>> _playlists = {};
   bool closed = false, buffering = false, prefetching = false;
+  bool _backgroundPrefetchAllowed;
+  bool get backgroundPrefetchAllowed => _backgroundPrefetchAllowed;
+  set backgroundPrefetchAllowed(bool allowed) {
+    if (_backgroundPrefetchAllowed == allowed) return;
+    _backgroundPrefetchAllowed = allowed;
+    if (!allowed) {
+      // A player may already be consuming this exact in-flight segment. Only
+      // cancel speculative work, never a promoted foreground response.
+      if (!cache._promoted.contains(_fetchKey)) _token?.cancel('当前播放优先，暂停后台预取');
+    } else if (!closed && !buffering) {
+      unawaited(cache._prefetch(this));
+    }
+  }
+
   double position = 0;
   int hits = 0, downloadedBytes = 0;
   String networkRoute = '';
@@ -106,7 +121,7 @@ class CinemaCacheSession {
     this.buffering = buffering;
     if (buffering) {
       if (!cache._promoted.contains(_fetchKey)) _token?.cancel('播放优先');
-    } else if (!prefetching && !closed) {
+    } else if (backgroundPrefetchAllowed && !prefetching && !closed) {
       unawaited(cache._prefetch(this));
     }
   }
@@ -169,6 +184,7 @@ class CinemaMediaCache extends ChangeNotifier {
     Map<String, String> headers, {
     bool hls = false,
     Future<String> Function(String manifest, Uri base)? manifestPolicy,
+    bool backgroundPrefetchAllowed = true,
   }) async {
     final uri = Uri.tryParse(url);
     if ((!preferences.enabled && transport.router?.active != true) ||
@@ -183,10 +199,15 @@ class CinemaMediaCache extends ChangeNotifier {
       '${++_serial}',
       Map.unmodifiable(headers),
       manifestPolicy: manifestPolicy,
+      backgroundPrefetchAllowed: backgroundPrefetchAllowed,
     );
     _sessions[session.id] = session;
     session._timer = Timer.periodic(const Duration(seconds: 5), (_) {
-      if (!session.closed && !session.buffering) unawaited(_prefetch(session));
+      if (!session.closed &&
+          !session.buffering &&
+          session.backgroundPrefetchAllowed) {
+        unawaited(_prefetch(session));
+      }
     });
     return (
       url: session.register(uri, manifest: true).toString(),
@@ -229,7 +250,12 @@ class CinemaMediaCache extends ChangeNotifier {
     final key = _key(segment.uri, session.headers, segment.range);
     final cached = await _cached(key);
     if (cached != null) return cached;
-    if (_background > 0 || _foreground > 0 || session.closed) return null;
+    if (_background > 0 ||
+        _foreground > 0 ||
+        session.closed ||
+        !session.backgroundPrefetchAllowed) {
+      return null;
+    }
     return _pending.putIfAbsent(key, () async {
       _background++;
       final token = session._token = CancelToken();
@@ -641,6 +667,7 @@ class CinemaMediaCache extends ChangeNotifier {
         _background > 0 ||
         session.closed ||
         session.buffering ||
+        !session.backgroundPrefetchAllowed ||
         !preferences.enabled) {
       return;
     }
@@ -654,7 +681,10 @@ class CinemaMediaCache extends ChangeNotifier {
       final startPosition = session.position;
       for (final playlist in session._playlists.values.toList()) {
         for (final segment in playlist) {
-          if (session.closed || session.buffering || !preferences.enabled) {
+          if (session.closed ||
+              session.buffering ||
+              !session.backgroundPrefetchAllowed ||
+              !preferences.enabled) {
             return;
           }
           if (segment.start + segment.duration < session.position ||

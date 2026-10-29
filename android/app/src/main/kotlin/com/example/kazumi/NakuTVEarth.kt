@@ -30,7 +30,7 @@ import kotlin.math.*
 
 /** A bounded GLES2 sphere replaces the WebView/WebGL scene on old televisions.
  * Texture is the exact Home Display NASA Blue Marble equirectangular asset.
- * No browser, controls, atmosphere, particles, landmarks or aircraft models.
+ * No browser, controls, interactive particles, landmarks or aircraft models.
  */
 class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
     MethodChannel.MethodCallHandler, EventChannel.StreamHandler,
@@ -227,6 +227,13 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
         private val sphereBuffers = IntArray(2)
         private val sphereHandles = IntArray(8)
         private val lineHandles = IntArray(4)
+        private val starHandles = IntArray(3)
+        private var starProgram = 0
+        private var starBuffer = 0
+        private var starCount = 0
+        private var starWidth = 0
+        private var starHeight = 0
+        private var starPointScale = 1f
         private var program = 0
         private var lineProgram = 0
         private var texture = 0
@@ -278,6 +285,16 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                     VERTEX.replace("UV_PRECISION", uvPrecision),
                     FRAGMENT.replace("UV_PRECISION", uvPrecision))
                 lineProgram = program(LINE_VERTEX, LINE_FRAGMENT)
+                starProgram = program(STAR_VERTEX, STAR_FRAGMENT)
+                starHandles[0] = GLES20.glGetAttribLocation(starProgram, "a_starPosition")
+                starHandles[1] = GLES20.glGetAttribLocation(starProgram, "a_starAppearance")
+                starHandles[2] = GLES20.glGetUniformLocation(starProgram, "u_pointScale")
+                val starNames = IntArray(1)
+                GLES20.glGenBuffers(1, starNames, 0)
+                starBuffer = starNames[0]
+                starCount = 0
+                starWidth = 0
+                starHeight = 0
                 sphereHandles[0] = GLES20.glGetUniformLocation(program, "u_mvp")
                 sphereHandles[1] = GLES20.glGetUniformLocation(program, "u_model")
                 sphereHandles[2] = GLES20.glGetAttribLocation(program, "a_position")
@@ -320,10 +337,12 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
             this.width = width.coerceAtLeast(1)
             this.height = height.coerceAtLeast(1)
             GLES20.glViewport(0, 0, this.width, this.height)
+            uploadStars()
         }
         override fun onDrawFrame(gl: GL10?) {
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
             if (failed || program == 0 || !animating) { lastFrame = 0L; return }
+            drawStars()
             val now = System.nanoTime()
             if (lastFrame != 0L) yaw = (yaw + ((now - lastFrame) / 1_000_000_000f).coerceIn(0f, .1f) * 1.68f) % 360f
             lastFrame = now
@@ -400,9 +419,51 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                     "textureWidth" to textureWidth, "textureHeight" to textureHeight,
                     "nightTextureWidth" to nightTextureWidth, "nightTextureHeight" to nightTextureHeight,
                     "solarUtcMillis" to solarSecond * 1000L, "dayNight" to true,
-                    "fpsLimit" to 24, "renderer" to "gles2"))
+                    "fpsLimit" to 24, "renderer" to "gles2",
+                    "staticStars" to true, "starCount" to starCount))
             }
         }
+        private fun uploadStars() {
+            if (failed || starProgram == 0 || starBuffer == 0 ||
+                (starWidth == width && starHeight == height)) return
+            val points = NakuTVStars.geometry(width, height)
+            val data = floats(points)
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, starBuffer)
+            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, points.size * 4, data, GLES20.GL_STATIC_DRAW)
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+            starCount = points.size / NakuTVStars.STRIDE
+            starWidth = width
+            starHeight = height
+            starPointScale = (height / 720f).coerceIn(.75f, 1.5f)
+        }
+
+        private fun drawStars() {
+            if (starCount == 0) return
+            // Clip-space VBO never sees the Earth matrices, clock or input.
+            // Draw first without depth writes; the opaque Earth covers it fully,
+            // including its dark hemisphere. No stars shine through the globe.
+            GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+            GLES20.glDepthMask(false)
+            GLES20.glDisable(GLES20.GL_CULL_FACE)
+            GLES20.glEnable(GLES20.GL_BLEND)
+            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE)
+            GLES20.glUseProgram(starProgram)
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, starBuffer)
+            GLES20.glEnableVertexAttribArray(starHandles[0])
+            GLES20.glVertexAttribPointer(starHandles[0], 2, GLES20.GL_FLOAT, false, 20, 0)
+            GLES20.glEnableVertexAttribArray(starHandles[1])
+            GLES20.glVertexAttribPointer(starHandles[1], 3, GLES20.GL_FLOAT, false, 20, 8)
+            GLES20.glUniform1f(starHandles[2], starPointScale)
+            GLES20.glDrawArrays(GLES20.GL_POINTS, 0, starCount)
+            GLES20.glDisableVertexAttribArray(starHandles[0])
+            GLES20.glDisableVertexAttribArray(starHandles[1])
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+            GLES20.glDisable(GLES20.GL_BLEND)
+            GLES20.glDepthMask(true)
+            GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+            GLES20.glEnable(GLES20.GL_CULL_FACE)
+        }
+
         private data class TextureData(val id: Int, val width: Int, val height: Int)
         private fun loadTexturePair(initialTier: Int) {
             var tier = initialTier
@@ -555,6 +616,40 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                     vec3 lamp = mix(vec3(0.80, 0.48, 0.19), vec3(1.0, 0.85, 0.57), smoothstep(0.12, 0.8, emission));
                     color += lamp * pow(emission, 0.94) * darkness * 0.95;
                     gl_FragColor = vec4(linearToSrgb(displayTone(color)), 1.0);
+                }
+            """
+            private const val STAR_VERTEX = """
+                precision mediump float;
+                attribute vec2 a_starPosition;
+                attribute vec3 a_starAppearance;
+                uniform float u_pointScale;
+                varying mediump float v_light;
+                varying mediump float v_warmth;
+                varying mediump float v_size;
+                void main() {
+                    v_light = a_starAppearance.x;
+                    v_warmth = a_starAppearance.y;
+                    v_size = a_starAppearance.z;
+                    gl_PointSize = v_size * u_pointScale;
+                    gl_Position = vec4(a_starPosition, 0.0, 1.0);
+                }
+            """
+            private const val STAR_FRAGMENT = """
+                precision mediump float;
+                varying mediump float v_light;
+                varying mediump float v_warmth;
+                varying mediump float v_size;
+                void main() {
+                    vec2 p = gl_PointCoord * 2.0 - 1.0;
+                    float r2 = dot(p, p);
+                    float halo = exp(-r2 * 4.8) * 0.18;
+                    float core = exp(-r2 * 28.0);
+                    float rays = exp(-abs(p.x * p.y) * 95.0) * exp(-r2 * 6.0)
+                        * step(7.0, v_size) * 0.18;
+                    float alpha = (core + halo + rays) * v_light
+                        * (1.0 - smoothstep(0.65, 1.0, r2));
+                    vec3 color = mix(vec3(0.67, 0.80, 1.0), vec3(1.0, 0.94, 0.83), v_warmth);
+                    gl_FragColor = vec4(color, alpha);
                 }
             """
             private const val LINE_VERTEX = """

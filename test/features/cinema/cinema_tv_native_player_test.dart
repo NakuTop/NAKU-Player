@@ -183,4 +183,138 @@ void main() {
       expect(calls.where((c) => c.method == 'open'), isEmpty);
     },
   );
+  test(
+    'duplicate metadata snapshots keep PlayerState identity and queue no unchanged streams',
+    () async {
+      final counts = <String, int>{};
+      final subscriptions = <StreamSubscription<dynamic>>[];
+      void observe(String name, Stream<dynamic> stream) {
+        subscriptions.add(
+          stream.listen(
+            (_) => counts.update(name, (n) => n + 1, ifAbsent: () => 1),
+          ),
+        );
+      }
+
+      observe('position', player.stream.position);
+      observe('duration', player.stream.duration);
+      observe('width', player.stream.width);
+      observe('height', player.stream.height);
+      observe('subtitle', player.stream.subtitle);
+      observe('tracks', player.stream.tracks);
+      Map<String, dynamic> snapshot() => {
+        'id': player.id,
+        'positionMs': 5000,
+        'durationMs': 120000,
+        'bufferMs': 20000,
+        'playing': true,
+        'buffering': false,
+        'completed': false,
+        'width': 3840,
+        'height': 2160,
+        'cues': ['same caption'],
+        'tracks': [
+          {'id': '2:0', 'type': 'subtitle', 'label': '中文', 'selected': true},
+        ],
+      };
+      events.add(snapshot());
+      await Future<void>.delayed(Duration.zero);
+      final stable = player.state;
+      final before = Map<String, int>.of(counts);
+      for (var i = 0; i < 120; i++) {
+        events.add(snapshot());
+      }
+      await Future<void>.delayed(Duration.zero);
+      expect(player.state, same(stable));
+      expect(counts, before);
+      expect(counts.values.every((value) => value == 1), true);
+      for (final sub in subscriptions) {
+        await sub.cancel();
+      }
+    },
+  );
+  test(
+    'delta packets preserve independent dimensions and the exact 250ms subtitle clock',
+    () async {
+      final positions = <int>[];
+      final sub = player.stream.position.listen(
+        (value) => positions.add(value.inMilliseconds),
+      );
+      events.add({'id': player.id, 'width': 3840, 'height': 2160});
+      events.add({'id': player.id, 'width': 4096});
+      for (var ms = 250; ms <= 1000; ms += 250) {
+        events.add({'id': player.id, 'positionMs': ms});
+      }
+      events.add({'id': player.id, 'positionMs': 5000, 'playing': false});
+      await Future<void>.delayed(Duration.zero);
+      expect(player.state.width, 4096);
+      expect(player.state.height, 2160);
+      expect(positions, [250, 500, 750, 1000, 5000]);
+      expect(player.state.playing, false);
+      await sub.cancel();
+    },
+  );
+  test(
+    'all changed fields commit together before stream listeners run',
+    () async {
+      PlayerState? observed;
+      final sub = player.stream.position.listen((_) => observed = player.state);
+      events.add({
+        'id': player.id,
+        'positionMs': 90000,
+        'durationMs': 90000,
+        'bufferMs': 90000,
+        'playing': false,
+        'buffering': false,
+        'completed': true,
+        'width': 1920,
+        'height': 1080,
+        'cues': [],
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(observed, same(player.state));
+      expect(observed!.position, const Duration(seconds: 90));
+      expect(observed!.duration, const Duration(seconds: 90));
+      expect(observed!.completed, true);
+      expect(observed!.width, 1920);
+      await sub.cancel();
+    },
+  );
+  test(
+    'track replay preserves external data and changed native labels still update',
+    () async {
+      Map<String, dynamic> tracks(String label) => {
+        'id': player.id,
+        'tracks': [
+          {'id': '2:0', 'type': 'subtitle', 'label': label, 'selected': true},
+        ],
+      };
+      events.add(tracks('Original'));
+      await Future<void>.delayed(Duration.zero);
+      await player.setSubtitleTrack(SubtitleTrack.data('fixture'));
+      events.add(tracks('Original'));
+      await Future<void>.delayed(Duration.zero);
+      expect(player.state.track.subtitle.data, true);
+      events.add(tracks('Updated'));
+      await Future<void>.delayed(Duration.zero);
+      expect(player.state.tracks.subtitle.last.title, 'Updated');
+      expect(player.state.track.subtitle.data, true);
+    },
+  );
+  test(
+    'first-frame and repeated terminal error deltas do not allocate playback state',
+    () async {
+      final initial = player.state;
+      final errors = <String>[];
+      final sub = player.stream.error.listen(errors.add);
+      events.add({'id': player.id, 'firstFrame': true});
+      events.add({'id': player.id, 'error': 'Android TV 播放错误（4005）'});
+      events.add({'id': player.id, 'error': 'Android TV 播放错误（4005）'});
+      await player.waitUntilFirstFrameRendered;
+      await Future<void>.delayed(Duration.zero);
+      expect(player.state, same(initial));
+      expect(errors, hasLength(2));
+      await sub.cancel();
+    },
+  );
 }

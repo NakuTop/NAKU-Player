@@ -1,10 +1,12 @@
 package com.example.kazumi
 
 import android.app.Activity
+import android.app.Application
 import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.Bundle
 import android.util.Log
 import android.view.SurfaceView
 import android.view.View
@@ -54,7 +56,7 @@ import java.util.concurrent.TimeUnit
  */
 @UnstableApi
 class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
-    MethodChannel.MethodCallHandler, EventChannel.StreamHandler {
+    MethodChannel.MethodCallHandler, EventChannel.StreamHandler, Application.ActivityLifecycleCallbacks {
     private val messenger = engine.dartExecutor.binaryMessenger
     private val channel = MethodChannel(messenger, "naku/tv-player")
     private val events = EventChannel(messenger, "naku/tv-player/events")
@@ -63,6 +65,7 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
     private val surfaces = mutableMapOf<Int, MutableSet<TVView>>()
     private var sink: EventChannel.EventSink? = null
     private var disposed = false
+    private var foreground = true
     // Direct by default. Public upstreams may explicitly opt into the selected
     // app/system proxy; NAS/loopback and redirect targets always bypass it.
     private val http = OkHttpClient.Builder()
@@ -74,6 +77,7 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
         .build()
 
     init {
+        activity.application.registerActivityLifecycleCallbacks(this)
         channel.setMethodCallHandler(this)
         events.setStreamHandler(this)
         engine.platformViewsController.registry.registerViewFactory(
@@ -88,9 +92,12 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
 
     override fun onListen(arguments: Any?, eventSink: EventChannel.EventSink?) {
         sink = eventSink
-        sessions.values.forEach { it.emit(mapOf("tracks" to it.trackRows)) }
+        sessions.values.forEach { it.emit(full = true); it.refreshTicker() }
     }
-    override fun onCancel(arguments: Any?) { sink = null }
+    override fun onCancel(arguments: Any?) {
+        sink = null
+        sessions.values.forEach { it.refreshTicker() }
+    }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         val id = call.argument<Number>("id")?.toInt()
@@ -100,8 +107,10 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
         }
         try {
             if (call.method == "create") {
-                sessions.getOrPut(id) { Session(id) }
+                val session = sessions.getOrPut(id) { Session(id) }
                 surfaces[id]?.forEach { it.attach() }
+                session.emit(full = true)
+                session.refreshTicker()
                 result.success(null)
                 return
             }
@@ -126,6 +135,7 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
                 else -> { result.notImplemented(); return }
             }
             session.emit()
+            session.refreshTicker()
             result.success(null)
         } catch (_: Exception) {
             // Never forward exception text, media URL, headers or NAS paths.
@@ -179,6 +189,9 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
         var closed = false
         private var droppedFrames = 0
         var trackRows: List<Map<String, Any?>> = emptyList()
+        private var cues: List<String> = emptyList()
+        private val packets = NakuTVPlayerEvents()
+        private var scheduledInterval = 0L
         private val rendererFactory = DefaultRenderersFactory(activity)
             .setEnableDecoderFallback(true)
             .setMediaCodecSelector { mimeType, secure, tunneling ->
@@ -205,14 +218,29 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
                 addListener(this@Session)
                 addAnalyticsListener(this@Session)
             }
-        private val ticker = object : Runnable {
+        private val ticker: Runnable = object : Runnable {
             override fun run() {
+                scheduledInterval = 0L
                 if (closed) return
                 emit()
-                handler.postDelayed(this, if (player.isPlaying) 250L else 1000L)
+                refreshTicker()
             }
         }
-        init { handler.post(ticker) }
+        fun refreshTicker() {
+            if (closed || disposed) {
+                handler.removeCallbacks(ticker)
+                scheduledInterval = 0L
+                return
+            }
+            val visible = surfaces[id]?.any { it.visible() } == true
+            val interval = NakuTVPlayerEvents.pollIntervalMs(player.isPlaying,
+                player.playWhenReady, player.playbackState == Player.STATE_BUFFERING,
+                foreground, visible, sink != null, closed)
+            if (interval == scheduledInterval) return
+            handler.removeCallbacks(ticker)
+            scheduledInterval = interval
+            if (interval > 0L) handler.postDelayed(ticker, interval)
+        }
 
         fun open(call: MethodCall) {
             val url = call.argument<String>("url") ?: throw IllegalArgumentException()
@@ -234,6 +262,9 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
                 OkHttpDataSource.Factory(client).setDefaultRequestProperties(headers))
             val factory = DefaultMediaSourceFactory(dataSource)
             firstFrame = false
+            trackRows = emptyList()
+            cues = emptyList()
+            packets.invalidate()
             player.stop()
             player.clearMediaItems()
             val item = MediaItem.Builder().setUri(uri)
@@ -242,23 +273,28 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
             player.seekTo((call.argument<Number>("positionMs")?.toLong() ?: 0L).coerceAtLeast(0))
             player.playWhenReady = call.argument<Boolean>("play") ?: true
             player.prepare()
+            emit(full = true)
+            refreshTicker()
         }
 
-        fun emit(extra: Map<String, Any?> = emptyMap()) {
-            if (closed || disposed) return
+        fun emit(extra: Map<String, Any?> = emptyMap(), full: Boolean = false) {
+            if (closed || disposed || sink == null) return
+            val state = player.playbackState
             val size = player.videoSize
-            sink?.success(mapOf(
-                "id" to id,
-                "positionMs" to player.currentPosition.coerceAtLeast(0L),
-                "durationMs" to player.duration.coerceAtLeast(0L),
-                "bufferMs" to player.bufferedPosition.coerceAtLeast(0L),
-                // Requested play remains true during buffering, matching media-kit.
-                "playing" to (player.playWhenReady && player.playbackState != Player.STATE_ENDED),
-                "buffering" to (player.playbackState == Player.STATE_BUFFERING),
-                "completed" to (player.playbackState == Player.STATE_ENDED),
-                "firstFrame" to firstFrame,
-                "width" to size.width, "height" to size.height
-            ) + extra)
+            val snapshot = NakuTVPlayerEvents.Snapshot(
+                player.currentPosition.coerceAtLeast(0L),
+                player.duration.coerceAtLeast(0L),
+                player.bufferedPosition.coerceAtLeast(0L),
+                // Requested play remains true during buffering; idle is stopped.
+                player.playWhenReady && (state == Player.STATE_READY || state == Player.STATE_BUFFERING),
+                state == Player.STATE_BUFFERING, state == Player.STATE_ENDED,
+                firstFrame, size.width, size.height)
+            val replayError = if (full) player.playerError?.let {
+                mapOf("error" to "Android TV 播放错误（${it.errorCode}）")
+            } ?: emptyMap() else emptyMap()
+            val metadata = if (full) mapOf("tracks" to trackRows, "cues" to cues) + replayError + extra else extra
+            val packet = packets.packet(id, snapshot, metadata, full) ?: return
+            sink?.success(packet)
         }
 
         private fun fact(value: String): String = value.replace(Regex("[^A-Za-z0-9_./+\\-]"), "_").take(128)
@@ -284,15 +320,20 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
             Log.i("NAKU-TV", "audio-encoding=${audioTrackConfig.encoding} sampleRate=${audioTrackConfig.sampleRate} channels=${audioTrackConfig.channelConfig} offload=${audioTrackConfig.offload} tunneling=${audioTrackConfig.tunneling}")
             emit(mapOf("audioEncoding" to audioTrackConfig.encoding))
         }
-        override fun onPlaybackStateChanged(playbackState: Int) { emit() }
-        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) { emit() }
+        override fun onPlaybackStateChanged(playbackState: Int) { emit(); refreshTicker() }
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) { emit(); refreshTicker() }
+        override fun onIsPlayingChanged(isPlaying: Boolean) { emit(); refreshTicker() }
+        override fun onIsLoadingChanged(isLoading: Boolean) { emit() }
+        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo, reason: Int) { emit(); refreshTicker() }
         override fun onVideoSizeChanged(videoSize: VideoSize) { emit() }
         override fun onRenderedFirstFrame() { firstFrame = true; emit() }
         override fun onPlayerError(error: PlaybackException) {
             emit(mapOf("error" to "Android TV 播放错误（${error.errorCode}）"))
         }
         override fun onCues(cueGroup: CueGroup) {
-            emit(mapOf("cues" to cueGroup.cues.mapNotNull { it.text?.toString() }))
+            cues = cueGroup.cues.mapNotNull { it.text?.toString() }
+            emit(mapOf("cues" to cues))
         }
         override fun onTracksChanged(tracks: Tracks) {
             val rows = mutableListOf<Map<String, Any?>>()
@@ -340,6 +381,7 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
             if (closed) return
             closed = true
             handler.removeCallbacks(ticker)
+            scheduledInterval = 0L
             player.removeListener(this)
             player.removeAnalyticsListener(this)
             player.release()
@@ -347,7 +389,34 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
     }
 
     private inner class TVView(context: Context, val id: Int) : PlatformView {
-        val view = PlayerView(context).apply {
+        private var ready = false
+        private var attached = false
+        val view: PlayerView = object : PlayerView(context) {
+            override fun onAttachedToWindow() {
+                super.onAttachedToWindow()
+                attached = true
+                if (ready) { sessions[id]?.emit(full = true); sessions[id]?.refreshTicker() }
+            }
+            override fun onDetachedFromWindow() {
+                attached = false
+                super.onDetachedFromWindow()
+                if (ready) sessions[id]?.refreshTicker()
+            }
+            override fun onVisibilityChanged(changedView: View, visibility: Int) {
+                super.onVisibilityChanged(changedView, visibility)
+                if (ready) {
+                    if (visible()) sessions[id]?.emit(full = true)
+                    sessions[id]?.refreshTicker()
+                }
+            }
+            override fun onWindowVisibilityChanged(visibility: Int) {
+                super.onWindowVisibilityChanged(visibility)
+                if (ready) {
+                    if (visible()) sessions[id]?.emit(full = true)
+                    sessions[id]?.refreshTicker()
+                }
+            }
+        }.apply {
             useController = false
             isFocusable = false
             isFocusableInTouchMode = false
@@ -358,16 +427,45 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
         init {
             check(view.videoSurfaceView is SurfaceView)
             surfaces.getOrPut(id) { mutableSetOf() }.add(this)
+            ready = true
             attach()
         }
-        fun attach() { view.player = sessions[id]?.player }
+        fun visible(): Boolean = ready && attached && view.isAttachedToWindow && view.isShown && view.windowVisibility == View.VISIBLE
+        fun attach() {
+            view.player = sessions[id]?.player
+            sessions[id]?.emit(full = true)
+            sessions[id]?.refreshTicker()
+        }
         override fun getView(): View = view
         override fun dispose() {
+            ready = false
+            attached = false
             view.player = null
             surfaces[id]?.remove(this)
             if (surfaces[id]?.isEmpty() == true) surfaces.remove(id)
+            sessions[id]?.refreshTicker()
         }
     }
+
+    override fun onActivityResumed(value: Activity) {
+        if (value !== activity) return
+        foreground = true
+        sessions.values.forEach { it.emit(full = true); it.refreshTicker() }
+    }
+    override fun onActivityPaused(value: Activity) {
+        if (value !== activity) return
+        foreground = false
+        sessions.values.forEach { it.refreshTicker() }
+    }
+    override fun onActivityStopped(value: Activity) {
+        if (value !== activity) return
+        foreground = false
+        sessions.values.forEach { it.refreshTicker() }
+    }
+    override fun onActivityCreated(value: Activity, state: Bundle?) {}
+    override fun onActivityStarted(value: Activity) {}
+    override fun onActivitySaveInstanceState(value: Activity, state: Bundle) {}
+    override fun onActivityDestroyed(value: Activity) { if (value === activity) dispose() }
 
     fun dispose() {
         if (disposed) return
@@ -379,6 +477,7 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
         sink = null
         channel.setMethodCallHandler(null)
         events.setStreamHandler(null)
+        activity.application.unregisterActivityLifecycleCallbacks(this)
         http.dispatcher.cancelAll()
         http.connectionPool.evictAll()
     }

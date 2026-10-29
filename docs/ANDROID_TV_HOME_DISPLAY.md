@@ -25,6 +25,26 @@ notification: pointer or standalone-key wake then pops the page. The shell's
 early remote handler consumes the first waking key and repeats, restoring the
 original page/focus without activating its focused action.
 
+## Static star background
+
+Since 1.1.3, the original Home Display's starfield character is restored as a
+fixed background. `NakuTVStars` uses the original deterministic seed, frozen
+spatial distribution, cool/warm palette and soft point cores/halos. The original
+flow, entrance transition, twinkle, pointer displacement, interaction spin and
+streaks are not ported. The left text region is quieter for readability.
+
+At most 960 candidates are evaluated once on viewport change; offscreen entries
+are removed before a static VBO upload. A 1280×720 viewport has 696 visible
+points. No geometry generation, buffer upload, clock sampling or input-driven
+layout occurs in the star draw. Its only uniform scales point size for the
+viewport; it receives neither Earth matrices nor solar/time/input uniforms.
+
+One GL_POINTS pass draws behind the globe with depth writes disabled. Blend and
+depth state are restored before opaque Earth rendering, so stars cannot shine
+through the night hemisphere. The existing Earth render cadence is reused;
+there is no additional timer, renderer, browser, texture asset or network call.
+Viewport/context changes rebuild the same deterministic layout.
+
 ## Real UTC day/night surface
 
 `NakuTVSolar` ports the original Home Display NOAA approximation and calculates
@@ -127,7 +147,16 @@ reference can compile the exact native vertex/fragment shaders and original
 logic and geography in a different GL implementation; its output is explicitly
 a reference, not an Android TV screenshot or performance acceptance.
 
+The production Java static-star helper has JVM checks for deterministic bounded
+geometry, viewport handling and text-side brightness. Wiring checks reject time,
+input or Earth-matrix star uniforms and per-frame generation/upload. An isolated
+WebGL1 reference using the actual production star geometry/shaders confirmed
+identical outside-globe background pixels across different UTC times and Earth
+yaws, and no inside-globe change when stars were toggled for QA. Such toggling
+exists only in the temporary reference harness, not the TV interface.
+
 Physical remote operation, real NAS authorization, actual Home Display records,
-high-definition Earth rotation/day-night output, real route arcs and sustained
+high-definition Earth rotation/day-night output, static-star appearance,
+real route arcs and sustained
 GPU performance on the target Huawei TV remain manual acceptance items. Passing
 local tests or offscreen reference checks does not count as those checks.

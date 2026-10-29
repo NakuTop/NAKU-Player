@@ -41,6 +41,7 @@ class CinemaTVNativePlayer extends PlatformPlayer
   late final StreamSubscription<dynamic> _subscription;
   final Completer<void> _firstFrame = Completer<void>();
   bool _disposed = false;
+  List<Map<Object?, Object?>>? _lastTrackRows;
 
   Future<void> get waitUntilFirstFrameRendered => _firstFrame.future;
   @override
@@ -74,103 +75,154 @@ class CinemaTVNativePlayer extends PlatformPlayer
     if (raw['error'] is String) {
       errorController.add(raw['error'] as String);
     }
-    if (raw['positionMs'] is num) {
-      final value = Duration(milliseconds: (raw['positionMs'] as num).toInt());
-      state = state.copyWith(position: value);
-      positionController.add(value);
-    }
-    if (raw['durationMs'] is num) {
-      final value = Duration(milliseconds: (raw['durationMs'] as num).toInt());
-      state = state.copyWith(duration: value);
-      durationController.add(value);
-    }
-    if (raw['bufferMs'] is num) {
-      final value = Duration(milliseconds: (raw['bufferMs'] as num).toInt());
-      state = state.copyWith(buffer: value);
-      bufferController.add(value);
-    }
-    if (raw['playing'] is bool) {
-      final value = raw['playing'] as bool;
-      state = state.copyWith(playing: value);
-      playingController.add(value);
-    }
-    if (raw['buffering'] is bool) {
-      final value = raw['buffering'] as bool;
-      state = state.copyWith(buffering: value);
-      bufferingController.add(value);
-    }
-    if (raw['completed'] is bool) {
-      final value = raw['completed'] as bool;
-      state = state.copyWith(completed: value);
-      completedController.add(value);
-    }
-    if (raw['width'] is num && raw['height'] is num) {
-      final w = (raw['width'] as num).toInt();
-      final h = (raw['height'] as num).toInt();
-      state = state.copyWith(width: w, height: h);
-      widthController.add(w);
-      heightController.add(h);
-    }
-    if (raw['cues'] is List) {
-      final value = (raw['cues'] as List).whereType<String>().toList();
-      state = state.copyWith(subtitle: value);
-      subtitleController.add(value);
-    }
-    if (raw['tracks'] is List) {
-      final video = <VideoTrack>[VideoTrack.auto(), VideoTrack.no()];
-      final audio = <AudioTrack>[AudioTrack.auto(), AudioTrack.no()];
-      final subtitle = <SubtitleTrack>[
-        SubtitleTrack.auto(),
-        SubtitleTrack.no(),
-      ];
-      var selected = state.track;
-      for (final row in (raw['tracks'] as List).whereType<Map>()) {
-        final trackId = '${row['id']}';
-        final label = row['label']?.toString();
-        final language = row['language']?.toString();
-        switch (row['type']) {
-          case 'video':
-            final track = VideoTrack(
-              trackId,
-              label,
-              language,
-              codec: row['codec']?.toString(),
-              w: row['width'] as int?,
-              h: row['height'] as int?,
-            );
-            video.add(track);
-            if (row['selected'] == true) {
-              selected = selected.copyWith(video: track);
-            }
-          case 'audio':
-            final track = AudioTrack(
-              trackId,
-              label,
-              language,
-              codec: row['codec']?.toString(),
-              channelscount: row['channels'] as int?,
-            );
-            audio.add(track);
-            if (row['selected'] == true) {
-              selected = selected.copyWith(audio: track);
-            }
-          case 'subtitle':
-            final track = SubtitleTrack(trackId, label, language);
-            subtitle.add(track);
-            if (row['selected'] == true && !state.track.subtitle.data) {
-              selected = selected.copyWith(subtitle: track);
-            }
-        }
+    final before = state;
+    Duration durationValue(String key, Duration previous) {
+      final value = raw[key];
+      if (value is! num || value.toInt() == previous.inMilliseconds) {
+        return previous;
       }
-      final value = Tracks(video: video, audio: audio, subtitle: subtitle);
-      state = state.copyWith(tracks: value, track: selected);
-      tracksController.add(value);
-      trackController.add(selected);
+      return Duration(milliseconds: value.toInt());
     }
+
+    final position = durationValue('positionMs', before.position);
+    final duration = durationValue('durationMs', before.duration);
+    final buffer = durationValue('bufferMs', before.buffer);
+    final playing = raw['playing'] is bool
+        ? raw['playing'] as bool
+        : before.playing;
+    final buffering = raw['buffering'] is bool
+        ? raw['buffering'] as bool
+        : before.buffering;
+    final completed = raw['completed'] is bool
+        ? raw['completed'] as bool
+        : before.completed;
+    final width = raw['width'] is num
+        ? (raw['width'] as num).toInt()
+        : before.width;
+    final height = raw['height'] is num
+        ? (raw['height'] as num).toInt()
+        : before.height;
+    var subtitle = before.subtitle;
+    if (raw['cues'] case final List cues) {
+      if (!listEquals(cues, subtitle)) {
+        subtitle = cues.whereType<String>().toList();
+      }
+    }
+    Tracks? nextTracks;
+    Track? nextTrack;
+    var tracksChanged = false;
+    if (raw['tracks'] case final List rows) {
+      if (!_sameTrackRows(rows)) {
+        final video = <VideoTrack>[VideoTrack.auto(), VideoTrack.no()];
+        final audio = <AudioTrack>[AudioTrack.auto(), AudioTrack.no()];
+        final subtitle = <SubtitleTrack>[
+          SubtitleTrack.auto(),
+          SubtitleTrack.no(),
+        ];
+        var selected = before.track;
+        for (final row in rows.whereType<Map>()) {
+          final trackId = '${row['id']}';
+          final label = row['label']?.toString();
+          final language = row['language']?.toString();
+          switch (row['type']) {
+            case 'video':
+              final track = VideoTrack(
+                trackId,
+                label,
+                language,
+                codec: row['codec']?.toString(),
+                w: row['width'] as int?,
+                h: row['height'] as int?,
+              );
+              video.add(track);
+              if (row['selected'] == true) {
+                selected = selected.copyWith(video: track);
+              }
+            case 'audio':
+              final track = AudioTrack(
+                trackId,
+                label,
+                language,
+                codec: row['codec']?.toString(),
+                channelscount: row['channels'] as int?,
+              );
+              audio.add(track);
+              if (row['selected'] == true) {
+                selected = selected.copyWith(audio: track);
+              }
+            case 'subtitle':
+              final track = SubtitleTrack(trackId, label, language);
+              subtitle.add(track);
+              if (row['selected'] == true && !before.track.subtitle.data) {
+                selected = selected.copyWith(subtitle: track);
+              }
+          }
+        }
+        nextTracks = Tracks(video: video, audio: audio, subtitle: subtitle);
+        nextTrack = selected;
+        tracksChanged = true;
+        _lastTrackRows = [
+          for (final row in rows.whereType<Map>())
+            Map<Object?, Object?>.of(row),
+        ];
+      }
+    }
+    if (position == before.position &&
+        duration == before.duration &&
+        buffer == before.buffer &&
+        playing == before.playing &&
+        buffering == before.buffering &&
+        completed == before.completed &&
+        width == before.width &&
+        height == before.height &&
+        identical(subtitle, before.subtitle) &&
+        !tracksChanged) {
+      return;
+    }
+
+    // One coherent state allocation per changed packet. Every listener sees
+    // the complete snapshot, even when Media3 reports several changes at once.
+    state = before.copyWith(
+      position: position,
+      duration: duration,
+      buffer: buffer,
+      playing: playing,
+      buffering: buffering,
+      completed: completed,
+      width: width,
+      height: height,
+      subtitle: subtitle,
+      tracks: nextTracks,
+      track: nextTrack,
+    );
+    if (position != before.position) positionController.add(position);
+    if (duration != before.duration) durationController.add(duration);
+    if (buffer != before.buffer) bufferController.add(buffer);
+    if (playing != before.playing) playingController.add(playing);
+    if (buffering != before.buffering) bufferingController.add(buffering);
+    if (completed != before.completed) completedController.add(completed);
+    if (width != before.width) widthController.add(width);
+    if (height != before.height) heightController.add(height);
+    if (!identical(subtitle, before.subtitle)) subtitleController.add(subtitle);
+    if (tracksChanged) tracksController.add(nextTracks!);
+    if (nextTrack != null && nextTrack != before.track) {
+      trackController.add(nextTrack);
+    }
+  }
+
+  bool _sameTrackRows(List<dynamic> rows) {
+    final previous = _lastTrackRows;
+    if (previous == null || previous.length != rows.length) return false;
+    for (var index = 0; index < previous.length; index++) {
+      final row = rows[index];
+      if (row is! Map || !mapEquals(previous[index], row)) return false;
+    }
+    return true;
   }
 
   @override
   Future<void> open(Playable playable, {bool play = true}) async {
+    _lastTrackRows = null;
     final queue = playable is Playlist
         ? playable
         : Playlist([playable as Media]);

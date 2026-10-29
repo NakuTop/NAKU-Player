@@ -283,6 +283,8 @@ class _Ratings extends CinemaRatingsRepository {
 class _Probe extends CinemaMediaProbe {
   _Probe() : super(transport: CinemaMediaTransport(dio: Dio()));
   final requests = <String, Completer<CinemaMediaProbeResult>>{};
+  final tokens = <CancelToken>[];
+  final calls = <String>[];
   @override
   Future<CinemaMediaProbeResult> measure(
     String url,
@@ -290,7 +292,14 @@ class _Probe extends CinemaMediaProbe {
     CancelToken? cancel,
     Duration timeout = const Duration(seconds: 8),
     bool hls = false,
-  }) => requests.putIfAbsent(url, Completer<CinemaMediaProbeResult>.new).future;
+  }) {
+    calls.add(url);
+    if (cancel != null) tokens.add(cancel);
+    return requests
+        .putIfAbsent(url, Completer<CinemaMediaProbeResult>.new)
+        .future;
+  }
+
   void complete() {
     for (final entry in requests.entries) {
       if (!entry.value.isCompleted) {
@@ -477,6 +486,8 @@ void main() {
     Future<CinemaTitle> Function(CinemaTitle)? resolveNASRatings,
     CinemaOnlineSubtitles Function()? subtitleClientFactory,
     int initialEpisode = 0,
+    Duration Function()? backgroundClock,
+    VoidCallback? onSurfaceBuild,
   }) async {
     await windowControls.initialize();
     tester.view.physicalSize = viewport;
@@ -503,6 +514,7 @@ void main() {
       mobileControls: mobileControls,
       resolveNASRatings: resolveNASRatings,
       autoSelectBestRoute: autoBest,
+      backgroundPlaybackClock: backgroundClock,
       mediaProbe: probe,
       mediaCache: cache,
       initialPositionSeconds: initialPosition,
@@ -525,44 +537,47 @@ void main() {
             backends.add(backend);
             return _Player(backend);
           },
-      videoSurfaceBuilder: (_, player) => renderToolbar
-          ? Builder(
-              builder: (context) => Column(
-                children: [
-                  Row(
-                    children: MaterialDesktopVideoControlsTheme.of(
-                      context,
-                    ).normal.topButtonBar,
-                  ),
-                  Expanded(
-                    child: StreamBuilder<bool>(
-                      stream: player.stream.buffering,
-                      initialData: false,
-                      builder: (context, snapshot) {
-                        final theme = MaterialDesktopVideoControlsTheme.of(
-                          context,
-                        ).normal;
-                        if (snapshot.data == true) {
-                          return theme.bufferingIndicatorBuilder?.call(
-                                context,
-                              ) ??
-                              const SizedBox();
-                        }
-                        return theme.primaryButtonBar.isEmpty
-                            ? const Text('fake video')
-                            : Row(children: theme.primaryButtonBar);
-                      },
+      videoSurfaceBuilder: (_, player) {
+        onSurfaceBuild?.call();
+        return renderToolbar
+            ? Builder(
+                builder: (context) => Column(
+                  children: [
+                    Row(
+                      children: MaterialDesktopVideoControlsTheme.of(
+                        context,
+                      ).normal.topButtonBar,
                     ),
-                  ),
-                  Row(
-                    children: MaterialDesktopVideoControlsTheme.of(
-                      context,
-                    ).normal.bottomButtonBar.toList(),
-                  ),
-                ],
-              ),
-            )
-          : const SizedBox.expand(child: Text('fake video')),
+                    Expanded(
+                      child: StreamBuilder<bool>(
+                        stream: player.stream.buffering,
+                        initialData: false,
+                        builder: (context, snapshot) {
+                          final theme = MaterialDesktopVideoControlsTheme.of(
+                            context,
+                          ).normal;
+                          if (snapshot.data == true) {
+                            return theme.bufferingIndicatorBuilder?.call(
+                                  context,
+                                ) ??
+                                const SizedBox();
+                          }
+                          return theme.primaryButtonBar.isEmpty
+                              ? const Text('fake video')
+                              : Row(children: theme.primaryButtonBar);
+                        },
+                      ),
+                    ),
+                    Row(
+                      children: MaterialDesktopVideoControlsTheme.of(
+                        context,
+                      ).normal.bottomButtonBar.toList(),
+                    ),
+                  ],
+                ),
+              )
+            : const SizedBox.expand(child: Text('fake video'));
+      },
     );
     await tester.pumpWidget(
       MaterialApp(
@@ -2470,33 +2485,259 @@ void main() {
     await unmount(tester);
   });
   testWidgets(
-    'TV explicit entry plays with inherited autoplay off and auto route keeps later pause',
+    'TV startup protects its tiny buffer and a later pause cancels optional auto switching',
     (tester) async {
       final wasTV = NakuDevice.isTV;
       NakuDevice.isTV = true;
       addTearDown(() => NakuDevice.isTV = wasTV);
+      var now = Duration.zero;
       final probe = _Probe();
       addTearDown(() => probe.transport.dio.close(force: true));
+      final cache = _Cache();
+      addTearDown(cache.finish);
       await mount(
         tester,
         {'autoPlay': false},
         autoBest: true,
         probe: probe,
+        cache: cache,
         initialPosition: 77,
+        backgroundClock: () => now,
       );
-      await waitForProbe(tester, probe);
-      expect(backends.single.state.playing, true);
-      await backends.single.seek(const Duration(seconds: 88));
-      await tester.tap(find.text('暂停'));
+      final backend = backends.single;
+      expect(backend.state.playing, true);
+      for (var tick = 0; tick < 14; tick++) {
+        now += const Duration(seconds: 1);
+        backend.reportBuffer(
+          backend.state.position + const Duration(seconds: 2),
+        );
+        await backend.seek(backend.state.position + const Duration(seconds: 1));
+        await tester.pump(const Duration(seconds: 1));
+      }
+      expect(
+        probe.calls,
+        isEmpty,
+        reason:
+            'Startup and the old12s diagnostics timer must yield bandwidth.',
+      );
+      expect(cache.warmups, isEmpty);
+      for (var tick = 0; tick < 9; tick++) {
+        now += const Duration(seconds: 1);
+        backend.reportBuffer(
+          backend.state.position + const Duration(seconds: 65),
+        );
+        await backend.seek(backend.state.position + const Duration(seconds: 1));
+        await tester.pump(const Duration(seconds: 1));
+      }
+      expect(probe.requests.length, 2);
+      expect(cache.warmups, isEmpty, reason: 'Optional jobs do not overlap.');
+      final position = backend.state.position;
+      await backend.pause();
       await tester.pump();
-      expect(backends.single.state.playing, false);
+      expect(probe.tokens.every((token) => token.isCancelled), true);
+      probe.complete();
+      await tester.pumpAndSettle();
+      expect(backends, hasLength(1));
+      expect(backend.state.position, position);
+      expect(backend.state.playing, false);
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'TV buffering and user seek cancel active comparison without extra media fetch',
+    (tester) async {
+      NakuDevice.isTV = true;
+      addTearDown(() => NakuDevice.isTV = false);
+      var now = Duration.zero;
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {},
+        autoBest: true,
+        probe: probe,
+        backgroundClock: () => now,
+      );
+      final backend = backends.single;
+      for (var tick = 0; tick < 9; tick++) {
+        now += const Duration(seconds: 1);
+        backend.reportBuffer(
+          backend.state.position + const Duration(seconds: 65),
+        );
+        await backend.seek(backend.state.position + const Duration(seconds: 1));
+        await tester.pump(const Duration(seconds: 1));
+      }
+      expect(probe.requests.length, 2);
+      backend.reportBuffering(true);
+      await tester.pump();
+      expect(probe.tokens.every((token) => token.isCancelled), true);
+      final calls = probe.calls.length;
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(backend.state.position.inSeconds, 19);
+      for (var tick = 0; tick < 12; tick++) {
+        now += const Duration(seconds: 1);
+        await backend.seek(backend.state.position + const Duration(seconds: 1));
+        await tester.pump(const Duration(seconds: 1));
+      }
+      expect(probe.calls.length, calls);
+      expect(backends, hasLength(1));
+      expect(backend.state.playing, true);
+      probe.complete();
+      await unmount(tester);
+    },
+  );
+
+  testWidgets(
+    'hidden TV probe progress keeps the video surface mounted without rebuilding',
+    (tester) async {
+      NakuDevice.isTV = true;
+      addTearDown(() => NakuDevice.isTV = false);
+      var now = Duration.zero;
+      var surfaces = 0;
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {},
+        probe: probe,
+        backgroundClock: () => now,
+        onSurfaceBuild: () => surfaces++,
+      );
+      final backend = backends.single;
+      for (var tick = 0; tick < 9; tick++) {
+        now += const Duration(seconds: 1);
+        backend.reportBuffer(
+          backend.state.position + const Duration(seconds: 65),
+        );
+        await backend.seek(backend.state.position + const Duration(seconds: 1));
+        await tester.pump(const Duration(seconds: 1));
+      }
+      expect(find.text('暂停'), findsNothing);
+      expect(probe.requests.length, 1);
+      final before = surfaces;
+      probe.complete();
+      await tester.pumpAndSettle();
+      expect(surfaces, before);
+      expect(backends, hasLength(1));
+      await unmount(tester);
+    },
+  );
+  testWidgets(
+    'healthy TV automatic comparison still selects the best route at the current position',
+    (tester) async {
+      NakuDevice.isTV = true;
+      addTearDown(() => NakuDevice.isTV = false);
+      var now = Duration.zero;
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {},
+        autoBest: true,
+        probe: probe,
+        initialPosition: 77,
+        backgroundClock: () => now,
+      );
+      final backend = backends.single;
+      for (var tick = 0; tick < 9; tick++) {
+        now += const Duration(seconds: 1);
+        backend.reportBuffer(
+          backend.state.position + const Duration(seconds: 65),
+        );
+        await backend.seek(backend.state.position + const Duration(seconds: 1));
+        await tester.pump(const Duration(seconds: 1));
+      }
+      expect(probe.requests.length, 2);
       probe.complete();
       await tester.pumpAndSettle();
       expect(backends, hasLength(2));
       expect(backends.last.opened!.uri, 'https://fixture.invalid/backup.mp4');
-      expect(backends.last.opened!.start, const Duration(seconds: 88));
-      expect(backends.last.state.playing, false);
+      expect(backends.last.opened!.start, const Duration(seconds: 86));
+      expect(backends.last.state.playing, true);
       await unmount(tester);
     },
   );
+
+  for (final userPaused in [false, true]) {
+    testWidgets(
+      'TV native IDLE network retry preserves explicit paused=$userPaused intent',
+      (tester) async {
+        NakuDevice.isTV = true;
+        addTearDown(() => NakuDevice.isTV = false);
+        const nativeChannel = MethodChannel('test/tv-idle-retry');
+        final events = StreamController<dynamic>.broadcast();
+        final opens = <Map<String, dynamic>>[];
+        int? activeId;
+        messenger.setMockMethodCallHandler(nativeChannel, (call) async {
+          final args = Map<String, dynamic>.from(call.arguments as Map);
+          final id = args['id'] as int;
+          if (call.method == 'open') {
+            activeId = id;
+            opens.add(args);
+            events.add({
+              'id': id,
+              'width': 1920,
+              'height': 1080,
+              'durationMs': 1200000,
+              'positionMs': args['positionMs'],
+              'bufferMs': 160000,
+              'playing': args['play'],
+              'buffering': false,
+              'completed': false,
+              'firstFrame': true,
+            });
+          } else if (call.method == 'pause' || call.method == 'play') {
+            events.add({'id': id, 'playing': call.method == 'play'});
+          }
+          return null;
+        });
+        addTearDown(() async {
+          await events.close();
+          messenger.setMockMethodCallHandler(nativeChannel, null);
+        });
+        await mount(
+          tester,
+          {'autoPlay': false},
+          initialPosition: 123,
+          viewport: const Size(1280, 720),
+          playerFactory: (configuration) => CinemaTVNativePlayer(
+            configuration: configuration,
+            channel: nativeChannel,
+            events: events.stream,
+          ),
+        );
+        expect(opens.single['play'], true);
+        events.add({'id': activeId, 'positionMs': 133000});
+        await tester.pump();
+        if (userPaused) {
+          await tester.tap(find.text('暂停'));
+          await tester.pumpAndSettle();
+          expect(find.text('播放'), findsOneWidget);
+        }
+        // Mirror Media3: terminal IDLE/playing=false arrives before its error.
+        events.add({'id': activeId, 'playing': false, 'buffering': false});
+        await tester.pump();
+        events.add({'id': activeId, 'error': '视频连接失败（2001）'});
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 600));
+        for (var i = 0; i < 30 && opens.length < 2; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 5)),
+          );
+          await tester.pump(const Duration(milliseconds: 20));
+        }
+        expect(opens, hasLength(2));
+        expect(opens.last['positionMs'], 133000);
+        expect(
+          opens.last['play'],
+          !userPaused,
+          reason:
+              'Terminal IDLE must not erase the explicit play or pause command.',
+        );
+        await unmount(tester);
+      },
+    );
+  }
 }
