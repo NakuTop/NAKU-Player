@@ -16,7 +16,7 @@ TV 使用独立包名 `com.nakutop.nakuplayer.tv`、独立版本号和 TV 发布
 ```sh
 python3 scripts/prepare_android_tv_update.py \
   --apk build/app/outputs/flutter-apk/app-release.apk \
-  --version 1.1.0 --build 2 \
+  --version 1.1.3 --build 5 \
   --output /absolute/path/to/tv-release \
   --build-tools "$ANDROID_HOME/build-tools/36.0.0" \
   --notes-file /absolute/path/to/release-notes.txt
@@ -26,4 +26,4 @@ python3 scripts/prepare_android_tv_update.py \
 
 在用户完成手动验收并明确同意发布后，创建对应正式 GitHub Release，将生成的 APK 和 SHA256SUMS 上传到严格匹配的 TV 标签；再将生成的 `android-tv-update.json` 更新到官方仓库 main 根目录。先确认公开 APK 可下载，再启用静态发布记录。GitHub API 的资产 digest 可作为静态记录外的第二读取路径。
 
-当前实现不代表发布通道已激活。尚未发布 TV 标签和静态记录时，界面会报告未发现可安装的 TV 新版本或网络检查失败，不会转而安装其他平台安装包。实际电视的系统安装授权与覆盖安装仍需真机验收。
+当前正式版本为 `1.1.3+5`，对应标签 `android-tv-v1.1.3+5`。正式安装包、源码快照和校验记录可在 [GitHub Release](https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v1.1.3%2B5) 获取；main 根目录的独立 TV 更新记录用于“我的 → 软件更新”。实际电视的系统安装授权与覆盖安装仍需真机验收。
