@@ -1,0 +1,415 @@
+{
+  "description": "Executed actual original HomeDisplay TypeScript, with basis rotation only. NOAA approximate equations for visual day/night; not navigation or astronomy.",
+  "referenceRoot": "/Users/shenminghao/Documents/Codex/2026-07-20/sites-plugin-sites-openai-bundled-2/.worktrees/earth-centered-orbit",
+  "sourceSha256": {
+    "lib/geo/solar-position.ts": "654bc7995ab8edb88233ea78bdc8b7b3fc96be1679e09dfa08631875d2fbf779",
+    "lib/geo/sphere.mjs": "ef0cf1ea0a4ce74ecd667ec88eeab5963f30f7ddd09269b3ff8a208c9598eeb6",
+    "lib/geo/earth-material.ts": "e433872b519b94795ecb13591cec9481ba050a1d9c1b02e1b090866c8c425240",
+    "tests/earth/solar-position.test.ts": "17073b5b301b5b523fb557dad4a4a160f2624aac344756518034a5f87fca760c"
+  },
+  "originalBasis": "(cos(lat)*cos(lon), sin(lat), -cos(lat)*sin(lon))",
+  "nativeBasis": "(cos(lat)*sin(lon), sin(lat), cos(lat)*cos(lon))",
+  "basisRotation": "native=(-original.z, original.y, original.x)",
+  "precision": "UTC seconds exactly as original; sub-second milliseconds are ignored.",
+  "fixtures": [
+    {
+      "name": "equinox-midnight",
+      "iso": "2026-03-20T00:00:00.000Z",
+      "epochMillis": 1773964800000,
+      "latitude": -0.6586504926955097,
+      "longitude": -177.92104032708153,
+      "originalDirection": {
+        "x": -0.9992757523915866,
+        "y": -0.01149536652946165,
+        "z": 0.03627433294468438
+      },
+      "nativeDirection": {
+        "x": -0.03627433294468438,
+        "y": -0.01149536652946165,
+        "z": -0.9992757523915866
+      },
+      "shanghaiAltitude": 24.435212251750173,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "equinox-noon",
+      "iso": "2026-03-20T12:00:00.000Z",
+      "epochMillis": 1774008000000,
+      "latitude": -0.4610330930446514,
+      "longitude": 2.04102369970758,
+      "originalDirection": {
+        "x": 0.9993332301246178,
+        "y": -0.008046458603093692,
+        "z": -0.03561389718419667
+      },
+      "nativeDirection": {
+        "x": 0.03561389718419667,
+        "y": -0.008046458603093692,
+        "z": 0.9993332301246178
+      },
+      "shanghaiAltitude": -25.106572660212528,
+      "shanghaiPhase": "night"
+    },
+    {
+      "name": "equinox-late",
+      "iso": "2026-03-20T23:59:59.000Z",
+      "epochMillis": 1774051199000,
+      "latitude": -0.26345803409662993,
+      "longitude": -177.99295830706888,
+      "originalDirection": {
+        "x": -0.99937596503376,
+        "y": -0.004598193932097536,
+        "z": 0.03502195205015984
+      },
+      "nativeDirection": {
+        "x": -0.03502195205015984,
+        "y": -0.004598193932097536,
+        "z": -0.99937596503376
+      },
+      "shanghaiAltitude": 24.720882135121105,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "summer-solstice",
+      "iso": "2026-06-21T12:00:00.000Z",
+      "epochMillis": 1782043200000,
+      "latitude": 23.452046074516133,
+      "longitude": 0.3320592000555962,
+      "originalDirection": {
+        "x": 0.9173780810128263,
+        "y": 0.39798139235897734,
+        "z": -0.005316748370394512
+      },
+      "nativeDirection": {
+        "x": 0.005316748370394512,
+        "y": 0.39798139235897734,
+        "z": 0.9173780810128263
+      },
+      "shanghaiAltitude": -11.495992509052552,
+      "shanghaiPhase": "night"
+    },
+    {
+      "name": "winter-solstice",
+      "iso": "2026-12-21T12:00:00.000Z",
+      "epochMillis": 1797854400000,
+      "latitude": -23.419890406297714,
+      "longitude": -0.5426314872162266,
+      "originalDirection": {
+        "x": 0.9175755470977535,
+        "y": -0.3974664680416805,
+        "z": 0.008690348136303629
+      },
+      "nativeDirection": {
+        "x": -0.008690348136303629,
+        "y": -0.3974664680416805,
+        "z": 0.9175755470977535
+      },
+      "shanghaiAltitude": -38.4640068237257,
+      "shanghaiPhase": "night"
+    },
+    {
+      "name": "original-shanghai-day",
+      "iso": "2026-09-17T05:00:00.000Z",
+      "epochMillis": 1789621200000,
+      "latitude": 2.68631216847323,
+      "longitude": 103.6775220084113,
+      "originalDirection": {
+        "x": -0.23619713204274956,
+        "y": 0.04686781684642846,
+        "z": -0.9705742231065224
+      },
+      "nativeDirection": {
+        "x": 0.9705742231065224,
+        "y": 0.04686781684642846,
+        "z": -0.23619713204274956
+      },
+      "shanghaiAltitude": 56.88738544449184,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "one-hour-later",
+      "iso": "2026-09-17T06:00:00.000Z",
+      "epochMillis": 1789624800000,
+      "latitude": 2.6702604728173576,
+      "longitude": 88.67359847149498,
+      "originalDirection": {
+        "x": 0.023122871833504918,
+        "y": 0.04658796793335431,
+        "z": -0.9986465310819499
+      },
+      "nativeDirection": {
+        "x": 0.9986465310819499,
+        "y": 0.04658796793335431,
+        "z": 0.023122871833504918
+      },
+      "shanghaiAltitude": 47.91624073194997,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "twelve-hours-later",
+      "iso": "2026-09-17T17:00:00.000Z",
+      "epochMillis": 1789664400000,
+      "latitude": 2.4935920136209275,
+      "longitude": -76.36955745111624,
+      "originalDirection": {
+        "x": 0.23543535832904264,
+        "y": 0.04350765307936603,
+        "z": 0.9709156895281902
+      },
+      "nativeDirection": {
+        "x": -0.9709156895281902,
+        "y": 0.04350765307936603,
+        "z": 0.23543535832904264
+      },
+      "shanghaiAltitude": -52.24630025955341,
+      "shanghaiPhase": "night"
+    },
+    {
+      "name": "before-leap-day",
+      "iso": "2024-02-28T23:59:59.000Z",
+      "epochMillis": 1709164799000,
+      "latitude": -8.129193605723843,
+      "longitude": -176.7420633767229,
+      "originalDirection": {
+        "x": -0.9883517843779211,
+        "y": -0.14140565497489466,
+        "z": 0.056260030733195326
+      },
+      "nativeDirection": {
+        "x": -0.056260030733195326,
+        "y": -0.14140565497489466,
+        "z": -0.9883517843779211
+      },
+      "shanghaiAltitude": 19.078079370059722,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "leap-day-start",
+      "iso": "2024-02-29T00:00:00.000Z",
+      "epochMillis": 1709164800000,
+      "latitude": -8.129189242668991,
+      "longitude": -176.74623052510935,
+      "originalDirection": {
+        "x": -0.9883558843324,
+        "y": -0.1414055795903936,
+        "z": 0.05618814791594883
+      },
+      "nativeDirection": {
+        "x": -0.05618814791594883,
+        "y": -0.1414055795903936,
+        "z": -0.9883558843324
+      },
+      "shanghaiAltitude": 19.081371070648714,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "leap-day-noon",
+      "iso": "2024-02-29T12:00:00.000Z",
+      "epochMillis": 1709208000000,
+      "latitude": -7.9404652673159735,
+      "longitude": 3.2326454800370357,
+      "originalDirection": {
+        "x": 0.9888361985736931,
+        "y": -0.13814406113626237,
+        "z": -0.05584971587312082
+      },
+      "nativeDirection": {
+        "x": 0.05584971587312082,
+        "y": -0.13814406113626237,
+        "z": 0.9888361985736931
+      },
+      "shanghaiAltitude": -28.18443483060127,
+      "shanghaiPhase": "night"
+    },
+    {
+      "name": "leap-day-end",
+      "iso": "2024-02-29T23:59:59.000Z",
+      "epochMillis": 1709251199000,
+      "latitude": -7.751275094643476,
+      "longitude": -176.78493319072004,
+      "originalDirection": {
+        "x": -0.9893033279624476,
+        "y": -0.13487298156433256,
+        "z": 0.055571612594678015
+      },
+      "nativeDirection": {
+        "x": -0.055571612594678015,
+        "y": -0.13487298156433256,
+        "z": -0.9893033279624476
+      },
+      "shanghaiAltitude": 19.339818811625403,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "after-leap-day",
+      "iso": "2024-03-01T00:00:00.000Z",
+      "epochMillis": 1709251200000,
+      "latitude": -7.751270709802241,
+      "longitude": -176.78910036789534,
+      "originalDirection": {
+        "x": -0.9893073774283068,
+        "y": -0.13487290573367722,
+        "z": 0.05549966004292643
+      },
+      "nativeDirection": {
+        "x": -0.05549966004292643,
+        "y": -0.13487290573367722,
+        "z": -0.9893073774283068
+      },
+      "shanghaiAltitude": 19.34311748984169,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "before-year-start",
+      "iso": "2025-12-31T23:59:59.000Z",
+      "epochMillis": 1767225599000,
+      "latitude": -23.095403127014066,
+      "longitude": -179.32601776876675,
+      "originalDirection": {
+        "x": -0.9197893310776474,
+        "y": -0.3922633175388975,
+        "z": 0.010820173247784861
+      },
+      "nativeDirection": {
+        "x": -0.010820173247784861,
+        "y": -0.3922633175388975,
+        "z": -0.9197893310776474
+      },
+      "shanghaiAltitude": 11.497589121056253,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "year-start",
+      "iso": "2026-01-01T00:00:00.000Z",
+      "epochMillis": 1767225600000,
+      "latitude": -23.095402297984272,
+      "longitude": -179.33018313124126,
+      "originalDirection": {
+        "x": -0.9197901209413147,
+        "y": -0.39226330422926936,
+        "z": 0.0107533052545413
+      },
+      "nativeDirection": {
+        "x": -0.0107533052545413,
+        "y": -0.39226330422926936,
+        "z": -0.9197901209413147
+      },
+      "shanghaiAltitude": 11.500461586147877,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "year-end",
+      "iso": "2026-12-31T23:59:59.000Z",
+      "epochMillis": 1798761599000,
+      "latitude": -23.095403127014066,
+      "longitude": -179.32601776876675,
+      "originalDirection": {
+        "x": -0.9197893310776474,
+        "y": -0.3922633175388975,
+        "z": 0.010820173247784861
+      },
+      "nativeDirection": {
+        "x": -0.010820173247784861,
+        "y": -0.3922633175388975,
+        "z": -0.9197893310776474
+      },
+      "shanghaiAltitude": 11.497589121056253,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "next-year-start",
+      "iso": "2027-01-01T00:00:00.000Z",
+      "epochMillis": 1798761600000,
+      "latitude": -23.095402297984272,
+      "longitude": -179.33018313124126,
+      "originalDirection": {
+        "x": -0.9197901209413147,
+        "y": -0.39226330422926936,
+        "z": 0.0107533052545413
+      },
+      "nativeDirection": {
+        "x": -0.0107533052545413,
+        "y": -0.39226330422926936,
+        "z": -0.9197901209413147
+      },
+      "shanghaiAltitude": 11.500461586147877,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "current-shanghai-noon",
+      "iso": "2026-10-29T04:00:00.000Z",
+      "epochMillis": 1793246400000,
+      "latitude": -13.087419582902784,
+      "longitude": 115.92946194732542,
+      "originalDirection": {
+        "x": -0.4259066607150831,
+        "y": -0.22643744636447385,
+        "z": -0.8759735151489816
+      },
+      "nativeDirection": {
+        "x": 0.8759735151489816,
+        "y": -0.22643744636447385,
+        "z": -0.4259066607150831
+      },
+      "shanghaiAltitude": 45.36436850991241,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "current-shanghai-midnight",
+      "iso": "2026-10-29T16:00:00.000Z",
+      "epochMillis": 1793289600000,
+      "latitude": -13.25522920712279,
+      "longitude": -64.07654310957764,
+      "originalDirection": {
+        "x": 0.4255230936119219,
+        "y": -0.2292892272572083,
+        "z": 0.8754179270878178
+      },
+      "nativeDirection": {
+        "x": -0.8754179270878178,
+        "y": -0.2292892272572083,
+        "z": 0.4255230936119219
+      },
+      "shanghaiAltitude": -71.31525727621805,
+      "shanghaiPhase": "night"
+    },
+    {
+      "name": "current-fractional-minute",
+      "iso": "2026-10-29T05:37:37.000Z",
+      "epochMillis": 1793252257000,
+      "latitude": -13.110221557860353,
+      "longitude": 91.52443247729252,
+      "originalDirection": {
+        "x": -0.02590982761121547,
+        "y": -0.22682506098526387,
+        "z": -0.9735908137108672
+      },
+      "nativeDirection": {
+        "x": 0.9735908137108672,
+        "y": -0.22682506098526387,
+        "z": -0.02590982761121547
+      },
+      "shanghaiAltitude": 37.15855447159435,
+      "shanghaiPhase": "day"
+    },
+    {
+      "name": "current-milliseconds-ignored-like-original",
+      "iso": "2026-10-29T05:37:37.987Z",
+      "epochMillis": 1793252257987,
+      "latitude": -13.110221557860353,
+      "longitude": 91.52443247729252,
+      "originalDirection": {
+        "x": -0.02590982761121547,
+        "y": -0.22682506098526387,
+        "z": -0.9735908137108672
+      },
+      "nativeDirection": {
+        "x": 0.9735908137108672,
+        "y": -0.22682506098526387,
+        "z": -0.02590982761121547
+      },
+      "shanghaiAltitude": 37.15855447159435,
+      "shanghaiPhase": "day"
+    }
+  ]
+}

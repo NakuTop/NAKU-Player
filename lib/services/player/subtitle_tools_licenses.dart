@@ -24,6 +24,9 @@ void registerSubtitleToolsLicenses() {
     yield LicenseEntryWithLineBreaks([
       'NASA Earth Observatory / Home Display Earth texture',
     ], await rootBundle.loadString('licenses/android_tv/EARTH_NOTICE.txt'));
+    yield LicenseEntryWithLineBreaks([
+      'Three.js / ACES display color transform',
+    ], await rootBundle.loadString('licenses/android_tv/THREE_LICENSE.txt'));
     for (final entry in const {
       'AndroidX Media3 1.11.1': 'MEDIA3_NOTICE.txt',
       'OkHttp 4.12.0': 'OKHTTP_NOTICE.txt',

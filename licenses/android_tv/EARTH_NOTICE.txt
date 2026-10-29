@@ -1,15 +1,39 @@
-NAKU TV rotating Earth texture
+NAKU TV / Home Display day and night Earth textures
 
-Credit: NASA Earth Observatory / Blue Marble Next Generation, July 2004.
-The 4096 x 2048 equirectangular day image is reused unchanged from the existing
-Home Display native-earth-v2-4096.webp, downsampled from the original NASA
-21600 x 10800 imagery. This is historical imagery, not a real-time Earth feed.
-No NASA or Apple endorsement is implied.
+Day credit: NASA Earth Observatory / Blue Marble Next Generation, July 2004.
+Night credit: NASA Earth Observatory / Joshua Stevens; Suomi NPP VIIRS,
+Miguel Roman, NASA GSFC, 2016.
 
-Packaged asset: assets/images/tv_earth_4k.webp
-SHA-256: d84101516fe68596d605947d0493879822d0ace662e742bb402e98fd03de2757
+The exact original 8192 x 4096 day and night-light assets from Home Display
+are bundled unchanged. Source imagery is historical reference, not a live
+satellite or live power-grid feed. Astronomical day/night visibility follows
+the current UTC wall clock. No NASA or Apple endorsement is implied.
 
-Existing source manifest:
+Packaged assets:
+[
+  {
+    "asset": "assets/images/tv_earth_day_8k.webp",
+    "original": "native-earth-v2-8192.webp",
+    "size": [
+      8192,
+      4096
+    ],
+    "sha256": "d4794d265d8cb88061cf0ded024ab84e5ce8bd6de0ea8a3c23d8a7ff1a8f5a99",
+    "mode": "RGB"
+  },
+  {
+    "asset": "assets/images/tv_earth_night_8k.webp",
+    "original": "night-lights-2016-hd-8192.webp",
+    "size": [
+      8192,
+      4096
+    ],
+    "sha256": "1ae3487286e9ecedaecc8a0e1601c4fef7c005828019d2b7bb63a0b72ebae694",
+    "mode": "RGB"
+  }
+]
+
+Original source manifest:
 {
   "version": 2,
   "projection": "EPSG:4326 / full 2:1 equirectangular / top-left (-180, 90)",

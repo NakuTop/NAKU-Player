@@ -38,7 +38,8 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
     private val handler = Handler(Looper.getMainLooper())
     private val channel = MethodChannel(engine.dartExecutor.binaryMessenger, "naku/tv-earth")
     private val events = EventChannel(engine.dartExecutor.binaryMessenger, "naku/tv-earth/events")
-    private val textureAsset = engine.flutterLoaderAsset("assets/images/tv_earth_4k.webp")
+    private val dayTextureAsset = engine.flutterLoaderAsset("assets/images/tv_earth_day_8k.webp")
+    private val nightTextureAsset = engine.flutterLoaderAsset("assets/images/tv_earth_night_8k.webp")
     private val views = mutableMapOf<Int, EarthView>()
     private var sink: EventChannel.EventSink? = null
     private var foreground = true
@@ -90,7 +91,7 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
         private var failed = false
         private var firstFrame = false
         private var firstFrameFacts = emptyMap<String, Any>()
-        private val renderer = EarthRenderer(context, textureAsset,
+        private val renderer = EarthRenderer(context, dayTextureAsset, nightTextureAsset,
             onFrame = { facts -> handler.post {
                 if (!closed) {
                     firstFrame = true
@@ -212,7 +213,8 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
 
     private class EarthRenderer(
         private val context: Context,
-        private val asset: String,
+        private val dayAsset: String,
+        private val nightAsset: String,
         private val onFrame: (Map<String, Any>) -> Unit,
         private val onError: () -> Unit,
     ) : GLSurfaceView.Renderer {
@@ -223,17 +225,23 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
         private val routeBuffers = mutableListOf<Pair<Int, Int>>()
         private val positionBuffers = mutableListOf<Int>()
         private val sphereBuffers = IntArray(2)
-        private val sphereHandles = IntArray(5)
+        private val sphereHandles = IntArray(8)
         private val lineHandles = IntArray(4)
         private var program = 0
         private var lineProgram = 0
         private var texture = 0
+        private var nightTexture = 0
         private var failed = false
         private var frameSent = false
         private var width = 1
         private var height = 1
         private var textureWidth = 0
         private var textureHeight = 0
+        private var nightTextureWidth = 0
+        private var nightTextureHeight = 0
+        private var solarSecond = Long.MIN_VALUE
+        private val sunLocal = FloatArray(4)
+        private val sunWorld = FloatArray(4)
         private var yaw = -45f
         private var lastFrame = 0L
         private val projection = FloatArray(16)
@@ -252,6 +260,9 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
             failed = false
             frameSent = false
             lastFrame = 0L
+            solarSecond = Long.MIN_VALUE
+            texture = 0
+            nightTexture = 0
             try {
                 GLES20.glClearColor(0f, 0f, 0f, 1f)
                 GLES20.glEnable(GLES20.GL_DEPTH_TEST)
@@ -272,6 +283,9 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 sphereHandles[2] = GLES20.glGetAttribLocation(program, "a_position")
                 sphereHandles[3] = GLES20.glGetAttribLocation(program, "a_uv")
                 sphereHandles[4] = GLES20.glGetUniformLocation(program, "u_texture")
+                sphereHandles[5] = GLES20.glGetUniformLocation(program, "u_nightTexture")
+                sphereHandles[6] = GLES20.glGetUniformLocation(program, "u_sunLocal")
+                sphereHandles[7] = GLES20.glGetUniformLocation(program, "u_sunWorld")
                 lineHandles[0] = GLES20.glGetUniformLocation(lineProgram, "u_mvp")
                 lineHandles[1] = GLES20.glGetAttribLocation(lineProgram, "a_position")
                 lineHandles[2] = GLES20.glGetUniformLocation(lineProgram, "u_points")
@@ -291,38 +305,14 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 uploadedGeometry = null
                 val max = IntArray(1)
                 GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_SIZE, max, 0)
-                require(max[0] >= 1024)
                 val memory = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-                val budget = if (memory?.isLowRamDevice == true || (memory?.memoryClass ?: 256) <= 128) 2048 else 4096
-                val limit = max[0].coerceAtMost(budget)
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true; inScaled = false }
-                context.assets.open(asset).use { BitmapFactory.decodeStream(it, null, bounds) }
-                require(bounds.outWidth > 0 && bounds.outHeight > 0)
-                var sample = 1
-                while (bounds.outWidth / sample > limit || bounds.outHeight / sample > limit) sample *= 2
-                val options = BitmapFactory.Options().apply {
-                    inScaled = false
-                    inSampleSize = sample
-                    inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
-                }
-                val bitmap = context.assets.open(asset).use { BitmapFactory.decodeStream(it, null, options) }
-                    ?: throw IllegalStateException()
-                textureWidth = bitmap.width
-                textureHeight = bitmap.height
-                val names = IntArray(1)
-                GLES20.glGenTextures(1, names, 0)
-                texture = names[0]
-                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
-                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR)
-                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-                try {
-                    GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
-                    // Power-of-two texture: build once, avoid moving coast shimmer.
-                    GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
-                } finally { bitmap.recycle() }
+                val free = ActivityManager.MemoryInfo()
+                memory?.getMemoryInfo(free)
+                val tier = NakuTVSolar.textureTier(max[0], free.availMem,
+                    memory?.memoryClass ?: 0, memory?.isLowRamDevice == true || free.lowMemory)
+                require(tier >= NakuTVSolar.MIN_TEXTURE_TIER)
                 check(GLES20.glGetError() == GLES20.GL_NO_ERROR)
+                loadTexturePair(tier)
             } catch (_: Exception) { failed = true; onError() }
             catch (_: OutOfMemoryError) { failed = true; onError() }
         }
@@ -337,6 +327,13 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
             val now = System.nanoTime()
             if (lastFrame != 0L) yaw = (yaw + ((now - lastFrame) / 1_000_000_000f).coerceIn(0f, .1f) * 1.68f) % 360f
             lastFrame = now
+            val utcMillis = System.currentTimeMillis()
+            if (utcMillis / 1000L != solarSecond) {
+                val direction = NakuTVSolar.earthFixedSunDirection(utcMillis)
+                for (axis in 0..2) sunLocal[axis] = direction[axis].toFloat()
+                sunLocal[3] = 0f
+                solarSecond = utcMillis / 1000L
+            }
             val aspect = width.toFloat() / height
             val radius = min(.88f, aspect * .90f)
             val center = if (aspect >= 1.2f) .32f * aspect else 0f
@@ -349,6 +346,9 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
             Matrix.rotateM(model, 0, yaw, 0f, 1f, 0f)
             Matrix.multiplyMM(temp, 0, view, 0, model, 0)
             Matrix.multiplyMM(mvp, 0, projection, 0, temp, 0)
+            // Transform only for view-dependent ocean/limb appearance. The
+            // day/night mask itself uses unrotated geographic normals below.
+            Matrix.multiplyMV(sunWorld, 0, model, 0, sunLocal, 0)
             GLES20.glUseProgram(program)
             GLES20.glUniformMatrix4fv(sphereHandles[0], 1, false, mvp, 0)
             GLES20.glUniformMatrix4fv(sphereHandles[1], 1, false, model, 0)
@@ -363,6 +363,11 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
             GLES20.glUniform1i(sphereHandles[4], 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, nightTexture)
+            GLES20.glUniform1i(sphereHandles[5], 1)
+            GLES20.glUniform3fv(sphereHandles[6], 1, sunLocal, 0)
+            GLES20.glUniform3fv(sphereHandles[7], 1, sunWorld, 0)
             GLES20.glDrawElements(GLES20.GL_TRIANGLES, mesh.second.limit(), GLES20.GL_UNSIGNED_SHORT, 0)
             GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, 0)
             GLES20.glDisableVertexAttribArray(position)
@@ -393,8 +398,74 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 frameSent = true
                 onFrame(mapOf("width" to width, "height" to height,
                     "textureWidth" to textureWidth, "textureHeight" to textureHeight,
+                    "nightTextureWidth" to nightTextureWidth, "nightTextureHeight" to nightTextureHeight,
+                    "solarUtcMillis" to solarSecond * 1000L, "dayNight" to true,
                     "fpsLimit" to 24, "renderer" to "gles2"))
             }
+        }
+        private data class TextureData(val id: Int, val width: Int, val height: Int)
+        private fun loadTexturePair(initialTier: Int) {
+            var tier = initialTier
+            while (tier >= NakuTVSolar.MIN_TEXTURE_TIER) {
+                var day: TextureData? = null
+                var night: TextureData? = null
+                try {
+                    day = loadTexture(dayAsset, tier)
+                    night = loadTexture(nightAsset, tier)
+                    require(day.width == night.width && day.height == night.height)
+                    texture = day.id
+                    nightTexture = night.id
+                    textureWidth = day.width
+                    textureHeight = day.height
+                    nightTextureWidth = night.width
+                    nightTextureHeight = night.height
+                    return
+                } catch (_: OutOfMemoryError) {
+                    // Both textures retry at the next complete supported tier.
+                } catch (_: RuntimeException) {
+                    // Includes GL_OUT_OF_MEMORY / faulty advertised texture size.
+                }
+                val ids = listOfNotNull(day?.id, night?.id).toIntArray()
+                if (ids.isNotEmpty()) GLES20.glDeleteTextures(ids.size, ids, 0)
+                clearGlErrors()
+                GLES20.glFinish()
+                tier /= 2
+            }
+            throw IllegalStateException("Earth day/night textures could not be allocated")
+        }
+        private fun loadTexture(asset: String, tier: Int): TextureData {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true; inScaled = false }
+            context.assets.open(asset).use { BitmapFactory.decodeStream(it, null, bounds) }
+            require(bounds.outWidth == 8192 && bounds.outHeight == 4096)
+            var sample = 1
+            while (bounds.outWidth / sample > tier) sample *= 2
+            val options = BitmapFactory.Options().apply {
+                inScaled = false
+                inSampleSize = sample
+                inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+            }
+            val bitmap = context.assets.open(asset).use { BitmapFactory.decodeStream(it, null, options) }
+                ?: throw IllegalStateException("Earth texture could not be decoded")
+            val ids = IntArray(1)
+            try {
+                GLES20.glGenTextures(1, ids, 0)
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_REPEAT)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+                GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+                GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
+                check(GLES20.glGetError() == GLES20.GL_NO_ERROR)
+                return TextureData(ids[0], bitmap.width, bitmap.height)
+            } catch (error: Throwable) {
+                if (ids[0] != 0) GLES20.glDeleteTextures(1, ids, 0)
+                throw error
+            } finally { bitmap.recycle() }
+        }
+        private fun clearGlErrors() {
+            // Lost-context drivers must never trap the renderer in a busy loop.
+            repeat(8) { if (GLES20.glGetError() == GLES20.GL_NO_ERROR) return }
         }
         private fun uploadFlightGeometry() {
             val next = geometry
@@ -422,22 +493,68 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 uniform mat4 u_mvp;
                 uniform mat4 u_model;
                 varying UV_PRECISION vec2 v_uv;
-                varying mediump vec3 v_normal;
+                varying mediump vec3 v_localNormal;
+                varying mediump vec3 v_worldNormal;
                 void main() {
                     v_uv = a_uv;
-                    v_normal = normalize((u_model * vec4(a_position, 0.0)).xyz);
+                    v_localNormal = a_position;
+                    v_worldNormal = normalize((u_model * vec4(a_position, 0.0)).xyz);
                     gl_Position = u_mvp * vec4(a_position, 1.0);
                 }
             """
             private const val FRAGMENT = """
                 precision mediump float;
                 varying UV_PRECISION vec2 v_uv;
-                varying mediump vec3 v_normal;
+                varying mediump vec3 v_localNormal;
+                varying mediump vec3 v_worldNormal;
                 uniform sampler2D u_texture;
+                uniform sampler2D u_nightTexture;
+                uniform mediump vec3 u_sunLocal;
+                uniform mediump vec3 u_sunWorld;
+                vec3 srgbToLinear(vec3 c) {
+                    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+                }
+                vec3 linearToSrgb(vec3 c) {
+                    return mix(c * 12.92, 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+                }
+                // Same ACES display transform used by Home Display's R3F Canvas.
+                vec3 displayTone(vec3 c) {
+                    mat3 inputMat = mat3(0.59719,0.07600,0.02840,
+                        0.35458,0.90834,0.13383,0.04823,0.01566,0.83777);
+                    mat3 outputMat = mat3(1.60475,-0.10208,-0.00327,
+                        -0.53108,1.10813,-0.07276,-0.07367,-0.00605,1.07602);
+                    c = inputMat * (c / 0.6);
+                    vec3 a = c * (c + 0.0245786) - 0.000090537;
+                    vec3 b = c * (0.983729 * c + 0.4329510) + 0.238081;
+                    return clamp(outputMat * (a / b), 0.0, 1.0);
+                }
                 void main() {
-                    vec3 day = texture2D(u_texture, v_uv).rgb;
-                    float diffuse = max(dot(normalize(v_normal), normalize(vec3(-0.45, 0.45, 1.0))), 0.0);
-                    gl_FragColor = vec4(day * (0.55 + 0.45 * diffuse), 1.0);
+                    // The solar dot is Earth-fixed, independent of visual yaw.
+                    float solar = dot(normalize(v_localNormal), normalize(u_sunLocal));
+                    vec3 n = normalize(v_worldNormal);
+                    vec3 sun = normalize(u_sunWorld);
+                    // Orthographic native projection has parallel +Z view rays.
+                    vec3 view = vec3(0.0, 0.0, 1.0);
+                    // Day RGB is sRGB; the historical VIIRS mask below is raw data.
+                    vec3 mapColor = srgbToLinear(texture2D(u_texture, v_uv).rgb);
+                    float daylight = smoothstep(-0.075, 0.12, solar);
+                    float direct = 0.64 + 0.40 * pow(max(0.0, solar), 0.65);
+                    float ocean = smoothstep(0.004, 0.04, mapColor.b - mapColor.g)
+                        * smoothstep(0.004, 0.04, mapColor.b - mapColor.r);
+                    vec3 color = mapColor * mix(vec3(0.54, 0.68, 0.91) * 0.13, vec3(direct), daylight);
+                    vec3 halfVector = normalize(sun + view);
+                    float highlight = pow(max(0.0, dot(n, halfVector)), 64.0) * 0.024
+                        + pow(max(0.0, dot(n, halfVector)), 12.0) * 0.005;
+                    color += vec3(0.72, 0.82, 0.89) * highlight * ocean * daylight;
+                    float limb = pow(1.0 - max(0.0, dot(n, view)), 4.0);
+                    float dusk = exp(-pow((solar + 0.018) / 0.085, 2.0));
+                    color = mix(color, vec3(0.18, 0.34, 0.49), limb * daylight * 0.23);
+                    color += vec3(0.10, 0.047, 0.014) * dusk * (0.025 + limb * 0.09);
+                    float darkness = smoothstep(0.015, 0.215, -solar);
+                    float emission = texture2D(u_nightTexture, v_uv).r;
+                    vec3 lamp = mix(vec3(0.80, 0.48, 0.19), vec3(1.0, 0.85, 0.57), smoothstep(0.12, 0.8, emission));
+                    color += lamp * pow(emission, 0.94) * darkness * 0.95;
+                    gl_FragColor = vec4(linearToSrgb(displayTone(color)), 1.0);
                 }
             """
             private const val LINE_VERTEX = """

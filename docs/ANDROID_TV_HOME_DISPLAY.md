@@ -8,8 +8,11 @@ a minute clock/date and at most three actual flights from the authenticated
 read-only Home Display feed. Parcels, next-destination cards, buttons, wake
 hints, extra 3D models and decorative effects are omitted.
 
-The native Earth uses the bundled high-definition globe texture, a bounded
-sphere mesh and a controlled rendering cadence. It does not load the website,
+The native Earth uses the exact original 8192×4096 day and historical-night
+textures, a bounded sphere mesh and a controlled rendering cadence. It selects
+the highest complete day/night tier that fits the GPU texture limit, current
+available memory and bitmap heap budget; allocation failure retries both maps
+together at 4096 then 2048, rather than retaining only a day map. It does not load the website,
 create WebGL, capture screenshots or drive Flutter's animation ticker. A local
 static globe is only the startup/render-failure fallback; render failures are
 labeled on-screen rather than represented as successful rotation. The desktop
@@ -21,6 +24,34 @@ held-key suppression through key-up. The display's `onWake` callback is a
 notification: pointer or standalone-key wake then pops the page. The shell's
 early remote handler consumes the first waking key and repeats, restoring the
 original page/focus without activating its focused action.
+
+## Real UTC day/night surface
+
+`NakuTVSolar` ports the original Home Display NOAA approximation and calculates
+the Earth-fixed solar direction from absolute UTC time. It does not use the
+television's display timezone, camera angle or rotation counter as a substitute
+for solar time. The native geographic basis is the original site's basis
+rotated by minus ninety degrees around Y; both use the same latitude/longitude
+and texture geography.
+
+The surface shader computes daylight from the unrotated local geographic
+normal. View rotation therefore changes which continent is visible without
+moving the real day/night boundary relative to that continent. The transformed
+world normal and sun are used only for view-dependent ocean glint and the limb.
+
+The day texture is decoded from sRGB before lighting. The night texture remains
+raw data: its red channel supplies the original historical 2016 VIIRS light
+mask, with warm emission only on the astronomical night side. The original
+surface's terminator softness, dim night tint, twilight, glint and light-mask
+constants are retained, followed by the Three/R3F ACES display transform and
+sRGB output. City emission is a historical image, not a live report of a city's
+power supply. Extra atmosphere/cloud models, controls and unrelated layers
+remain omitted from this flights-only TV surface.
+
+Both texture resources are required for normal initialization. Missing or
+invalid resources produce the existing explicitly labeled render-failure
+fallback; the app does not claim a working day/night pair while silently using
+only the day map. APK checks must verify both original image files.
 
 ## Authorization and wire compatibility
 
@@ -84,10 +115,19 @@ full-viewport native-Earth wiring with an injected rendering probe, absence of
 buttons/filters/decorative effects, flights-only supplied-record projection,
 verified route bounds, maximum item count, minute polling, background/native
 active-state cancellation, stale completion and wake behavior. The rendering
-probe is a widget-test substitute, not proof of real OpenGL output. Authorization/session tests cover response scope, expiry,
-cookie validation, fixed endpoint, response bounds and logout races. The
-existing desktop WebView rendering/exit tests remain separate.
+probe is a widget-test substitute, not proof of real OpenGL output.
+Authorization/session tests cover response scope, expiry, cookie validation,
+fixed endpoint, response bounds and logout races. The existing desktop WebView
+rendering/exit tests remain separate.
 
-Physical remote operation, real NAS authorization, actual Home Display records
-high-definition Earth rotation, real route arcs and sustained GPU performance
-on the target Huawei TV remain manual acceptance items. Passing local tests does not count as those checks.
+Independent UTC comparison checks the Java solar helper against the original
+Home Display equations and coordinate conversion. A separate temporary WebGL1
+reference can compile the exact native vertex/fragment shaders and original
+8K maps to inspect two UTC times at the same view angle. This validates shader
+logic and geography in a different GL implementation; its output is explicitly
+a reference, not an Android TV screenshot or performance acceptance.
+
+Physical remote operation, real NAS authorization, actual Home Display records,
+high-definition Earth rotation/day-night output, real route arcs and sustained
+GPU performance on the target Huawei TV remain manual acceptance items. Passing
+local tests or offscreen reference checks does not count as those checks.
