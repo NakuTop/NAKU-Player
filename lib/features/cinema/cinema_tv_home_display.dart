@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'cinema_nas_media.dart';
+import 'cinema_tv_earth.dart';
 
 class CinemaTVDisplayItem {
   const CinemaTVDisplayItem(this.title, this.body, this.detail);
@@ -30,8 +31,8 @@ String cinemaTVDisplayTime(Object? value) {
   return '${two(time.month)}/${two(time.day)} ${two(time.hour)}:${two(time.minute)} UTC';
 }
 
-/// A small read-only projection of the existing /api/display schema. No demo,
-/// booking references, notes or invented records are used to fill empty space.
+/// Flights-only projection of the existing authenticated /api/display schema.
+/// Parcels, destinations, demo data and private notes never appear on TV.
 List<CinemaTVDisplayItem> cinemaTVDisplayItems(Map<String, dynamic> snapshot) {
   if (snapshot['demo'] != false) return const [];
   final items = <CinemaTVDisplayItem>[];
@@ -60,47 +61,59 @@ List<CinemaTVDisplayItem> cinemaTVDisplayItems(Map<String, dynamic> snapshot) {
       );
     }
   }
-  final parcels = snapshot['parcels'];
-  if (parcels is List) {
-    for (final parcel in parcels.whereType<Map>()) {
-      if (items.length >= 3) break;
-      final name = _text(parcel['parcelName'], 50);
-      final status = _text(parcel['status'], 50);
-      final carrier = _text(parcel['carrier'], 40);
-      final event = parcel['latestEvent'];
-      final location = event is Map ? _text(event['location'], 50) : '';
-      final description = event is Map ? _text(event['description'], 80) : '';
-      if (name.isEmpty && status.isEmpty && description.isEmpty) continue;
-      items.add(
-        CinemaTVDisplayItem(
-          [name, carrier].where((v) => v.isNotEmpty).join(' · '),
-          [status, location].where((v) => v.isNotEmpty).join(' · '),
-          description,
-        ),
-      );
-    }
-  }
-  final destination = snapshot['destination'];
-  if (items.length < 3 && destination is Map) {
-    final city = _text(destination['city'], 50);
-    if (city.isNotEmpty) {
-      items.add(
-        CinemaTVDisplayItem(
-          '下一站 · $city',
-          [
-            _text(destination['country'], 50),
-            _text(destination['date'], 40),
-          ].where((v) => v.isNotEmpty).join(' · '),
-          _text(destination['dataLabel'], 40),
-        ),
-      );
-    }
-  }
   return items.take(3).toList(growable: false);
 }
 
-/// TV's Home Display uses one local bitmap and ordinary Flutter text. It never
-/// creates a WebView, runs WebGL, captures frames, or starts a rendering ticker.
+/// Only verified endpoints supplied by the authenticated flight feed can create
+/// route arcs. Missing coordinates never borrow a city or synthetic location.
+List<Map<String, dynamic>> cinemaTVDisplayRoutes(
+  Map<String, dynamic> snapshot,
+) {
+  if (snapshot['demo'] != false || snapshot['flights'] is! List) {
+    return const [];
+  }
+  bool coordinate(Object? value, double limit) =>
+      value is num && value.isFinite && value >= -limit && value <= limit;
+  final routes = <Map<String, dynamic>>[];
+  for (final flight in (snapshot['flights'] as List).whereType<Map>()) {
+    final origin = flight['origin'], destination = flight['destination'];
+    if (origin is! Map ||
+        destination is! Map ||
+        origin['drawable'] != true ||
+        destination['drawable'] != true ||
+        !coordinate(origin['lat'], 90) ||
+        !coordinate(origin['lng'], 180) ||
+        !coordinate(destination['lat'], 90) ||
+        !coordinate(destination['lng'], 180)) {
+      continue;
+    }
+    final route = <String, dynamic>{
+      'originLat': origin['lat'],
+      'originLon': origin['lng'],
+      'destinationLat': destination['lat'],
+      'destinationLon': destination['lng'],
+    };
+    final position = flight['position'];
+    if (flight['routePreview'] != true &&
+        (flight['positionStatus'] == 'live' ||
+            flight['positionStatus'] == 'last-known') &&
+        position is Map &&
+        coordinate(position['lat'], 90) &&
+        coordinate(position['lng'], 180)) {
+      route['positionLat'] = position['lat'];
+      route['positionLon'] = position['lng'];
+    }
+    routes.add(route);
+    if (routes.length == 8) break;
+  }
+  return routes;
+}
+
+typedef CinemaTVEarthBuilder =
+    Widget Function(List<Map<String, dynamic>> flights, bool active);
+
+/// Native rotating Earth and a small, noninteractive flight projection. No
+/// WebView, WebGL, decorative models, in-screen controls or screenshot readback.
 class CinemaTVHomeDisplay extends StatefulWidget {
   const CinemaTVHomeDisplay({
     super.key,
@@ -108,6 +121,7 @@ class CinemaTVHomeDisplay extends StatefulWidget {
     this.onWake,
     this.loadSnapshot,
     this.now,
+    this.earthBuilder,
   });
   final CinemaNASClient? client;
   final VoidCallback? onWake;
@@ -115,6 +129,8 @@ class CinemaTVHomeDisplay extends StatefulWidget {
   final Future<Map<String, dynamic>> Function()? loadSnapshot;
   @visibleForTesting
   final DateTime Function()? now;
+  @visibleForTesting
+  final CinemaTVEarthBuilder? earthBuilder;
   @override
   State<CinemaTVHomeDisplay> createState() => _CinemaTVHomeDisplayState();
 }
@@ -126,6 +142,7 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
   Map<String, dynamic>? _snapshot;
   Timer? _minute, _poll;
   bool _foreground = true, _loading = false, _waking = false;
+  bool _earthFailed = false;
   int _generation = 0;
   String _status = '正在同步 Home Display';
 
@@ -191,6 +208,7 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!mounted) return;
     final resumed = state == AppLifecycleState.resumed;
     if (_foreground == resumed) return;
     _foreground = resumed;
@@ -202,6 +220,7 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
       _poll?.cancel();
       ++_generation;
       _loading = false;
+      setState(() {});
     }
   }
 
@@ -262,14 +281,39 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      Image.asset(
-                        'assets/images/tv_home_display.jpg',
+                      SizedBox.expand(
                         key: const ValueKey('tv-home-display-earth'),
-                        fit: BoxFit.cover,
-                        cacheWidth: 1280,
-                        filterQuality: FilterQuality.low,
-                        errorBuilder: (_, _, _) =>
-                            const ColoredBox(color: Colors.black),
+                        child:
+                            widget.earthBuilder?.call(
+                              _snapshot == null
+                                  ? const []
+                                  : cinemaTVDisplayRoutes(_snapshot!),
+                              _foreground,
+                            ) ??
+                            CinemaTVEarth(
+                              flights: _snapshot == null
+                                  ? const []
+                                  : cinemaTVDisplayRoutes(_snapshot!),
+                              active: _foreground,
+                              onFirstFrame: () {
+                                if (mounted && _earthFailed) {
+                                  setState(() => _earthFailed = false);
+                                }
+                              },
+                              onError: () {
+                                if (mounted && !_earthFailed) {
+                                  setState(() => _earthFailed = true);
+                                }
+                              },
+                              fallbackBuilder: (_) => Image.asset(
+                                'assets/images/tv_home_display.jpg',
+                                fit: BoxFit.cover,
+                                cacheWidth: 1920,
+                                filterQuality: FilterQuality.low,
+                                errorBuilder: (_, _, _) =>
+                                    const ColoredBox(color: Colors.black),
+                              ),
+                            ),
                       ),
                       Padding(
                         padding: EdgeInsets.fromLTRB(
@@ -310,7 +354,7 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
                             SizedBox(height: 28 * scale),
                             if (items.isNotEmpty)
                               SizedBox(
-                                width: (size.width * .53)
+                                width: (size.width * .44)
                                     .clamp(280, 720)
                                     .toDouble(),
                                 child: Column(
@@ -363,7 +407,7 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
                               )
                             else
                               Text(
-                                _status.isNotEmpty ? _status : '暂无待展示的行程或物流',
+                                _status.isNotEmpty ? _status : '暂无待展示的航班',
                                 style: TextStyle(
                                   color: Colors.white60,
                                   fontSize: 18 * scale,
@@ -372,6 +416,7 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
                             SizedBox(height: 8 * scale),
                             Text(
                               [
+                                if (_earthFailed) '地球渲染暂不可用',
                                 if (items.isNotEmpty && _status.isNotEmpty)
                                   _status,
                                 if (_snapshot != null)

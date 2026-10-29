@@ -70,6 +70,7 @@ import 'naku_update_page.dart';
 import 'naku_update_service.dart';
 import 'cinema_grouping.dart';
 import 'cinema_card_ratings.dart';
+import 'cinema_tv_ratings.dart';
 import 'cinema_nas_page.dart';
 import 'cinema_nas_sync.dart';
 import 'cinema_nas_media.dart';
@@ -1963,6 +1964,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           .where((v) => v.sourceId != 'douban-discovery')
           .toList(),
       ratingsRepository: widget.ratingsRepository,
+      resolveRatingsTitle: _resolveTVRatingTitle,
       artworkRepository: widget.artworkRepository,
       repository: _repository,
       store: _store,
@@ -2969,6 +2971,15 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     ],
   );
 
+  Future<CinemaTitle> _resolveTVRatingTitle(CinemaTitle title) {
+    if (title.sourceId == cinemaNASSource.id) {
+      return widget.enableSearchDiscovery
+          ? _ratingIdentity.resolve(title)
+          : Future.value(title);
+    }
+    return _ratingTitles.resolve(title);
+  }
+
   Future<void> _openTVNASTitle(CinemaTitle title) async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -2983,6 +2994,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             resolvedDetail: true,
             resume: _store.historyFor(title),
             ratingsRepository: widget.ratingsRepository,
+            resolveRatingsTitle: _resolveTVRatingTitle,
             artworkRepository: widget.artworkRepository,
             onRecommendationSelected: (_) {},
             onPlay: (detail, source, road, episode, variants) {
@@ -4470,11 +4482,13 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               ),
             ),
             const SizedBox(height: 5),
-            if (!NakuDevice.isTV && !title.isDirectMedia)
+            if (!title.isDirectMedia)
               CinemaCardRatings(
                 title: title,
                 repository: _ratings,
-                resolveTitle: _ratingTitles.resolve,
+                resolveTitle: NakuDevice.isTV
+                    ? _resolveTVRatingTitle
+                    : _ratingTitles.resolve,
               ),
           ],
         ),
@@ -5016,6 +5030,7 @@ class _TitleDetails extends StatefulWidget {
     required this.source,
     this.variants = const [],
     this.ratingsRepository,
+    this.resolveRatingsTitle,
     this.artworkRepository,
     required this.repository,
     required this.store,
@@ -5028,6 +5043,7 @@ class _TitleDetails extends StatefulWidget {
   final CinemaSource source;
   final List<CinemaTitle> variants;
   final CinemaRatingsRepository? ratingsRepository;
+  final Future<CinemaTitle> Function(CinemaTitle)? resolveRatingsTitle;
   final CinemaDetailArtworkRepository? artworkRepository;
   final CinemaRepository repository;
   final CinemaStore store;
@@ -5938,15 +5954,6 @@ class _TitleDetailsState extends State<_TitleDetails> {
   Widget _tvDetail(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
     final viewport = MediaQuery.sizeOf(context);
     final gutter = (viewport.width * .045).clamp(32.0, 72.0);
-    final ratings =
-        _artworkRatings
-            .peek(title)
-            ?.ratings
-            .where((r) => r.value != null)
-            .map((r) => '${r.provider} ${r.value!.toStringAsFixed(1)}')
-            .take(3)
-            .join('   ·   ') ??
-        '';
     return ColoredBox(
       key: const ValueKey('tv-static-detail'),
       color: CinemaTheme.background,
@@ -6003,16 +6010,15 @@ class _TitleDetailsState extends State<_TitleDetails> {
                     _sourceControls(title, snapshot),
                   ],
                 ),
-                if (ratings.isNotEmpty) ...[
-                  const SizedBox(height: 20),
-                  Text(
-                    ratings,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      color: CinemaTheme.muted,
-                    ),
+                const SizedBox(height: 22),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 760),
+                  child: CinemaTVRatings(
+                    title: title,
+                    repository: widget.ratingsRepository,
+                    resolveTitle: widget.resolveRatingsTitle,
                   ),
-                ],
+                ),
                 if (title.description.isNotEmpty) ...[
                   const SizedBox(height: 24),
                   ConstrainedBox(

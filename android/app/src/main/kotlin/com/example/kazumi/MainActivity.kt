@@ -37,6 +37,7 @@ class MainActivity: AudioServiceActivity() {
     private var nakuDiscovery: NakuDiscovery? = null
     private var nakuTVPlayer: NakuTVPlayer? = null
     private var nakuTVUpdater: NakuTVUpdater? = null
+    private var nakuTVEarth: NakuTVEarth? = null
     private var intentChannel: MethodChannel? = null
     private var pipChannel: MethodChannel? = null
 
@@ -82,6 +83,8 @@ class MainActivity: AudioServiceActivity() {
     }
 
     override fun onDestroy() {
+        nakuTVEarth?.dispose()
+        nakuTVEarth = null
         nakuTVPlayer?.dispose()
         nakuTVPlayer = null
         nakuTVUpdater?.dispose()
@@ -115,6 +118,8 @@ class MainActivity: AudioServiceActivity() {
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        nakuTVEarth?.dispose()
+        nakuTVEarth = NakuTVEarth(this, flutterEngine)
         nakuTVPlayer?.dispose()
         nakuTVPlayer = NakuTVPlayer(this, flutterEngine)
         nakuTVUpdater?.dispose()

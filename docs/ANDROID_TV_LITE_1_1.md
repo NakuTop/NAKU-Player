@@ -1,5 +1,8 @@
 # NAKU TV Lite 1.1.0 · build 2
 
+The static-globe screensaver described in this historical build was superseded
+by the explicit rotating-Earth correction in [1.1.1](ANDROID_TV_LITE_1_1_1.md).
+
 This update targets the old Huawei TV reported during manual acceptance of
 1.0.0: uneven playback, incorrect colors, crowded controls and a stalled,
 partially filled Home Display. The TV application keeps its independent package

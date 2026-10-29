@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/rendering.dart';
 import 'package:dio/dio.dart';
@@ -10,6 +11,8 @@ import 'package:kazumi/features/cinema/cinema_featured_wall.dart';
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_nas_page.dart';
+import 'package:kazumi/features/cinema/cinema_nas_media.dart';
+import 'package:kazumi/features/cinema/cinema_search_discovery.dart';
 import 'package:kazumi/features/cinema/cinema_navigation_preferences.dart';
 import 'package:kazumi/features/cinema/cinema_neon_decode.dart';
 import 'package:kazumi/features/cinema/cinema_pane_transition.dart';
@@ -132,16 +135,61 @@ class _Discovery extends DoubanRepository {
   }
 }
 
+const _threeScores = CinemaRatings(
+  identity: RatingIdentity(doubanId: '100003'),
+  message: '',
+  ratings: [
+    CinemaRating(provider: '豆瓣', value: 9.4, note: '官网', verified: true),
+    CinemaRating(provider: 'IMDb', value: 8.7, note: '官网', verified: true),
+    CinemaRating(
+      provider: '烂番茄',
+      value: 73,
+      scale: 100,
+      note: '官网',
+      verified: true,
+    ),
+  ],
+);
+
+class _IdentityDiscovery extends CinemaSearchDiscoveryRepository {
+  final queries = <String>[];
+  @override
+  Future<CinemaSearchDiscovery> search(
+    String keyword, {
+    CancelToken? cancelToken,
+  }) async {
+    queries.add(keyword);
+    return const CinemaSearchDiscovery(
+      titles: [
+        CinemaDiscoveryTitle(
+          id: '100003',
+          title: 'NAS 测试影片',
+          year: '2026',
+          kind: 'movie',
+          identityVerified: true,
+        ),
+      ],
+    );
+  }
+}
+
 class _Ratings extends CinemaRatingsRepository {
   final notifier = ChangeNotifier();
+  final requests = <CinemaTitle>[];
+  final effective = <CinemaTitle>[];
+  bool hydrate = false;
+  CinemaRatings? cached;
+  Completer<CinemaRatings>? pending;
   @override
   Listenable get changes => notifier;
   @override
-  CinemaRatings peek(CinemaTitle title) => const CinemaRatings(
-    identity: RatingIdentity(),
-    ratings: [],
-    message: '测试评分',
-  );
+  CinemaRatings peek(CinemaTitle title) =>
+      cached ??
+      const CinemaRatings(
+        identity: RatingIdentity(),
+        ratings: [],
+        message: '测试评分',
+      );
   @override
   Future<void> restore() async {}
   @override
@@ -155,7 +203,21 @@ class _Ratings extends CinemaRatingsRepository {
     CinemaTitle title, {
     bool Function()? isCurrent,
     Future<CinemaTitle> Function(CinemaTitle)? resolveTitle,
-  }) async => peek(title);
+  }) async {
+    requests.add(title);
+    effective.add(
+      hydrate && resolveTitle != null ? await resolveTitle(title) : title,
+    );
+    final gate = pending;
+    if (gate == null) return peek(title);
+    final result = await gate.future;
+    if (isCurrent?.call() != false) {
+      cached = result;
+      notifier.notifyListeners();
+    }
+    return result;
+  }
+
   @override
   Future<CinemaRatings> loadForProvider(
     CinemaTitle title,
@@ -244,6 +306,8 @@ void main() {
   Future<void> mount(
     WidgetTester tester, {
     Size size = const Size(1280, 720),
+    bool enableSearchDiscovery = false,
+    CinemaSearchDiscoveryRepository? searchDiscovery,
   }) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = size;
@@ -267,7 +331,8 @@ void main() {
                 artworkRepository: _Artwork(),
                 navigationPreferences: navigation,
                 enableWatchTogether: false,
-                enableSearchDiscovery: false,
+                enableSearchDiscovery: enableSearchDiscovery,
+                searchDiscovery: searchDiscovery,
               ),
             ),
           ),
@@ -502,4 +567,111 @@ void main() {
     expect(tester.takeException(), isNull);
     await clean(tester);
   });
+  testWidgets(
+    'TV movie detail actively restores three ratings without review controls',
+    (tester) async {
+      ratings.pending = Completer<CinemaRatings>();
+      await mount(tester);
+      await tester.tap(find.byKey(const ValueKey('tv-nav-mine')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('cinema-card-ratings')), findsWidgets);
+      for (final provider in ['豆瓣', 'IMDb', '烂番茄']) {
+        expect(find.byKey(ValueKey('card-rating-$provider')), findsWidgets);
+      }
+      final before = ratings.requests.length;
+      await tester.tap(find.text('电影测试作品').first);
+      await tester.pumpAndSettle();
+      expect(ratings.requests.length, greaterThan(before));
+      expect(
+        find.byKey(const ValueKey('tv-three-provider-ratings')),
+        findsOneWidget,
+      );
+      ratings.pending!.complete(_threeScores);
+      await tester.pumpAndSettle();
+      for (final (provider, value) in [
+        ('豆瓣', '9.4'),
+        ('IMDb', '8.7'),
+        ('烂番茄', '73'),
+      ]) {
+        expect(
+          tester
+              .widget<Text>(find.byKey(ValueKey('tv-rating-value-$provider')))
+              .data,
+          value,
+        );
+      }
+      expect(find.byKey(const ValueKey('cinema-detail-tab-0')), findsNothing);
+      expect(find.byKey(const ValueKey('cinema-detail-tab-3')), findsNothing);
+      expect(find.byType(BackdropFilter), findsNothing);
+      expect(tester.takeException(), isNull);
+      await clean(tester);
+    },
+  );
+
+  testWidgets(
+    'fresh NAS TV details enrich exact identity before loading all three scores',
+    (tester) async {
+      final nas = createCinemaNASTitle(
+        namespace: List.filled(64, 'b').join(),
+        row: {
+          'ug_video_info_id': 42,
+          'media_lib_set_id': 2,
+          'name': 'NAS 测试影片',
+          'year': 2026,
+          'type': 1,
+        },
+        files: [(label: '原画', path: '/volume1/movie.mkv')],
+      );
+      await tester.runAsync(() => store.toggleFavorite(nas));
+      final identities = _IdentityDiscovery();
+      ratings.hydrate = true;
+      ratings.pending = Completer<CinemaRatings>();
+      await mount(
+        tester,
+        enableSearchDiscovery: true,
+        searchDiscovery: identities,
+      );
+      await tester.tap(find.byKey(const ValueKey('tv-nav-mine')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('NAS 测试影片').first);
+      await tester.pumpAndSettle();
+      expect(identities.queries, contains('NAS 测试影片'));
+      final enriched = ratings.effective
+          .where((title) => title.key == nas.key)
+          .toList();
+      expect(enriched, isNotEmpty);
+      expect(enriched.every((title) => title.doubanId == '100003'), isTrue);
+      expect(
+        enriched.every(
+          (title) =>
+              title.routes.single.episodes.single.url ==
+              nas.routes.single.episodes.single.url,
+        ),
+        isTrue,
+      );
+      ratings.pending!.complete(_threeScores);
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('tv-rating-value-豆瓣')))
+            .data,
+        '9.4',
+      );
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('tv-rating-value-IMDb')))
+            .data,
+        '8.7',
+      );
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('tv-rating-value-烂番茄')))
+            .data,
+        '73',
+      );
+      expect(find.byType(BackdropFilter), findsNothing);
+      expect(tester.takeException(), isNull);
+      await clean(tester);
+    },
+  );
 }
