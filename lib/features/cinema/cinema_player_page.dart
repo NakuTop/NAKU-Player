@@ -1475,6 +1475,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             mediaUrl,
             upstreamHeaders,
             hls: mediaFormat == VideoSourceFormat.hls,
+            titleKey: _preferences.privateMode ? null : candidate.title.key,
             backgroundPrefetchAllowed: !NakuDevice.isTV,
             manifestPolicy: NakuDevice.isTV
                 ? (text, base) => _tvHlsPolicies.putIfAbsent(
@@ -3102,7 +3103,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     playback.warmedNext = true;
     _ownOptionalProbe(token);
     try {
-      await _cache.warmNext(episode.url, _source.headers, cancel: token);
+      await _cache.warmNext(episode.url, _source.headers, cancel: token,
+          titleKey: _preferences.privateMode ? null : playback.title.key);
     } finally {
       _releaseOptionalProbe(token);
       // A cancelled request may finish after playback has resumed or changed.

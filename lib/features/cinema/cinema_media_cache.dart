@@ -3,12 +3,15 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
+
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
+
 import 'cinema_media_transport.dart';
 import 'cinema_playback_buffer.dart';
+import 'cinema_store.dart';
 
 class CinemaCachePreferences {
   const CinemaCachePreferences({
@@ -58,10 +61,12 @@ class CinemaCacheSession {
     this.id,
     this.headers, {
     this.manifestPolicy,
+    this.titleKey,
     bool backgroundPrefetchAllowed = true,
   }) : _backgroundPrefetchAllowed = backgroundPrefetchAllowed;
   final CinemaMediaCache cache;
   final String id;
+  final String? titleKey;
   final Map<String, String> headers;
   final Future<String> Function(String manifest, Uri base)? manifestPolicy;
   final Map<String, _Resource> _resources = {};
@@ -127,6 +132,7 @@ class CinemaCacheSession {
   }
 
   Future<void> close() async {
+    if (closed) return;
     closed = true;
     _timer?.cancel();
     _token?.cancel('播放已结束');
@@ -134,6 +140,7 @@ class CinemaCacheSession {
       request.cancel('播放已结束');
     }
     cache._sessions.remove(id);
+    await cache._prune();
   }
 }
 
@@ -166,12 +173,83 @@ class CinemaMediaCache extends ChangeNotifier {
   int bytesUsed = 0, hits = 0;
   String? error;
   bool _disposed = false;
+  CinemaStore? _historyStore;
+  Set<String>? _historyKeys;
+  final Map<String, Set<String>> _owners = {};
+  Future<void> _maintenance = Future.value();
+
+  Future<T> _serialized<T>(Future<T> Function() action) {
+    final result = _maintenance.then((_) => action());
+    _maintenance = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return result;
+  }
+
+  /// Bind only after the library has loaded; an unloaded library is not empty.
+  Future<void> bindHistory(CinemaStore store) async {
+    await store.load();
+    if (store.lastError != null) return;
+    _historyStore?.removeListener(_historyChanged);
+    _historyStore = store;
+    store.addListener(_historyChanged);
+    await retainHistory(store.historyCacheKeys);
+  }
+
+  void _historyChanged() {
+    final store = _historyStore;
+    if (store != null && store.lastError == null && !_disposed) {
+      unawaited(retainHistory(store.historyCacheKeys));
+    }
+  }
+
+  Future<void> retainHistory(Set<String> keys) async {
+    if (_historyKeys != null && setEquals(_historyKeys, keys)) return;
+    _historyKeys = Set.of(keys);
+    await initialize();
+    await _prune();
+  }
+
+  void _rememberOwner(String key, CinemaCacheSession session) {
+    final title = session.titleKey;
+    if (title != null) (_owners[key] ??= {}).add(title);
+  }
+
+  Future<void> _saveOwners() async {
+    final temp = File('${_directory!.path}/owners-v1.json.part');
+    await temp.writeAsString(
+      jsonEncode({
+        for (final entry in _owners.entries) entry.key: entry.value.toList(),
+      }),
+      flush: true,
+    );
+    await temp.rename('${_directory!.path}/owners-v1.json');
+  }
+
   Future<void> initialize() => _starting ??= _start();
   Future<void> _start() async {
     _directory ??= Directory(
       '${(await getApplicationCacheDirectory()).path}/naku-video-v2',
     );
     await _directory!.create(recursive: true);
+    final index = File('${_directory!.path}/owners-v1.json');
+    try {
+      final raw = jsonDecode(await index.readAsString());
+      if (raw is Map) {
+        for (final entry in raw.entries) {
+          if (entry.key is String && entry.value is List) {
+            _owners[entry.key as String] = (entry.value as List)
+                .whereType<String>()
+                .toSet();
+          }
+        }
+      }
+    } on FileSystemException {
+      // Legacy fragments have no reliable title identity; retain under LRU.
+    } on FormatException {
+      // A damaged index must never classify unknown fragments as orphaned.
+    }
     await _prune();
     _server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     _server!.listen((request) {
@@ -183,6 +261,7 @@ class CinemaMediaCache extends ChangeNotifier {
     String url,
     Map<String, String> headers, {
     bool hls = false,
+    String? titleKey,
     Future<String> Function(String manifest, Uri base)? manifestPolicy,
     bool backgroundPrefetchAllowed = true,
   }) async {
@@ -199,6 +278,7 @@ class CinemaMediaCache extends ChangeNotifier {
       '${++_serial}',
       Map.unmodifiable(headers),
       manifestPolicy: manifestPolicy,
+      titleKey: titleKey,
       backgroundPrefetchAllowed: backgroundPrefetchAllowed,
     );
     _sessions[session.id] = session;
@@ -230,10 +310,11 @@ class CinemaMediaCache extends ChangeNotifier {
         .toString();
   }
 
-  Future<File?> _cached(String key) async {
+  Future<File?> _cached(String key, CinemaCacheSession session) async {
     final file = File('${_directory!.path}/$key.bin');
     try {
       if (!await file.exists()) return null;
+      _rememberOwner(key, session);
       // Touch implements LRU without repeatedly serializing a global index.
       await file.setLastModified(DateTime.now());
       return file;
@@ -248,7 +329,7 @@ class CinemaMediaCache extends ChangeNotifier {
   ).hasMatch(uri.path);
   Future<File?> _fetch(CinemaCacheSession session, _Segment segment) async {
     final key = _key(segment.uri, session.headers, segment.range);
-    final cached = await _cached(key);
+    final cached = await _cached(key, session);
     if (cached != null) return cached;
     if (_background > 0 ||
         _foreground > 0 ||
@@ -281,7 +362,7 @@ class CinemaMediaCache extends ChangeNotifier {
           return null;
         }
         session.networkRoute = transport.router?.labelFor(segment.uri) ?? '';
-        return await _store(key, data);
+        return await _store(key, data, session);
       } catch (_) {
         return null;
       } finally {
@@ -293,7 +374,19 @@ class CinemaMediaCache extends ChangeNotifier {
     });
   }
 
-  Future<File?> _store(String key, Uint8List data) async {
+  Future<File?> _store(
+    String key,
+    Uint8List data,
+    CinemaCacheSession session,
+  ) => _serialized(() => _storeUnlocked(key, data, session));
+
+  Future<File?> _storeUnlocked(
+    String key,
+    Uint8List data,
+    CinemaCacheSession session,
+  ) async {
+    if (_historyKeys != null && session.titleKey == null) return null;
+    if (session.closed) return null;
     if (data.length > preferences.quotaMB * 1024 * 1024 || _disposed) {
       return null;
     }
@@ -303,9 +396,11 @@ class CinemaMediaCache extends ChangeNotifier {
       final previous = File('${_directory!.path}/$key.bin');
       final oldBytes = await previous.exists() ? await previous.length() : 0;
       final file = await temp.rename('${_directory!.path}/$key.bin');
+      _rememberOwner(key, session);
       bytesUsed += data.length - oldBytes;
+      await _saveOwners();
       if (bytesUsed > preferences.quotaMB * 1024 * 1024) {
-        await _prune();
+        await _pruneUnlocked();
       } else {
         _notify();
       }
@@ -378,7 +473,7 @@ class CinemaMediaCache extends ChangeNotifier {
       try {
         var cached =
             preferences.enabled && resource.persist && _cacheable(resource.uri)
-            ? await _cached(key)
+            ? await _cached(key, session)
             : null;
         var completeFile = range == null;
         final wholeKey = _key(resource.uri, session.headers, null);
@@ -415,10 +510,14 @@ class CinemaMediaCache extends ChangeNotifier {
             resource.persist &&
             _cacheable(resource.uri) &&
             RegExp(r'^bytes=(\d*)-(\d*)$').hasMatch(range)) {
-          cached = await _cached(_key(resource.uri, session.headers, null));
+          cached = await _cached(
+            _key(resource.uri, session.headers, null),
+            session,
+          );
           completeFile = cached != null;
         }
         if (cached != null) {
+          _rememberOwner(cached.uri.pathSegments.last.replaceFirst('.bin', ''), session);
           session.hits++;
           hits++;
           _notify();
@@ -466,6 +565,9 @@ class CinemaMediaCache extends ChangeNotifier {
         }
       } finally {
         _pinned.remove(key);
+        if (bytesUsed > preferences.quotaMB * 1024 * 1024) {
+          await _prune();
+        }
       }
     } catch (_) {
       try {
@@ -594,7 +696,7 @@ class CinemaMediaCache extends ChangeNotifier {
           }
         }
         if (builder != null && builder.length > 0 && !token.isCancelled) {
-          final file = await _store(storeKey, builder.takeBytes());
+          final file = await _store(storeKey, builder.takeBytes(), session);
           saved?.complete(file);
         }
       } finally {
@@ -713,9 +815,10 @@ class CinemaMediaCache extends ChangeNotifier {
     String url,
     Map<String, String> headers, {
     CancelToken? cancel,
+    String? titleKey,
   }) async {
     if (!preferences.enabled || preferences.nextSeconds == 0) return;
-    final opened = await open(url, headers);
+    final opened = await open(url, headers, titleKey: titleKey);
     if (opened == null) return;
     final session = opened.session;
     if (cancel != null) {
@@ -745,7 +848,9 @@ class CinemaMediaCache extends ChangeNotifier {
     }
   }
 
-  Future<void> _prune() async {
+  Future<void> _prune() => _serialized(_pruneUnlocked);
+
+  Future<void> _pruneUnlocked() async {
     if (_directory == null || !await _directory!.exists()) return;
     final files = <({File file, FileStat stat})>[];
     await for (final entity in _directory!.list(followLinks: false)) {
@@ -764,14 +869,31 @@ class CinemaMediaCache extends ChangeNotifier {
     bytesUsed = files.fold(0, (sum, f) => sum + f.stat.size);
     final quota = preferences.quotaMB * 1024 * 1024;
     for (final item in files) {
-      if (bytesUsed <= quota) break;
       final name = item.file.uri.pathSegments.last.replaceFirst('.bin', '');
-      if (_pinned.contains(name)) continue;
+      final owners = _owners[name];
+      final active = _sessions.values.any(
+        (s) =>
+            !s.closed &&
+            s.titleKey != null &&
+            (owners?.contains(s.titleKey) ?? false),
+      );
+      final orphan =
+          _historyKeys != null &&
+          owners != null &&
+          !owners.any(_historyKeys!.contains);
+      if (bytesUsed <= quota && !orphan) continue;
+      if (_pinned.contains(name) || (orphan && active)) continue;
       try {
         await item.file.delete();
         bytesUsed -= item.stat.size;
+        _owners.remove(name);
       } catch (_) {}
     }
+    final existing = files
+        .map((f) => f.file.uri.pathSegments.last.replaceFirst('.bin', ''))
+        .toSet();
+    _owners.removeWhere((key, _) => !existing.contains(key));
+    await _saveOwners();
     _notify();
   }
 
@@ -780,17 +902,15 @@ class CinemaMediaCache extends ChangeNotifier {
     for (final session in _sessions.values) {
       session._token?.cancel('清理缓存');
     }
-    await for (final entity in _directory!.list(followLinks: false)) {
-      if (entity is File &&
-          !_pinned.contains(
-            entity.uri.pathSegments.last.replaceFirst('.bin', ''),
-          )) {
-        try {
-          await entity.delete();
-        } catch (_) {}
+    await _serialized(() async {
+      await for (final entity in _directory!.list(followLinks: false)) {
+        if (entity is File && entity.path.endsWith('.bin') &&
+            !_pinned.contains(entity.uri.pathSegments.last.replaceFirst('.bin', ''))) {
+          try { await entity.delete(); } on FileSystemException { /* In use. */ }
+        }
       }
-    }
-    await _prune();
+      await _pruneUnlocked();
+    });
   }
 
   Future<void> configure(CinemaCachePreferences value) async {
@@ -819,6 +939,7 @@ class CinemaMediaCache extends ChangeNotifier {
 
   @override
   void dispose() {
+    _historyStore?.removeListener(_historyChanged);
     _disposed = true;
     unawaited(shutdown());
     super.dispose();

@@ -988,6 +988,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             CinemaCachePreferences.parse(prefs),
           );
         }
+        await CinemaMediaCache.instance.bindHistory(_store);
         unawaited(CinemaSourceSubscriptions(_store).refresh(automatic: true));
       }
 

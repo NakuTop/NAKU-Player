@@ -94,6 +94,12 @@ class CinemaStore extends ChangeNotifier {
   List<CinemaTitle> get favorites => List.unmodifiable(_favorites);
   List<CinemaHistory> get history => List.unmodifiable(_history);
 
+  /// Include merged source identities so changing source does not orphan cache.
+  Set<String> get historyCacheKeys => _historyDocuments.values
+      .expand((document) => _recordTitles(document, history: true))
+      .map((title) => title.key)
+      .toSet();
+
   Future<void> load() {
     if (_loaded) return Future.value();
     return _loading ??= _read().whenComplete(() => _loading = null);

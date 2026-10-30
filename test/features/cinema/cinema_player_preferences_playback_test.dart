@@ -331,6 +331,7 @@ class _Cache extends CinemaMediaCache {
     String url,
     Map<String, String> headers, {
     CancelToken? cancel,
+    String? titleKey,
   }) {
     final request = _Warmup(url, cancel!);
     warmups.add(request);
