@@ -82,11 +82,7 @@ class NakuTVUpdater(private val activity: Activity) {
 
     @Suppress("DEPRECATION")
     private fun packageInfo(): PackageInfo = activity.packageManager.getPackageInfo(
-        activity.packageName, signatureFlags())
-
-    @Suppress("DEPRECATION")
-    private fun signatureFlags() = if (Build.VERSION.SDK_INT >= 28)
-        PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+        activity.packageName, 0)
 
     @Suppress("DEPRECATION")
     private fun signatures(path: String? = null): Set<String> =
@@ -130,7 +126,9 @@ class NakuTVUpdater(private val activity: Activity) {
         }
         val actualHash = digest.digest().joinToString("") { "%02x".format(it) }
         require(actualHash == expectedHash) { "安装包校验失败" }
-        val archive = activity.packageManager.getPackageArchiveInfo(file.path, signatureFlags())
+        // Read metadata independently; certificate API failures must reach the
+        // compatibility reader below rather than aborting this first query.
+        val archive = activity.packageManager.getPackageArchiveInfo(file.path, 0)
             ?: error("安装包无法识别")
         val installed = packageInfo()
         require(archive.packageName == expectedPackage && archive.packageName == installed.packageName) {
