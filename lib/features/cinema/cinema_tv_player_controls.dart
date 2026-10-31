@@ -1,7 +1,77 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'cinema_optical_glass.dart';
 import 'cinema_theme.dart';
+import 'cinema_tv_motion.dart';
+
+/// A two-row remote path, independent of spacing and native video surfaces.
+class CinemaTVControlNavigation extends StatefulWidget {
+  const CinemaTVControlNavigation({
+    super.key,
+    required this.timeline,
+    required this.actions,
+    required this.onActivity,
+    required this.child,
+  });
+  final FocusNode timeline;
+  final List<FocusNode> actions;
+  final VoidCallback onActivity;
+  final Widget child;
+  @override
+  State<CinemaTVControlNavigation> createState() => _TVControlNavigationState();
+}
+
+class _TVControlNavigationState extends State<CinemaTVControlNavigation> {
+  int _lastAction = 0;
+  @override
+  Widget build(BuildContext context) => FocusTraversalGroup(
+    child: Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: (_, event) {
+        if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+          return KeyEventResult.ignored;
+        }
+        widget.onActivity();
+        final nodes = widget.actions.where((n) => n.canRequestFocus).toList();
+        if (nodes.isEmpty) return KeyEventResult.ignored;
+        final index = nodes.indexWhere((node) => node.hasFocus),
+            key = event.logicalKey;
+        if (widget.timeline.hasFocus) {
+          if (key == LogicalKeyboardKey.arrowDown) {
+            nodes[_lastAction.clamp(0, nodes.length - 1)].requestFocus();
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        }
+        if (index < 0) return KeyEventResult.ignored;
+        _lastAction = index;
+        if (key == LogicalKeyboardKey.arrowLeft ||
+            key == LogicalKeyboardKey.arrowRight) {
+          _lastAction = (index + (key == LogicalKeyboardKey.arrowLeft ? -1 : 1))
+              .clamp(0, nodes.length - 1);
+          nodes[_lastAction].requestFocus();
+          return KeyEventResult.handled;
+        }
+        if (key == LogicalKeyboardKey.arrowUp) {
+          widget.timeline.requestFocus();
+          return KeyEventResult.handled;
+        }
+        if (key == LogicalKeyboardKey.arrowDown) return KeyEventResult.handled;
+        if (event is KeyDownEvent &&
+            (key == LogicalKeyboardKey.gameButtonA ||
+                key == LogicalKeyboardKey.numpadEnter)) {
+          final target = nodes[index].context;
+          if (target != null) {
+            Actions.maybeInvoke(target, const ActivateIntent());
+          }
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: widget.child,
+    ),
+  );
+}
 
 class CinemaTVSeekPreview extends ChangeNotifier {
   Duration? _target;
@@ -38,12 +108,14 @@ class CinemaTVTimeline extends StatelessWidget {
     required this.focusNode,
     required this.onCommit,
     required this.onActivity,
+    this.compact = false,
   });
   final Duration position, duration;
   final CinemaTVSeekPreview preview;
   final FocusNode focusNode;
   final ValueChanged<Duration> onCommit;
   final VoidCallback onActivity;
+  final bool compact;
   static String time(Duration value) {
     final seconds = value.inSeconds.clamp(0, 999999);
     final h = seconds ~/ 3600, m = seconds % 3600 ~/ 60, s = seconds % 60;
@@ -80,7 +152,9 @@ class CinemaTVTimeline extends StatelessWidget {
             return KeyEventResult.handled;
           }
           if (key == LogicalKeyboardKey.select ||
-              key == LogicalKeyboardKey.enter) {
+              key == LogicalKeyboardKey.enter ||
+              key == LogicalKeyboardKey.numpadEnter ||
+              key == LogicalKeyboardKey.gameButtonA) {
             final selection = preview.take();
             if (selection != null) onCommit(selection);
             return KeyEventResult.handled;
@@ -97,7 +171,10 @@ class CinemaTVTimeline extends StatelessWidget {
           label: '播放进度 ${time(target)}，左右预览，确定跳转，返回取消',
           slider: true,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            padding: EdgeInsets.symmetric(
+              horizontal: 10,
+              vertical: compact ? 4 : 12,
+            ),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(12),
               border: Border.all(
@@ -110,22 +187,25 @@ class CinemaTVTimeline extends StatelessWidget {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(time(target), style: const TextStyle(fontSize: 17)),
+                    Text(
+                      time(target),
+                      style: TextStyle(fontSize: compact ? 14 : 17),
+                    ),
                     Text(
                       '−${time(duration - target)}',
-                      style: const TextStyle(
-                        fontSize: 17,
+                      style: TextStyle(
+                        fontSize: compact ? 14 : 17,
                         color: CinemaTheme.muted,
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 10),
+                SizedBox(height: compact ? 5 : 10),
                 ClipRRect(
                   borderRadius: BorderRadius.circular(4),
                   child: LinearProgressIndicator(
                     value: fraction,
-                    minHeight: 5,
+                    minHeight: compact ? 3 : 5,
                     color: focusNode.hasFocus
                         ? CinemaTheme.copper
                         : Colors.white,
@@ -149,25 +229,32 @@ class CinemaTVTimeline extends StatelessWidget {
   );
 }
 
-/// Reuses the app's optical material; only layout and focus change for TV.
+/// A compact, unblurred bottom scrim keeps the picture visible above controls.
 class CinemaTVControlSurface extends StatelessWidget {
   const CinemaTVControlSurface({super.key, required this.child});
   final Widget child;
   @override
-  Widget build(BuildContext context) => DecoratedBox(
-    decoration: const BoxDecoration(
-      gradient: LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [Colors.transparent, Color(0xE609090B)],
+  Widget build(BuildContext context) => TweenAnimationBuilder<double>(
+    tween: Tween(begin: 0, end: 1),
+    duration: CinemaTVMotion.duration(context, CinemaTVMotion.panel),
+    curve: CinemaTVMotion.curve,
+    builder: (_, value, child) => Opacity(
+      opacity: value,
+      child: Transform.translate(
+        offset: Offset(0, 12 * (1 - value)),
+        child: child,
       ),
     ),
-    child: Padding(
-      padding: const EdgeInsets.fromLTRB(28, 32, 28, 22),
-      child: CinemaOpticalGlass(
-        opacity: .58,
-        radius: 20,
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 14),
+    child: DecoratedBox(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Colors.transparent, Color(0xE609090B)],
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(28, 12, 28, 14),
         child: child,
       ),
     ),

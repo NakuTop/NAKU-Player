@@ -8,6 +8,7 @@ import 'cinema_featured_wall.dart';
 import 'cinema_navigation_island.dart';
 import 'cinema_navigation_preferences.dart';
 import 'cinema_tv_focus.dart';
+import 'cinema_tv_motion.dart';
 import 'cinema_lan_cast.dart';
 import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:kazumi/services/platform/desktop_window_controls.dart';
@@ -2382,21 +2383,44 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     Key? key,
     FocusNode? focusNode,
     bool autofocus = false,
-  }) => CinemaTVFocus(
-    child: TextButton(
-      key: key,
-      focusNode: focusNode,
-      autofocus: autofocus,
-      onPressed: onPressed,
-      style: TextButton.styleFrom(
-        foregroundColor: selected ? Colors.white : CinemaTheme.muted,
-        backgroundColor: selected
-            ? const Color(0xFF252528)
-            : Colors.transparent,
-        textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+  }) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 4),
+    child: CinemaTVFocus(
+      radius: 28,
+      child: TextButton(
+        key: key,
+        focusNode: focusNode,
+        autofocus: autofocus,
+        onPressed: onPressed,
+        style: ButtonStyle(
+          animationDuration: CinemaTVMotion.duration(
+            context,
+            CinemaTVMotion.focus,
+          ),
+          foregroundColor: WidgetStateProperty.resolveWith(
+            (states) => states.contains(WidgetState.focused)
+                ? const Color(0xFF111114)
+                : selected
+                ? Colors.white
+                : CinemaTheme.muted,
+          ),
+          backgroundColor: WidgetStateProperty.resolveWith(
+            (states) => states.contains(WidgetState.focused)
+                ? const Color(0xFFF5F5F7)
+                : selected
+                ? const Color(0xFF252528)
+                : Colors.transparent,
+          ),
+          textStyle: const WidgetStatePropertyAll(
+            TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+          ),
+          padding: const WidgetStatePropertyAll(
+            EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+          ),
+          shape: const WidgetStatePropertyAll(StadiumBorder()),
+        ),
+        child: Text(label),
       ),
-      child: Text(label),
     ),
   );
 
@@ -2537,8 +2561,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     _TVDestination.nas => const SizedBox.shrink(),
   };
 
-  // Keep the TV surface static: old televisions spend their budget decoding
-  // video and drawing artwork, rather than compositing blur and page effects.
+  // Keep artwork stable; focus-only transforms provide depth without backdrop blur.
   double get _tvGutter =>
       (MediaQuery.sizeOf(context).width * .04).clamp(32, 64);
   int get _tvColumns => MediaQuery.sizeOf(context).width >= 1100 ? 4 : 3;

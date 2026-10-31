@@ -35,7 +35,7 @@ def main():
         assert match, name
         shader = match.group(1)
         uniforms = re.findall(r'uniform\s+\w+\s+(\w+)\s*;', shader)
-        assert set(uniforms) <= {'u_pointScale'}, 'Stars must not receive clocks, input or Earth matrices'
+        assert set(uniforms) <= {'u_pointScale', 'u_twinklePhase'}, 'Only point scale and a bounded twinkle phase may reach stars'
         for forbidden in ['uTime', 'uPointer', 'uSpin', 'u_model', 'u_mvp', 'u_sun', 'texture2D']:
             assert forbidden not in shader, forbidden
     draw = re.search(r'private fun drawStars\(\) \{([\s\S]*?)\n        \}', renderer).group(1)
@@ -43,6 +43,9 @@ def main():
     assert 'glDisable(GLES20.GL_DEPTH_TEST)' in draw and 'glEnable(GLES20.GL_DEPTH_TEST)' in draw
     assert 'glDisable(GLES20.GL_BLEND)' in draw
     assert 'glBufferData' not in draw and 'geometry(' not in draw
+    assert 'sin(phase + u_twinklePhase * frequency)' in renderer
+    assert 'drawAtmosphere(center / aspect, radius / aspect, radius)' in renderer
+    assert 'glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)' in renderer
     frame = renderer[renderer.index('override fun onDrawFrame'):renderer.index('private fun uploadStars')]
     assert frame.index('drawStars()') < frame.index('glUseProgram(program)')
     assert 'uploadStars()' not in frame
@@ -54,7 +57,7 @@ def main():
                         str(SOURCE), str(HARNESS)], check=True)
         subprocess.run([str(jdk / 'bin/java'), '-cp', directory,
                         'com.example.kazumi.NakuTVStarsTest'], check=True)
-    print('PASS: static-only star uniforms, draw-before-Earth, restored GL state, no per-frame generation/upload.')
+    print('PASS: bounded twinkle uniforms, draw-before-Earth, restored GL state, no per-frame generation/upload.')
     print('Scope: production geometry and wiring; actual TV point appearance/performance requires device acceptance.')
 
 

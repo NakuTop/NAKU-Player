@@ -10,6 +10,9 @@ import 'package:flutter/foundation.dart';
 import 'package:kazumi/services/platform/desktop_fullscreen.dart';
 import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:kazumi/features/cinema/cinema_tv_session.dart';
+import 'package:kazumi/features/cinema/cinema_tv_player_controls.dart';
+import 'package:kazumi/features/cinema/cinema_tracks_sheet.dart';
+import 'package:kazumi/features/cinema/cinema_danmaku.dart';
 import 'package:kazumi/features/cinema/cinema_tv_native_player.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -2625,6 +2628,57 @@ void main() {
       await unmount(tester);
     },
   );
+  for (final size in [const Size(960, 540), const Size(1280, 720)]) {
+    testWidgets(
+      'TV production controls stay compact and remote opens both panels at $size',
+      (tester) async {
+        NakuDevice.isTV = true;
+        addTearDown(() => NakuDevice.isTV = false);
+        await mount(tester, {'autoPlay': true}, viewport: size);
+        final surface = find.byType(CinemaTVControlSurface);
+        expect(tester.getSize(surface).height, lessThan(160));
+        expect(FocusManager.instance.primaryFocus?.debugLabel, 'TV play');
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.pump();
+        expect(FocusManager.instance.primaryFocus?.debugLabel, 'TV subtitles');
+        await tester.sendKeyEvent(LogicalKeyboardKey.select);
+        await tester.pumpAndSettle();
+        expect(find.byType(CinemaTracksPanel), findsOneWidget);
+        expect(
+          tester.getSize(find.byType(CinemaTracksPanel)).width,
+          lessThanOrEqualTo(size.width * .42),
+        );
+        expect(
+          backends.single.state.playing,
+          true,
+          reason: 'opening a display panel preserves the playback intent',
+        );
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(FocusManager.instance.primaryFocus?.debugLabel, 'TV subtitles');
+        expect(backends.single.state.playing, true);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.pump();
+        expect(FocusManager.instance.primaryFocus?.debugLabel, 'TV danmaku');
+        await tester.sendKeyEvent(LogicalKeyboardKey.gameButtonA);
+        await tester.pumpAndSettle();
+        expect(find.byType(CinemaDanmakuStylePanel), findsOneWidget);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(FocusManager.instance.primaryFocus?.debugLabel, 'TV danmaku');
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.sendKeyEvent(LogicalKeyboardKey.gameButtonA);
+        await tester.pump();
+        expect(backends.single.state.position, const Duration(seconds: 10));
+        await tester.pump(const Duration(seconds: 4));
+        expect(surface, findsNothing);
+        expect(tester.takeException(), isNull);
+        await unmount(tester);
+      },
+    );
+  }
   testWidgets(
     'TV hidden controls accept immediate seek and pause without manual source UI',
     (tester) async {

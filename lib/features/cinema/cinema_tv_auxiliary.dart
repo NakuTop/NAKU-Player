@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'cinema_theme.dart';
+import 'cinema_tv_motion.dart';
 
 /// A remote-first modal: no drag handle, no hidden hover actions, and focus
 /// remains visible when a result list scrolls.
@@ -13,7 +14,13 @@ Future<T?> showCinemaTVPanel<T>(
   context: context,
   useRootNavigator: false,
   requestFocus: true,
-  animationStyle: AnimationStyle.noAnimation,
+  animationStyle: MediaQuery.disableAnimationsOf(context)
+      ? AnimationStyle.noAnimation
+      : const AnimationStyle(
+          duration: CinemaTVMotion.panel,
+          reverseDuration: CinemaTVMotion.focus,
+          curve: CinemaTVMotion.curve,
+        ),
   builder: (dialogContext) {
     final media = MediaQuery.of(dialogContext);
     return Dialog(
@@ -21,7 +28,16 @@ Future<T?> showCinemaTVPanel<T>(
       alignment: Alignment.centerRight,
       insetPadding: const EdgeInsets.all(24),
       child: SizedBox(
-        width: math.min(width, math.max(280, media.size.width - 48)),
+        width: math.min(
+          width,
+          math.min(
+            500,
+            math.min(
+              math.max(360, media.size.width * .42),
+              math.max(280, media.size.width - 48),
+            ),
+          ),
+        ),
         height: math.max(180, media.size.height - media.viewInsets.bottom - 48),
         child: CinemaGlass(
           child: FocusTraversalGroup(
@@ -87,7 +103,10 @@ class CinemaTVAuxiliaryAction extends StatelessWidget {
               Scrollable.ensureVisible(
                 context,
                 alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
-                duration: Duration.zero,
+                duration: CinemaTVMotion.duration(
+                  context,
+                  CinemaTVMotion.focus,
+                ),
               );
             }
           });

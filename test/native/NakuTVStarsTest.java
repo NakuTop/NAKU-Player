@@ -60,9 +60,9 @@ public final class NakuTVStarsTest {
             }
             check(Math.abs(points[i]) <= 1 && Math.abs(points[i+1]) <= 1,
                     name + " no offscreen buffer entries");
-            check(points[i+2] > 0 && points[i+2] < .81, name + " fixed quiet brightness");
+            check(points[i+2] > 0 && points[i+2] <= 1.0, name + " bounded brighter base light");
             check(points[i+3] >= 0 && points[i+3] <= 1, name + " original cool/warm mix range");
-            check(points[i+4] >= 2 && points[i+4] <= 8.11, name + " bounded original point sizes");
+            check(points[i+4] >= 3.1 && points[i+4] <= 10.61, name + " bounded larger point sizes");
         }
     }
     private static void check(boolean result, String message) {

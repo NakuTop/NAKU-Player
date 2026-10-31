@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'cinema_appearance.dart';
+import 'cinema_tv_motion.dart';
 import 'cinema_optical_glass.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:kazumi/utils/constants.dart';
@@ -80,7 +81,7 @@ abstract final class CinemaTheme {
           ? NoSplash.splashFactory
           : InkRipple.splashFactory,
       focusColor: NakuDevice.isTV
-          ? copper.withValues(alpha: .45)
+          ? Colors.white.withValues(alpha: .14)
           : const Color(0x24FFFFFF),
       hoverColor: const Color(0x0CFFFFFF),
       highlightColor: const Color(0x10FFFFFF),
@@ -94,12 +95,12 @@ abstract final class CinemaTheme {
       pageTransitionsTheme: NakuDevice.isTV
           ? const PageTransitionsTheme(
               builders: {
-                TargetPlatform.android: _CinemaTVStaticTransitions(),
-                TargetPlatform.macOS: _CinemaTVStaticTransitions(),
-                TargetPlatform.linux: _CinemaTVStaticTransitions(),
-                TargetPlatform.windows: _CinemaTVStaticTransitions(),
-                TargetPlatform.iOS: _CinemaTVStaticTransitions(),
-                TargetPlatform.fuchsia: _CinemaTVStaticTransitions(),
+                TargetPlatform.android: CinemaTVPageTransitions(),
+                TargetPlatform.macOS: CinemaTVPageTransitions(),
+                TargetPlatform.linux: CinemaTVPageTransitions(),
+                TargetPlatform.windows: CinemaTVPageTransitions(),
+                TargetPlatform.iOS: CinemaTVPageTransitions(),
+                TargetPlatform.fuchsia: CinemaTVPageTransitions(),
               },
             )
           : pageTransitionsTheme2024,
@@ -471,16 +472,4 @@ class _CinemaAppearanceInherited extends InheritedNotifier<CinemaAppearance> {
     required super.notifier,
     required super.child,
   });
-}
-
-class _CinemaTVStaticTransitions extends PageTransitionsBuilder {
-  const _CinemaTVStaticTransitions();
-  @override
-  Widget buildTransitions<T>(
-    PageRoute<T> route,
-    BuildContext context,
-    Animation<double> animation,
-    Animation<double> secondaryAnimation,
-    Widget child,
-  ) => child;
 }

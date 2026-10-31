@@ -1,4 +1,5 @@
 import 'cinema_swipe_navigation.dart';
+import 'cinema_tv_focus.dart';
 import 'package:kazumi/services/platform/naku_device.dart';
 import 'dart:async';
 import 'dart:math' as math;
@@ -345,13 +346,49 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
               errorBuilder: (_, _, _) =>
                   const ColoredBox(color: Color(0xFF111113)),
             ),
+          const Positioned.fill(
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Color(0x0009090B),
+                      Color(0x2809090B),
+                      Color(0xFF09090B),
+                    ],
+                    stops: [0, .38, 1],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const Positioned.fill(
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                    colors: [
+                      Color(0xA609090B),
+                      Color(0x3009090B),
+                      Color(0x0009090B),
+                    ],
+                    stops: [0, .52, 1],
+                  ),
+                ),
+              ),
+            ),
+          ),
           Positioned(
             left: (viewport.width * .04).clamp(32.0, 64.0),
             bottom: 30,
             child: Container(
               constraints: BoxConstraints(maxWidth: viewport.width * .58),
-              color: const Color(0xDF111113),
-              padding: const EdgeInsets.all(22),
+              color: Colors.transparent,
+              padding: const EdgeInsets.symmetric(vertical: 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
@@ -361,7 +398,7 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: viewport.height < 600 ? 34 : 44,
+                      fontSize: viewport.height < 600 ? 38 : 48,
                       height: 1.12,
                       fontWeight: FontWeight.w600,
                     ),
@@ -378,21 +415,24 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
                     ),
                   ),
                   const SizedBox(height: 20),
-                  FilledButton.icon(
-                    key: const ValueKey('tv-featured-open'),
-                    onPressed: () => widget.onOpen(title),
-                    icon: const Icon(Icons.play_arrow_rounded, size: 26),
-                    label: const Text('查看影片'),
-                    style: FilledButton.styleFrom(
-                      foregroundColor: const Color(0xFF151515),
-                      backgroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 18,
-                      ),
-                      textStyle: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
+                  CinemaTVFocus(
+                    radius: 16,
+                    child: FilledButton.icon(
+                      key: const ValueKey('tv-featured-open'),
+                      onPressed: () => widget.onOpen(title),
+                      icon: const Icon(Icons.play_arrow_rounded, size: 26),
+                      label: const Text('查看影片'),
+                      style: FilledButton.styleFrom(
+                        foregroundColor: const Color(0xFF151515),
+                        backgroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 18,
+                        ),
+                        textStyle: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ),
                   ),

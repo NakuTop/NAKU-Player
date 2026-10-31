@@ -2,12 +2,12 @@ package com.example.kazumi;
 
 import java.util.Arrays;
 
-/** Frozen original Home Display starfield geometry, prepared only on resize.
+/** Stationary Home Display starfield geometry, prepared only on resize.
  * No clock, model rotation, random device seed or input state enters this API.
  */
 public final class NakuTVStars {
     public static final int MAX_CANDIDATES = 960;
-    public static final int STRIDE = 5; // clip x/y, fixed light, warmth, pixel size
+    public static final int STRIDE = 5; // clip x/y, base light, warmth/phase seed, pixel size
     private static final long MASK = 0xffffffffL;
     private NakuTVStars() {}
 
@@ -55,9 +55,9 @@ public final class NakuTVStars {
             double textQuiet = .52 + .48 * smooth(-.15, .25, clipX);
             values[at++] = (float) clipX;
             values[at++] = (float) clipY;
-            values[at++] = (float) (frozenLight * textQuiet);
+            values[at++] = (float) Math.min(1.0, frozenLight * textQuiet * 2.15);
             values[at++] = (float) y;
-            values[at++] = (float) (2.0 + z * 2.3 + (z >= .988 ? 3.8 : 0.0));
+            values[at++] = (float) (3.1 + z * 3.0 + (z >= .988 ? 4.5 : 0.0));
         }
         return Arrays.copyOf(values, at);
     }

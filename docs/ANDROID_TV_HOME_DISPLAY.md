@@ -6,7 +6,7 @@ high-definition, slowly rotating Earth using a native OpenGL ES renderer; it
 is not a static-image replacement. A compact, noninteractive overlay contains
 a minute clock/date and at most three actual flights from the authenticated
 read-only Home Display feed. Parcels, next-destination cards, buttons, wake
-hints, extra 3D models and decorative effects are omitted.
+hints, extra 3D models and interactive effects are omitted.
 
 The native Earth uses the exact original 8192×4096 day and historical-night
 textures, a bounded sphere mesh and a controlled rendering cadence. It selects
@@ -25,25 +25,44 @@ notification: pointer or standalone-key wake then pops the page. The shell's
 early remote handler consumes the first waking key and repeats, restoring the
 original page/focus without activating its focused action.
 
-## Static star background
+## Fixed sky with bounded twinkle (1.1.6)
 
-Since 1.1.3, the original Home Display's starfield character is restored as a
-fixed background. `NakuTVStars` uses the original deterministic seed, frozen
-spatial distribution, cool/warm palette and soft point cores/halos. The original
-flow, entrance transition, twinkle, pointer displacement, interaction spin and
-streaks are not ported. The left text region is quieter for readability.
+The original Home Display starfield keeps its deterministic spatial distribution,
+cool/warm palette and soft point cores. Since 1.1.6 the points are larger and
+brighter and gently vary between 60% and 100% of their base light, with periods
+of about 7–20 seconds. Their positions never move with the Earth or input. The
+original entrance, pointer displacement, interaction spin and streaks remain
+omitted. The text side is quieter for readability.
 
-At most 960 candidates are evaluated once on viewport change; offscreen entries
-are removed before a static VBO upload. A 1280×720 viewport has 696 visible
-points. No geometry generation, buffer upload, clock sampling or input-driven
-layout occurs in the star draw. Its only uniform scales point size for the
-viewport; it receives neither Earth matrices nor solar/time/input uniforms.
+At most 960 candidates are evaluated once per viewport/context change, with
+696 visible points at 1280×720. A static VBO is uploaded only then. A single
+GL_POINTS pass runs behind the opaque globe, restores depth/blend/cull state,
+and receives only viewport point scale and a bounded twinkle phase. The phase
+uses the existing monotonic active-frame delta and a seamless two-minute loop;
+there is no extra timer, buffer upload, geometry generation or network work
+per frame. Backgrounding stops the existing at-most-24fps render loop.
 
-One GL_POINTS pass draws behind the globe with depth writes disabled. Blend and
-depth state are restored before opaque Earth rendering, so stars cannot shine
-through the night hemisphere. The existing Earth render cadence is reused;
-there is no additional timer, renderer, browser, texture asset or network call.
-Viewport/context changes rebuild the same deterministic layout.
+## Atmosphere, clouds and old-TV rendering budget (1.1.6)
+
+A thin blue atmosphere follows the solar direction, with a softer warm edge
+near the terminator. It is one four-vertex analytic pass, not another sphere,
+ray marching, bloom or a blur render target. The surface computes its ocean
+mask in the original sRGB texel space, before the dark blue values collapse
+in linear light, and uses a restrained solar glint.
+
+The other clients' original `clouds-2048.jpg` is bundled unchanged as
+`assets/images/tv_earth_clouds_2k.jpg` (2048×1024, SHA-256
+`daddaad84d7a33bbbc86cdda3f591099f57cee8607b7bcf3b67eb7e4f7a1c793`).
+It is an historical texture, not live weather. Coverage is composited into the
+existing sphere shader without another rotating model or animation loop. The
+optional cloud texture needs about 20 MiB during upload; failure leaves
+the original required day/night pair intact. Supported anisotropic filtering
+is capped at 4×.
+
+Only the screensaver framebuffer is capped at 1920×1080 on low-RAM devices or
+heaps of at most 256 MiB; it still fills the entire actual TV view. The separate
+Media3 video SurfaceView and its resolution/HDR path are unaffected. Original
+8K day/night sources and their adaptive paired allocation policy are retained.
 
 ## Real UTC day/night surface
 
@@ -62,11 +81,11 @@ world normal and sun are used only for view-dependent ocean glint and the limb.
 The day texture is decoded from sRGB before lighting. The night texture remains
 raw data: its red channel supplies the original historical 2016 VIIRS light
 mask, with warm emission only on the astronomical night side. The original
-surface's terminator softness, dim night tint, twilight, glint and light-mask
-constants are retained, followed by the Three/R3F ACES display transform and
+surface's terminator softness, dim night tint, twilight and light-mask
+constants are retained, with the restrained ocean changes above, followed by the Three/R3F ACES display transform and
 sRGB output. City emission is a historical image, not a live report of a city's
-power supply. Extra atmosphere/cloud models, controls and unrelated layers
-remain omitted from this flights-only TV surface.
+power supply. Atmosphere and cloud appearance use the bounded passes above;
+controls and unrelated data layers remain omitted from this flights-only TV surface.
 
 Both texture resources are required for normal initialization. Missing or
 invalid resources produce the existing explicitly labeled render-failure
@@ -147,16 +166,15 @@ reference can compile the exact native vertex/fragment shaders and original
 logic and geography in a different GL implementation; its output is explicitly
 a reference, not an Android TV screenshot or performance acceptance.
 
-The production Java static-star helper has JVM checks for deterministic bounded
-geometry, viewport handling and text-side brightness. Wiring checks reject time,
-input or Earth-matrix star uniforms and per-frame generation/upload. An isolated
-WebGL1 reference using the actual production star geometry/shaders confirmed
-identical outside-globe background pixels across different UTC times and Earth
-yaws, and no inside-globe change when stars were toggled for QA. Such toggling
-exists only in the temporary reference harness, not the TV interface.
+The production Java star helper has JVM checks for deterministic bounded
+geometry, viewport handling and text-side brightness. Wiring checks permit only
+point scale and the bounded twinkle phase, rejecting input/Earth-matrix uniforms
+and per-frame generation/upload. The exact production shaders and geometry
+are also exercised in a temporary WebGL1 reference at two UTC times and
+different twinkle phases. This is not proof of Android driver behavior or FPS.
 
 Physical remote operation, real NAS authorization, actual Home Display records,
-high-definition Earth rotation/day-night output, static-star appearance,
+high-definition Earth rotation/day-night output, atmosphere/clouds/twinkling-star appearance,
 real route arcs and sustained
 GPU performance on the target Huawei TV remain manual acceptance items. Passing
 local tests or offscreen reference checks does not count as those checks.

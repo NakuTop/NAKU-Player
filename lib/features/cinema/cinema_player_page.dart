@@ -82,6 +82,7 @@ import 'cinema_player_preferences.dart';
 import 'cinema_video_gestures.dart';
 import 'cinema_player_entrance.dart';
 import 'cinema_tv_player_controls.dart';
+import 'cinema_tv_motion.dart';
 import 'cinema_tv_media_policy.dart';
 import 'cinema_tv_session.dart';
 import 'cinema_optical_glass.dart';
@@ -571,7 +572,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _playback?.player.state.playing != true) {
       return;
     }
-    _tvControlsTimer = Timer(const Duration(seconds: 5), () {
+    _tvControlsTimer = Timer(const Duration(seconds: 4), () {
       if (mounted &&
           NakuDevice.isTV &&
           ModalRoute.of(context)?.isCurrent == true) {
@@ -605,7 +606,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return KeyEventResult.ignored;
     }
     if (!_tvControlsVisible) {
-      if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter) {
+      if (key == LogicalKeyboardKey.select ||
+          key == LogicalKeyboardKey.enter ||
+          key == LogicalKeyboardKey.numpadEnter ||
+          key == LogicalKeyboardKey.gameButtonA) {
         if (event is KeyDownEvent) unawaited(_togglePlayback());
         return KeyEventResult.handled;
       }
@@ -633,6 +637,29 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _showTVControls();
         return KeyEventResult.handled;
       }
+    }
+    final controlNodes = [
+      _tvPlayFocus,
+      _tvEpisodeFocus,
+      _tvSubtitleFocus,
+      _tvDanmakuFocus,
+    ];
+    if (_tvControlsVisible &&
+        !_tvTimelineFocus.hasFocus &&
+        !controlNodes.any((node) => node.hasFocus) &&
+        const [
+          LogicalKeyboardKey.arrowLeft,
+          LogicalKeyboardKey.arrowRight,
+          LogicalKeyboardKey.arrowUp,
+          LogicalKeyboardKey.arrowDown,
+          LogicalKeyboardKey.select,
+          LogicalKeyboardKey.enter,
+          LogicalKeyboardKey.numpadEnter,
+          LogicalKeyboardKey.gameButtonA,
+        ].contains(key)) {
+      _tvPlayFocus.requestFocus();
+      _scheduleTVControlsHide();
+      return KeyEventResult.handled;
     }
     _scheduleTVControlsHide();
     return KeyEventResult.ignored;
@@ -2368,8 +2395,22 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Future<void> _showDanmaku() async {
-    final controller = _playback?.danmaku;
-    if (controller != null) {
+    final playback = _playback;
+    if (playback == null) return;
+    final controller = playback.danmaku ??= CinemaDanmakuController(
+      playback.player,
+      widget.store,
+      '${_title.key}|${_episode?.url ?? ''}',
+      autoQuery: CinemaLogvarQuery.parse(
+        _title.title,
+        category: _title.category,
+        episodeName: _subtitleEpisodeName,
+        fallbackEpisode: _episodeIndex + 1,
+        year: _title.year,
+      ),
+    );
+    if (mounted) setState(() {});
+    if (mounted) {
       await showCinemaDanmakuSheet(context, controller, title: _title.title);
     }
   }
@@ -4405,118 +4446,131 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   );
 
   Widget _tvControlOverlay(_CinemaPlayback playback) => CinemaTVControlSurface(
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                _title.title,
-                style: const TextStyle(
-                  fontSize: 23,
-                  fontWeight: FontWeight.w600,
+    child: CinemaTVControlNavigation(
+      timeline: _tvTimelineFocus,
+      actions: [
+        _tvPlayFocus,
+        if ((_route?.episodes.length ?? 0) > 1) _tvEpisodeFocus,
+        _tvSubtitleFocus,
+        _tvDanmakuFocus,
+      ],
+      onActivity: _scheduleTVControlsHide,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${_title.title}${_episode == null ? '' : ' · ${_episode!.name}'}',
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            const SizedBox(width: 24),
-            Text(
-              _probingRoutes ? '正在自动优选' : '自动播放优化',
-              style: const TextStyle(fontSize: 16, color: _muted),
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        if (_episode != null)
-          Text(
-            _episode!.name,
-            style: const TextStyle(fontSize: 16, color: _muted),
-          ),
-        const SizedBox(height: 8),
-        StreamBuilder<Duration>(
-          stream: playback.player.stream.position,
-          initialData: playback.position,
-          builder: (_, position) => CinemaTVTimeline(
-            position: position.data ?? playback.position,
-            duration: playback.duration,
-            preview: _tvTimeline,
-            focusNode: _tvTimelineFocus,
-            onCommit: _seekTV,
-            onActivity: _scheduleTVControlsHide,
-          ),
-        ),
-        const SizedBox(height: 10),
-        Row(
-          children: [
-            StreamBuilder<bool>(
-              stream: playback.player.stream.playing,
-              initialData: playback.player.state.playing,
-              builder: (_, playing) => FilledButton.icon(
-                focusNode: _tvPlayFocus,
-                autofocus: true,
-                onPressed: _togglePlayback,
-                style: _tvButtonStyle(primary: true),
-                icon: Icon(
-                  playing.data == true
-                      ? Icons.pause_rounded
-                      : Icons.play_arrow_rounded,
-                  size: 26,
-                ),
-                label: Text(
-                  playing.data == true ? '暂停' : '播放',
-                  style: const TextStyle(fontSize: 19),
-                ),
-              ),
-            ),
-            if ((_route?.episodes.length ?? 0) > 1) ...[
-              const SizedBox(width: 14),
-              OutlinedButton.icon(
-                focusNode: _tvEpisodeFocus,
-                style: _tvButtonStyle(),
-                onPressed: () => _showTVAction(_showEpisodes, _tvEpisodeFocus),
-                icon: const Icon(Icons.playlist_play_rounded, size: 25),
-                label: const Text('选集', style: TextStyle(fontSize: 19)),
               ),
             ],
-            const Spacer(),
-            OutlinedButton.icon(
-              focusNode: _tvSubtitleFocus,
-              style: _tvButtonStyle(),
-              onPressed: () => _showTVAction(_showTracks, _tvSubtitleFocus),
-              icon: const Icon(Icons.subtitles_outlined, size: 24),
-              label: const Text('字幕', style: TextStyle(fontSize: 19)),
+          ),
+          const SizedBox(height: 2),
+          StreamBuilder<Duration>(
+            stream: playback.player.stream.position,
+            initialData: playback.position,
+            builder: (_, position) => CinemaTVTimeline(
+              compact: true,
+              position: position.data ?? playback.position,
+              duration: playback.duration,
+              preview: _tvTimeline,
+              focusNode: _tvTimelineFocus,
+              onCommit: _seekTV,
+              onActivity: _scheduleTVControlsHide,
             ),
-            const SizedBox(width: 14),
-            OutlinedButton.icon(
-              focusNode: _tvDanmakuFocus,
-              style: _tvButtonStyle(),
-              onPressed: playback.danmaku == null
-                  ? null
-                  : () => _showTVAction(_showDanmaku, _tvDanmakuFocus),
-              icon: const Icon(Icons.comment_outlined, size: 23),
-              label: const Text('弹幕', style: TextStyle(fontSize: 19)),
-            ),
-          ],
-        ),
-      ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              StreamBuilder<bool>(
+                stream: playback.player.stream.playing,
+                initialData: playback.player.state.playing,
+                builder: (_, playing) => FilledButton.icon(
+                  focusNode: _tvPlayFocus,
+                  autofocus: true,
+                  onPressed: _togglePlayback,
+                  style: _tvButtonStyle(primary: true),
+                  icon: Icon(
+                    playing.data == true
+                        ? Icons.pause_rounded
+                        : Icons.play_arrow_rounded,
+                    size: 22,
+                  ),
+                  label: Text(
+                    playing.data == true ? '暂停' : '播放',
+                    style: const TextStyle(fontSize: 17),
+                  ),
+                ),
+              ),
+              if ((_route?.episodes.length ?? 0) > 1) ...[
+                const SizedBox(width: 14),
+                OutlinedButton.icon(
+                  focusNode: _tvEpisodeFocus,
+                  style: _tvButtonStyle(),
+                  onPressed: () =>
+                      _showTVAction(_showEpisodes, _tvEpisodeFocus),
+                  icon: const Icon(Icons.playlist_play_rounded, size: 22),
+                  label: const Text('选集', style: TextStyle(fontSize: 17)),
+                ),
+              ],
+              const Spacer(),
+              OutlinedButton.icon(
+                focusNode: _tvSubtitleFocus,
+                style: _tvButtonStyle(),
+                onPressed: () => _showTVAction(_showTracks, _tvSubtitleFocus),
+                icon: const Icon(Icons.subtitles_outlined, size: 22),
+                label: const Text('字幕', style: TextStyle(fontSize: 17)),
+              ),
+              const SizedBox(width: 14),
+              OutlinedButton.icon(
+                focusNode: _tvDanmakuFocus,
+                style: _tvButtonStyle(),
+                onPressed: () => _showTVAction(_showDanmaku, _tvDanmakuFocus),
+                icon: const Icon(Icons.comment_outlined, size: 22),
+                label: const Text('弹幕', style: TextStyle(fontSize: 17)),
+              ),
+            ],
+          ),
+        ],
+      ),
     ),
   );
   ButtonStyle _tvButtonStyle({bool primary = false}) => ButtonStyle(
+    animationDuration: CinemaTVMotion.duration(context, CinemaTVMotion.focus),
     padding: const WidgetStatePropertyAll(
-      EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+      EdgeInsets.symmetric(horizontal: 17, vertical: 10),
     ),
-    minimumSize: const WidgetStatePropertyAll(Size(100, 52)),
+    minimumSize: const WidgetStatePropertyAll(Size(88, 44)),
+    backgroundColor: WidgetStateProperty.resolveWith(
+      (states) => states.contains(WidgetState.focused)
+          ? const Color(0xFFF5F5F7)
+          : primary
+          ? const Color(0xFF343438)
+          : const Color(0xFF1C1C20),
+    ),
+    foregroundColor: WidgetStateProperty.resolveWith(
+      (states) => states.contains(WidgetState.focused)
+          ? const Color(0xFF111114)
+          : Colors.white,
+    ),
+    shape: WidgetStatePropertyAll(
+      RoundedRectangleBorder(borderRadius: BorderRadius.circular(13)),
+    ),
     side: WidgetStateProperty.resolveWith(
       (states) => BorderSide(
         color: states.contains(WidgetState.focused)
             ? Colors.white
-            : primary
-            ? Colors.transparent
-            : _line,
-        width: states.contains(WidgetState.focused) ? 3 : 1,
+            : const Color(0x24FFFFFF),
+        width: 1.5,
       ),
     ),
   );

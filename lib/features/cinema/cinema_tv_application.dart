@@ -7,6 +7,7 @@ import 'cinema_nas_media.dart';
 import 'cinema_tv_idle.dart';
 import 'cinema_tv_home_display.dart';
 import 'cinema_tv_session.dart';
+import 'cinema_tv_motion.dart';
 
 /// The existing cinema pages keep their artwork, caches and transitions inside
 /// one TV navigator. Idle observation also covers players and nested dialogs.
@@ -172,18 +173,18 @@ class CinemaTVApplicationState extends State<CinemaTVApplication>
     onPointerDown: (_) => activity(),
     onPointerSignal: (_) => activity(),
     child: MediaQuery(
-      data: MediaQuery.of(context).copyWith(disableAnimations: true),
+      data: MediaQuery.of(context),
       child: Theme(
         data: Theme.of(context).copyWith(
           splashFactory: NoSplash.splashFactory,
           pageTransitionsTheme: const PageTransitionsTheme(
             builders: {
-              TargetPlatform.android: _TVStaticPageTransitions(),
-              TargetPlatform.linux: _TVStaticPageTransitions(),
-              TargetPlatform.macOS: _TVStaticPageTransitions(),
-              TargetPlatform.windows: _TVStaticPageTransitions(),
-              TargetPlatform.iOS: _TVStaticPageTransitions(),
-              TargetPlatform.fuchsia: _TVStaticPageTransitions(),
+              TargetPlatform.android: CinemaTVPageTransitions(),
+              TargetPlatform.linux: CinemaTVPageTransitions(),
+              TargetPlatform.macOS: CinemaTVPageTransitions(),
+              TargetPlatform.windows: CinemaTVPageTransitions(),
+              TargetPlatform.iOS: CinemaTVPageTransitions(),
+              TargetPlatform.fuchsia: CinemaTVPageTransitions(),
             },
           ),
         ),
@@ -207,18 +208,6 @@ class CinemaTVApplicationState extends State<CinemaTVApplication>
       ),
     ),
   );
-}
-
-class _TVStaticPageTransitions extends PageTransitionsBuilder {
-  const _TVStaticPageTransitions();
-  @override
-  Widget buildTransitions<T>(
-    PageRoute<T> route,
-    BuildContext context,
-    Animation<double> animation,
-    Animation<double> secondaryAnimation,
-    Widget child,
-  ) => child;
 }
 
 class _TVRouteActivity extends NavigatorObserver {

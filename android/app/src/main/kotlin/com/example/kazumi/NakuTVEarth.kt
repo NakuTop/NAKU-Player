@@ -40,6 +40,7 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
     private val events = EventChannel(engine.dartExecutor.binaryMessenger, "naku/tv-earth/events")
     private val dayTextureAsset = engine.flutterLoaderAsset("assets/images/tv_earth_day_8k.webp")
     private val nightTextureAsset = engine.flutterLoaderAsset("assets/images/tv_earth_night_8k.webp")
+    private val cloudTextureAsset = engine.flutterLoaderAsset("assets/images/tv_earth_clouds_2k.jpg")
     private val views = mutableMapOf<Int, EarthView>()
     private var sink: EventChannel.EventSink? = null
     private var foreground = true
@@ -91,7 +92,7 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
         private var failed = false
         private var firstFrame = false
         private var firstFrameFacts = emptyMap<String, Any>()
-        private val renderer = EarthRenderer(context, dayTextureAsset, nightTextureAsset,
+        private val renderer = EarthRenderer(context, dayTextureAsset, nightTextureAsset, cloudTextureAsset,
             onFrame = { facts -> handler.post {
                 if (!closed) {
                     firstFrame = true
@@ -146,6 +147,20 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
         }
         init {
             renderer.setRoutes(values["routes"])
+            // Bound only the old-TV screensaver framebuffer. Video output is
+            // a separate native SurfaceView and retains its full HDR resolution.
+            val memory = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            if (memory?.isLowRamDevice == true || (memory?.memoryClass ?: 256) <= 256) {
+                surface.addOnLayoutChangeListener { _, left, top, right, bottom, _, _, _, _ ->
+                    val width = right - left
+                    val height = bottom - top
+                    if (width > 0 && height > 0) {
+                        val scale = min(1.0, min(1920.0 / width, 1080.0 / height))
+                        if (scale < 1.0) surface.holder.setFixedSize((width * scale).roundToInt(), (height * scale).roundToInt())
+                        else surface.holder.setSizeFromLayout()
+                    }
+                }
+            }
             ready = true
             surface.onPause()
         }
@@ -215,6 +230,7 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
         private val context: Context,
         private val dayAsset: String,
         private val nightAsset: String,
+        private val cloudAsset: String,
         private val onFrame: (Map<String, Any>) -> Unit,
         private val onError: () -> Unit,
     ) : GLSurfaceView.Renderer {
@@ -225,9 +241,13 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
         private val routeBuffers = mutableListOf<Pair<Int, Int>>()
         private val positionBuffers = mutableListOf<Int>()
         private val sphereBuffers = IntArray(2)
-        private val sphereHandles = IntArray(8)
+        private val sphereHandles = IntArray(10)
         private val lineHandles = IntArray(4)
-        private val starHandles = IntArray(3)
+        private val starHandles = IntArray(4)
+        private val atmosphereHandles = IntArray(3)
+        private var atmosphereProgram = 0
+        private var atmosphereBuffer = 0
+        private var starPhase = 0f
         private var starProgram = 0
         private var starBuffer = 0
         private var starCount = 0
@@ -237,7 +257,9 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
         private var program = 0
         private var lineProgram = 0
         private var texture = 0
+        private var cloudTexture = 0
         private var nightTexture = 0
+        private var anisotropy = 1f
         private var failed = false
         private var frameSent = false
         private var width = 1
@@ -289,6 +311,18 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 starHandles[0] = GLES20.glGetAttribLocation(starProgram, "a_starPosition")
                 starHandles[1] = GLES20.glGetAttribLocation(starProgram, "a_starAppearance")
                 starHandles[2] = GLES20.glGetUniformLocation(starProgram, "u_pointScale")
+                starHandles[3] = GLES20.glGetUniformLocation(starProgram, "u_twinklePhase")
+                atmosphereProgram = program(ATMOSPHERE_VERTEX, ATMOSPHERE_FRAGMENT)
+                atmosphereHandles[0] = GLES20.glGetAttribLocation(atmosphereProgram, "a_corner")
+                atmosphereHandles[1] = GLES20.glGetUniformLocation(atmosphereProgram, "u_disc")
+                atmosphereHandles[2] = GLES20.glGetUniformLocation(atmosphereProgram, "u_sunWorld")
+                val haloNames = IntArray(1)
+                GLES20.glGenBuffers(1, haloNames, 0)
+                atmosphereBuffer = haloNames[0]
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, atmosphereBuffer)
+                GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, 32,
+                    floats(floatArrayOf(-1f,-1f, 1f,-1f, -1f,1f, 1f,1f)), GLES20.GL_STATIC_DRAW)
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
                 val starNames = IntArray(1)
                 GLES20.glGenBuffers(1, starNames, 0)
                 starBuffer = starNames[0]
@@ -303,6 +337,8 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 sphereHandles[5] = GLES20.glGetUniformLocation(program, "u_nightTexture")
                 sphereHandles[6] = GLES20.glGetUniformLocation(program, "u_sunLocal")
                 sphereHandles[7] = GLES20.glGetUniformLocation(program, "u_sunWorld")
+                sphereHandles[8] = GLES20.glGetUniformLocation(program, "u_cloudTexture")
+                sphereHandles[9] = GLES20.glGetUniformLocation(program, "u_cloudEnabled")
                 lineHandles[0] = GLES20.glGetUniformLocation(lineProgram, "u_mvp")
                 lineHandles[1] = GLES20.glGetAttribLocation(lineProgram, "a_position")
                 lineHandles[2] = GLES20.glGetUniformLocation(lineProgram, "u_points")
@@ -329,7 +365,17 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                     memory?.memoryClass ?: 0, memory?.isLowRamDevice == true || free.lowMemory)
                 require(tier >= NakuTVSolar.MIN_TEXTURE_TIER)
                 check(GLES20.glGetError() == GLES20.GL_NO_ERROR)
+                if (GLES20.glGetString(GLES20.GL_EXTENSIONS)?.contains("GL_EXT_texture_filter_anisotropic") == true) {
+                    val maximum = FloatArray(1)
+                    GLES20.glGetFloatv(0x84FF, maximum, 0)
+                    if (maximum[0].isFinite()) anisotropy = maximum[0].coerceIn(1f, 4f)
+                }
                 loadTexturePair(tier)
+                // The same optional 2K historical cloud map as the other clients.
+                // Its ~20 MiB bitmap + mipmap peak fits the reserved headroom.
+                cloudTexture = try { loadTexture(cloudAsset, 2048).id }
+                    catch (_: Exception) { clearGlErrors(); 0 }
+                    catch (_: OutOfMemoryError) { clearGlErrors(); 0 }
             } catch (_: Exception) { failed = true; onError() }
             catch (_: OutOfMemoryError) { failed = true; onError() }
         }
@@ -342,9 +388,12 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
         override fun onDrawFrame(gl: GL10?) {
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
             if (failed || program == 0 || !animating) { lastFrame = 0L; return }
-            drawStars()
             val now = System.nanoTime()
-            if (lastFrame != 0L) yaw = (yaw + ((now - lastFrame) / 1_000_000_000f).coerceIn(0f, .1f) * 1.68f) % 360f
+            val delta = if (lastFrame == 0L) 0f else ((now - lastFrame) / 1_000_000_000f).coerceIn(0f, .1f)
+            yaw = (yaw + delta * 1.68f) % 360f
+            // Integer star frequencies make a seamless two-minute phase loop.
+            starPhase = (starPhase + delta * (2f * PI.toFloat() / 120f)) % (2f * PI.toFloat())
+            drawStars()
             lastFrame = now
             val utcMillis = System.currentTimeMillis()
             if (utcMillis / 1000L != solarSecond) {
@@ -368,6 +417,7 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
             // Transform only for view-dependent ocean/limb appearance. The
             // day/night mask itself uses unrotated geographic normals below.
             Matrix.multiplyMV(sunWorld, 0, model, 0, sunLocal, 0)
+            drawAtmosphere(center / aspect, radius / aspect, radius)
             GLES20.glUseProgram(program)
             GLES20.glUniformMatrix4fv(sphereHandles[0], 1, false, mvp, 0)
             GLES20.glUniformMatrix4fv(sphereHandles[1], 1, false, model, 0)
@@ -387,6 +437,10 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
             GLES20.glUniform1i(sphereHandles[5], 1)
             GLES20.glUniform3fv(sphereHandles[6], 1, sunLocal, 0)
             GLES20.glUniform3fv(sphereHandles[7], 1, sunWorld, 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (cloudTexture != 0) cloudTexture else texture)
+            GLES20.glUniform1i(sphereHandles[8], 2)
+            GLES20.glUniform1f(sphereHandles[9], if (cloudTexture != 0) 1f else 0f)
             GLES20.glDrawElements(GLES20.GL_TRIANGLES, mesh.second.limit(), GLES20.GL_UNSIGNED_SHORT, 0)
             GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, 0)
             GLES20.glDisableVertexAttribArray(position)
@@ -420,8 +474,30 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                     "nightTextureWidth" to nightTextureWidth, "nightTextureHeight" to nightTextureHeight,
                     "solarUtcMillis" to solarSecond * 1000L, "dayNight" to true,
                     "fpsLimit" to 24, "renderer" to "gles2",
-                    "staticStars" to true, "starCount" to starCount))
+                    "staticStars" to false, "twinklingStars" to true, "atmosphere" to true, "clouds" to (cloudTexture != 0), "starCount" to starCount))
             }
+        }
+        private fun drawAtmosphere(centerX: Float, radiusX: Float, radiusY: Float) {
+            // Four vertices and analytic falloff; no extra planet mesh/map,
+            // ray marching, blur render target or independent animation loop.
+            GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+            GLES20.glDepthMask(false)
+            GLES20.glDisable(GLES20.GL_CULL_FACE)
+            GLES20.glEnable(GLES20.GL_BLEND)
+            GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+            GLES20.glUseProgram(atmosphereProgram)
+            GLES20.glUniform4f(atmosphereHandles[1], centerX, 0f, radiusX, radiusY)
+            GLES20.glUniform3fv(atmosphereHandles[2], 1, sunWorld, 0)
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, atmosphereBuffer)
+            GLES20.glEnableVertexAttribArray(atmosphereHandles[0])
+            GLES20.glVertexAttribPointer(atmosphereHandles[0], 2, GLES20.GL_FLOAT, false, 8, 0)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            GLES20.glDisableVertexAttribArray(atmosphereHandles[0])
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+            GLES20.glDisable(GLES20.GL_BLEND)
+            GLES20.glDepthMask(true)
+            GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+            GLES20.glEnable(GLES20.GL_CULL_FACE)
         }
         private fun uploadStars() {
             if (failed || starProgram == 0 || starBuffer == 0 ||
@@ -434,12 +510,12 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
             starCount = points.size / NakuTVStars.STRIDE
             starWidth = width
             starHeight = height
-            starPointScale = (height / 720f).coerceIn(.75f, 1.5f)
+            starPointScale = (height / 720f).coerceIn(.75f, 3f)
         }
 
         private fun drawStars() {
             if (starCount == 0) return
-            // Clip-space VBO never sees the Earth matrices, clock or input.
+            // Positions stay in a static clip-space VBO; only luminance receives a phase.
             // Draw first without depth writes; the opaque Earth covers it fully,
             // including its dark hemisphere. No stars shine through the globe.
             GLES20.glDisable(GLES20.GL_DEPTH_TEST)
@@ -454,6 +530,7 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
             GLES20.glEnableVertexAttribArray(starHandles[1])
             GLES20.glVertexAttribPointer(starHandles[1], 3, GLES20.GL_FLOAT, false, 20, 8)
             GLES20.glUniform1f(starHandles[2], starPointScale)
+            GLES20.glUniform1f(starHandles[3], starPhase)
             GLES20.glDrawArrays(GLES20.GL_POINTS, 0, starCount)
             GLES20.glDisableVertexAttribArray(starHandles[0])
             GLES20.glDisableVertexAttribArray(starHandles[1])
@@ -497,7 +574,8 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
         private fun loadTexture(asset: String, tier: Int): TextureData {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true; inScaled = false }
             context.assets.open(asset).use { BitmapFactory.decodeStream(it, null, bounds) }
-            require(bounds.outWidth == 8192 && bounds.outHeight == 4096)
+            require(bounds.outWidth == 8192 && bounds.outHeight == 4096 ||
+                asset == cloudAsset && bounds.outWidth == 2048 && bounds.outHeight == 1024)
             var sample = 1
             while (bounds.outWidth / sample > tier) sample *= 2
             val options = BitmapFactory.Options().apply {
@@ -515,6 +593,7 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_REPEAT)
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+                if (anisotropy > 1f) GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, 0x84FE, anisotropy)
                 GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
                 GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
                 check(GLES20.glGetError() == GLES20.GL_NO_ERROR)
@@ -570,6 +649,8 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 varying mediump vec3 v_worldNormal;
                 uniform sampler2D u_texture;
                 uniform sampler2D u_nightTexture;
+                uniform sampler2D u_cloudTexture;
+                uniform float u_cloudEnabled;
                 uniform mediump vec3 u_sunLocal;
                 uniform mediump vec3 u_sunWorld;
                 vec3 srgbToLinear(vec3 c) {
@@ -597,15 +678,19 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                     // Orthographic native projection has parallel +Z view rays.
                     vec3 view = vec3(0.0, 0.0, 1.0);
                     // Day RGB is sRGB; the historical VIIRS mask below is raw data.
-                    vec3 mapColor = srgbToLinear(texture2D(u_texture, v_uv).rgb);
+                    vec3 texel = texture2D(u_texture, v_uv).rgb;
+                    vec3 mapColor = srgbToLinear(texel);
                     float daylight = smoothstep(-0.075, 0.12, solar);
                     float direct = 0.64 + 0.40 * pow(max(0.0, solar), 0.65);
-                    float ocean = smoothstep(0.004, 0.04, mapColor.b - mapColor.g)
-                        * smoothstep(0.004, 0.04, mapColor.b - mapColor.r);
+                    // Compute the water mask before gamma decoding: dark blue
+                    // oceans must not collapse into a coarse near-black mask.
+                    float ocean = smoothstep(0.015, 0.10, texel.b - texel.g)
+                        * smoothstep(0.025, 0.13, texel.b - texel.r);
+                    mapColor *= mix(vec3(1.0), vec3(0.94, 0.98, 1.035), ocean);
                     vec3 color = mapColor * mix(vec3(0.54, 0.68, 0.91) * 0.13, vec3(direct), daylight);
                     vec3 halfVector = normalize(sun + view);
-                    float highlight = pow(max(0.0, dot(n, halfVector)), 64.0) * 0.024
-                        + pow(max(0.0, dot(n, halfVector)), 12.0) * 0.005;
+                    float highlight = pow(max(0.0, dot(n, halfVector)), 64.0) * 0.032
+                        + pow(max(0.0, dot(n, halfVector)), 12.0) * 0.007;
                     color += vec3(0.72, 0.82, 0.89) * highlight * ocean * daylight;
                     float limb = pow(1.0 - max(0.0, dot(n, view)), 4.0);
                     float dusk = exp(-pow((solar + 0.018) / 0.085, 2.0));
@@ -615,7 +700,40 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                     float emission = texture2D(u_nightTexture, v_uv).r;
                     vec3 lamp = mix(vec3(0.80, 0.48, 0.19), vec3(1.0, 0.85, 0.57), smoothstep(0.12, 0.8, emission));
                     color += lamp * pow(emission, 0.94) * darkness * 0.95;
+                    // Composite clouds into the existing sphere: no third mesh
+                    // or spinning model, and nothing can bleed outside the limb.
+                    float cloud = srgbToLinear(texture2D(u_cloudTexture, v_uv).rgb).r;
+                    float density = smoothstep(0.09, 0.83, cloud) * u_cloudEnabled;
+                    vec3 cloudColor = mix(vec3(0.10, 0.15, 0.21), vec3(0.76, 0.83, 0.86), daylight);
+                    color = mix(color, cloudColor, density * (0.045 + daylight * 0.31));
                     gl_FragColor = vec4(linearToSrgb(displayTone(color)), 1.0);
+                }
+            """
+            private const val ATMOSPHERE_VERTEX = """
+                attribute vec2 a_corner;
+                uniform vec4 u_disc;
+                varying mediump vec2 v_disc;
+                void main() {
+                    v_disc = a_corner * 1.05;
+                    gl_Position = vec4(u_disc.xy + v_disc * u_disc.zw, 0.0, 1.0);
+                }
+            """
+            private const val ATMOSPHERE_FRAGMENT = """
+                precision mediump float;
+                varying mediump vec2 v_disc;
+                uniform vec3 u_sunWorld;
+                void main() {
+                    float radius = length(v_disc);
+                    if (radius < 1.0 || radius > 1.05) discard;
+                    float altitude = radius - 1.0;
+                    float solar = dot(vec3(v_disc / radius, 0.0), normalize(u_sunWorld));
+                    float day = smoothstep(-0.16, 0.20, solar);
+                    float dusk = exp(-pow(solar / 0.12, 2.0));
+                    vec3 color = mix(vec3(0.10,0.18,0.29), vec3(0.28,0.52,0.76), day);
+                    color = mix(color, vec3(0.63,0.40,0.21), dusk * 0.23);
+                    color = 1.055 * pow(color, vec3(1.0/2.4)) - 0.055;
+                    float alpha = exp(-altitude * 110.0) * (1.0 - smoothstep(0.025,0.05,altitude)) * (0.045 + day * 0.36);
+                    gl_FragColor = vec4(color * alpha, alpha);
                 }
             """
             private const val STAR_VERTEX = """
@@ -623,11 +741,14 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 attribute vec2 a_starPosition;
                 attribute vec3 a_starAppearance;
                 uniform float u_pointScale;
+                uniform float u_twinklePhase;
                 varying mediump float v_light;
                 varying mediump float v_warmth;
                 varying mediump float v_size;
                 void main() {
-                    v_light = a_starAppearance.x;
+                    float phase = dot(a_starPosition, vec2(9.7, 17.3)) + a_starAppearance.y * 6.2831853;
+                    float frequency = 6.0 + floor(a_starAppearance.y * 12.0);
+                    v_light = a_starAppearance.x * (0.80 + 0.20 * sin(phase + u_twinklePhase * frequency));
                     v_warmth = a_starAppearance.y;
                     v_size = a_starAppearance.z;
                     gl_PointSize = v_size * u_pointScale;
@@ -642,10 +763,10 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 void main() {
                     vec2 p = gl_PointCoord * 2.0 - 1.0;
                     float r2 = dot(p, p);
-                    float halo = exp(-r2 * 4.8) * 0.18;
-                    float core = exp(-r2 * 28.0);
+                    float halo = exp(-r2 * 4.8) * 0.28;
+                    float core = exp(-r2 * 16.0);
                     float rays = exp(-abs(p.x * p.y) * 95.0) * exp(-r2 * 6.0)
-                        * step(7.0, v_size) * 0.18;
+                        * step(7.0, v_size) * 0.22;
                     float alpha = (core + halo + rays) * v_light
                         * (1.0 - smoothstep(0.65, 1.0, r2));
                     vec3 color = mix(vec3(0.67, 0.80, 1.0), vec3(1.0, 0.94, 0.83), v_warmth);
