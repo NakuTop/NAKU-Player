@@ -11,6 +11,7 @@ class CinemaSubtitleReplay extends ChangeNotifier {
   bool listening = false, busy = false;
   String? error;
   Timer? _poll, _timeout;
+  Future<void>? _stopping;
   double? _originalRate;
   int _generation = 0;
   bool _disposed = false;
@@ -46,7 +47,9 @@ class CinemaSubtitleReplay extends ChangeNotifier {
     if (busy || _disposed) return;
     if (start == null || end == null) await capture();
     await stop();
-    if (_disposed) return;
+    // Two clicks can both arrive before capture/stop has finished. Only the
+    // first may take ownership after the preceding rate has been restored.
+    if (_disposed || busy) return;
     final generation = ++_generation;
     busy = true;
     error = null;
@@ -71,6 +74,7 @@ class CinemaSubtitleReplay extends ChangeNotifier {
       });
       _timeout = Timer(const Duration(seconds: 12), () => unawaited(stop()));
     } catch (_) {
+      if (_disposed || generation != _generation) return;
       error = '回听未能开始，请确认影片可以播放后重试';
       await stop();
     } finally {
@@ -79,7 +83,10 @@ class CinemaSubtitleReplay extends ChangeNotifier {
     }
   }
 
-  Future<void> stop() async {
+  Future<void> stop() =>
+      _stopping ??= _stop().whenComplete(() => _stopping = null);
+
+  Future<void> _stop() async {
     ++_generation;
     _poll?.cancel();
     _timeout?.cancel();

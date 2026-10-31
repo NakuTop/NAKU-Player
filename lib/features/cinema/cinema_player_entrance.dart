@@ -587,9 +587,10 @@ class _EntrancePainter extends CustomPainter {
 
   void _tube(Canvas canvas, Offset origin, double tubeHalfWidth, double lamp) {
     for (final (blur, alpha, width) in const [
-      (18.0, .19, 7.0),
-      (6.0, .32, 3.0),
-      (0.0, .94, 1.3),
+      (24.0, .32, 14.0),
+      (9.0, .52, 8.0),
+      (2.0, .85, 4.6),
+      (0.0, 1.0, 2.8),
     ]) {
       final paint = Paint()
         ..color = const Color(0xFFFFF2DE).withValues(alpha: alpha * lamp)
@@ -622,7 +623,7 @@ double _lampExtent(CinemaPlayerLoadStage stage) => switch (stage) {
   CinemaPlayerLoadStage.waitingForFrame => .64,
 };
 
-double _lampGlow(double extent) => .08 + .4 * extent;
+double _lampGlow(double extent) => .44 + .46 * extent;
 
 double _lightingExtent(double initial, double progress) =>
     initial + (1 - initial) * _smooth(0, 1, progress);

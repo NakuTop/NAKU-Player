@@ -4,7 +4,11 @@ import Foundation
     static func main() {
         do {
             let args = CommandLine.arguments
-            if args.contains("--self-test") { try NakuAirPlaySender.selfTest(); return }
+            if args.contains("--self-test") {
+                try NakuAirPlaySender.selfTest()
+                try runHomePodAudioClockTests()
+                return
+            }
             guard args.count >= 3, let duration = Double(args[2]), (0.1...10).contains(duration) else { print("Usage: naku-homepod-probe <numericIPv4> <durationSeconds 0.1...10> [latencyMs] | --self-test"); exit(2) }
             let sender = NakuAirPlaySender(address: args[1], latencyMs: args.count > 3 ? Int(args[3]) ?? 120 : 120)
             defer { sender.close() }

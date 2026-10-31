@@ -26,6 +26,7 @@
 		DAFEEFA2477DEB19375C03E2 /* NakuHomePodAudio.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFAD4751499EDEAD1099E308 /* NakuHomePodAudio.swift */; };
 		D49E367DCE1FF4CF5834C579 /* NakuPCMProcessTap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DC7E8BB2D5BE5BEEB4B077D /* NakuPCMProcessTap.swift */; };
 		4D62040110BC33DC29D8DAAD /* NakuAirPlaySender.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC69721719765AB7DCA0AA5D /* NakuAirPlaySender.swift */; };
+		7D877792693B4720A48EAC70 /* NakuAirPlayAudioClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10DC565010AD40F1B61A1F06 /* NakuAirPlayAudioClock.swift */; };
 		692289F4AA84609FE23B5C68 /* Addition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EFC54139873F33E106760D6 /* Addition.swift */; };
 		140E05ADBED726BBB002DA18 /* BigInt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A0D90BCF12611F6C72B7799 /* BigInt.swift */; };
 		E1D1DB9CD0156975D3D71C36 /* BigUInt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AF7A870E43E3857D6494989 /* BigUInt.swift */; };
@@ -113,6 +114,7 @@
 		FFAD4751499EDEAD1099E308 /* NakuHomePodAudio.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Runner/NakuHomePodAudio.swift"; sourceTree = SOURCE_ROOT; };
 		0DC7E8BB2D5BE5BEEB4B077D /* NakuPCMProcessTap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Runner/NakuPCMProcessTap.swift"; sourceTree = SOURCE_ROOT; };
 		FC69721719765AB7DCA0AA5D /* NakuAirPlaySender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Runner/NakuAirPlaySender.swift"; sourceTree = SOURCE_ROOT; };
+		10DC565010AD40F1B61A1F06 /* NakuAirPlayAudioClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Runner/NakuAirPlayAudioClock.swift"; sourceTree = SOURCE_ROOT; };
 		8EFC54139873F33E106760D6 /* Addition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Addition.swift"; sourceTree = SOURCE_ROOT; };
 		7A0D90BCF12611F6C72B7799 /* BigInt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/BigInt.swift"; sourceTree = SOURCE_ROOT; };
 		3AF7A870E43E3857D6494989 /* BigUInt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/BigUInt.swift"; sourceTree = SOURCE_ROOT; };
@@ -276,6 +278,7 @@
 				FFAD4751499EDEAD1099E308 /* NakuHomePodAudio.swift */,
 				0DC7E8BB2D5BE5BEEB4B077D /* NakuPCMProcessTap.swift */,
 				FC69721719765AB7DCA0AA5D /* NakuAirPlaySender.swift */,
+				10DC565010AD40F1B61A1F06 /* NakuAirPlayAudioClock.swift */,
 				8EFC54139873F33E106760D6 /* Addition.swift */,
 				7A0D90BCF12611F6C72B7799 /* BigInt.swift */,
 				3AF7A870E43E3857D6494989 /* BigUInt.swift */,
@@ -593,6 +596,7 @@
 				DAFEEFA2477DEB19375C03E2 /* NakuHomePodAudio.swift in Sources */,
 				D49E367DCE1FF4CF5834C579 /* NakuPCMProcessTap.swift in Sources */,
 				4D62040110BC33DC29D8DAAD /* NakuAirPlaySender.swift in Sources */,
+				7D877792693B4720A48EAC70 /* NakuAirPlayAudioClock.swift in Sources */,
 				692289F4AA84609FE23B5C68 /* Addition.swift in Sources */,
 				140E05ADBED726BBB002DA18 /* BigInt.swift in Sources */,
 				E1D1DB9CD0156975D3D71C36 /* BigUInt.swift in Sources */,

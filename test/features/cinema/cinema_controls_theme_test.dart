@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:media_kit/media_kit.dart';
@@ -11,6 +12,12 @@ class _Backend extends PlatformPlayer {
     state = state.copyWith(rate: value);
     rateController.add(value);
   }
+
+  @override
+  Future<void> setVolume(double value) async {
+    state = state.copyWith(volume: value);
+    volumeController.add(value);
+  }
 }
 
 class _Player implements Player {
@@ -22,6 +29,8 @@ class _Player implements Player {
   PlayerStream get stream => backend.stream;
   @override
   Future<void> setRate(double value) => backend.setRate(value);
+  @override
+  Future<void> setVolume(double value) => backend.setVolume(value);
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
@@ -110,6 +119,30 @@ void main() {
           ),
         ),
       ),
+    );
+    await player.setVolume(65);
+    await tester.dragFrom(
+      const Offset(200, 180),
+      const Offset(120, 85),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump();
+    expect(
+      player.state.volume,
+      65,
+      reason: 'desktop drag must not change volume',
+    );
+    await tester.sendEventToBinding(
+      const PointerScrollEvent(
+        position: Offset(200, 180),
+        scrollDelta: Offset(0, -20),
+      ),
+    );
+    await tester.pump();
+    expect(
+      player.state.volume,
+      70,
+      reason: 'explicit scroll still adjusts volume',
     );
     await tester.tap(find.byTooltip('实际桌面倍速'));
     await tester.pumpAndSettle();

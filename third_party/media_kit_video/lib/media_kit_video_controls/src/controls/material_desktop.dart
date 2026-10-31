@@ -579,14 +579,14 @@ class _MaterialDesktopVideoControlsState
               onPointerSignal: _theme(context).modifyVolumeOnScroll
                   ? (e) {
                       if (e is PointerScrollEvent) {
-                        if (e.delta.dy > 0) {
+                        if (e.scrollDelta.dy > 0) {
                           final volume =
                               controller(context).player.state.volume - 5.0;
                           controller(
                             context,
                           ).player.setVolume(volume.clamp(0.0, 100.0));
                         }
-                        if (e.delta.dy < 0) {
+                        if (e.scrollDelta.dy < 0) {
                           final volume =
                               controller(context).player.state.volume + 5.0;
                           controller(
@@ -626,24 +626,8 @@ class _MaterialDesktopVideoControlsState
                           toggleFullscreen(context);
                         }
                       },
-                onPanUpdate: _theme(context).modifyVolumeOnScroll
-                    ? (e) {
-                        if (e.delta.dy > 0) {
-                          final volume =
-                              controller(context).player.state.volume - 5.0;
-                          controller(
-                            context,
-                          ).player.setVolume(volume.clamp(0.0, 100.0));
-                        }
-                        if (e.delta.dy < 0) {
-                          final volume =
-                              controller(context).player.state.volume + 5.0;
-                          controller(
-                            context,
-                          ).player.setVolume(volume.clamp(0.0, 100.0));
-                        }
-                      }
-                    : null,
+                // Desktop window drags must not be interpreted as volume
+                // changes. Volume has its own slider and pointer-scroll path.
                 child: MouseRegion(
                   cursor: (_theme(context).hideMouseOnControlsRemoval && !mount)
                       ? SystemMouseCursors.none

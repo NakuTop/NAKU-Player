@@ -85,6 +85,47 @@ class _Player implements Player {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
+class _DeferredSeasonExpansionClient extends _Client {
+  final expanding = Completer<void>();
+  final expansion = Completer<List<Map<String, dynamic>>>();
+
+  @override
+  Future<CinemaSubtitleCatalogResult> aggregate(
+    String query,
+    String type, {
+    String imdbId = '',
+    String year = '',
+    int season = 1,
+    int episode = 1,
+    String language = 'zh-eng',
+    String mediaRelease = '',
+    void Function(List<Map<String, dynamic>> rows)? onVerified,
+  }) async {
+    final result = await super.aggregate(
+      query,
+      type,
+      imdbId: imdbId,
+      year: year,
+      season: season,
+      episode: episode,
+      language: language,
+      mediaRelease: mediaRelease,
+    );
+    return CinemaSubtitleCatalogResult([
+      for (final row in result.rows)
+        {...row, 'archiveEntry': row['subtitleFileName']},
+    ], const {});
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> seasonFiles(
+    Map<String, dynamic> selected,
+  ) {
+    if (!expanding.isCompleted) expanding.complete();
+    return expansion.future;
+  }
+}
+
 class _ArchiveAdapter implements HttpClientAdapter {
   _ArchiveAdapter(this.bytes);
   final List<int> bytes;
@@ -171,6 +212,66 @@ void main() {
     store.dispose();
     await directory.delete(recursive: true);
   });
+
+  test(
+    'cancel during archive expansion leaves the finished job unchanged',
+    () async {
+      final client = _DeferredSeasonExpansionClient();
+      final task = batch.start(
+        series: 'work',
+        profile: profile,
+        episodes: [_episodes[2]],
+        currentEpisode: 2,
+        clientFactory: () => client,
+      );
+      await client.expanding.future;
+      expect(batch.ready, 1);
+      batch.cancel('work');
+      final completed = batch.completed;
+      client.expansion.complete([]);
+      await expectLater(task, completes);
+      expect(batch.completed, completed);
+      expect(batch.busy, false);
+      expect(batch.activeEpisode, isNull);
+    },
+  );
+
+  test(
+    'replaced archive expansion cannot advance the new subtitle job',
+    () async {
+      final oldClient = _DeferredSeasonExpansionClient();
+      final oldTask = batch.start(
+        series: 'work',
+        profile: profile,
+        episodes: [_episodes[2]],
+        currentEpisode: 2,
+        clientFactory: () => oldClient,
+      );
+      await oldClient.expanding.future;
+      final replacement = _Client()..gate = Completer<void>();
+      final newTask = batch.start(
+        series: 'work',
+        profile: profile,
+        episodes: [_episodes[0], _episodes[1]],
+        currentEpisode: 1,
+        clientFactory: () => replacement,
+      );
+      await replacement.started.future;
+      oldClient.expansion.complete([]);
+      try {
+        await expectLater(oldTask, completes);
+        expect(batch.completed, 0);
+        expect(batch.ready, 0);
+        expect(batch.busy, true);
+        expect(batch.activeEpisode, 2);
+      } finally {
+        replacement.gate!.complete();
+        await newTask;
+      }
+      expect(batch.completed, 2);
+      expect(batch.ready, 2);
+    },
+  );
 
   test(
     'downloads all known episodes once, next first, excludes other season and wrong episode',

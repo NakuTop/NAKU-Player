@@ -379,16 +379,26 @@ public final class NakuAirPlaySender {
     public var onDiagnostic: ((String) -> Void)?
     public let configuredLatencyMs: Int
     public var packetsSent: UInt64 { state.withLock { packetCount } }
-    public var droppedFrames: UInt64 { state.withLock { droppedCount } }
+    public var droppedFrames: UInt64 { state.withLock { pcmSource.droppedFrames } }
+    public var underruns: UInt64 { state.withLock { pcmSource.underruns } }
+    public var bufferedFrames: Int { state.withLock { pcmSource.bufferedFrames } }
+    public var driftPPM: Double { state.withLock { pcmSource.driftPPM } }
+    public var lateSends: UInt64 { state.withLock { lateSendCount } }
+    public var clockResets: UInt64 { state.withLock { clockResetCount } }
+    public var retransmitRequests: UInt64 { state.withLock { retransmitCount } }
     public var lastError: String? { state.withLock { errorText } }
     public var isConnected: Bool { state.withLock { running } }
     public var initialReceiverVolume: Double? { state.withLock { reportedInitialVolume } }
     private let address: String, port: UInt16
     private let state = NSLock(), lifecycle = NSLock()
     private var networkActive = false
-    private var running = false, packetCount: UInt64 = 0, droppedCount: UInt64 = 0, errorText: String?
+    private var running = false, packetCount: UInt64 = 0, errorText: String?
+    private var lateSendCount: UInt64 = 0, clockResetCount: UInt64 = 0, retransmitCount: UInt64 = 0
     private var reportedInitialVolume: Double?
-    private var pendingPCM = Data()
+    // Unisson's observed default DriftCompensatedSource configuration at
+    // 0x1000f48c4: 15 ms target, 40 ms maximum, bounded ±1000 ppm correction.
+    private let pcmSource = NakuAirPlayDriftBuffer(configuration: .init(
+        targetMs: 15, maximumMs: 40, maxCorrectionPPM: 1000))
     private var connection: RTSPConnection?, events: RTSPConnection?
     private var audioFD: Int32 = -1, controlFD: Int32 = -1, timingFD: Int32 = -1
     private var audioDest = sockaddr_in(), controlDest = sockaddr_in()
@@ -396,9 +406,9 @@ public final class NakuAirPlaySender {
     private var seq = UInt16.random(in: .min ... .max), rtp = UInt32.random(in: .min ... .max), ssrc = UInt32.random(in: 1 ... .max), counter: UInt64 = 0
     private var history: [UInt16: Data] = [:], historyOrder: [UInt16] = []
     private let workerGroup = DispatchGroup()
-    private var startWall = Date().timeIntervalSince1970, framesSent: UInt64 = 0, firstSync = true
+    private var firstSync = true
     private var uri = ""
-    private static let frames = 352, pcmBytes = 1408, maximumPCMBytes = 1408*12
+    private static let frames = 352, pcmBytes = 1408
     public init(address: String, port: UInt16 = 7000, latencyMs: Int = 120) { self.address = address; self.port = port; configuredLatencyMs = max(20, min(latencyMs, 2000)) }
 
     public func connect() throws {
@@ -409,7 +419,13 @@ public final class NakuAirPlaySender {
         onDiagnostic?(phase)
         do {
             if connection != nil { state.withLock { running = false; networkActive = false }; events?.close(); _ = workerGroup.wait(timeout: .now()+5); cleanup() }
-            state.withLock { errorText = nil; reportedInitialVolume = nil; packetCount = 0; droppedCount = 0; pendingPCM.removeAll(keepingCapacity: true) }
+            state.withLock {
+                errorText = nil; reportedInitialVolume = nil; packetCount = 0
+                lateSendCount = 0; clockResetCount = 0; retransmitCount = 0
+                pcmSource.reset(clearCounters: true)
+            }
+            // Build the FIR table on this connection queue before pacing starts.
+            NakuAirPlayDriftBuffer.prepare()
             let conn = try RTSPConnection(address, port, diagnostic: { [weak self] in self?.onDiagnostic?($0) }); connection = conn
             uri = "rtsp://\(conn.localIP)/\(ssrc)"
             phase = "GET info"
@@ -454,12 +470,11 @@ public final class NakuAirPlaySender {
             let streamReply = try plistRequest("SETUP", ["streams": streams])
             guard let stream = (streamReply["streams"] as? [[String: Any]])?.first, let dataPort = (stream["dataPort"] as? NSNumber)?.uint16Value, dataPort != 0, let remoteControl = (stream["controlPort"] as? NSNumber)?.uint16Value, remoteControl != 0 else { throw NakuAirPlayError.protocolError("HomePod did not provide audio/control ports") }
             audioDest = try address4(address, dataPort); controlDest = try address4(address, remoteControl)
-            seq = UInt16.random(in: .min ... .max); rtp = UInt32.random(in: .min ... .max); counter = 0; framesSent = 0; firstSync = true
+            seq = UInt16.random(in: .min ... .max); rtp = UInt32.random(in: .min ... .max); counter = 0; firstSync = true
             phase = "RECORD"
             _ = try conn.request("RECORD", uri, headers: ["Range": "npt=0-", "RTP-Info": "seq=\(seq);rtptime=\(rtp)"])
             phase = "initial FLUSH"
             _ = try conn.request("FLUSH", uri, headers: ["Range": "npt=0-", "RTP-Info": "seq=\(seq);rtptime=\(rtp)"])
-            startWall = Date().timeIntervalSince1970
             state.withLock { running = true }
             startWorkers()
         } catch {
@@ -474,19 +489,7 @@ public final class NakuAirPlaySender {
         guard !data.isEmpty else { return }
         state.withLock {
             guard running else { return }
-            let valid = data.count - data.count % 4
-            guard valid > 0 else { return }
-            if valid >= Self.maximumPCMBytes {
-                droppedCount += UInt64((pendingPCM.count+valid-Self.maximumPCMBytes)/4)
-                pendingPCM = data.subdata(in: valid-Self.maximumPCMBytes..<valid)
-                return
-            }
-            let incoming = data.prefix(valid)
-            pendingPCM.append(incoming)
-            if pendingPCM.count > Self.maximumPCMBytes {
-                let drop = ((pendingPCM.count-Self.maximumPCMBytes+3)/4)*4
-                pendingPCM = Data(pendingPCM.dropFirst(drop)); droppedCount += UInt64(drop/4)
-            }
+            pcmSource.append(data)
         }
     }
     public func setVolume(_ normalized: Double) {
@@ -513,12 +516,12 @@ public final class NakuAirPlaySender {
     public func flush() throws {
         guard let conn = connection, isConnected else { return }
         // Keep the continuously paced RTP timeline; only discard queued pre-seek samples.
-        state.withLock { pendingPCM.removeAll(keepingCapacity: true) }
+        state.withLock { pcmSource.reset() }
         _ = try conn.request("FLUSH", uri)
     }
     public func close() {
         lifecycle.lock(); defer { lifecycle.unlock() }
-        state.withLock { running = false; networkActive = false; pendingPCM.removeAll() }
+        state.withLock { running = false; networkActive = false; pcmSource.reset() }
         events?.close()
         _ = workerGroup.wait(timeout: .now()+5)
         if let conn = connection { _ = try? conn.request("TEARDOWN", uri) }
@@ -612,26 +615,36 @@ public final class NakuAirPlaySender {
         if firstFailure { onDiagnostic?("sender terminal error: \(error.localizedDescription)") }
     }
     private func audioLoop() {
-        let period = Double(Self.frames)/44100.0
-        var next = ProcessInfo.processInfo.systemUptime, nextSync = next
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        let ticksPerSecond = 1e9*Double(timebase.denom)/Double(timebase.numer)
+        var clock = NakuAirPlayAudioClock(ticks: mach_absolute_time(),
+            wall: Date().timeIntervalSince1970, ticksPerSecond: ticksPerSecond)
+        var packetsUntilSync = 0
         while isConnected {
-            let now = ProcessInfo.processInfo.systemUptime
-            if now < next { Thread.sleep(forTimeInterval: min(next-now, 0.003)); continue }
-            if now-next > period*3 { next = now }
+            mach_wait_until(clock.deadline)
+            guard isConnected else { break }
+            let wake = clock.observeWake(ticks: mach_absolute_time(), wall: Date().timeIntervalSince1970)
+            if wake.lateness > NakuAirPlayAudioClock.lateThreshold {
+                state.withLock { lateSendCount &+= 1 }
+            }
+            if wake.reset {
+                state.withLock { clockResetCount &+= 1 }
+                firstSync = true; packetsUntilSync = 0
+                onDiagnostic?("audio clock reanchored after \(Int(wake.lateness*1000)) ms interruption")
+            }
             do {
                 serviceDatagrams()
-                if now >= nextSync { try syncPacket(); nextSync = now+1 }
-                let pcm: Data = state.withLock {
-                    let n = min(Self.pcmBytes, pendingPCM.count); var d = Data(pendingPCM.prefix(n)); pendingPCM = Data(pendingPCM.dropFirst(n)); if n < Self.pcmBytes { d.append(Data(repeating: 0, count: Self.pcmBytes-n)) }; return d
-                }
+                if packetsUntilSync == 0 { try syncPacket(unixTime: clock.syncWall); packetsUntilSync = 126 }
+                let pcm = state.withLock { pcmSource.read(lateness: wake.reset ? 0 : wake.lateness) }
                 let packet = try audioPacket(pcm)
                 try sendUDP(packet, fd: audioFD, destination: audioDest)
                 history[seq] = packet; historyOrder.append(seq)
                 if historyOrder.count > 256 { history.removeValue(forKey: historyOrder.removeFirst()) }
-                seq &+= 1; rtp &+= UInt32(Self.frames); framesSent += UInt64(Self.frames)
+                seq &+= 1; rtp &+= UInt32(Self.frames)
                 state.withLock { packetCount &+= 1 }
             } catch { fail(error); break }
-            next += period
+            clock.advance(); packetsUntilSync -= 1
         }
     }
     private func audioPacket(_ littlePCM: Data) throws -> Data {
@@ -642,8 +655,8 @@ public final class NakuAirPlaySender {
         var packet = header + (try seal(networkPCM, key: audioKey, counter: counter, aad: header.subdata(in: 4..<12)))
         packet.addLE(counter); counter &+= 1; return packet
     }
-    private func syncPacket() throws {
-        let time = Self.ntp(startWall+Double(framesSent)/44100.0)
+    private func syncPacket(unixTime: Double) throws {
+        let time = Self.ntp(unixTime)
         let latency = UInt32(configuredLatencyMs*44100/1000)
         var packet = Data([firstSync ? 0x90 : 0x80, 0xD4]); packet.addBE(UInt16(7)); packet.addBE(rtp &- latency); packet.addBE(UInt32(truncatingIfNeeded: time >> 32)); packet.addBE(UInt32(truncatingIfNeeded: time)); packet.addBE(rtp)
         try sendUDP(packet, fd: controlFD, destination: controlDest); firstSync = false
@@ -661,6 +674,7 @@ public final class NakuAirPlaySender {
                     let now = Self.ntp(Date().timeIntervalSince1970)
                     var reply = Data([data[0], 0xD3]); reply.addBE(UInt16(7)); reply.addBE(UInt32(0)); reply.append(data.subdata(in: 24..<32)); reply.addBE(now); reply.addBE(Self.ntp(Date().timeIntervalSince1970)); try? sendUDP(reply, fd: fd, destination: peer)
                 } else if fd == controlFD, data.count >= 8, data[1]&0x7f == 0x55 {
+                    state.withLock { retransmitCount &+= 1 }
                     let first = data.be16(4), count = min(Int(data.be16(6)), 128)
                     for offset in 0..<count { let id = first &+ UInt16(offset); if let packet = history[id] { var reply = Data([0x80, 0xD6]); reply.addBE(id); reply.append(packet); try? sendUDP(reply, fd: fd, destination: peer) } }
                 }
@@ -729,8 +743,8 @@ public final class NakuAirPlaySender {
         try require(fixture.publicKey == hex("bc0e7cf5dc3babf67dcedbb3b140aacc6cac43f4336b43bbd5de48d6ea7c8eda66924e354255225bccad9debe21182e6bb050f3ff3e6cfbb62c229379968c70ca436ad649a0b051373184215eef046f6f1f2256838f958581f6c7b2b85fa4afe326a0e8a951d4489305331aff88a136fd8d108bcc95fceb7e557c889c828bd23fb0702f053e1ca6470fb3c76bce4843fc005c7ea675740f8550212656cfc8919d9db805a434a68229e0d9dfe43fc16dc680a5ce74b77cf374353b05759bc1da3a9dabde30a4209381c87ca83d9483abdf66b86f9b1cbda9ad82c62712b87ce6fb7069b8fc8df344261821a06d0dc5106af76d4245f3f7737a94dbc484b415555dc401842d3011204553ba9f611b02bc38de26eba1a76bf8350205a62c436ba1c3c7c69d59318bd107fd1c1f5d846b3142e85a5d49e522655e020ed1bfe1e186cf923bf328f0b9b4c6a8aa3266ed9125bb98d63827110713be7803122ee4603c54ea31863ce4b10aff31f9073cf63b94733b4f066e72d4ec35687047d5d0db160") && fixture.sharedKey == hex("e630bac6f2a1f47bb1c03420dd99a546491404a5a0a90146fdab3775a7e36778f9d20a75dc6d6728712db6455c5dd894d3eda560e49075cca34d3ea82590ea98") && fixture.proof == hex("9b68730f513a09bfc189ae640956488fdd06bca049406b360c2e213c69329076bdd0b27191f6cfb560baedfb4ffc5b830df791be689034afdf839eb80bbc247d"), "SRP client matches independent server fixture")
         try require(SRPProof.primeHex.count == 768, "SRP3072 group length")
         sender.state.withLock { sender.running = true }
-        sender.writePCM(Data(repeating: 0, count: maximumPCMBytes*3+3))
-        try require(sender.pendingPCM.count <= maximumPCMBytes && sender.droppedFrames > 0 && sender.pendingPCM.count%4 == 0, "bounded aligned PCM producer queue")
+        sender.writePCM(Data(repeating: 0, count: NakuAirPlayDriftBuffer.capacity*4*3+3))
+        try require(sender.bufferedFrames <= NakuAirPlayDriftBuffer.capacity && sender.droppedFrames > 0, "bounded aligned PCM producer queue")
         sender.state.withLock { sender.running = false }
         var tampered = try HAPFramer(outKey: key, inKey: key).encode(Data("test".utf8)); tampered[tampered.count-1] ^= 1
         var rejected = false

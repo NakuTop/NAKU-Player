@@ -260,7 +260,7 @@ private final class NakuCinemaStartupSound {
     guard NSApp.isActive, !NSApp.isHidden,
           let window, window.isVisible, !window.isMiniaturized else { return false }
     highestGeneration = generation
-    let quietVolume = min(0.25, max(0, volume))
+    let quietVolume = min(0.6, max(0, volume))
     guard quietVolume > 0 else { return false }
     let url = try Self.cachedWaveURL()
     guard let prepared = NSSound(contentsOf: url, byReference: false) else {
@@ -284,7 +284,7 @@ private final class NakuCinemaStartupSound {
       .appendingPathComponent("cinema-audio", isDirectory: true)
     try FileManager.default.createDirectory(at: directory,
       withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-    let url = directory.appendingPathComponent("original-startup-chord-v1.wav")
+    let url = directory.appendingPathComponent("original-startup-chord-v2.wav")
     if !FileManager.default.fileExists(atPath: url.path) {
       try waveData().write(to: url, options: .atomic)
     }
@@ -293,7 +293,7 @@ private final class NakuCinemaStartupSound {
 
   private static func waveData() -> Data {
     let sampleRate = 22_050
-    let duration = 0.92
+    let duration = 1.18
     let samples = Int(Double(sampleRate) * duration)
     let pcmBytes = samples * 2
     var data = Data(capacity: 44 + pcmBytes)
@@ -323,14 +323,14 @@ private final class NakuCinemaStartupSound {
     for index in 0..<samples {
       let time = Double(index) / Double(sampleRate)
       let attack = pow(sin(min(1, time / 0.065) * .pi / 2), 2)
-      let release = pow(max(0, 1 - time / duration), 2.4)
+      let release = pow(max(0, 1 - time / duration), 1.8)
       var signal = 0.0
       for voice in frequencies.indices {
         let localTime = max(0, time - Double(voice) * 0.006)
         let phase = 2 * Double.pi * frequencies[voice] * localTime
         signal += weights[voice] * (sin(phase) + 0.08 * sin(phase * 2))
       }
-      let value = Int16((min(1, max(-1, signal * attack * release * 0.58))
+      let value = Int16((min(1, max(-1, signal * attack * release * 0.82))
         * Double(Int16.max)).rounded())
       word(UInt16(bitPattern: value))
     }

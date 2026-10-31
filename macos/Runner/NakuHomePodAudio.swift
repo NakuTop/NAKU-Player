@@ -72,7 +72,14 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
       "receiverVolume": receiverVolume,
       "capturedFrames": NSNumber(value: bytes / 4),
       "nonzeroSamples": NSNumber(value: nonzero), "peakSample": peak,
-      "packetsSent": NSNumber(value: sender?.packetsSent ?? 0)
+      "packetsSent": NSNumber(value: sender?.packetsSent ?? 0),
+      "senderBufferedFrames": sender?.bufferedFrames ?? 0,
+      "senderUnderruns": NSNumber(value: sender?.underruns ?? 0),
+      "senderDroppedFrames": NSNumber(value: sender?.droppedFrames ?? 0),
+      "senderDriftPPM": sender?.driftPPM ?? 0,
+      "senderLateSends": NSNumber(value: sender?.lateSends ?? 0),
+      "senderClockResets": NSNumber(value: sender?.clockResets ?? 0),
+      "senderRetransmitRequests": NSNumber(value: sender?.retransmitRequests ?? 0)
     ]
     if let selected { result["deviceId"] = selected.id; result["deviceName"] = selected.name }
     if let errorMessage { result["error"] = errorMessage }
@@ -246,8 +253,12 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
         let frames = self.capturedBytes / 4, nonzero = self.nonzeroSamples
         let peak = self.peakSample
         self.counterLock.unlock()
-        NakuAudioLog.write("NAKUHomePod audio: frames=%llu nonzero=%llu peak=%d packets=%llu",
-              frames, nonzero, peak, self.sender?.packetsSent ?? 0)
+        NakuAudioLog.write("NAKUHomePod audio: frames=%llu nonzero=%llu peak=%d packets=%llu queue=%d underruns=%llu dropped=%llu drift=%.1fppm late=%llu resets=%llu retransmits=%llu",
+              frames, nonzero, peak, self.sender?.packetsSent ?? 0,
+              self.sender?.bufferedFrames ?? 0, self.sender?.underruns ?? 0,
+              self.sender?.droppedFrames ?? 0, self.sender?.driftPPM ?? 0,
+              self.sender?.lateSends ?? 0, self.sender?.clockResets ?? 0,
+              self.sender?.retransmitRequests ?? 0)
       }
       if let sender = self.sender, !sender.isConnected || sender.lastError != nil {
         self.fail(sender.lastError ?? "HomePod 连接已断开，已恢复本机声音。")

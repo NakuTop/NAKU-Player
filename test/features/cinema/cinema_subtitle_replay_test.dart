@@ -11,6 +11,7 @@ class _ReplayPlayer implements Player {
   bool delaySeekPosition = false;
   bool failSeek = false;
   Completer<void>? pendingSeek;
+  Completer<void>? pendingPause;
   final rates = <double>[];
   final seeks = <Duration>[];
   int playCalls = 0, pauseCalls = 0;
@@ -46,6 +47,7 @@ class _ReplayPlayer implements Player {
   Future<void> pause() async {
     pauseCalls++;
     playing = false;
+    await pendingPause?.future;
   }
 
   @override
@@ -53,6 +55,32 @@ class _ReplayPlayer implements Player {
 }
 
 void main() {
+  testWidgets(
+    'overlapping replay requests preserve the original playback rate',
+    (tester) async {
+      final player = _ReplayPlayer();
+      final replay = CinemaSubtitleReplay(player);
+      await Future.wait([replay.play(), replay.play()]);
+      expect(player.playCalls, 1);
+      await replay.stop();
+      expect(player.rate, 1.5);
+
+      await replay.play();
+      final pause = player.pendingPause = Completer<void>();
+      final first = replay.play();
+      await tester.pump();
+      final second = replay.play();
+      await tester.pump();
+      pause.complete();
+      await Future.wait([first, second]);
+      await replay.stop();
+      expect(player.rate, 1.5);
+      expect(player.playing, false);
+      replay.dispose();
+      await tester.pump();
+    },
+  );
+
   testWidgets('replays preceding three seconds slowly then pauses at the end', (
     tester,
   ) async {
@@ -256,5 +284,28 @@ void main() {
     expect(player.rate, 1.5);
     replay.dispose();
     await tester.pump();
+  });
+
+  testWidgets('a late seek failure cannot stop a replacement replay', (
+    tester,
+  ) async {
+    final seek = Completer<void>();
+    final player = _ReplayPlayer()..pendingSeek = seek;
+    final replay = CinemaSubtitleReplay(player);
+    final oldStart = replay.play();
+    await tester.pump();
+    expect(replay.busy, true);
+    await replay.stop();
+    player.pendingSeek = null;
+    await replay.play();
+    expect(replay.listening, true);
+    seek.completeError(StateError('old media seek failed'));
+    await oldStart;
+    expect(replay.listening, true);
+    expect(player.playing, true);
+    expect(replay.error, isNull);
+    replay.dispose();
+    await tester.pump();
+    expect(player.rate, 1.5);
   });
 }

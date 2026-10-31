@@ -9,7 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix="naku-homepod-sender-") as temporary:
     work = Path(temporary)
     sources = sorted((ROOT / "third_party/swift-bigint/Sources").glob("*.swift"))
-    sources += [ROOT / "macos/Runner/NakuAirPlaySender.swift",
+    sources += [ROOT / "macos/Runner/NakuAirPlayAudioClock.swift",
+                ROOT / "macos/Runner/NakuAirPlaySender.swift",
+                ROOT / "test/native/homepod_audio_clock_test.swift",
                 ROOT / "test/native/homepod_sender_test.swift"]
     executable = work / "sender-tests"
     subprocess.run([

@@ -12,3 +12,10 @@ controls and selects a rate after the hover deadline. Hidden controls remain
 offstage and cannot receive pointer input. While a modal menu is open, keep
 its toolbar anchor visible so the popup cannot move or shrink; resume the idle
 timer after the menu closes.
+
+3.0.18: Desktop pointer pans no longer adjust volume. Window dragging is owned
+by the host video gesture surface; scrolling and the volume slider keep their
+existing behavior. Regression: `cinema_controls_theme_test.dart` exercises the
+real controls with both a mouse drag and a pointer-scroll event.
+Read wheel motion from `PointerScrollEvent.scrollDelta`; its pointer-position
+`delta` is zero for a stationary wheel and previously ignored those events.

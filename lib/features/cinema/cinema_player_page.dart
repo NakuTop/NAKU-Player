@@ -510,7 +510,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       try {
         await _startupSoundChannel.invokeMethod<bool>(
           'playCinemaStartupSound',
-          {'generation': soundToken, 'volume': (_volume / 100).clamp(0, .25)},
+          {'generation': soundToken, 'volume': (_volume / 100).clamp(0, .6)},
         );
       } catch (_) {
         // Audio decoration must never delay or fail the actual media reveal.
@@ -5168,6 +5168,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                         }
                       },
                       onToggleFullscreen: () => unawaited(_toggleFullscreen()),
+                      onWindowDrag: _usesMacCinemaLayout && !_fullscreen
+                          ? () => unawaited(windowManager.startDragging())
+                          : null,
                       child: MaterialDesktopVideoControlsTheme(
                         normal: controlsTheme,
                         fullscreen: controlsTheme,

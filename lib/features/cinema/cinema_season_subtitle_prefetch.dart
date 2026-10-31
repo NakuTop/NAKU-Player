@@ -485,6 +485,9 @@ class CinemaSeasonSubtitlePrefetch extends ChangeNotifier {
               client = _client = createClient();
             }
           }
+          // Expanding a newly found season archive can finish after cancellation
+          // or after a replacement queue has reset the shared progress fields.
+          if (!current()) return;
           completed++;
           episodeDone[episode]?.complete();
           notifyListeners();

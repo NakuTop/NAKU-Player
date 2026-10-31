@@ -16,6 +16,38 @@ HomePod. The setting's 120 ms value is the requested receiver buffer, not a
 measured acoustic delay. Audio is not written to disk. No system recording,
 microphone, process tap, or ScreenCaptureKit API is used by this feature.
 
+In 3.0.18 the audio scheduler and source-clock compensation were independently
+implemented from REA observations of Unisson 0.1.3, arm64 SHA-256
+`469bf76334805f9dfaadeb506b31b52e3b2f29e20daeb821cb5812ac89254088`:
+
+- Packet deadlines use `mach_wait_until` and total 352-frame sample counts.
+  Sends over 5 ms late are counted. Interruptions over 250 ms re-anchor the
+  monotonic/wall-clock correspondence and send an immediate synchronization
+  packet, preserving the RTP sample sequence. Reference loop: `0x10010c880`,
+  Evidence `ev_d82202760fd464cc42770b10d2512aa0a6bfa6af1fde396efca1259d5ff6be7f`.
+- The source queue uses the verified 15 ms target, 40 ms maximum and
+  ±1000 ppm correction limit from factory `0x1000f48c4`, Evidence
+  `ev_5efc6b6b3b962bc1df160d36f9c14e6ccf9b8a845ac13d823a0104fd7c689153`.
+  A one-second queue filter drives a bounded PI controller (gains 0.05/0.002),
+  with integrator anti-windup. Reference: `0x1000c801c`, Evidence
+  `ev_bdd6e2fc002302876cc67838849d9989e7b29951e07ec13dc8af2d2132b017b1`.
+- A normalized 48-tap, 512-phase sinc filter (cutoff 0.96, Kaiser beta 9)
+  interpolates the source clock without repeatedly inserting silence or
+  discarding complete audio packets. Reference generator `0x1000c86a8`, Evidence
+  `ev_fefe4557d3106e46c9ab03723d25a85534f707d0701a06567c116d4fcdf0f1d1`,
+  and reader `0x1000c812c`, Evidence
+  `ev_2f0129fe9417fcffc96e004a2134e91c8e7fdcfed0c3e0a2ca0968077363f90c`.
+
+NAKU retains its existing 120/200/300 ms requested receiver buffer choices.
+Unisson's optional AdaptiveLatency policy is not enabled here; its controlling
+preference was not established. NAKU's existing 48-to-44.1 kHz conversion,
+pairing, encrypted transport and output-restoration path remain in use. This is
+a reconstruction of the observed mechanisms, not a claim of full binary or
+runtime equivalence. Synthetic drift and interruption fixtures verify those
+contracts; HomePod listening and acoustic latency still require device testing.
+Diagnostics now include source queue depth, underruns, dropped frames, drift,
+late sends, clock re-anchors and retransmit request counts.
+
 The root broker has no arbitrary command service. It authorizes the driver host
 against the exact Apple-signed coreaudiod and isolated driver-host requirements
 and the reader against the installed player's designated requirement plus the
