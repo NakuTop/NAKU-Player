@@ -24,7 +24,8 @@ class CinemaTVMediaEnvironment {
   Future<void> refresh() async {
     if (!available) return;
     final at = now?.call() ?? DateTime.now();
-    if (_readAt != null && at.difference(_readAt!) < const Duration(seconds: 3)) {
+    if (_readAt != null &&
+        at.difference(_readAt!) < const Duration(seconds: 3)) {
       return;
     }
     if (_reading != null) return _reading;
@@ -119,6 +120,47 @@ class CinemaTVMediaEnvironment {
     return size != null &&
         result.width! <= size.width &&
         result.height! <= size.height;
+  }
+
+  /// Manifest hints eliminate unsupported DV-only variants before a speed
+  /// measurement can prefer them. The native renderer validates actual tracks.
+  bool supportsVariant(CinemaHlsVariant variant) {
+    if (!supports(
+      CinemaMediaProbeResult(
+        ok: true,
+        elapsedMs: 0,
+        codec: variant.codec,
+        width: variant.width,
+        height: variant.height,
+      ),
+    )) {
+      return false;
+    }
+    final display = _snapshot['displayCapabilities'];
+    if (display is! Map || display['known'] != true) return true;
+    final profile = int.tryParse(
+      RegExp(
+            r'(?:dvhe|dvh1|dvav|dva1|dav1)\.(\d{2})\.',
+            caseSensitive: false,
+          ).firstMatch(variant.codecs)?[1] ??
+          '',
+    );
+    if (profile != null &&
+        display['dolbyVision'] != true &&
+        !{7, 8, 9, 10}.contains(profile)) {
+      return false;
+    }
+    if (variant.videoRange == 'PQ' &&
+        display['hdr10'] != true &&
+        display['dolbyVision'] != true) {
+      return false;
+    }
+    if (variant.videoRange == 'HLG' &&
+        display['hlg'] != true &&
+        display['dolbyVision'] != true) {
+      return false;
+    }
+    return true;
   }
 
   ({int width, int height}) get maximumSize {

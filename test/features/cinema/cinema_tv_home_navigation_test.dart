@@ -1,3 +1,9 @@
+// Use the image cache package's existing SQLite backend in this platform fixture.
+// ignore: depend_on_referenced_packages
+import 'package:sqflite/sqflite.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:kazumi/features/cinema/cinema_card_ratings.dart';
+import 'package:kazumi/features/cinema/cinema_tv_nas_card.dart';
 import 'dart:io';
 import 'dart:async';
 import 'dart:ui' as ui;
@@ -254,11 +260,57 @@ class _Artwork extends CinemaDetailArtworkRepository {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  late Directory posterSupport;
   setUpAll(() async {
-    const capture = String.fromEnvironment('NAKU_TV_UI_OUTPUT');
+    databaseFactory = databaseFactorySqflitePlugin;
+    posterSupport = await Directory.systemTemp.createTemp(
+      'naku-tv-poster-store-',
+    );
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('plugins.flutter.io/path_provider'),
+      (_) async => posterSupport.path,
+    );
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('com.tekartik.sqflite'),
+      (call) async {
+        return switch (call.method) {
+          'getDatabasesPath' => posterSupport.path,
+          'openDatabase' => {'id': 1},
+          'query' => <Map<String, Object?>>[],
+          'batch' => <Object?>[],
+          'insert' || 'update' => 1,
+          _ => null,
+        };
+      },
+    );
+  });
+  tearDownAll(() async {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('plugins.flutter.io/path_provider'),
+      null,
+    );
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('com.tekartik.sqflite'),
+      null,
+    );
+    await posterSupport.delete(recursive: true);
+  });
+  setUpAll(() async {
+    final capture =
+        Platform.environment['NAKU_TV_UI_OUTPUT'] ??
+        const String.fromEnvironment('NAKU_TV_UI_OUTPUT');
     if (capture.isEmpty) return;
     final font = await rootBundle.load('assets/fonts/MiSans-Regular.ttf');
-    for (final family in ['.AppleSystemUIFont', 'MI_Sans_Regular', 'Ahem']) {
+    for (final family in [
+      'Roboto',
+      '.AppleSystemUIFont',
+      'MI_Sans_Regular',
+      'Ahem',
+    ]) {
       await (FontLoader(family)..addFont(Future.value(font))).load();
     }
     final icons = await rootBundle.load('fonts/MaterialIcons-Regular.otf');
@@ -344,6 +396,11 @@ void main() {
 
   Future<void> clean(WidgetTester tester) async {
     await tester.pumpWidget(const SizedBox.shrink());
+    // The real image cache schedules its database maintenance after 10s.
+    await tester.pump(const Duration(seconds: 11));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 5)),
+    );
     await tester.pump();
   }
 
@@ -372,7 +429,7 @@ void main() {
       expect(find.text('设置'), findsNothing);
       expect(find.text('下载'), findsNothing);
       expect(find.text('一起看'), findsNothing);
-      expect(find.byType(CinemaFeaturedWall), findsOneWidget);
+      expect(find.byType(CinemaFeaturedWall), findsNothing);
       expect(find.byType(CinemaGlass), findsNothing);
       expect(find.byType(CinemaPaneTransition), findsNothing);
       expect(find.byType(BackdropFilter), findsNothing);
@@ -456,42 +513,39 @@ void main() {
       await clean(tester);
     },
   );
-  testWidgets(
-    'TV keeps artwork but removes decorative processing from home and detail',
-    (tester) async {
-      await mount(tester);
-      expect(
-        find.byKey(const ValueKey('tv-featured-original')),
-        findsOneWidget,
-      );
-      await tester.tap(find.byKey(const ValueKey('tv-nav-mine')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('电影测试作品').first);
-      await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('tv-static-detail')), findsOneWidget);
-      expect(find.byType(CinemaNeonDecode), findsNothing);
-      expect(find.byType(BackdropFilter), findsNothing);
-      expect(find.byKey(const ValueKey('cinema-detail-tab-0')), findsNothing);
-      expect(
-        find.byKey(const ValueKey('cinema-detail-primary-play')),
-        findsOneWidget,
-      );
-      expect(find.byTooltip('关闭'), findsNothing);
-      expect(tester.takeException(), isNull);
-      await clean(tester);
-    },
-  );
+  testWidgets('TV starts with poster rails and keeps the quiet detail layout', (
+    tester,
+  ) async {
+    await mount(tester);
+    expect(find.byType(CinemaFeaturedWall), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('tv-nav-mine')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('电影测试作品').first);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('tv-static-detail')), findsOneWidget);
+    expect(find.byType(CinemaNeonDecode), findsNothing);
+    expect(find.byType(BackdropFilter), findsNothing);
+    expect(find.byKey(const ValueKey('cinema-detail-tab-0')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('cinema-detail-primary-play')),
+      findsOneWidget,
+    );
+    expect(find.byTooltip('关闭'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await clean(tester);
+  });
   for (final size in const [Size(960, 540), Size(1280, 720)]) {
     testWidgets(
-      'TV large artwork and quiet catalogue at ${size.width} x ${size.height}',
+      'TV poster rails and quiet catalogue at ${size.width} x ${size.height}',
       (tester) async {
         await mount(tester, size: size);
-        final hero = tester.getRect(
-          find.byKey(const ValueKey('tv-static-featured')),
-        );
-        expect(hero.height, closeTo(size.height * .76, 1));
-        expect(hero.width, size.width);
-        const capture = String.fromEnvironment('NAKU_TV_UI_OUTPUT');
+        expect(find.byType(CinemaFeaturedWall), findsNothing);
+        expect(find.text('为你推荐'), findsOneWidget);
+        final recommendation = tester.getRect(find.text('为你推荐'));
+        expect(recommendation.top, lessThan(size.height * .3));
+        final capture =
+            Platform.environment['NAKU_TV_UI_OUTPUT'] ??
+            const String.fromEnvironment('NAKU_TV_UI_OUTPUT');
         if (capture.isNotEmpty) {
           await tester.runAsync(() async {
             final boundary = tester.renderObject<RenderRepaintBoundary>(
@@ -604,6 +658,95 @@ void main() {
       expect(find.byKey(const ValueKey('cinema-detail-tab-3')), findsNothing);
       expect(find.byType(BackdropFilter), findsNothing);
       expect(tester.takeException(), isNull);
+      await clean(tester);
+    },
+  );
+
+  testWidgets(
+    'NAS continue-watching restores local poster and three-score identity before opening details',
+    (tester) async {
+      final ns = 'b' * 64;
+      final nas = createCinemaNASTitle(
+        namespace: ns,
+        row: {
+          'ug_video_info_id': 42,
+          'media_lib_set_id': 2,
+          'name': 'NAS 旧历史',
+          'type': 1,
+        },
+        files: [(label: '原片', path: '/volume1/movie.mkv')],
+      );
+      await tester.runAsync(
+        () => store.recordProgress(
+          title: nas,
+          routeIndex: 0,
+          episodeIndex: 0,
+          positionSeconds: 123,
+          durationSeconds: 7200,
+        ),
+      );
+      final calls = <String>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(CinemaNASClient.channel, (call) async {
+            calls.add(call.method);
+            if (call.method == 'details') {
+              return {
+                'video_info': {
+                  'ug_video_info_id': 42,
+                  'poster_path': '/poster/42.jpg',
+                  'year': 2026,
+                  'douban_id': '100003',
+                  'imdb_id': 'tt12345678',
+                },
+              };
+            }
+            if (call.method == 'asset') {
+              expect(call.arguments['poster'], true);
+              return 'https://nas-fixture.invalid/poster.jpg?token=fixture';
+            }
+            return <String, dynamic>{};
+          });
+      ratings.hydrate = true;
+      ratings.pending = Completer<CinemaRatings>()..complete(_threeScores);
+      await mount(tester);
+      for (var i = 0; i < 25 && !calls.contains('asset'); i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 5)),
+        );
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      await tester.pumpAndSettle();
+      final card = find.byKey(ValueKey('tv-nas-card:${nas.key}'));
+      expect(card, findsOneWidget);
+      final artwork = find.descendant(
+        of: card,
+        matching: find.byType(CachedNetworkImage),
+      );
+      expect(artwork, findsOneWidget);
+      expect(
+        tester.widget<CachedNetworkImage>(artwork).cacheKey,
+        cinemaTVNASPosterKey(nas),
+      );
+      final scores = tester.widget<CinemaCardRatings>(
+        find.descendant(of: card, matching: find.byType(CinemaCardRatings)),
+      );
+      expect(scores.title.doubanId, '100003');
+      expect(scores.title.imdbId, 'tt12345678');
+      expect(scores.title.routes, same(nas.routes));
+      expect(
+        find.descendant(of: card, matching: find.textContaining('9.4')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: card, matching: find.textContaining('8.7')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: card, matching: find.textContaining('73%')),
+        findsOneWidget,
+      );
+      expect(calls.where((m) => m == 'details'), hasLength(1));
+      expect(calls, isNot(contains('startPlayback')));
       await clean(tester);
     },
   );

@@ -246,6 +246,9 @@ class CinemaTVNativePlayer extends PlatformPlayer
       playing: play,
     );
     playlistController.add(queue);
+    // The first native packet may already equal this requested seek. Publish
+    // it now so delta coalescing cannot leave the page's resume clock at zero.
+    positionController.add(state.position);
     completedController.add(false);
     bufferingController.add(true);
     playingController.add(play);

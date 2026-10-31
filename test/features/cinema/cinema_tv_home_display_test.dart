@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -59,6 +62,18 @@ Widget _earth(List<Map<String, dynamic>> routes, bool active) =>
     );
 
 void main() {
+  setUpAll(() async {
+    if ((Platform.environment['NAKU_TV_UI_OUTPUT'] ?? '').isEmpty) return;
+    final font = await rootBundle.load('assets/fonts/MiSans-Regular.ttf');
+    for (final family in [
+      'Roboto',
+      '.AppleSystemUIFont',
+      'MI_Sans_Regular',
+      'Ahem',
+    ]) {
+      await (FontLoader(family)..addFont(Future.value(font))).load();
+    }
+  });
   test(
     'flights-only projection preserves actual labels and UTC, hides parcels and destinations',
     () {
@@ -168,6 +183,31 @@ void main() {
     },
   );
 
+  test(
+    'explicit route previews reach native renderer without fabricated telemetry',
+    () {
+      final data = _snapshot()['data'] as Map<String, dynamic>;
+      final flight = Map<String, dynamic>.from(
+        (data['flights'] as List).single,
+      );
+      final snapshot = {
+        ...data,
+        'flights': [
+          {
+            ...flight,
+            'routePreview': true,
+            'positionStatus': 'estimated',
+            'position': {'lat': 35, 'lng': 130},
+          },
+        ],
+      };
+      final route = cinemaTVDisplayRoutes(snapshot).single;
+      expect(route['preview'], 1.0);
+      expect(route.containsKey('positionLat'), false);
+      expect(cinemaTVDisplayItems(snapshot).single.detail, contains('航线预览'));
+    },
+  );
+
   testWidgets(
     'Earth background receives verified flight routes and native active state',
     (tester) async {
@@ -250,7 +290,15 @@ void main() {
             home: CinemaTVHomeDisplay(
               earthBuilder: _earth,
               now: () => DateTime(2026, 10, 28, 14, 20),
-              loadSnapshot: () async => _snapshot(),
+              loadSnapshot: () async {
+                final result = _snapshot();
+                final data = result['data'] as Map<String, dynamic>;
+                data['flights'] = List.filled(
+                  3,
+                  (data['flights'] as List).single,
+                );
+                return result;
+              },
             ),
           ),
         );
@@ -265,8 +313,28 @@ void main() {
           tester.getSize(find.byKey(const ValueKey('tv-home-display-earth'))),
           size,
         );
+        final capture =
+            Platform.environment['NAKU_TV_UI_OUTPUT'] ??
+            const String.fromEnvironment('NAKU_TV_UI_OUTPUT');
+        if (capture.isNotEmpty) {
+          await tester.runAsync(() async {
+            final boundary = tester.renderObject<RenderRepaintBoundary>(
+              find.byType(RepaintBoundary).first,
+            );
+            final image = await boundary.toImage(pixelRatio: 1);
+            final bytes = await image.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            final file = File(
+              '$capture/tv-display-text-${size.width.toInt()}x${size.height.toInt()}.png',
+            );
+            await file.parent.create(recursive: true);
+            await file.writeAsBytes(bytes!.buffer.asUint8List());
+            image.dispose();
+          });
+        }
         expect(find.text('14:20'), findsOneWidget);
-        expect(find.text('上海 → 东京'), findsOneWidget);
+        expect(find.text('上海 → 东京'), findsNWidgets(3));
         expect(find.textContaining('测试承运商'), findsNothing);
         expect(find.textContaining('运输中'), findsNothing);
         expect(find.textContaining('下一站'), findsNothing);

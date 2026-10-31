@@ -27,6 +27,10 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.exoplayer.video.VideoRendererEventListener
+import androidx.media3.common.MimeTypes
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.audio.AudioSink
@@ -193,22 +197,40 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
         var captionBottomFraction = .08f
         var firstFrame = false
         var closed = false
+        private var mediaEpoch = 0
+        private var compatibilityError: String? = null
         private var droppedFrames = 0
         var trackRows: List<Map<String, Any?>> = emptyList()
         private var cues: List<String> = emptyList()
         private val packets = NakuTVPlayerEvents()
         private var scheduledInterval = 0L
-        private val rendererFactory = DefaultRenderersFactory(activity)
+        private val output = NakuTVCapabilities.display(activity)
+        private val rendererFactory = object : DefaultRenderersFactory(activity) {
+            override fun buildVideoRenderers(context: Context, extensionRendererMode: Int,
+                mediaCodecSelector: MediaCodecSelector, enableDecoderFallback: Boolean,
+                eventHandler: Handler, eventListener: VideoRendererEventListener,
+                allowedVideoJoiningTimeMs: Long, out: java.util.ArrayList<Renderer>) {
+                out.add(NakuTVVideoRenderer(context, mediaCodecSelector, enableDecoderFallback,
+                    eventHandler, eventListener, allowedVideoJoiningTimeMs))
+            }
+        }
             .setEnableDecoderFallback(true)
             .setMediaCodecSelector { mimeType, secure, tunneling ->
                 val decoders = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling)
                 // Older TV CPUs cannot replace video silicon without stalls.
                 // Reject unsupported software video so the page can choose a
                 // compatible NAS profile/source; audio PCM fallback stays valid.
-                if (mimeType.startsWith("video/")) {
-                    decoders.filter { it.hardwareAccelerated && !it.softwareOnly }
-                } else decoders
+                decoders.filter { NakuTVColorPolicy.allowDecoder(mimeType,
+                    it.hardwareAccelerated, it.softwareOnly, output.dolbyVision) }
             }
+        private val trackSelector = DefaultTrackSelector(activity).apply {
+            parameters = buildUponParameters()
+                .setExceedRendererCapabilitiesIfNecessary(false)
+                .setPreferredAudioMimeTypes(MimeTypes.AUDIO_E_AC3_JOC, MimeTypes.AUDIO_TRUEHD,
+                    MimeTypes.AUDIO_E_AC3, MimeTypes.AUDIO_AC3, MimeTypes.AUDIO_DTS_HD,
+                    MimeTypes.AUDIO_DTS, MimeTypes.AUDIO_AAC)
+                .build()
+        }
         private val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(15_000, 50_000, 1_000, 2_500)
             .setTargetBufferBytes(64 * 1024 * 1024)
@@ -216,6 +238,7 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
             .build()
         val player: ExoPlayer = ExoPlayer.Builder(activity, rendererFactory)
             .setLoadControl(loadControl)
+            .setTrackSelector(trackSelector)
             .build().apply {
                 setAudioAttributes(AudioAttributes.DEFAULT, true)
                 setHandleAudioBecomingNoisy(true)
@@ -268,6 +291,8 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
                 OkHttpDataSource.Factory(client).setDefaultRequestProperties(headers))
             val factory = DefaultMediaSourceFactory(dataSource)
             firstFrame = false
+            mediaEpoch++
+            compatibilityError = null
             trackRows = emptyList()
             cues = emptyList()
             packets.invalidate()
@@ -295,9 +320,9 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
                 player.playWhenReady && (state == Player.STATE_READY || state == Player.STATE_BUFFERING),
                 state == Player.STATE_BUFFERING, state == Player.STATE_ENDED,
                 firstFrame, size.width, size.height)
-            val replayError = if (full) player.playerError?.let {
-                mapOf("error" to "Android TV 播放错误（${it.errorCode}）")
-            } ?: emptyMap() else emptyMap()
+            val replayError = if (full) (compatibilityError ?: player.playerError?.let {
+                "Android TV 播放错误（${it.errorCode}）"
+            })?.let { mapOf("error" to it) } ?: emptyMap() else emptyMap()
             val metadata = if (full) mapOf("tracks" to trackRows, "cues" to cues) + replayError + extra else extra
             val packet = packets.packet(id, snapshot, metadata, full) ?: return
             sink?.success(packet)
@@ -314,6 +339,11 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
             format: Format, decoderReuseEvaluation: DecoderReuseEvaluation?) {
             val color = format.colorInfo
             Log.i("NAKU-TV", "video-format=${fact(format.sampleMimeType.orEmpty())} size=${format.width}x${format.height} colorSpace=${color?.colorSpace} colorRange=${color?.colorRange} transfer=${color?.colorTransfer}")
+            emit(mapOf("videoCodec" to fact(format.sampleMimeType.orEmpty()),
+                "dolbyProfile" to NakuTVColorPolicy.dolbyProfile(format.codecs),
+                "colorMode" to NakuTVColorPolicy.mode(format.sampleMimeType, format.codecs,
+                    color?.colorTransfer ?: -1, color?.colorRange ?: -1,
+                    output.known, output.dolbyVision, output.hdr10, output.hlg)))
         }
         override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime,
             droppedFrames: Int, elapsedMs: Long) {
@@ -342,6 +372,28 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
             emit(mapOf("cues" to cues))
         }
         override fun onTracksChanged(tracks: Tracks) {
+            // With strict track support, Media3 can otherwise continue an
+            // unsupported video as audio-only instead of raising an error.
+            val videos = tracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+            val audios = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+            val unsupportedVideo = videos.isNotEmpty() && videos.none { group ->
+                (0 until group.length).any { group.isTrackSupported(it) }
+            }
+            val unsupportedAudio = audios.isNotEmpty() && audios.none { group ->
+                (0 until group.length).any { group.isTrackSupported(it) }
+            }
+            if ((unsupportedVideo || unsupportedAudio) && compatibilityError == null) {
+                val epoch = mediaEpoch
+                handler.post {
+                    if (!closed && epoch == mediaEpoch && compatibilityError == null) {
+                        compatibilityError = if (unsupportedVideo)
+                            "电视不支持此原片的编码或色彩格式，正在检查兼容播放（4005）"
+                        else "电视及当前音响不支持此音轨，正在检查兼容播放（4005）"
+                        player.stop()
+                        emit(mapOf("error" to compatibilityError))
+                    }
+                }
+            }
             val rows = mutableListOf<Map<String, Any?>>()
             tracks.groups.forEachIndexed { groupIndex, group ->
                 val type = when (group.type) {

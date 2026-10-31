@@ -1,3 +1,4 @@
+import 'cinema_tv_nas_card.dart';
 import 'cinema_moyu_host.dart';
 import 'cinema_swipe_navigation.dart';
 import 'cinema_neon_decode.dart';
@@ -181,6 +182,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       widget.navigationPreferences ?? CinemaNavigationPreferences.instance;
   CinemaNASSync? _nasSync;
   final _nasPageCache = CinemaNASPageCache();
+  CinemaTVNASMetadataRepository? _tvNASCards;
   late final CinemaRepository _repository =
       widget.repository ?? CinemaRepository(health: _health);
   late final _homeCache =
@@ -1017,6 +1019,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   @override
   void dispose() {
+    _tvNASCards?.dispose();
     _tvSessionTimer?.cancel();
     _tvQuery.dispose();
     _tvSearchFocus.dispose();
@@ -2650,24 +2653,6 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     return CustomScrollView(
       key: const PageStorageKey('tv-home-content'),
       slivers: [
-        if (titles.isNotEmpty)
-          SliverToBoxAdapter(
-            child: SizedBox(
-              height: MediaQuery.sizeOf(context).height * .76,
-              child: CinemaFeaturedWall(
-                key: const ValueKey('tv-featured-original'),
-                titles: titles.take(4).toList(),
-                artworkRepository: widget.artworkRepository,
-                artworkChanges: _ratings.changes,
-                artworkIdentity: (title) =>
-                    _ratings.peek(title)?.identity ?? const RatingIdentity(),
-                onOpen: (title) => _openTitle(
-                  title,
-                  variants: _catalogView.variants[title.key] ?? const [],
-                ),
-              ),
-            ),
-          ),
         if (history.isNotEmpty)
           SliverToBoxAdapter(child: _tvRail('继续观看', history, history: true)),
         if (titles.isNotEmpty)
@@ -2995,11 +2980,15 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     ],
   );
 
-  Future<CinemaTitle> _resolveTVRatingTitle(CinemaTitle title) {
+  Future<CinemaTitle> _resolveTVRatingTitle(CinemaTitle title) async {
     if (title.sourceId == cinemaNASSource.id) {
+      final repository = _tvNASCards ??= CinemaTVNASMetadataRepository(
+        _nasPageCache.client,
+      );
+      final metadata = await repository.resolve(title);
       return widget.enableSearchDiscovery
-          ? _ratingIdentity.resolve(title)
-          : Future.value(title);
+          ? _ratingIdentity.resolve(metadata.title)
+          : metadata.title;
     }
     return _ratingTitles.resolve(title);
   }
@@ -3010,21 +2999,28 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         settings: const RouteSettings(name: '/tv/details'),
         builder: (detailsContext) => Scaffold(
           backgroundColor: CinemaTheme.background,
-          body: _TitleDetails(
+          body: CinemaTVNASCard(
             title: title,
-            source: cinemaNASSource,
-            repository: _repository,
-            store: _store,
-            resolvedDetail: true,
-            resume: _store.historyFor(title),
-            ratingsRepository: widget.ratingsRepository,
-            resolveRatingsTitle: _resolveTVRatingTitle,
-            artworkRepository: widget.artworkRepository,
-            onRecommendationSelected: (_) {},
-            onPlay: (detail, source, road, episode, variants) {
-              Navigator.of(detailsContext).pop();
-              _playTitle(detail, source, road, episode, variants);
-            },
+            repository: _tvNASCards ??= CinemaTVNASMetadataRepository(
+              _nasPageCache.client,
+            ),
+            builder: (_, poster) => _TitleDetails(
+              title: title,
+              tvPoster: poster,
+              source: cinemaNASSource,
+              repository: _repository,
+              store: _store,
+              resolvedDetail: true,
+              resume: _store.historyFor(title),
+              ratingsRepository: widget.ratingsRepository,
+              resolveRatingsTitle: _resolveTVRatingTitle,
+              artworkRepository: widget.artworkRepository,
+              onRecommendationSelected: (_) {},
+              onPlay: (detail, source, road, episode, variants) {
+                Navigator.of(detailsContext).pop();
+                _playTitle(detail, source, road, episode, variants);
+              },
+            ),
           ),
         ),
       ),
@@ -4412,6 +4408,30 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     CinemaTitle title, {
     List<CinemaTitle> variants = const [],
     VoidCallback? onOpen,
+  }) {
+    if (NakuDevice.isTV && title.sourceId == cinemaNASSource.id) {
+      return CinemaTVNASCard(
+        key: ValueKey('tv-nas-card:${title.key}'),
+        title: title,
+        repository: _tvNASCards ??= CinemaTVNASMetadataRepository(
+          _nasPageCache.client,
+        ),
+        builder: (resolved, poster) => _resolvedTitleCard(
+          resolved,
+          variants: variants,
+          onOpen: onOpen,
+          nasPoster: poster,
+        ),
+      );
+    }
+    return _resolvedTitleCard(title, variants: variants, onOpen: onOpen);
+  }
+
+  Widget _resolvedTitleCard(
+    CinemaTitle title, {
+    List<CinemaTitle> variants = const [],
+    VoidCallback? onOpen,
+    Widget? nasPoster,
   }) => CinemaTVFocus(
     child: InkWell(
       key: ValueKey('title-card:${title.key}'),
@@ -4426,6 +4446,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 fit: StackFit.expand,
                 children: [
                   _poster(title, null, null),
+                  if (nasPoster != null)
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(9),
+                      child: nasPoster,
+                    ),
                   if (!NakuDevice.isTV &&
                       (title.sourceId == 'douban-discovery' ||
                           (_isCatalog && !_searching)))
@@ -5062,7 +5087,9 @@ class _TitleDetails extends StatefulWidget {
     required this.onRecommendationSelected,
     this.resume,
     this.resolvedDetail = false,
+    this.tvPoster,
   });
+  final Widget? tvPoster;
   final CinemaTitle title;
   final CinemaSource source;
   final List<CinemaTitle> variants;
@@ -5978,91 +6005,121 @@ class _TitleDetailsState extends State<_TitleDetails> {
   Widget _tvDetail(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
     final viewport = MediaQuery.sizeOf(context);
     final gutter = (viewport.width * .045).clamp(32.0, 72.0);
+    final posterWidth = (viewport.width * .16).clamp(144.0, 200.0);
+    const fallback = ColoredBox(
+      color: Color(0xFF161618),
+      child: Center(
+        child: Icon(
+          Icons.local_movies_outlined,
+          color: CinemaTheme.muted,
+          size: 38,
+        ),
+      ),
+    );
+    final poster =
+        widget.tvPoster ??
+        (title.poster.isEmpty
+            ? fallback
+            : CachedNetworkImage(
+                imageUrl: title.poster,
+                cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
+                httpHeaders: title.sourceId == 'douban-discovery'
+                    ? doubanImageHeaders
+                    : null,
+                memCacheWidth: 640,
+                fit: BoxFit.cover,
+                fadeInDuration: Duration.zero,
+                fadeOutDuration: Duration.zero,
+                placeholder: (_, _) => fallback,
+                errorWidget: (_, _, _) => fallback,
+              ));
     return ColoredBox(
       key: const ValueKey('tv-static-detail'),
       color: CinemaTheme.background,
       child: ListView(
         key: const ValueKey('cinema-title-detail-layout'),
+        padding: EdgeInsets.fromLTRB(gutter, 36, gutter, 40),
         children: [
-          SizedBox(
-            height: viewport.height * .52,
-            width: double.infinity,
-            child: _posterProvider == null
-                ? const ColoredBox(color: Color(0xFF161618))
-                : Image(
-                    image: _posterProvider!,
-                    fit: BoxFit.cover,
-                    alignment: const Alignment(0, -.35),
-                    errorBuilder: (_, _, _) =>
-                        const ColoredBox(color: Color(0xFF161618)),
-                  ),
-          ),
-          Padding(
-            padding: EdgeInsets.fromLTRB(gutter, 22, gutter, 40),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  cinemaMediaBaseTitle(title.title),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: viewport.height < 600 ? 30 : 38,
-                    height: 1.12,
-                    fontWeight: FontWeight.w600,
-                  ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                key: const ValueKey('tv-detail-poster'),
+                width: posterWidth,
+                height: posterWidth * 1.5,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(9),
+                  child: poster,
                 ),
-                const SizedBox(height: 12),
-                Text(
-                  [
-                    title.year,
-                    title.category,
-                    title.durationText,
-                  ].where((s) => s.isNotEmpty).join(' · '),
-                  style: const TextStyle(
-                    fontSize: 16,
-                    color: CinemaTheme.muted,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Wrap(
-                  spacing: 16,
-                  runSpacing: 10,
-                  crossAxisAlignment: WrapCrossAlignment.center,
+              ),
+              const SizedBox(width: 28),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _actions(title, snapshot),
-                    _sourceControls(title, snapshot),
-                  ],
-                ),
-                const SizedBox(height: 22),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 760),
-                  child: CinemaTVRatings(
-                    title: title,
-                    repository: widget.ratingsRepository,
-                    resolveTitle: widget.resolveRatingsTitle,
-                  ),
-                ),
-                if (title.description.isNotEmpty) ...[
-                  const SizedBox(height: 24),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 1050),
-                    child: Text(
-                      title.description,
+                    Text(
+                      cinemaMediaBaseTitle(title.title),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: viewport.height < 600 ? 30 : 38,
+                        height: 1.12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      [
+                        title.year,
+                        title.category,
+                        title.durationText,
+                      ].where((s) => s.isNotEmpty).join(' · '),
                       style: const TextStyle(
-                        fontSize: 18,
-                        height: 1.6,
+                        fontSize: 16,
                         color: CinemaTheme.muted,
                       ),
                     ),
-                  ),
-                ],
-                if (snapshot.hasError && title.routes.isEmpty) ...[
-                  const SizedBox(height: 20),
-                  const Text('暂时未能读取影片，请返回后重试。'),
-                ],
-              ],
-            ),
+                    const SizedBox(height: 20),
+                    Wrap(
+                      spacing: 16,
+                      runSpacing: 10,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        _actions(title, snapshot),
+                        _sourceControls(title, snapshot),
+                      ],
+                    ),
+                    const SizedBox(height: 22),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 760),
+                      child: CinemaTVRatings(
+                        title: title,
+                        repository: widget.ratingsRepository,
+                        resolveTitle: widget.resolveRatingsTitle,
+                      ),
+                    ),
+                    if (title.description.isNotEmpty) ...[
+                      const SizedBox(height: 24),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 1050),
+                        child: Text(
+                          title.description,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            height: 1.6,
+                            color: CinemaTheme.muted,
+                          ),
+                        ),
+                      ),
+                    ],
+                    if (snapshot.hasError && title.routes.isEmpty) ...[
+                      const SizedBox(height: 20),
+                      const Text('暂时未能读取影片，请返回后重试。'),
+                    ],
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -6101,8 +6158,8 @@ class _TitleDetailsState extends State<_TitleDetails> {
             _scoresTerminal = false;
             _informationTerminal = false;
           }
-          _watchPoster(title);
           if (NakuDevice.isTV) return _tvDetail(title, snapshot);
+          _watchPoster(title);
           final generation = _detailGeneration;
           final ratingTicket = _ratingTicket;
           final sourceTerminal =

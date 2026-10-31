@@ -400,6 +400,24 @@ class _NAS extends CinemaNASClient {
   }
 }
 
+class _TVNAS extends _NAS {
+  @override
+  Future<Map<String, dynamic>> call(
+    String method, [
+    Map<String, dynamic>? args,
+  ]) async {
+    final result = await super.call(method, args);
+    if (method != 'playbackOptions') return result;
+    return {
+      ...result,
+      'profiles': [
+        {'id': '1920x1080', 'label': '1080P'},
+        {'id': '1280x720', 'label': '720P'},
+      ],
+    };
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
@@ -2446,6 +2464,115 @@ void main() {
       await unmount(tester);
     },
   );
+  testWidgets(
+    'TV incompatible NAS original changes to a compatible stream without losing pause or position',
+    (tester) async {
+      final wasTV = NakuDevice.isTV;
+      NakuDevice.isTV = true;
+      addTearDown(() => NakuDevice.isTV = wasTV);
+      final nas = _TVNAS();
+      const channel = MethodChannel('test/tv-compatibility-player');
+      final events = StreamController<dynamic>.broadcast();
+      final players = <CinemaTVNativePlayer>[];
+      final opens = <MethodCall>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'open') {
+          opens.add(call);
+          scheduleMicrotask(
+            () => events.add({
+              'id': call.arguments['id'],
+              'positionMs': call.arguments['positionMs'],
+              'durationMs': 1200000,
+              'bufferMs': call.arguments['positionMs'],
+              'playing': call.arguments['play'],
+              'buffering': false,
+              'firstFrame': true,
+              'width': 1920,
+              'height': 1080,
+            }),
+          );
+        }
+        if (call.method == 'pause') {
+          events.add({'id': call.arguments['id'], 'playing': false});
+        }
+        return null;
+      });
+      addTearDown(() async {
+        await events.close();
+        messenger.setMockMethodCallHandler(channel, null);
+      });
+      messenger.setMockMethodCallHandler(CinemaNASClient.channel, (call) async {
+        if (call.method == 'ensure') return {'namespace': 'a' * 64};
+        if (call.method == 'asset') return 'http://192.168.1.9/dv5.mkv';
+        throw StateError('Unexpected original call: ${call.method}');
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(CinemaNASClient.channel, null),
+      );
+      final reference = nasMediaReference(
+        namespace: 'a' * 64,
+        id: 72,
+        library: 3,
+        path: '/dv5.mkv',
+      );
+      final title = CinemaTitle(
+        id: 'nas-tv-dv5',
+        sourceId: cinemaNASSource.id,
+        title: 'NAS color fixture',
+        routes: [
+          CinemaRoute(
+            name: 'NAS',
+            episodes: [CinemaEpisode(name: '电影', url: reference)],
+          ),
+        ],
+      );
+      await mount(
+        tester,
+        {'autoPlay': false},
+        viewport: const Size(1280, 720),
+        selectedTitle: title,
+        selectedSource: cinemaNASSource,
+        initialPosition: 123,
+        nasPlayback: CinemaNASPlaybackClient(client: nas),
+        playerFactory: (configuration) {
+          final player = CinemaTVNativePlayer(
+            configuration: configuration,
+            channel: channel,
+            events: events.stream,
+          );
+          players.add(player);
+          return player;
+        },
+        resolveNASRatings: (value) async => value,
+      );
+      for (var i = 0; i < 20 && opens.isEmpty; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(opens.single.arguments['url'], 'http://192.168.1.9/dv5.mkv');
+      expect(nas.starts, isEmpty);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('暂停'));
+      await tester.pumpAndSettle();
+      expect(find.text('播放'), findsOneWidget);
+      events.add({'id': players.single.id, 'error': '电视不支持原片的色彩格式（4005）'});
+      for (var i = 0; i < 60 && opens.length < 2; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(nas.starts.single['resolution'], '1920x1080');
+      expect(opens.last.arguments['url'], contains('stream.m3u8'));
+      expect(opens.last.arguments['positionMs'], 123000);
+      expect(opens.last.arguments['play'], false);
+      expect(players, hasLength(2));
+      expect(find.text('画质'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      expect(nas.calls, contains('closePlayback'));
+    },
+  );
+
   testWidgets(
     'TV NAS prefers original direct movie despite available transcodes and shows flat loading',
     (tester) async {

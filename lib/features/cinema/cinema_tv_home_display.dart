@@ -56,6 +56,7 @@ List<CinemaTVDisplayItem> cinemaTVDisplayItems(Map<String, dynamic> snapshot) {
           [
             cinemaTVDisplayTime(departure),
             dataLabel,
+            if (flight['routePreview'] == true) '航线预览',
           ].where((v) => v.isNotEmpty).join(' · '),
         ),
       );
@@ -93,6 +94,7 @@ List<Map<String, dynamic>> cinemaTVDisplayRoutes(
       'destinationLat': destination['lat'],
       'destinationLon': destination['lng'],
     };
+    if (flight['routePreview'] == true) route['preview'] = 1.0;
     final position = flight['position'];
     if (flight['routePreview'] != true &&
         (flight['positionStatus'] == 'live' ||
@@ -113,7 +115,7 @@ typedef CinemaTVEarthBuilder =
     Widget Function(List<Map<String, dynamic>> flights, bool active);
 
 /// Native rotating Earth and a small, noninteractive flight projection. No
-/// WebView, WebGL, decorative models, in-screen controls or screenshot readback.
+/// WebView, WebGL, in-screen controls or screenshot readback.
 class CinemaTVHomeDisplay extends StatefulWidget {
   const CinemaTVHomeDisplay({
     super.key,
@@ -385,8 +387,9 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
                                                 maxLines: 1,
                                                 overflow: TextOverflow.ellipsis,
                                                 style: TextStyle(
-                                                  color: Colors.white70,
-                                                  fontSize: 18 * scale,
+                                                  color: Colors.white,
+                                                  fontSize: 32 * scale,
+                                                  fontWeight: FontWeight.w500,
                                                 ),
                                               ),
                                             if (item.detail.isNotEmpty)

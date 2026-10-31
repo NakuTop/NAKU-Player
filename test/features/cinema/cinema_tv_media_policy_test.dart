@@ -78,6 +78,61 @@ void main() {
       isNull,
     );
   });
+  test('TV chooses HDR10 over DV5 even when DV-only variant has more pixels', () async {
+    final environment = CinemaTVMediaEnvironment(
+      supported: () => true,
+      reader: () async => {
+        'decoderCapabilities': [
+          {'codec': 'HEVC', 'maxWidth': 3840, 'maxHeight': 2160},
+          {'codec': 'AVC', 'maxWidth': 1920, 'maxHeight': 1080},
+        ],
+        'displayCapabilities': {
+          'known': true,
+          'dolbyVision': false,
+          'hdr10': true,
+          'hlg': true,
+        },
+      },
+    );
+    await environment.refresh();
+    const manifest =
+        '#EXTM3U\n'
+        '#EXT-X-STREAM-INF:BANDWIDTH=20000000,RESOLUTION=3840x2160,CODECS="dvhe.05.06",VIDEO-RANGE=PQ\n'
+        'dv5.m3u8\n'
+        '#EXT-X-STREAM-INF:BANDWIDTH=15000000,RESOLUTION=3840x2160,CODECS="dvh1.08.06",VIDEO-RANGE=PQ\n'
+        'dv8.m3u8\n'
+        '#EXT-X-STREAM-INF:BANDWIDTH=10000000,RESOLUTION=3840x2160,CODECS="hvc1.2.4.L153",VIDEO-RANGE=PQ\n'
+        'hdr10.m3u8\n'
+        '#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="avc1.640028",VIDEO-RANGE=SDR\n'
+        'sdr.m3u8\n';
+    final variants = cinemaHlsVariants(
+      manifest,
+      Uri.parse('https://fixture.invalid/master.m3u8'),
+    );
+    expect(variants.first.codec, 'HEVC');
+    expect(variants.first.codecs, 'dvhe.05.06');
+    expect(variants.where(environment.supportsVariant).map((v) => v.uri.path), [
+      '/dv8.m3u8',
+      '/hdr10.m3u8',
+      '/sdr.m3u8',
+    ]);
+    final sdr = CinemaTVMediaEnvironment(
+      supported: () => true,
+      reader: () async => {
+        'displayCapabilities': {
+          'known': true,
+          'dolbyVision': false,
+          'hdr10': false,
+          'hlg': false,
+        },
+      },
+    );
+    await sdr.refresh();
+    expect(variants.where(sdr.supportsVariant).map((v) => v.uri.path), [
+      '/sdr.m3u8',
+    ]);
+  });
+
   test('one codec maximum does not claim support for another codec', () async {
     final environment = CinemaTVMediaEnvironment(
       supported: () => true,

@@ -30,7 +30,7 @@ import kotlin.math.*
 
 /** A bounded GLES2 sphere replaces the WebView/WebGL scene on old televisions.
  * Texture is the exact Home Display NASA Blue Marble equirectangular asset.
- * No browser, controls, interactive particles, landmarks or aircraft models.
+ * No browser, controls, interactive particles or landmarks. Bounded native airframes.
  */
 class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
     MethodChannel.MethodCallHandler, EventChannel.StreamHandler,
@@ -235,14 +235,21 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
         private val onError: () -> Unit,
     ) : GLSurfaceView.Renderer {
         @Volatile var animating = false
-        private data class FlightGeometry(val routes: List<FloatBuffer>, val positions: List<FloatBuffer>)
-        @Volatile private var geometry = FlightGeometry(emptyList(), emptyList())
+        private data class Aircraft(val path: NakuTVFlightPath, val lat: Double, val lon: Double, val preview: Boolean)
+        private data class FlightGeometry(val routes: List<FloatBuffer>, val positions: List<FloatBuffer>, val aircraft: List<Aircraft>, val center: Float? = null)
+        @Volatile private var geometry = FlightGeometry(emptyList(), emptyList(), emptyList())
         private var uploadedGeometry: FlightGeometry? = null
         private val routeBuffers = mutableListOf<Pair<Int, Int>>()
         private val positionBuffers = mutableListOf<Int>()
         private val sphereBuffers = IntArray(2)
         private val sphereHandles = IntArray(10)
-        private val lineHandles = IntArray(4)
+        private val lineHandles = IntArray(6)
+        private var aircraftBuffer = 0
+        private val aircraftMesh = floats(NakuTVFlightPath.aircraft())
+        private val aircraftFrame = FloatArray(16)
+        private val aircraftMvp = FloatArray(16)
+        private var previewSeconds = 0f
+        private var centeredOnFlight = false
         private val starHandles = IntArray(4)
         private val atmosphereHandles = IntArray(3)
         private var atmosphereProgram = 0
@@ -283,7 +290,17 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
         fun setRoutes(raw: Any?) {
             if (raw !is List<*>) return
             val rows = raw.take(8).filterIsInstance<Map<*, *>>()
-            geometry = FlightGeometry(rows.mapNotNull { route(it) }, rows.mapNotNull { position(it) })
+            val paths = rows.mapNotNull { row ->
+                fun value(key: String) = (row[key] as? Number)?.toDouble() ?: Double.NaN
+                val path = try { NakuTVFlightPath(value("originLat"), value("originLon"), value("destinationLat"), value("destinationLon")) }
+                    catch (_: IllegalArgumentException) { return@mapNotNull null }
+                val preview = (row["preview"] as? Number)?.toDouble() == 1.0
+                val lat = if (preview) Double.NaN else value("positionLat")
+                val lon = if (preview) Double.NaN else value("positionLon")
+                Triple(row, path, if (preview || NakuTVFlightPath.valid(lat, lon)) Aircraft(path, lat, lon, preview) else null)
+            }
+            geometry = FlightGeometry(paths.map { floats(it.second.vertices) },
+                paths.mapNotNull { position(it.first) }, paths.mapNotNull { it.third }, paths.firstOrNull()?.second?.centerLongitude())
         }
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
             failed = false
@@ -343,6 +360,14 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 lineHandles[1] = GLES20.glGetAttribLocation(lineProgram, "a_position")
                 lineHandles[2] = GLES20.glGetUniformLocation(lineProgram, "u_points")
                 lineHandles[3] = GLES20.glGetUniformLocation(lineProgram, "u_pointSize")
+                lineHandles[4] = GLES20.glGetUniformLocation(lineProgram, "u_color")
+                lineHandles[5] = GLES20.glGetUniformLocation(lineProgram, "u_aircraft")
+                val aircraftName = IntArray(1)
+                GLES20.glGenBuffers(1, aircraftName, 0)
+                aircraftBuffer = aircraftName[0]
+                aircraftMesh.position(0)
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, aircraftBuffer)
+                GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, aircraftMesh.limit() * 4, aircraftMesh, GLES20.GL_STATIC_DRAW)
                 GLES20.glGenBuffers(2, sphereBuffers, 0)
                 mesh.first.position(0)
                 GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, sphereBuffers[0])
@@ -390,7 +415,12 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
             if (failed || program == 0 || !animating) { lastFrame = 0L; return }
             val now = System.nanoTime()
             val delta = if (lastFrame == 0L) 0f else ((now - lastFrame) / 1_000_000_000f).coerceIn(0f, .1f)
+            if (!centeredOnFlight) geometry.center?.let {
+                yaw = -it
+                centeredOnFlight = true
+            }
             yaw = (yaw + delta * 1.68f) % 360f
+            previewSeconds = (previewSeconds + delta) % 75f
             // Integer star frequencies make a seamless two-minute phase loop.
             starPhase = (starPhase + delta * (2f * PI.toFloat() / 120f)) % (2f * PI.toFloat())
             drawStars()
@@ -451,6 +481,9 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
             val routePosition = lineHandles[1]
             GLES20.glEnableVertexAttribArray(routePosition)
             GLES20.glUniform1f(lineHandles[2], 0f)
+            GLES20.glUniform1f(lineHandles[5], 0f)
+            GLES20.glUniform3f(lineHandles[4], .68f, .84f, .92f)
+            GLES20.glLineWidth(2f)
             GLES20.glUniform1f(lineHandles[3], (height / 180f).coerceIn(4f, 10f))
             routeBuffers.forEach { (buffer, count) ->
                 GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, buffer)
@@ -463,6 +496,23 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 GLES20.glVertexAttribPointer(routePosition, 3, GLES20.GL_FLOAT, false, 12, 0)
                 GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
             }
+            // One shared airframe VBO, at most eight matrix updates/draws. Preview
+            // journeys stay separate from reported coordinates and network data.
+            GLES20.glUniform1f(lineHandles[2], 0f)
+            GLES20.glUniform1f(lineHandles[5], 1f)
+            GLES20.glUniform3f(lineHandles[4], .88f, .94f, .98f)
+            GLES20.glDisable(GLES20.GL_CULL_FACE)
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, aircraftBuffer)
+            GLES20.glVertexAttribPointer(routePosition, 3, GLES20.GL_FLOAT, false, 12, 0)
+            val airframeScale = (180f / height).coerceIn(.42f, .9f)
+            geometry.aircraft.forEach { aircraft ->
+                aircraft.path.frame(if (aircraft.preview) ((previewSeconds / 75f + .5f) % 1f).toDouble() else .5,
+                    aircraft.lat, aircraft.lon, airframeScale, aircraftFrame)
+                Matrix.multiplyMM(aircraftMvp, 0, mvp, 0, aircraftFrame, 0)
+                GLES20.glUniformMatrix4fv(lineHandles[0], 1, false, aircraftMvp, 0)
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, aircraftMesh.limit() / 3)
+            }
+            GLES20.glEnable(GLES20.GL_CULL_FACE)
             GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
             GLES20.glDisableVertexAttribArray(routePosition)
             if (!frameSent) {
@@ -474,6 +524,7 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                     "nightTextureWidth" to nightTextureWidth, "nightTextureHeight" to nightTextureHeight,
                     "solarUtcMillis" to solarSecond * 1000L, "dayNight" to true,
                     "fpsLimit" to 24, "renderer" to "gles2",
+                    "routes" to geometry.routes.size, "aircraft" to geometry.aircraft.size,
                     "staticStars" to false, "twinklingStars" to true, "atmosphere" to true, "clouds" to (cloudTexture != 0), "starCount" to starCount))
             }
         }
@@ -777,14 +828,21 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 attribute vec3 a_position;
                 uniform mat4 u_mvp;
                 uniform float u_pointSize;
-                void main() { gl_Position = u_mvp * vec4(a_position, 1.0); gl_PointSize = u_pointSize; }
+                uniform float u_aircraft;
+                varying mediump float v_shade;
+                void main() {
+                    v_shade = mix(1.0, .74 + .26 * clamp(a_position.y * 62.5 + .5, 0.0, 1.0), u_aircraft);
+                    gl_Position = u_mvp * vec4(a_position, 1.0); gl_PointSize = u_pointSize;
+                }
             """
             private const val LINE_FRAGMENT = """
                 precision mediump float;
                 uniform float u_points;
+                uniform vec3 u_color;
+                varying mediump float v_shade;
                 void main() {
                     if (u_points > 0.5 && distance(gl_PointCoord, vec2(0.5)) > 0.5) discard;
-                    gl_FragColor = vec4(0.91, 0.76, 0.43, 1.0);
+                    gl_FragColor = vec4(u_color * v_shade, 1.0);
                 }
             """
             private fun program(vertex: String, fragment: String): Int {
@@ -849,26 +907,7 @@ class NakuTVEarth(private val activity: Activity, engine: FlutterEngine) :
                 return floats(floatArrayOf((cos(a) * sin(b) * 1.014).toFloat(),
                     (sin(a) * 1.014).toFloat(), (cos(a) * cos(b) * 1.014).toFloat()))
             }
-            private fun route(row: Map<*, *>): FloatBuffer? {
-                fun value(key: String, limit: Double): Double? = (row[key] as? Number)?.toDouble()
-                    ?.takeIf { it.isFinite() && abs(it) <= limit }
-                fun point(lat: Double, lon: Double): DoubleArray {
-                    val a = lat * PI / 180; val b = lon * PI / 180
-                    return doubleArrayOf(cos(a) * sin(b), sin(a), cos(a) * cos(b))
-                }
-                val from = point(value("originLat", 90.0) ?: return null, value("originLon", 180.0) ?: return null)
-                val to = point(value("destinationLat", 90.0) ?: return null, value("destinationLon", 180.0) ?: return null)
-                val angle = acos(from.indices.sumOf { from[it] * to[it] }.coerceIn(-1.0, 1.0))
-                if (angle < 1e-6 || PI - angle < 1e-6) return null
-                val values = FloatArray(65 * 3)
-                for (i in 0..64) {
-                    val t = i / 64.0
-                    val a = sin((1 - t) * angle) / sin(angle)
-                    val b = sin(t * angle) / sin(angle)
-                    for (axis in 0..2) values[i * 3 + axis] = ((from[axis] * a + to[axis] * b) * 1.008).toFloat()
-                }
-                return floats(values)
-            }
+
         }
     }
 }

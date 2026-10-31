@@ -6,7 +6,8 @@ high-definition, slowly rotating Earth using a native OpenGL ES renderer; it
 is not a static-image replacement. A compact, noninteractive overlay contains
 a minute clock/date and at most three actual flights from the authenticated
 read-only Home Display feed. Parcels, next-destination cards, buttons, wake
-hints, extra 3D models and interactive effects are omitted.
+hints, landmarks and interactive effects are omitted. Version 1.1.7 restores
+bounded route arcs and the original swept-wing aircraft design.
 
 The native Earth uses the exact original 8192×4096 day and historical-night
 textures, a bounded sphere mesh and a controlled rendering cadence. It selects
@@ -129,9 +130,15 @@ Only real origin/destination points marked drawable and containing valid
 latitude/longitude can create route arcs. The UI passes at most eight normalized
 routes to the renderer, without private flight notes, booking references or
 invented endpoints. These arcs represent supplied flight routes. An optional
-small 2D point uses an actual finite position only when the feed marks it live
-or last-known and the flight is not a route preview. Estimated/interpolated
-positions and decorative aircraft models are excluded.
+aircraft uses an actual finite position only when the feed marks it live
+or last-known and the flight is not a route preview. Explicit route previews
+carry a separate numeric flag and animate as display-only journeys with an
+on-screen preview label. They never become telemetry or write back to the feed.
+The shared under-600-vertex airliner matches Home Display's original geometry.
+Arc geometry is uploaded on snapshot changes, and models use only bounded
+matrix updates within the existing frame loop. Routes use a restrained lifted
+great circle; the first valid route faces the viewer before rotation continues.
+At the 1280x720 baseline the route destination text is 32 logical pixels.
 
 Snapshot polling runs every sixty seconds; the clock updates once per minute.
 Backgrounding cancels both timers, sets the native Earth inactive and ignores

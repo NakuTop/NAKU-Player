@@ -61,6 +61,18 @@ void main() {
     },
   );
 
+  test(
+    'native previews stay marked and cannot carry a made-up actual position',
+    () {
+      final preview = cinemaTVEarthRoutes([
+        {...route, 'preview': 1.0, 'positionLat': 30, 'positionLon': 120},
+      ]).single;
+      expect(preview['preview'], 1.0);
+      expect(preview.containsKey('positionLat'), false);
+      expect(preview.containsKey('positionLon'), false);
+    },
+  );
+
   const channel = MethodChannel('test/tv-earth');
   late StreamController<dynamic> events;
   late List<MethodCall> calls;

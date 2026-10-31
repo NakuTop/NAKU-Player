@@ -441,11 +441,13 @@ class CinemaHlsVariant {
     this.width,
     this.height, [
     this.codec = '',
+    this.codecs = '',
+    this.videoRange = '',
   ]);
   final Uri uri;
   final int bitrate;
   final int? width, height;
-  final String codec;
+  final String codec, codecs, videoRange;
 }
 
 List<CinemaHlsVariant> cinemaHlsVariants(String text, Uri base) {
@@ -468,6 +470,8 @@ List<CinemaHlsVariant> cinemaHlsVariants(String text, Uri base) {
         int.tryParse(resolution?[1] ?? ''),
         int.tryParse(resolution?[2] ?? ''),
         _cinemaHlsVideoCodec(lines[i]),
+        RegExp(r'CODECS="([^"]+)"').firstMatch(lines[i])?[1] ?? '',
+        RegExp(r'VIDEO-RANGE=([^,]+)').firstMatch(lines[i])?[1] ?? '',
       ),
     );
   }
@@ -477,9 +481,19 @@ List<CinemaHlsVariant> cinemaHlsVariants(String text, Uri base) {
 String _cinemaHlsVideoCodec(String line) {
   final value =
       RegExp(r'CODECS="([^"]+)"').firstMatch(line)?[1]?.toLowerCase() ?? '';
-  if (value.contains('avc1') || value.contains('avc3')) return 'AVC';
-  if (value.contains('hvc1') || value.contains('hev1')) return 'HEVC';
-  if (value.contains('av01')) return 'AV1';
+  if (value.contains('avc1') ||
+      value.contains('avc3') ||
+      value.contains('dvav') ||
+      value.contains('dva1')) {
+    return 'AVC';
+  }
+  if (value.contains('hvc1') ||
+      value.contains('hev1') ||
+      value.contains('dvhe') ||
+      value.contains('dvh1')) {
+    return 'HEVC';
+  }
+  if (value.contains('av01') || value.contains('dav1')) return 'AV1';
   if (value.contains('vp09')) return 'VP9';
   return '';
 }

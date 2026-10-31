@@ -37,6 +37,8 @@ void main() {
   test(
     'open preserves signed request headers, seek position and paused intent',
     () async {
+      final positions = <Duration>[];
+      final subscription = player.stream.position.listen(positions.add);
       player.mediaMimeType = 'application/x-mpegURL';
       await player.open(
         Media(
@@ -53,6 +55,9 @@ void main() {
       expect(open.arguments['headers'], {'Authorization': 'fixture'});
       expect(player.state.playing, false);
       expect(player.state.buffering, true);
+      await Future<void>.delayed(Duration.zero);
+      expect(positions, contains(const Duration(seconds: 47)));
+      await subscription.cancel();
     },
   );
   test(

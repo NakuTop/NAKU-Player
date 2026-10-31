@@ -656,7 +656,7 @@ void main() {
     (tester) async {
       NakuDevice.isTV = true;
       addTearDown(() => NakuDevice.isTV = false);
-      // The TV home keeps its large artwork and horizontal remote header.
+      // The TV home starts with poster rails and a horizontal remote header.
       // Desktop sort/source controls are absent from every TV catalogue.
       await mount(tester, width: 800, recentHot: true);
       const destinations = [
@@ -690,10 +690,7 @@ void main() {
       expect(find.text('设置'), findsNothing);
       expect(find.text('网页影院'), findsNothing);
       expect(find.byIcon(Icons.menu_rounded), findsNothing);
-      expect(
-        find.byKey(const ValueKey('tv-featured-original')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('tv-featured-original')), findsNothing);
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
       expect(
         Focus.of(

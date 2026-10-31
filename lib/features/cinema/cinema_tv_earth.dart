@@ -7,7 +7,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 /// Only real, finite airport coordinates cross the native rendering bridge.
-/// No flight identifiers, account data, synthetic routes or aircraft models.
+/// No flight identifiers or account data. Explicit route previews stay marked.
 List<Map<String, double>> cinemaTVEarthRoutes(
   List<Map<String, dynamic>> flights,
 ) {
@@ -28,9 +28,11 @@ List<Map<String, double>> cinemaTVEarthRoutes(
       row[key] = number;
     }
     if (row.length != 4) continue;
+    if (flight['preview'] == 1.0) row['preview'] = 1.0;
     final positionLat = flight['positionLat'];
     final positionLon = flight['positionLon'];
-    if (positionLat is num &&
+    if (row['preview'] != 1.0 &&
+        positionLat is num &&
         positionLat.isFinite &&
         positionLat.abs() <= 90 &&
         positionLon is num &&

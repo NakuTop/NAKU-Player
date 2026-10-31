@@ -1849,15 +1849,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         .where(
           (variant) =>
               !_tvHlsRejected.contains(variant.uri.toString()) &&
-              environment.supports(
-                CinemaMediaProbeResult(
-                  ok: true,
-                  elapsedMs: 0,
-                  width: variant.width,
-                  height: variant.height,
-                  codec: variant.codec,
-                ),
-              ),
+              environment.supportsVariant(variant),
         )
         .toList();
     if (candidates.isEmpty) throw const FormatException('没有这台电视可解码的 HLS 画质');
