@@ -46,6 +46,42 @@ void main() {
     },
   );
 
+  test(
+    'weather uses the same short-lived grant and only the fixed collection endpoint',
+    () async {
+      final session = CinemaHomeDisplaySnapshotSession(
+        now: () => now,
+        fetch: (uri, headers) async {
+          expect(
+            uri.toString(),
+            '$cinemaHomeDisplayOrigin/api/display/weather?scope=all',
+          );
+          expect(
+            headers[HttpHeaders.cookieHeader],
+            contains('__Host-naku-display=private-fixture'),
+          );
+          return (
+            status: 200,
+            bytes: utf8.encode(
+              jsonEncode({
+                'ok': true,
+                'data': {'routes': [], 'checkedAt': now.toIso8601String()},
+              }),
+            ),
+          );
+        },
+      );
+      await session.install(grant());
+      expect((await session.weather())['ok'], true);
+      expect(
+        jsonEncode(await session.weather()),
+        isNot(contains('private-fixture')),
+      );
+      await session.invalidateCredential();
+      expect((await session.weather())['ok'], false);
+    },
+  );
+
   test('no session or expiring grant never sends a feed request', () async {
     var calls = 0, clock = now;
     final session = CinemaHomeDisplaySnapshotSession(

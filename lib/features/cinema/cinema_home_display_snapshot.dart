@@ -41,12 +41,20 @@ class CinemaHomeDisplaySnapshotSession implements CinemaHomeDisplayCookieStore {
     await webCookies?.invalidateCredential();
   }
 
-  Future<Map<String, dynamic>> snapshot() async {
+  Future<Map<String, dynamic>> snapshot() => _feed('/api/display');
+
+  Future<Map<String, dynamic>> weather() =>
+      _feed('/api/display/weather?scope=all', weather: true);
+
+  Future<Map<String, dynamic>> _feed(
+    String path, {
+    bool weather = false,
+  }) async {
     if (!ready) return {'ok': false, 'reason': 'nas_session_expired'};
     final grant = _grant!, revision = _revision;
     try {
       final response = await (fetch ?? _request)(
-        Uri.parse('$cinemaHomeDisplayOrigin/api/display'),
+        Uri.parse('$cinemaHomeDisplayOrigin$path'),
         {
           HttpHeaders.cookieHeader:
               '${grant.context.name}=${grant.context.value}; '
@@ -69,9 +77,14 @@ class CinemaHomeDisplaySnapshotSession implements CinemaHomeDisplayCookieStore {
           : null;
       if (raw is! Map ||
           raw['demo'] == true ||
-          raw['flights'] is! List ||
-          raw['flights'].length > 100 ||
-          (raw['parcels'] != null && raw['parcels'] is! List)) {
+          (weather
+              ? raw['routes'] is! List ||
+                    raw['routes'].length > 12 ||
+                    raw['checkedAt'] is! String ||
+                    DateTime.tryParse(raw['checkedAt']) == null
+              : raw['flights'] is! List ||
+                    raw['flights'].length > 100 ||
+                    (raw['parcels'] != null && raw['parcels'] is! List))) {
         return {'ok': false, 'reason': 'display_response_invalid'};
       }
       return {'ok': true, 'data': Map<String, dynamic>.from(raw)};

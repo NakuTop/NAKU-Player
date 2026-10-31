@@ -686,7 +686,9 @@ class CinemaAndroidNAS {
     return _homeDisplayAuthorization.authorize(_homeDisplayClientID);
   }
 
-  Future<Map<String, dynamic>> _homeDisplaySnapshot() async {
+  Future<Map<String, dynamic>> _homeDisplaySnapshot({
+    bool weather = false,
+  }) async {
     final generation = _homeDisplayGeneration;
     if (_token.isEmpty || _namespace.isEmpty) {
       return {'ok': false, 'reason': 'nas_login_required'};
@@ -697,7 +699,9 @@ class CinemaAndroidNAS {
         return {'ok': false, 'reason': access['reason']};
       }
     }
-    final data = await _homeDisplayCookies.snapshot();
+    final data = await (weather
+        ? _homeDisplayCookies.weather()
+        : _homeDisplayCookies.snapshot());
     if (generation != _homeDisplayGeneration || _token.isEmpty) {
       return {'ok': false, 'reason': 'nas_session_expired'};
     }
@@ -1270,6 +1274,8 @@ class CinemaAndroidNAS {
         return _authorizeHomeDisplay();
       case 'homeDisplaySnapshot':
         return _homeDisplaySnapshot();
+      case 'homeDisplayWeather':
+        return _homeDisplaySnapshot(weather: true);
       case 'qrCreate':
         return _createQR('${a['address'] ?? ''}');
       case 'qrPoll':

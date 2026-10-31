@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -6,10 +7,12 @@ import 'package:flutter/services.dart';
 
 import 'cinema_nas_media.dart';
 import 'cinema_tv_earth.dart';
+import 'cinema_tv_display_data.dart';
 
 class CinemaTVDisplayItem {
-  const CinemaTVDisplayItem(this.title, this.body, this.detail);
+  const CinemaTVDisplayItem(this.title, this.body, this.detail, {this.flight});
   final String title, body, detail;
+  final CinemaTVFlightInfo? flight;
 }
 
 String _text(Object? value, [int maximum = 100]) => value is String
@@ -33,7 +36,12 @@ String cinemaTVDisplayTime(Object? value) {
 
 /// Flights-only projection of the existing authenticated /api/display schema.
 /// Parcels, destinations, demo data and private notes never appear on TV.
-List<CinemaTVDisplayItem> cinemaTVDisplayItems(Map<String, dynamic> snapshot) {
+List<CinemaTVDisplayItem> cinemaTVDisplayItems(
+  Map<String, dynamic> snapshot, {
+  Map<String, dynamic>? weather,
+  DateTime? now,
+  bool weatherStale = false,
+}) {
   if (snapshot['demo'] != false) return const [];
   final items = <CinemaTVDisplayItem>[];
   final flights = snapshot['flights'];
@@ -58,6 +66,12 @@ List<CinemaTVDisplayItem> cinemaTVDisplayItems(Map<String, dynamic> snapshot) {
             dataLabel,
             if (flight['routePreview'] == true) '航线预览',
           ].where((v) => v.isNotEmpty).join(' · '),
+          flight: cinemaTVFlightInfo(
+            flight,
+            weather: weather,
+            now: now ?? DateTime.now(),
+            weatherStale: weatherStale,
+          ),
         ),
       );
     }
@@ -122,6 +136,7 @@ class CinemaTVHomeDisplay extends StatefulWidget {
     this.client,
     this.onWake,
     this.loadSnapshot,
+    this.loadWeather,
     this.now,
     this.earthBuilder,
   });
@@ -129,6 +144,8 @@ class CinemaTVHomeDisplay extends StatefulWidget {
   final VoidCallback? onWake;
   @visibleForTesting
   final Future<Map<String, dynamic>> Function()? loadSnapshot;
+  @visibleForTesting
+  final Future<Map<String, dynamic>> Function()? loadWeather;
   @visibleForTesting
   final DateTime Function()? now;
   @visibleForTesting
@@ -142,10 +159,15 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
   late final _client = widget.client ?? CinemaNASClient();
   late DateTime _clock = widget.now?.call() ?? DateTime.now();
   Map<String, dynamic>? _snapshot;
+  Map<String, dynamic>? _weather;
+  String _weatherKey = '';
+  DateTime? _weatherNext;
+  bool _weatherLoading = false, _weatherStale = false;
   Timer? _minute, _poll;
   bool _foreground = true, _loading = false, _waking = false;
   bool _earthFailed = false;
   int _generation = 0;
+  int _weatherGeneration = 0;
   String _status = '正在同步 Home Display';
 
   @override
@@ -186,6 +208,7 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
           _snapshot = Map<String, dynamic>.from(data);
           _status = '';
         });
+        unawaited(_refreshWeather(Map<String, dynamic>.from(data)));
       } else {
         final reason = result['reason'];
         final needsNAS =
@@ -193,7 +216,13 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
             reason == 'nas_session_expired' ||
             reason == 'nas_authentication_failed';
         setState(() {
-          if (needsNAS) _snapshot = null;
+          if (needsNAS) {
+            _snapshot = null;
+            _weather = null;
+            _weatherKey = '';
+            ++_weatherGeneration;
+            _weatherLoading = false;
+          }
           _status = needsNAS ? '请先在“我的”连接 NAS' : '暂时无法同步 · 稍后自动重试';
         });
       }
@@ -205,6 +234,80 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
       }
     } finally {
       if (generation == _generation) _loading = false;
+    }
+  }
+
+  Future<void> _refreshWeather(Map<String, dynamic> snapshot) async {
+    final flights = snapshot['flights'];
+    if (!_foreground ||
+        _weatherLoading ||
+        flights is! List ||
+        flights.isEmpty) {
+      return;
+    }
+    final key = jsonEncode(
+      flights
+          .whereType<Map>()
+          .take(12)
+          .map(
+            (flight) => [
+              flight['id'],
+              for (final side in ['origin', 'destination'])
+                if (flight[side] is Map)
+                  [
+                    for (final field in ['lat', 'lng', 'timezone', 'drawable'])
+                      flight[side][field],
+                  ]
+                else
+                  null,
+            ],
+          )
+          .toList(),
+    );
+    final now = widget.now?.call() ?? DateTime.now();
+    if (key == _weatherKey &&
+        _weatherNext != null &&
+        now.isBefore(_weatherNext!)) {
+      return;
+    }
+    final generation = ++_weatherGeneration;
+    _weatherLoading = true;
+    _weatherKey = key;
+    _weatherNext = now.add(const Duration(minutes: 1));
+    try {
+      final result =
+          await (widget.loadWeather?.call() ??
+                  _client.call('homeDisplayWeather'))
+              .timeout(const Duration(seconds: 35));
+      if (!mounted || !_foreground || generation != _weatherGeneration) return;
+      final data = result['data'];
+      if (result['ok'] == true && data is Map && data['routes'] is List) {
+        setState(() {
+          _weather = Map<String, dynamic>.from(data);
+          _weatherStale = false;
+        });
+        // Incomplete city results can retry later without polling the provider
+        // on every frame or discarding another city's valid weather.
+        final incomplete =
+            (data['routes'] as List).isEmpty ||
+            (data['routes'] as List).whereType<Map>().any(
+              (route) => ['origin', 'destination'].any(
+                (side) =>
+                    route[side] is Map &&
+                    (route[side]['snapshot'] == null ||
+                        route[side]['error'] != null),
+              ),
+            );
+        _weatherNext = now.add(Duration(minutes: incomplete ? 5 : 30));
+      } else {
+        setState(() => _weatherStale = true);
+      }
+    } catch (_) {
+      if (mounted && _foreground && generation == _weatherGeneration) {
+        setState(() => _weatherStale = true);
+      }
+    } finally {
+      if (generation == _weatherGeneration) _weatherLoading = false;
     }
   }
 
@@ -221,7 +324,10 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
       _minute?.cancel();
       _poll?.cancel();
       ++_generation;
+      ++_weatherGeneration;
       _loading = false;
+      if (_weatherLoading) _weatherNext = null;
+      _weatherLoading = false;
       setState(() {});
     }
   }
@@ -236,6 +342,7 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
   @override
   void dispose() {
     ++_generation;
+    ++_weatherGeneration;
     _minute?.cancel();
     _poll?.cancel();
     WidgetsBinding.instance.removeObserver(this);
@@ -247,7 +354,12 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
     String two(int value) => value.toString().padLeft(2, '0');
     final items = _snapshot == null
         ? const <CinemaTVDisplayItem>[]
-        : cinemaTVDisplayItems(_snapshot!);
+        : cinemaTVDisplayItems(
+            _snapshot!,
+            weather: _weather,
+            now: _clock,
+            weatherStale: _weatherStale,
+          );
     return PopScope<void>(
       onPopInvokedWithResult: (didPop, _) {
         if (didPop && !_waking) {
@@ -335,87 +447,99 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
                                 letterSpacing: 3,
                               ),
                             ),
-                            const Spacer(),
-                            Text(
-                              '${two(_clock.hour)}:${two(_clock.minute)}',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 96 * scale,
-                                fontWeight: FontWeight.w300,
-                                height: 1,
-                              ),
-                            ),
-                            SizedBox(height: 12 * scale),
-                            Text(
-                              '${_clock.month}月${_clock.day}日  ${const ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日'][_clock.weekday - 1]}',
-                              style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 22 * scale,
-                              ),
-                            ),
-                            SizedBox(height: 28 * scale),
-                            if (items.isNotEmpty)
-                              SizedBox(
-                                width: (size.width * .44)
-                                    .clamp(280, 720)
-                                    .toDouble(),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    for (final item in items)
-                                      Padding(
-                                        padding: EdgeInsets.only(
-                                          bottom: 16 * scale,
-                                        ),
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
+                            Expanded(
+                              child: Align(
+                                alignment: Alignment.bottomLeft,
+                                child: SizedBox(
+                                  width: math.min(
+                                    size.width * .44,
+                                    580 * scale,
+                                  ),
+                                  child: FittedBox(
+                                    alignment: Alignment.bottomLeft,
+                                    fit: BoxFit.scaleDown,
+                                    child: SizedBox(
+                                      width: 550 * scale,
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Text(
+                                            '${two(_clock.hour)}:${two(_clock.minute)}',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 64 * scale,
+                                              fontWeight: FontWeight.w300,
+                                              height: 1,
+                                            ),
+                                          ),
+                                          SizedBox(height: 10 * scale),
+                                          Text(
+                                            '${_clock.month}月${_clock.day}日  ${const ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日'][_clock.weekday - 1]}',
+                                            style: TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 20 * scale,
+                                            ),
+                                          ),
+                                          SizedBox(height: 26 * scale),
+                                          if (items.isNotEmpty) ...[
+                                            _TVFlightDetails(
+                                              item: items.first,
+                                              scale: scale,
+                                            ),
+                                            for (final item in items.skip(1))
+                                              Padding(
+                                                padding: EdgeInsets.only(
+                                                  top: 12 * scale,
+                                                ),
+                                                child: Row(
+                                                  children: [
+                                                    SizedBox(
+                                                      width: 180 * scale,
+                                                      child: Text(
+                                                        item.title,
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow
+                                                            .ellipsis,
+                                                        style: TextStyle(
+                                                          color: Colors.white60,
+                                                          fontSize: 16 * scale,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    Expanded(
+                                                      child: Text(
+                                                        item.body,
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow
+                                                            .ellipsis,
+                                                        style: TextStyle(
+                                                          color: Colors.white70,
+                                                          fontSize: 19 * scale,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                          ] else
                                             Text(
-                                              item.title,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
+                                              _status.isNotEmpty
+                                                  ? _status
+                                                  : '暂无待展示的航班',
                                               style: TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 20 * scale,
-                                                fontWeight: FontWeight.w600,
+                                                color: Colors.white60,
+                                                fontSize: 18 * scale,
                                               ),
                                             ),
-                                            if (item.body.isNotEmpty)
-                                              Text(
-                                                item.body,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: 32 * scale,
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                              ),
-                                            if (item.detail.isNotEmpty)
-                                              Text(
-                                                item.detail,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: TextStyle(
-                                                  color: Colors.white54,
-                                                  fontSize: 14 * scale,
-                                                ),
-                                              ),
-                                          ],
-                                        ),
+                                        ],
                                       ),
-                                  ],
-                                ),
-                              )
-                            else
-                              Text(
-                                _status.isNotEmpty ? _status : '暂无待展示的航班',
-                                style: TextStyle(
-                                  color: Colors.white60,
-                                  fontSize: 18 * scale,
+                                    ),
+                                  ),
                                 ),
                               ),
+                            ),
                             SizedBox(height: 8 * scale),
                             Text(
                               [
@@ -443,6 +567,105 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
           ),
         ),
       ),
+    );
+  }
+}
+
+class _TVFlightDetails extends StatelessWidget {
+  const _TVFlightDetails({required this.item, required this.scale});
+  final CinemaTVDisplayItem item;
+  final double scale;
+
+  @override
+  Widget build(BuildContext context) {
+    final info = item.flight!;
+    Widget line(
+      String value,
+      double size, {
+      Color color = Colors.white70,
+      FontWeight weight = FontWeight.w400,
+    }) => Text(
+      value,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        color: color,
+        fontSize: size * scale,
+        fontWeight: weight,
+        height: 1.3,
+      ),
+    );
+    Widget airport(bool departure) => Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          line(
+            '${departure ? '出发' : '到达'} · ${departure ? info.departureAirport : info.arrivalAirport}',
+            16,
+          ),
+          SizedBox(height: 5 * scale),
+          line(
+            departure ? info.departure : info.arrival,
+            24,
+            color: Colors.white,
+            weight: FontWeight.w500,
+          ),
+          line(
+            departure ? info.departureNote : info.arrivalNote,
+            14,
+            color: Colors.white54,
+          ),
+          SizedBox(height: 8 * scale),
+          line(departure ? info.departureWeather : info.arrivalWeather, 19),
+        ],
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Flexible(
+              child: line(
+                info.city,
+                48,
+                color: Colors.white,
+                weight: FontWeight.w500,
+              ),
+            ),
+            if (info.country.isNotEmpty) ...[
+              SizedBox(width: 14 * scale),
+              Flexible(child: line(info.country, 18)),
+            ],
+          ],
+        ),
+        SizedBox(height: 6 * scale),
+        line(
+          [item.title, info.airline].where((v) => v.isNotEmpty).join(' · '),
+          20,
+          color: Colors.white,
+        ),
+        line(item.body, 20),
+        SizedBox(height: 18 * scale),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            airport(true),
+            SizedBox(width: 18 * scale),
+            airport(false),
+          ],
+        ),
+        if (info.gate.isNotEmpty) ...[
+          SizedBox(height: 12 * scale),
+          line(info.gate, 17),
+        ],
+        SizedBox(height: 12 * scale),
+        line(info.countdown, 18, color: Colors.white),
+        if (info.source.isNotEmpty)
+          line(info.source, 13, color: Colors.white38),
+      ],
     );
   }
 }

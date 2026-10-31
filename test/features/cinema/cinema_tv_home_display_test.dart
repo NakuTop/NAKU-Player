@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:flutter/rendering.dart';
@@ -18,12 +19,16 @@ Map<String, dynamic> _snapshot() => {
         'id': 'fixture-flight',
         'flightNumber': 'TEST901',
         'status': '计划出发',
+        'airline': '测试航空',
+        'terminal': 'T2',
+        'gate': 'D18',
         'origin': {
           'city': '上海',
           'label': 'PVG',
           'lat': 31.1443,
           'lng': 121.8083,
           'drawable': true,
+          'timezone': 'Asia/Shanghai',
         },
         'destination': {
           'city': '东京',
@@ -31,8 +36,11 @@ Map<String, dynamic> _snapshot() => {
           'lat': 35.7647,
           'lng': 140.3864,
           'drawable': true,
+          'country': '日本',
+          'timezone': 'Asia/Tokyo',
         },
         'scheduledDeparture': '2026-10-29T03:30:00Z',
+        'scheduledArrival': '2026-10-29T06:30:00Z',
         'dataLabel': '计划班表',
         'bookingReference': 'must-never-render',
       },
@@ -60,6 +68,30 @@ Widget _earth(List<Map<String, dynamic>> routes, bool active) =>
       key: ValueKey('rotating-earth-probe'),
       color: Colors.black,
     );
+
+Map<String, dynamic> _weather(DateTime now) {
+  final flight =
+      ((_snapshot()['data'] as Map)['flights'] as List).single as Map;
+  Map entry(String side, num temperature) => {
+    'point': flight[side],
+    'dataStatus': 'live',
+    'updatedAt': now.toUtc().toIso8601String(),
+    'snapshot': {'temperature': temperature, 'condition': '晴'},
+  };
+  return {
+    'ok': true,
+    'data': {
+      'checkedAt': now.toUtc().toIso8601String(),
+      'routes': [
+        {
+          'selectionKey': jsonEncode([flight['id'], null, null]),
+          'origin': entry('origin', 18),
+          'destination': entry('destination', 12),
+        },
+      ],
+    },
+  };
+}
 
 void main() {
   setUpAll(() async {
@@ -216,6 +248,10 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: CinemaTVHomeDisplay(
+            loadWeather: () async => {
+              'ok': true,
+              'data': {'routes': [], 'checkedAt': '2026-10-28T12:20:00Z'},
+            },
             earthBuilder: (values, enabled) {
               routes = values;
               active = enabled;
@@ -250,6 +286,10 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: CinemaTVHomeDisplay(
+            loadWeather: () async => {
+              'ok': true,
+              'data': {'routes': [], 'checkedAt': '2026-10-28T12:20:00Z'},
+            },
             earthBuilder: (routes, active) {
               activeValues.add(active);
               return _earth(routes, active);
@@ -273,6 +313,91 @@ void main() {
     },
   );
 
+  testWidgets(
+    'flight weather uses its own slow clock and retains only unexpired readings after a failure',
+    (tester) async {
+      var now = DateTime(2026, 10, 28, 14, 20),
+          weatherCalls = 0,
+          failing = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CinemaTVHomeDisplay(
+            earthBuilder: _earth,
+            now: () => now,
+            loadSnapshot: () async => _snapshot(),
+            loadWeather: () async {
+              weatherCalls++;
+              if (failing) throw const SocketException('offline');
+              return _weather(now);
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('18° 晴'), findsOneWidget);
+      expect(find.text('12° 晴'), findsOneWidget);
+      expect(find.text('10/29 11:30 当地'), findsOneWidget);
+      expect(find.text('10/29 15:30 当地'), findsOneWidget);
+      expect(find.text('航站楼 T2 · 登机口 D18'), findsOneWidget);
+      expect(weatherCalls, 1);
+      now = now.add(const Duration(minutes: 1));
+      await tester.pump(const Duration(minutes: 1));
+      await tester.pumpAndSettle();
+      expect(weatherCalls, 1);
+      failing = true;
+      now = now.add(const Duration(minutes: 30));
+      await tester.pump(const Duration(minutes: 30));
+      await tester.pumpAndSettle();
+      expect(weatherCalls, 2);
+      expect(find.text('12° 晴 · 缓存'), findsOneWidget);
+      now = now.add(const Duration(minutes: 15));
+      await tester.pump(const Duration(minutes: 15));
+      await tester.pumpAndSettle();
+      expect(find.text('12° 晴 · 缓存'), findsNothing);
+      expect(find.text('天气暂不可用'), findsNWidgets(2));
+      expect(find.text('上海 → 东京'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'a suspended weather response is ignored and resumes without waiting for its old deadline',
+    (tester) async {
+      final delayed = Completer<Map<String, dynamic>>();
+      var calls = 0;
+      final now = DateTime(2026, 10, 28, 14, 20);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CinemaTVHomeDisplay(
+            earthBuilder: _earth,
+            now: () => now,
+            loadSnapshot: () async => _snapshot(),
+            loadWeather: () {
+              calls++;
+              return calls == 1 ? delayed.future : Future.value(_weather(now));
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(calls, 1);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(calls, 2);
+      expect(find.text('12° 晴'), findsOneWidget);
+      delayed.complete({
+        'ok': true,
+        'data': {'routes': []},
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('12° 晴'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   for (final size in [
     const Size(960, 540),
     const Size(1280, 720),
@@ -288,6 +413,10 @@ void main() {
         await tester.pumpWidget(
           MaterialApp(
             home: CinemaTVHomeDisplay(
+              loadWeather: () async => {
+                'ok': true,
+                'data': {'routes': [], 'checkedAt': '2026-10-28T12:20:00Z'},
+              },
               earthBuilder: _earth,
               now: () => DateTime(2026, 10, 28, 14, 20),
               loadSnapshot: () async {
@@ -382,6 +511,10 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: CinemaTVHomeDisplay(
+            loadWeather: () async => {
+              'ok': true,
+              'data': {'routes': [], 'checkedAt': '2026-10-28T12:20:00Z'},
+            },
             earthBuilder: _earth,
             now: () => now,
             loadSnapshot: () async {
@@ -419,6 +552,10 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: CinemaTVHomeDisplay(
+            loadWeather: () async => {
+              'ok': true,
+              'data': {'routes': [], 'checkedAt': '2026-10-28T12:20:00Z'},
+            },
             earthBuilder: _earth,
             now: () => DateTime(2026, 10, 28, 14, 20),
             loadSnapshot: () async => throw const SocketException('offline'),
@@ -441,6 +578,10 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: CinemaTVHomeDisplay(
+            loadWeather: () async => {
+              'ok': true,
+              'data': {'routes': [], 'checkedAt': '2026-10-28T12:20:00Z'},
+            },
             earthBuilder: _earth,
             loadSnapshot: () {
               requests++;
@@ -476,6 +617,13 @@ void main() {
                   transitionDuration: Duration.zero,
                   reverseTransitionDuration: Duration.zero,
                   pageBuilder: (_, _, _) => CinemaTVHomeDisplay(
+                    loadWeather: () async => {
+                      'ok': true,
+                      'data': {
+                        'routes': [],
+                        'checkedAt': '2026-10-28T12:20:00Z',
+                      },
+                    },
                     earthBuilder: _earth,
                     onWake: () => wakes++,
                     loadSnapshot: () async => _snapshot(),
