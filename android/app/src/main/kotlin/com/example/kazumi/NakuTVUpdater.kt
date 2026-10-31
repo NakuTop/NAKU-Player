@@ -89,14 +89,17 @@ class NakuTVUpdater(private val activity: Activity) {
         PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
 
     @Suppress("DEPRECATION")
-    private fun signatures(info: PackageInfo): Set<String> {
-        val signatures = if (Build.VERSION.SDK_INT >= 28)
-            info.signingInfo?.apkContentsSigners else info.signatures
-        return signatures?.map { signature ->
-            MessageDigest.getInstance("SHA-256").digest(signature.toByteArray())
-                .joinToString("") { "%02x".format(it) }
-        }?.toSet() ?: emptySet()
-    }
+    private fun signatures(path: String? = null): Set<String> =
+        NakuTVUpdateSignatures.read(Build.VERSION.SDK_INT >= 28) { modern ->
+            val flags = if (modern) PackageManager.GET_SIGNING_CERTIFICATES
+                else PackageManager.GET_SIGNATURES
+            val info = if (path == null)
+                activity.packageManager.getPackageInfo(activity.packageName, flags)
+            else activity.packageManager.getPackageArchiveInfo(path, flags)
+            val certificates = if (modern) info?.signingInfo?.apkContentsSigners
+                else info?.signatures
+            certificates?.map { it.toByteArray() }?.toTypedArray()
+        }
 
     @Suppress("DEPRECATION")
     private fun versionCode(info: PackageInfo): Long =
@@ -135,8 +138,11 @@ class NakuTVUpdater(private val activity: Activity) {
         }
         require(versionCode(archive) == expectedBuild && versionCode(archive) > versionCode(installed) &&
             archive.versionName == expectedVersion) { "安装包版本不正确或不是新版本" }
-        val currentSigners = signatures(installed)
-        require(currentSigners.isNotEmpty() && signatures(archive) == currentSigners) {
+        val currentSigners = signatures()
+        val archiveSigners = signatures(file.path)
+        require(currentSigners.isNotEmpty()) { "电视未能读取当前应用签名，请重试" }
+        require(archiveSigners.isNotEmpty()) { "电视未能读取安装包签名，请重新下载或覆盖安装同签名正式包" }
+        require(archiveSigners == currentSigners) {
             "安装包签名与当前应用不一致"
         }
         return file

@@ -31,6 +31,14 @@ def prepare(apk: Path, version: str, build: int, output: Path,
     certificate = run(build_tools / 'apksigner', 'verify', '--verbose', '--print-certs', apk)
     if 'Verifies' not in certificate or f'Signer #1 certificate SHA-256 digest: {SIGNER}' not in certificate:
         raise ValueError('APK is not signed with the existing NAKU Android release certificate')
+    # Probe legacy JAR parsing below the APK's installation minimum as well as
+    # normal v2 verification. Old TV updaters can use that certificate reader.
+    legacy_certificate = run(build_tools / 'apksigner', 'verify', '--verbose',
+                             '--print-certs', '--min-sdk-version', '23', apk)
+    if ('Verified using v1 scheme (JAR signing): true' not in legacy_certificate
+            or 'Verified using v2 scheme (APK Signature Scheme v2): true' not in legacy_certificate
+            or f'Signer #1 certificate SHA-256 digest: {SIGNER}' not in legacy_certificate):
+        raise ValueError('TV update requires matching v1 and v2 release signatures')
     with zipfile.ZipFile(apk) as archive:
         if archive.testzip() is not None:
             raise ValueError('APK ZIP integrity check failed')

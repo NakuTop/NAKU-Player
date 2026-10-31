@@ -67,6 +67,10 @@ android {
 
     signingConfigs {
         release {
+            // Keep the same certificate, with both legacy TV and modern APK
+            // signature formats. This also helps already-installed old updaters.
+            enableV1Signing = true
+            enableV2Signing = true
             if (nakuSigningFile.exists()) {
                 storeFile file(nakuSigning['storeFile'])
                 storePassword nakuSigning['storePassword']
