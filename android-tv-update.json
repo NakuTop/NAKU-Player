@@ -1,16 +1,16 @@
 [
   {
-    "tag_name": "android-tv-v1.1.3+5",
+    "tag_name": "android-tv-v1.1.4+6",
     "draft": false,
     "prerelease": false,
-    "body": "NAKU TV 1.1.3（build 5）\n恢复静态星空，保留原版冷暖星色；取消流动、闪烁、视差和输入交互。\n保留地球自转、实时UTC昼夜、原版8K昼夜纹理、航班界面和三种评分。\n播放时优先保障当前视频带宽：可选测速、升级、预热和预取等待充足缓冲，缓冲/暂停/定位/弹层/后台时取消可选请求。\n减少重复播放状态传输、暂停与后台轮询及隐藏控制栏时的无效重建，保留字幕时钟、即时定位和错误恢复。\n保持原生SurfaceView硬件解码及HDR/杜比输出；实际电视画面和流畅度需手动验收。\n",
+    "body": "NAKU TV Lite 1.1.4（6）\n\n聚合播放优先检查巨量资源的 jlm3u8 与 jlplayer 两端，选择可用且更快的一端；两端均未能加载时再回退其他源。手动换线、换集及取消后，旧测速不会覆盖当前选择；失败换源保留同集进度。\n\n沿用现有 TV 五向键、分层返回、原生解码、NAS 播放、字幕、弹幕与 Home Display。包名、更新入口及原签名保持一致。\n\n影院自动化测试 1520 项通过、47 项跳过，目标代码静态分析通过；真实电视上的首帧、画质、流畅度、NAS 同步和不同地区网络表现仍需手动验收。签名和包结构验证不等同于物理设备播放验收。\n",
     "assets": [
       {
-        "name": "NAKU-TV-1.1.3-Android-universal.apk",
+        "name": "NAKU-TV-1.1.4-Android-universal.apk",
         "state": "uploaded",
-        "size": 90230038,
-        "digest": "sha256:74dccdb260ef85a595cba1db4299bae5e656288deb82aaae4d419ee662d942e0",
-        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v1.1.3%2B5/NAKU-TV-1.1.3-Android-universal.apk"
+        "size": 90254178,
+        "digest": "sha256:6803b01e33c38264f2844dfd9c7ca312d68c3f342cf4e78b607dcbbe41235eb0",
+        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v1.1.4%2B6/NAKU-TV-1.1.4-Android-universal.apk"
       }
     ]
   }
