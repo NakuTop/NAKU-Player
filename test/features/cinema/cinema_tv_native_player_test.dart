@@ -55,6 +55,24 @@ void main() {
       expect(player.state.buffering, true);
     },
   );
+  test(
+    'caption clearance is bounded, coalesced and preserves video intent',
+    () async {
+      await player.open(Media('https://fixture.invalid/movie.mkv'));
+      calls.clear();
+      await player.setSubtitleBottomFraction(168 / 720);
+      await player.setSubtitleBottomFraction(168 / 720);
+      await player.setSubtitleBottomFraction(3);
+      await player.setSubtitleBottomFraction(double.nan);
+      expect(calls.map((c) => c.method), [
+        'captionInset',
+        'captionInset',
+        'captionInset',
+      ]);
+      expect(calls.map((c) => c.arguments['fraction']), [168 / 720, .45, .08]);
+      expect(player.state.playing, true);
+    },
+  );
   test('dimensions cannot complete the first-frame gate', () async {
     var rendered = false;
     unawaited(player.waitUntilFirstFrameRendered.then((_) => rendered = true));

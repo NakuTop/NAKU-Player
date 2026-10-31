@@ -12,6 +12,7 @@ import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:kazumi/features/cinema/cinema_tv_session.dart';
 import 'package:kazumi/features/cinema/cinema_tv_player_controls.dart';
 import 'package:kazumi/features/cinema/cinema_tracks_sheet.dart';
+import 'package:kazumi/features/cinema/cinema_external_subtitles.dart';
 import 'package:kazumi/features/cinema/cinema_danmaku.dart';
 import 'package:kazumi/features/cinema/cinema_tv_native_player.dart';
 import 'package:flutter/rendering.dart';
@@ -2637,6 +2638,15 @@ void main() {
         await mount(tester, {'autoPlay': true}, viewport: size);
         final surface = find.byType(CinemaTVControlSurface);
         expect(tester.getSize(surface).height, lessThan(160));
+        expect(
+          tester
+              .widget<CinemaExternalSubtitleOverlay>(
+                find.byType(CinemaExternalSubtitleOverlay),
+              )
+              .appearance
+              .bottom,
+          CinemaTVControlSurface.subtitleClearance,
+        );
         expect(FocusManager.instance.primaryFocus?.debugLabel, 'TV play');
         await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
         await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
@@ -2674,6 +2684,15 @@ void main() {
         expect(backends.single.state.position, const Duration(seconds: 10));
         await tester.pump(const Duration(seconds: 4));
         expect(surface, findsNothing);
+        expect(
+          tester
+              .widget<CinemaExternalSubtitleOverlay>(
+                find.byType(CinemaExternalSubtitleOverlay),
+              )
+              .appearance
+              .bottom,
+          24,
+        );
         expect(tester.takeException(), isNull);
         await unmount(tester);
       },

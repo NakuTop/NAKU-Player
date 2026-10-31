@@ -5189,6 +5189,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                     key: ValueKey(playback),
                                     player:
                                         playback.player as CinemaTVNativePlayer,
+                                    subtitleBottomInset: _tvControlsVisible
+                                        ? CinemaTVControlSurface
+                                              .subtitleClearance
+                                        : 0,
                                   )
                                 : ListenableBuilder(
                                     listenable: Listenable.merge([
@@ -5251,12 +5255,26 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                     Positioned.fill(
                       child: ListenableBuilder(
                         listenable: widget.store,
-                        builder: (context, _) => CinemaExternalSubtitleOverlay(
-                          player: playback.player,
-                          appearance: CinemaSubtitleAppearance.from(
+                        builder: (context, _) {
+                          final appearance = CinemaSubtitleAppearance.from(
                             widget.store.extras['subtitleAppearance'],
-                          ),
-                        ),
+                          );
+                          return CinemaExternalSubtitleOverlay(
+                            player: playback.player,
+                            appearance: NakuDevice.isTV && _tvControlsVisible
+                                ? CinemaSubtitleAppearance(
+                                    fontSize: appearance.fontSize,
+                                    bottom:
+                                        appearance.bottom <
+                                            CinemaTVControlSurface
+                                                .subtitleClearance
+                                        ? CinemaTVControlSurface
+                                              .subtitleClearance
+                                        : appearance.bottom,
+                                  )
+                                : appearance,
+                          );
+                        },
                       ),
                     ),
                   if (playback?.danmaku case final danmaku?)
@@ -5267,7 +5285,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                     Positioned(
                       left: 20,
                       right: 20,
-                      bottom: _pip ? 12 : 74,
+                      bottom: NakuDevice.isTV && _tvControlsVisible
+                          ? CinemaTVControlSurface.subtitleClearance
+                          : _pip
+                          ? 12
+                          : 74,
                       child: IgnorePointer(
                         child: ListenableBuilder(
                           listenable: playback.liveSubtitles,

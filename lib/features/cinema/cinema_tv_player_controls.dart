@@ -233,6 +233,7 @@ class CinemaTVTimeline extends StatelessWidget {
 class CinemaTVControlSurface extends StatelessWidget {
   const CinemaTVControlSurface({super.key, required this.child});
   final Widget child;
+  static const subtitleClearance = 168.0;
   @override
   Widget build(BuildContext context) => TweenAnimationBuilder<double>(
     tween: Tween(begin: 0, end: 1),

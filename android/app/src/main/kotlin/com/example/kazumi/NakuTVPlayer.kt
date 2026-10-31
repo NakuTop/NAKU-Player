@@ -127,6 +127,11 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
                 "seek" -> session.player.seekTo((call.argument<Number>("positionMs")?.toLong() ?: 0L).coerceAtLeast(0))
                 "volume" -> session.player.volume = (call.argument<Number>("value")?.toFloat() ?: 1f).coerceIn(0f, 1f)
                 "rate" -> session.player.setPlaybackSpeed((call.argument<Number>("value")?.toFloat() ?: 1f).coerceIn(.25f, 3f))
+                "captionInset" -> {
+                    val fraction = call.argument<Number>("fraction")?.toFloat() ?: .08f
+                    session.captionBottomFraction = if (fraction.isFinite()) fraction.coerceIn(.08f, .45f) else .08f
+                    surfaces[id]?.forEach { it.updateCaptionInset() }
+                }
                 "track" -> session.selectTrack(call.argument<String>("type") ?: "", call.argument<String>("track") ?: "auto")
                 "dispose" -> {
                     surfaces[id]?.forEach { it.view.player = null }
@@ -185,6 +190,7 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
     }
 
     private inner class Session(val id: Int) : Player.Listener, AnalyticsListener {
+        var captionBottomFraction = .08f
         var firstFrame = false
         var closed = false
         private var droppedFrames = 0
@@ -431,8 +437,12 @@ class NakuTVPlayer(private val activity: Activity, engine: FlutterEngine) :
             attach()
         }
         fun visible(): Boolean = ready && attached && view.isAttachedToWindow && view.isShown && view.windowVisibility == View.VISIBLE
+        fun updateCaptionInset() {
+            view.subtitleView?.setBottomPaddingFraction(sessions[id]?.captionBottomFraction ?: .08f)
+        }
         fun attach() {
             view.player = sessions[id]?.player
+            updateCaptionInset()
             sessions[id]?.emit(full = true)
             sessions[id]?.refreshTicker()
         }

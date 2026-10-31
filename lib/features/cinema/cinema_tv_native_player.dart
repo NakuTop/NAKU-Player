@@ -41,6 +41,7 @@ class CinemaTVNativePlayer extends PlatformPlayer
   late final StreamSubscription<dynamic> _subscription;
   final Completer<void> _firstFrame = Completer<void>();
   bool _disposed = false;
+  double _captionBottomFraction = .08;
   List<Map<Object?, Object?>>? _lastTrackRows;
 
   Future<void> get waitUntilFirstFrameRendered => _firstFrame.future;
@@ -65,6 +66,14 @@ class CinemaTVNativePlayer extends PlatformPlayer
     await _creation;
     if (_disposed) return;
     await _channel.invokeMethod<void>(method, {'id': id, ...args});
+  }
+
+  /// Only changes SubtitleView placement; never resizes/reopens video output.
+  Future<void> setSubtitleBottomFraction(double fraction) async {
+    final value = fraction.isFinite ? fraction.clamp(.08, .45).toDouble() : .08;
+    if (_captionBottomFraction == value) return;
+    _captionBottomFraction = value;
+    await _call('captionInset', {'fraction': value});
   }
 
   void _event(dynamic raw) {
@@ -375,27 +384,50 @@ class CinemaTVNativePlayer extends PlatformPlayer
 /// Expensive Android view explicitly selects hybrid composition. A normal
 /// AndroidView may use a virtual display and lose HDR/output frame timing.
 class CinemaTVNativeVideo extends StatelessWidget {
-  const CinemaTVNativeVideo({super.key, required this.player});
+  const CinemaTVNativeVideo({
+    super.key,
+    required this.player,
+    this.subtitleBottomInset = 0,
+  });
   final CinemaTVNativePlayer player;
+  final double subtitleBottomInset;
   @override
-  Widget build(BuildContext context) => PlatformViewLink(
-    viewType: 'naku/tv-video',
-    surfaceFactory: (context, controller) => AndroidViewSurface(
-      controller: controller as AndroidViewController,
-      gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
-      hitTestBehavior: PlatformViewHitTestBehavior.transparent,
-    ),
-    onCreatePlatformView: (params) =>
-        PlatformViewsService.initExpensiveAndroidView(
-            id: params.id,
-            viewType: 'naku/tv-video',
-            layoutDirection: TextDirection.ltr,
-            creationParams: {'playerId': player.id},
-            creationParamsCodec: const StandardMessageCodec(),
-            onFocus: () => params.onFocusChanged(true),
-          )
-          ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
-          ..create(),
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, bounds) {
+      final fraction = bounds.maxHeight > 0 && bounds.maxHeight.isFinite
+          ? (subtitleBottomInset / bounds.maxHeight).clamp(.08, .45).toDouble()
+          : .08;
+      if (player._captionBottomFraction != fraction) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (context.mounted) {
+            unawaited(
+              player
+                  .setSubtitleBottomFraction(fraction)
+                  .catchError((Object _) {}),
+            );
+          }
+        });
+      }
+      return PlatformViewLink(
+        viewType: 'naku/tv-video',
+        surfaceFactory: (context, controller) => AndroidViewSurface(
+          controller: controller as AndroidViewController,
+          gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+          hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+        ),
+        onCreatePlatformView: (params) =>
+            PlatformViewsService.initExpensiveAndroidView(
+                id: params.id,
+                viewType: 'naku/tv-video',
+                layoutDirection: TextDirection.ltr,
+                creationParams: {'playerId': player.id},
+                creationParamsCodec: const StandardMessageCodec(),
+                onFocus: () => params.onFocusChanged(true),
+              )
+              ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
+              ..create(),
+      );
+    },
   );
 }
 
