@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+broker='/Library/PrivilegedHelperTools/com.shenminghao.naku.audio-broker'
+if [ ! -x "$broker" ]; then
+  echo '请先安装 NAKU 专用虚拟声卡。' >&2
+  exit 1
+fi
+authorized=0
+for app in '/Applications/NAKU播放器.app' '/Applications/NAKUPlayer.app' '/Applications/NAKU Player.app'; do
+  if [ -d "$app" ] && "$broker" --authorize-app "$app"; then
+    authorized=1
+    break
+  fi
+done
+if [ "$authorized" -ne 1 ]; then exit 1; fi
+# Rebind the existing broker to the approved player signature. No HAL files are
+# replaced and CoreAudio is not restarted for an application-only update.
+/bin/launchctl kickstart -k system/com.shenminghao.naku.audio-broker

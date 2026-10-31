@@ -1,0 +1,17 @@
+NAKU native AirPlay2 sender
+
+Independent Swift protocol implementation; no Unisson proprietary code copied.
+Protocol reference: MIT pyatv b277a4c8222ecdcbaab8a24e3e713ca44765adb4
+https://github.com/postlund/pyatv
+See licenses/homepod/pyatv-LICENSE.txt.
+
+BigInt: MIT attaswift/BigInt; vendored Sources with its original LICENSE.md.
+https://github.com/attaswift/BigInt
+
+Build/offline check:
+python3 scripts/test_homepod_sender_native.py
+
+Use -O for release or hardware timing qualification.
+Probe only sends when explicitly given numeric IPv4 and duration.
+Its quiet tone does not change HomePod volume.
+120ms is requested receiver buffering; it is not measured acoustic latency.

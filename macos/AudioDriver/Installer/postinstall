@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+broker='/Library/PrivilegedHelperTools/com.shenminghao.naku.audio-broker'
+daemon='/Library/LaunchDaemons/com.shenminghao.naku.audio-broker.plist'
+authorized=0
+for app in '/Applications/NAKU播放器.app' '/Applications/NAKUPlayer.app' '/Applications/NAKU Player.app'; do
+  if [ -d "$app" ] && "$broker" --authorize-app "$app"; then
+    authorized=1
+    break
+  fi
+done
+if [ "$authorized" -ne 1 ]; then
+  echo '请先将有效的 NAKU 播放器放入“应用程序”文件夹，再重新安装虚拟声卡。' >&2
+  exit 1
+fi
+/bin/launchctl bootout system "$daemon" >/dev/null 2>&1 || true
+/bin/launchctl bootstrap system "$daemon"
+/bin/launchctl kickstart system/com.shenminghao.naku.audio-broker
+# HAL loads a newly installed audio plugin when its service restarts. This is
+# performed once by the explicit administrator-approved driver installation.
+/usr/bin/killall coreaudiod >/dev/null 2>&1 || true
+exit 0

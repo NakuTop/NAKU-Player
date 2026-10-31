@@ -2,6 +2,7 @@ import 'package:kazumi/services/network/macos_system_proxy.dart';
 import 'cinema_playback_buffer.dart';
 import 'cinema_tv_background_policy.dart';
 import 'cinema_buffer_status.dart';
+import 'cinema_homepod_player_route.dart';
 import 'cinema_keyboard_transport.dart';
 import 'cinema_subtitle_auto_sync.dart';
 import 'cinema_danmaku.dart';
@@ -1748,6 +1749,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               )).proxy;
         if (!_isCurrent(generation)) return;
       }
+      await candidate.homepodAudioRoute.prepareForOpen();
+      if (!_isCurrent(generation)) return;
       await candidate.player.open(
         Media(
           mediaUrl,
@@ -1763,6 +1766,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       );
       if (!_isCurrent(generation)) return;
       candidate.logStage('open-return');
+      candidate.homepodAudioRoute.logPlaybackState();
       if (_windowControls.blocksPlayback) {
         await candidate.player.pause();
         if (!_isCurrent(generation)) return;
@@ -5926,11 +5930,21 @@ class _CinemaPlayback {
   final int generation;
   final CinemaPlayerPreferences preferences;
   final Player Function(PlayerConfiguration configuration)? createPlayer;
-  late final player =
-      createPlayer?.call(preferences.playerConfiguration) ??
-      (Platform.isAndroid && NakuDevice.isTV
-          ? CinemaTVNativePlayer(configuration: preferences.playerConfiguration)
-          : Player(configuration: preferences.playerConfiguration));
+  late final Player player = _createPlayer();
+  late final CinemaHomePodPlayerRoute homepodAudioRoute;
+
+  Player _createPlayer() {
+    final created =
+        createPlayer?.call(preferences.playerConfiguration) ??
+        (Platform.isAndroid && NakuDevice.isTV
+            ? CinemaTVNativePlayer(
+                configuration: preferences.playerConfiguration,
+              )
+            : Player(configuration: preferences.playerConfiguration));
+    homepodAudioRoute = CinemaHomePodPlayerRoute(created);
+    return created;
+  }
+
   late final controller = VideoController(
     player,
     configuration: preferences.videoConfiguration,
@@ -6003,7 +6017,10 @@ class _CinemaPlayback {
   Future<void> dispose() => _disposal ??= _dispose();
   Future<void> _dispose() async {
     firstFrameTimer?.cancel();
-    if (player is CinemaTVNativePlayer) {
+    // Reading player also initializes its route binding if creation was lazy.
+    final disposingPlayer = player;
+    await homepodAudioRoute.dispose();
+    if (disposingPlayer is CinemaTVNativePlayer) {
       try {
         await player.stop();
       } catch (_) {

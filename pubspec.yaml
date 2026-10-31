@@ -1,7 +1,7 @@
 name: kazumi
 description: "NAKU播放器：电影、剧集与动漫客户端。"
 publish_to: "none"
-version: 3.0.16+96
+version: 3.0.17+97
 
 environment:
   sdk: ">=3.10.0 <4.0.0"
@@ -184,6 +184,7 @@ flutter:
     - assets/statements/
     - licenses/ech_http/
     - licenses/libfvad/
+    - licenses/homepod/
     - licenses/danmu_api/
     - licenses/junrar-LICENSE.txt
     - licenses/slf4j-LICENSE.txt

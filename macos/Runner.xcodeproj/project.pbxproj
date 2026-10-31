@@ -21,6 +21,33 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+		31E0000EDF3B9CFF56DE3DE4 /* NakuVirtualAudio.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB6D68A4F9BE6D603D19B96 /* NakuVirtualAudio.swift */; };
+		A435F84458CEAEB5305E594B /* NakuAudioClient.c in Sources */ = {isa = PBXBuildFile; fileRef = C6D041A3CFC38BE63E0924E4 /* NakuAudioClient.c */; };
+		DAFEEFA2477DEB19375C03E2 /* NakuHomePodAudio.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFAD4751499EDEAD1099E308 /* NakuHomePodAudio.swift */; };
+		D49E367DCE1FF4CF5834C579 /* NakuPCMProcessTap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DC7E8BB2D5BE5BEEB4B077D /* NakuPCMProcessTap.swift */; };
+		4D62040110BC33DC29D8DAAD /* NakuAirPlaySender.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC69721719765AB7DCA0AA5D /* NakuAirPlaySender.swift */; };
+		692289F4AA84609FE23B5C68 /* Addition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EFC54139873F33E106760D6 /* Addition.swift */; };
+		140E05ADBED726BBB002DA18 /* BigInt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A0D90BCF12611F6C72B7799 /* BigInt.swift */; };
+		E1D1DB9CD0156975D3D71C36 /* BigUInt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AF7A870E43E3857D6494989 /* BigUInt.swift */; };
+		470C9EC8ABA0CE0D9887C152 /* Bitwise Ops.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52B05F7A5B606EB70C61A4EB /* Bitwise Ops.swift */; };
+		0B4081B8219D6BFE50366704 /* Codable.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44EFBF6EF007FAB4E52AAAE0 /* Codable.swift */; };
+		79554F89672EFEE9E71DA07B /* Comparable.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25EB7BE0CE06F284857EA3B9 /* Comparable.swift */; };
+		C1E93025CD7B10C1CF33395C /* Data Conversion.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBCDD4AD37D570FF9577CB89 /* Data Conversion.swift */; };
+		EED4BA5E425E52E0798769FD /* Division.swift in Sources */ = {isa = PBXBuildFile; fileRef = B52E0CD122B2E18D2BDAC3A0 /* Division.swift */; };
+		00BE157CBBF1561AF79ACE13 /* Exponentiation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 450D1E0E915EA015F376F05D /* Exponentiation.swift */; };
+		0A5448E145D4D228B0766860 /* Floating Point Conversion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 834C7157B200A224E84FE5C7 /* Floating Point Conversion.swift */; };
+		423CBAF9B368AC456F5889D6 /* GCD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C99310A3D7C10DA9346A704 /* GCD.swift */; };
+		B89324D1297DBD223CB4AE89 /* Hashable.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA97C19684A4FC9518A12ACE /* Hashable.swift */; };
+		9654D5CBF1B3D744DDE80F0D /* Integer Conversion.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3CF171E753538EF32AF728D /* Integer Conversion.swift */; };
+		EC90A31D7BEF3F2416C5795D /* Multiplication.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67F2148C3160D4B2C1F89071 /* Multiplication.swift */; };
+		1AA63DE92764FE3246CD9866 /* Prime Test.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAF999E58F814E76DEB93D85 /* Prime Test.swift */; };
+		02EC33FD9F02ABC6051E9045 /* Random.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE4228AE583D41F583E99E18 /* Random.swift */; };
+		9A539E1C707BEC100CEC97F9 /* Shifts.swift in Sources */ = {isa = PBXBuildFile; fileRef = E50A74B4F23B50849624F624 /* Shifts.swift */; };
+		5D07F2795A578F2EB08B610A /* Square Root.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58766DC30D9457B50F18C03C /* Square Root.swift */; };
+		7D0CD9CFE041A4730F4BD5A3 /* Strideable.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB68E05482F379B1D16F9BE9 /* Strideable.swift */; };
+		C79D38E80F6A0DECB755A0CF /* String Conversion.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7E5E391D3ED2C63BB66B4E5 /* String Conversion.swift */; };
+		1AF5731A3B6962DB7BA2BED7 /* Subtraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67E992D14159B08E4D047272 /* Subtraction.swift */; };
+		863BCCE84634ACDAEFBD46B5 /* Words and Bits.swift in Sources */ = {isa = PBXBuildFile; fileRef = 561DA668A36C778A5820D0DC /* Words and Bits.swift */; };
         1C0A1C0A1C0A1C0A00000001 /* NakuAppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 1C0A1C0A1C0A1C0A00000002 /* NakuAppIcon.icon */; };
         D0C011D0C011D0C011000001 /* NakuDockIconController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0C011D0C011D0C011000002 /* NakuDockIconController.swift */; };
         9B1139CA8C054060BA716FE1 /* NakuDesktopWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B1139CA8C054060BA716FE2 /* NakuDesktopWindowController.swift */; };
@@ -80,6 +107,34 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		AAB6D68A4F9BE6D603D19B96 /* NakuVirtualAudio.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Runner/NakuVirtualAudio.swift"; sourceTree = SOURCE_ROOT; };
+		C6D041A3CFC38BE63E0924E4 /* NakuAudioClient.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "Runner/NakuAudioClient.c"; sourceTree = SOURCE_ROOT; };
+		C471C4B75997DEEDFC1EB392 /* NakuAudioClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Runner/NakuAudioClient.h"; sourceTree = SOURCE_ROOT; };
+		FFAD4751499EDEAD1099E308 /* NakuHomePodAudio.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Runner/NakuHomePodAudio.swift"; sourceTree = SOURCE_ROOT; };
+		0DC7E8BB2D5BE5BEEB4B077D /* NakuPCMProcessTap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Runner/NakuPCMProcessTap.swift"; sourceTree = SOURCE_ROOT; };
+		FC69721719765AB7DCA0AA5D /* NakuAirPlaySender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Runner/NakuAirPlaySender.swift"; sourceTree = SOURCE_ROOT; };
+		8EFC54139873F33E106760D6 /* Addition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Addition.swift"; sourceTree = SOURCE_ROOT; };
+		7A0D90BCF12611F6C72B7799 /* BigInt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/BigInt.swift"; sourceTree = SOURCE_ROOT; };
+		3AF7A870E43E3857D6494989 /* BigUInt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/BigUInt.swift"; sourceTree = SOURCE_ROOT; };
+		52B05F7A5B606EB70C61A4EB /* Bitwise Ops.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Bitwise Ops.swift"; sourceTree = SOURCE_ROOT; };
+		44EFBF6EF007FAB4E52AAAE0 /* Codable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Codable.swift"; sourceTree = SOURCE_ROOT; };
+		25EB7BE0CE06F284857EA3B9 /* Comparable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Comparable.swift"; sourceTree = SOURCE_ROOT; };
+		FBCDD4AD37D570FF9577CB89 /* Data Conversion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Data Conversion.swift"; sourceTree = SOURCE_ROOT; };
+		B52E0CD122B2E18D2BDAC3A0 /* Division.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Division.swift"; sourceTree = SOURCE_ROOT; };
+		450D1E0E915EA015F376F05D /* Exponentiation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Exponentiation.swift"; sourceTree = SOURCE_ROOT; };
+		834C7157B200A224E84FE5C7 /* Floating Point Conversion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Floating Point Conversion.swift"; sourceTree = SOURCE_ROOT; };
+		9C99310A3D7C10DA9346A704 /* GCD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/GCD.swift"; sourceTree = SOURCE_ROOT; };
+		FA97C19684A4FC9518A12ACE /* Hashable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Hashable.swift"; sourceTree = SOURCE_ROOT; };
+		C3CF171E753538EF32AF728D /* Integer Conversion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Integer Conversion.swift"; sourceTree = SOURCE_ROOT; };
+		67F2148C3160D4B2C1F89071 /* Multiplication.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Multiplication.swift"; sourceTree = SOURCE_ROOT; };
+		EAF999E58F814E76DEB93D85 /* Prime Test.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Prime Test.swift"; sourceTree = SOURCE_ROOT; };
+		AE4228AE583D41F583E99E18 /* Random.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Random.swift"; sourceTree = SOURCE_ROOT; };
+		E50A74B4F23B50849624F624 /* Shifts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Shifts.swift"; sourceTree = SOURCE_ROOT; };
+		58766DC30D9457B50F18C03C /* Square Root.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Square Root.swift"; sourceTree = SOURCE_ROOT; };
+		FB68E05482F379B1D16F9BE9 /* Strideable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Strideable.swift"; sourceTree = SOURCE_ROOT; };
+		E7E5E391D3ED2C63BB66B4E5 /* String Conversion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/String Conversion.swift"; sourceTree = SOURCE_ROOT; };
+		67E992D14159B08E4D047272 /* Subtraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Subtraction.swift"; sourceTree = SOURCE_ROOT; };
+		561DA668A36C778A5820D0DC /* Words and Bits.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../third_party/swift-bigint/Sources/Words and Bits.swift"; sourceTree = SOURCE_ROOT; };
         1C0A1C0A1C0A1C0A00000002 /* NakuAppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer; name = NakuAppIcon.icon; path = Runner/NakuAppIcon.icon; sourceTree = "<group>"; };
         D0C011D0C011D0C011000002 /* NakuDockIconController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NakuDockIconController.swift; sourceTree = "<group>"; };
         9B1139CA8C054060BA716FE2 /* NakuDesktopWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NakuDesktopWindowController.swift; sourceTree = "<group>"; };
@@ -215,6 +270,34 @@
 		33FAB671232836740065AC1E /* Runner */ = {
 			isa = PBXGroup;
 			children = (
+				AAB6D68A4F9BE6D603D19B96 /* NakuVirtualAudio.swift */,
+				C6D041A3CFC38BE63E0924E4 /* NakuAudioClient.c */,
+				C471C4B75997DEEDFC1EB392 /* NakuAudioClient.h */,
+				FFAD4751499EDEAD1099E308 /* NakuHomePodAudio.swift */,
+				0DC7E8BB2D5BE5BEEB4B077D /* NakuPCMProcessTap.swift */,
+				FC69721719765AB7DCA0AA5D /* NakuAirPlaySender.swift */,
+				8EFC54139873F33E106760D6 /* Addition.swift */,
+				7A0D90BCF12611F6C72B7799 /* BigInt.swift */,
+				3AF7A870E43E3857D6494989 /* BigUInt.swift */,
+				52B05F7A5B606EB70C61A4EB /* Bitwise Ops.swift */,
+				44EFBF6EF007FAB4E52AAAE0 /* Codable.swift */,
+				25EB7BE0CE06F284857EA3B9 /* Comparable.swift */,
+				FBCDD4AD37D570FF9577CB89 /* Data Conversion.swift */,
+				B52E0CD122B2E18D2BDAC3A0 /* Division.swift */,
+				450D1E0E915EA015F376F05D /* Exponentiation.swift */,
+				834C7157B200A224E84FE5C7 /* Floating Point Conversion.swift */,
+				9C99310A3D7C10DA9346A704 /* GCD.swift */,
+				FA97C19684A4FC9518A12ACE /* Hashable.swift */,
+				C3CF171E753538EF32AF728D /* Integer Conversion.swift */,
+				67F2148C3160D4B2C1F89071 /* Multiplication.swift */,
+				EAF999E58F814E76DEB93D85 /* Prime Test.swift */,
+				AE4228AE583D41F583E99E18 /* Random.swift */,
+				E50A74B4F23B50849624F624 /* Shifts.swift */,
+				58766DC30D9457B50F18C03C /* Square Root.swift */,
+				FB68E05482F379B1D16F9BE9 /* Strideable.swift */,
+				E7E5E391D3ED2C63BB66B4E5 /* String Conversion.swift */,
+				67E992D14159B08E4D047272 /* Subtraction.swift */,
+				561DA668A36C778A5820D0DC /* Words and Bits.swift */,
 				33CC10F02044A3C60003C045 /* AppDelegate.swift */,
                 D0C011D0C011D0C011000002 /* NakuDockIconController.swift */,
 				33CC11122044BFA00003C045 /* MainFlutterWindow.swift */,
@@ -285,6 +368,7 @@
 				33CC110E2044A8840003C045 /* Bundle Framework */,
 				3399D490228B24CF009A79C7 /* ShellScript */,
 				C5F63198A3A7374B2E98B292 /* [CP] Embed Pods Frameworks */,
+				96BBD844B022D4620E588ACE /* Build NAKU Audio Driver */,
 			);
 			buildRules = (
 			);
@@ -370,6 +454,26 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		96BBD844B022D4620E588ACE /* Build NAKU Audio Driver */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			inputPaths = (
+				"$(SRCROOT)/AudioDriver/build-driver-package.sh",
+				"$(SRCROOT)/AudioDriver/Shared/NakuAudioShared.h",
+				"$(SRCROOT)/AudioDriver/Driver/NakuAudioDriver.c",
+				"$(SRCROOT)/AudioDriver/Driver/Info.plist",
+				"$(SRCROOT)/AudioDriver/Broker/NakuAudioBroker.c",
+				"$(SRCROOT)/AudioDriver/Installer/postinstall",
+				"$(SRCROOT)/AudioDriver/Installer/authorize-postinstall",
+				"$(SRCROOT)/AudioDriver/Installer/com.shenminghao.naku.audio-broker.plist",
+			);
+			name = "Build NAKU Audio Driver";
+			outputPaths = ("$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/NAKUAudio.pkg", "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/NAKUAudioAuthorization.pkg");
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/AudioDriver/build-driver-package.sh\" \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/NAKUAudio.pkg\" \"$DERIVED_FILE_DIR/naku-audio-package\"\n";
+		};
 		3399D490228B24CF009A79C7 /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -484,6 +588,33 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				31E0000EDF3B9CFF56DE3DE4 /* NakuVirtualAudio.swift in Sources */,
+				A435F84458CEAEB5305E594B /* NakuAudioClient.c in Sources */,
+				DAFEEFA2477DEB19375C03E2 /* NakuHomePodAudio.swift in Sources */,
+				D49E367DCE1FF4CF5834C579 /* NakuPCMProcessTap.swift in Sources */,
+				4D62040110BC33DC29D8DAAD /* NakuAirPlaySender.swift in Sources */,
+				692289F4AA84609FE23B5C68 /* Addition.swift in Sources */,
+				140E05ADBED726BBB002DA18 /* BigInt.swift in Sources */,
+				E1D1DB9CD0156975D3D71C36 /* BigUInt.swift in Sources */,
+				470C9EC8ABA0CE0D9887C152 /* Bitwise Ops.swift in Sources */,
+				0B4081B8219D6BFE50366704 /* Codable.swift in Sources */,
+				79554F89672EFEE9E71DA07B /* Comparable.swift in Sources */,
+				C1E93025CD7B10C1CF33395C /* Data Conversion.swift in Sources */,
+				EED4BA5E425E52E0798769FD /* Division.swift in Sources */,
+				00BE157CBBF1561AF79ACE13 /* Exponentiation.swift in Sources */,
+				0A5448E145D4D228B0766860 /* Floating Point Conversion.swift in Sources */,
+				423CBAF9B368AC456F5889D6 /* GCD.swift in Sources */,
+				B89324D1297DBD223CB4AE89 /* Hashable.swift in Sources */,
+				9654D5CBF1B3D744DDE80F0D /* Integer Conversion.swift in Sources */,
+				EC90A31D7BEF3F2416C5795D /* Multiplication.swift in Sources */,
+				1AA63DE92764FE3246CD9866 /* Prime Test.swift in Sources */,
+				02EC33FD9F02ABC6051E9045 /* Random.swift in Sources */,
+				9A539E1C707BEC100CEC97F9 /* Shifts.swift in Sources */,
+				5D07F2795A578F2EB08B610A /* Square Root.swift in Sources */,
+				7D0CD9CFE041A4730F4BD5A3 /* Strideable.swift in Sources */,
+				C79D38E80F6A0DECB755A0CF /* String Conversion.swift in Sources */,
+				1AF5731A3B6962DB7BA2BED7 /* Subtraction.swift in Sources */,
+				863BCCE84634ACDAEFBD46B5 /* Words and Bits.swift in Sources */,
 				33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */,
 				EDFA68B177EAF4F5A89FDB05 /* vad_sp.c in Sources */,
 				8246777580DE59ACA1E6C6AA /* vad_gmm.c in Sources */,

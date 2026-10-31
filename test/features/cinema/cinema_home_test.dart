@@ -1125,6 +1125,8 @@ void main() {
     expect(find.byKey(const ValueKey('settings-updates')), findsNothing);
     await tester.tap(find.byTooltip('返回设置'));
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const ValueKey('settings-updates')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('settings-updates')));
     await tester.pumpAndSettle();
     expect(find.text('自动检查更新'), findsOneWidget);

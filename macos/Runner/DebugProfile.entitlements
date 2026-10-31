@@ -18,6 +18,12 @@
 	<array>
 		<string>com.shenminghao.yingchuan-spks</string>
 		<string>com.shenminghao.yingchuan-spki</string>
+		<string>com.shenminghao.naku.audio-broker</string>
+	</array>
+	<key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
+	<array>
+		<string>/Library/Application Support/NAKUAudio/authorization.plist</string>
+		<string>/Library/Application Support/NAKUAudio/driver-status.plist</string>
 	</array>
 </dict>
 </plist>

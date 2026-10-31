@@ -2,9 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleURLTypes</key>
-  <array><dict><key>CFBundleURLName</key><string>com.nakutop.naku.watch</string>
-  <key>CFBundleURLSchemes</key><array><string>naku</string></array></dict></array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.nakutop.naku.watch</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>naku</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>NAKU播放器</string>
 	<key>CFBundleDevelopmentRegion</key>
@@ -29,6 +37,13 @@
 	<false/>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>查找并连接同一网络中的 HomePod，用于你主动开启的音频输出。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_airplay._tcp</string>
+		<string>_raop._tcp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

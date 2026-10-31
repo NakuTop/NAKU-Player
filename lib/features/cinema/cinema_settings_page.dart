@@ -7,6 +7,7 @@ import 'cinema_theme.dart';
 import 'cinema_settings_catalog.dart';
 import 'cinema_window_close_settings.dart';
 import 'cinema_desktop_window_settings.dart';
+import 'cinema_homepod_audio_settings.dart';
 import 'cinema_navigation_preferences.dart';
 
 /// Shared settings entry; source editing remains owned by the home store.
@@ -126,6 +127,14 @@ class CinemaSettingsPage extends StatelessWidget {
                             subtitle: refined ? '' : '全局隐藏 / 显示快捷键、隐藏时暂停与整窗半透明',
                             onTap: () =>
                                 showCinemaDesktopWindowSettings(context),
+                          ),
+                          _entry(
+                            key: 'settings-homepod-audio',
+                            icon: Icons.speaker_group_outlined,
+                            title: 'HomePod 低延迟输出',
+                            compact: refined,
+                            subtitle: refined ? '' : '将整个 Mac 的声音送到 HomePod',
+                            onTap: () => showCinemaHomePodAudioSettings(context),
                           ),
                         ],
                         if (!refined)
@@ -353,6 +362,14 @@ class CinemaSettingsPage extends StatelessWidget {
                         ]),
                         const SizedBox(height: 34),
                         group('系统与同步', [
+                          _entry(
+                            key: 'settings-homepod-audio',
+                            icon: Icons.speaker_group_outlined,
+                            title: 'HomePod 低延迟输出',
+                            compact: true,
+                            subtitle: '',
+                            onTap: () => showCinemaHomePodAudioSettings(context),
+                          ),
                           destination('sync'),
                           destination('proxy'),
                           destination('storage'),
