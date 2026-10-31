@@ -1,16 +1,16 @@
 [
   {
-    "tag_name": "android-tv-v1.1.5+7",
+    "tag_name": "android-tv-v1.1.6+8",
     "draft": false,
     "prerelease": false,
-    "body": "NAKU TV Lite 1.1.5（7）\n\n修复更新器把电视未返回签名资料误报为签名不一致：优先读取 SigningInfo，缺失或接口失败时重新通过 GET_SIGNATURES 读取。证书仍以完整 SHA-256 集合进行相等校验，空证书或不同签名继续拒绝安装，并区分“无法读取”与“确实不一致”。\n\n继续使用原 NAKU TV 发布证书，APK 同时提供 v1 与 v2 签名，兼顾已安装旧版更新器的证书解析。发布前校验工具也要求两种格式均能验证且证书一致。\n\n包名为 com.nakutop.nakuplayer.tv。1.1.3/1.1.4 可检查本次更新；同签名覆盖安装保留应用资料。当前 1.1.3 中的旧校验代码无法远程修改，如果电视依然拦截，需先用本正式包覆盖安装一次，再使用修复后的更新器。无需卸载旧版。\n\n证书读取策略与更新流程自动测试、构建及 APK 签名验证不等同于真实电视覆盖安装验收；华为智慧屏上的实际更新仍需手动确认。\n",
+    "body": "NAKU TV Lite 1.1.6（8）\n\n播放器改为紧凑底部控制条，片名与集数合并一行，去掉常驻优化说明，播放中 4 秒无操作隐藏；字幕、弹幕、选集改为较窄侧栏。控制条显示时字幕上移避让，隐藏后恢复，不改变视频尺寸。\n修复遥控器左右跨过留白时无法选中字幕、弹幕的问题。上下进入/退出进度条，左右预览、确定跳转、返回取消；关闭面板回到原按钮，保留当前播放状态。\n首页菜单、海报与面板统一白色焦点和短转场，尊重减少动态效果；保留 MiSans 字体、纯黑风格、海报和三种评分。\nHome Display 保留高清地球自转与真实 UTC 昼夜，加入薄大气、同源历史云图和自然海洋反光；星星增大增亮并缓慢闪烁，位置固定。\n继续使用原生 Media3/SurfaceView 播放。屏保沿用 GLES2 与原有最多 24fps 调度，低内存电视仅限制屏保帧缓冲到全屏 1080p，保留原始 8K 昼夜图及适配内存策略。\n\n包名 com.nakutop.nakuplayer.tv，沿用原发布证书，APK 同时提供 v1/v2 签名。可在“我的 → 软件更新”检查；也可用本 APK 直接覆盖安装，保留登录和应用数据。\n\n自动测试、着色器参考和包校验不等同于真实华为智慧屏的遥控、GPU、HDR/杜比和长时间播放验收。\n",
     "assets": [
       {
-        "name": "NAKU-TV-1.1.5-Android-universal.apk",
+        "name": "NAKU-TV-1.1.6-Android-universal.apk",
         "state": "uploaded",
-        "size": 90324506,
-        "digest": "sha256:f68a3d8ee7b3ad528beb690a00ca5ad808159cac1a720157d3caf70a50ea22a1",
-        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v1.1.5%2B7/NAKU-TV-1.1.5-Android-universal.apk"
+        "size": 91250335,
+        "digest": "sha256:d1af8e9f227980d3f5451402f83eb7720061c15567008ccf014f7ca4f9e4fdfe",
+        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v1.1.6%2B8/NAKU-TV-1.1.6-Android-universal.apk"
       }
     ]
   }
