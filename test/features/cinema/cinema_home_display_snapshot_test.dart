@@ -98,6 +98,36 @@ void main() {
     expect(calls, 0);
   });
 
+  testWidgets(
+    'weather discovery is not cut off by the shorter itinerary deadline',
+    (tester) async {
+      final response = Completer<({int status, List<int> bytes})>();
+      final session = CinemaHomeDisplaySnapshotSession(
+        now: () => now,
+        fetch: (_, _) => response.future,
+      );
+      await session.install(grant());
+      var finished = false;
+      final result = session.weather().then((value) {
+        finished = true;
+        return value;
+      });
+      await tester.pump(const Duration(seconds: 16));
+      expect(finished, false);
+      response.complete((
+        status: 200,
+        bytes: utf8.encode(
+          jsonEncode({
+            'ok': true,
+            'data': {'routes': [], 'checkedAt': now.toIso8601String()},
+          }),
+        ),
+      ));
+      await tester.pump();
+      expect((await result)['ok'], true);
+    },
+  );
+
   test(
     'logout invalidates an in-flight snapshot and discards private data',
     () async {

@@ -52,16 +52,22 @@ class CinemaHomeDisplaySnapshotSession implements CinemaHomeDisplayCookieStore {
   }) async {
     if (!ready) return {'ok': false, 'reason': 'nas_session_expired'};
     final grant = _grant!, revision = _revision;
+    // The weather endpoint first verifies the itinerary, then reads two city
+    // providers. Match its existing web client's 40-second read budget.
+    final timeout = Duration(seconds: weather ? 40 : 15);
     try {
-      final response = await (fetch ?? _request)(
-        Uri.parse('$cinemaHomeDisplayOrigin$path'),
-        {
-          HttpHeaders.cookieHeader:
-              '${grant.context.name}=${grant.context.value}; '
-              '${grant.credential.name}=${grant.credential.value}',
-          HttpHeaders.acceptHeader: 'application/json',
-        },
-      ).timeout(const Duration(seconds: 15));
+      final uri = Uri.parse('$cinemaHomeDisplayOrigin$path');
+      final headers = {
+        HttpHeaders.cookieHeader:
+            '${grant.context.name}=${grant.context.value}; '
+            '${grant.credential.name}=${grant.credential.value}',
+        HttpHeaders.acceptHeader: 'application/json',
+      };
+      final response =
+          await (fetch != null
+                  ? fetch!(uri, headers)
+                  : _request(uri, headers, timeout: timeout))
+              .timeout(timeout);
       if (revision != _revision || !ready) {
         return {'ok': false, 'reason': 'nas_session_expired'};
       }
@@ -95,14 +101,12 @@ class CinemaHomeDisplaySnapshotSession implements CinemaHomeDisplayCookieStore {
 
   static Future<({int status, List<int> bytes})> _request(
     Uri uri,
-    Map<String, String> headers,
-  ) async {
+    Map<String, String> headers, {
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 10);
-    final deadline = Timer(
-      const Duration(seconds: 15),
-      () => client.close(force: true),
-    );
+    final deadline = Timer(timeout, () => client.close(force: true));
     try {
       final request = await client.getUrl(uri);
       request.followRedirects = false;

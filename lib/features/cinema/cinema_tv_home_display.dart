@@ -278,7 +278,7 @@ class _CinemaTVHomeDisplayState extends State<CinemaTVHomeDisplay>
       final result =
           await (widget.loadWeather?.call() ??
                   _client.call('homeDisplayWeather'))
-              .timeout(const Duration(seconds: 35));
+              .timeout(const Duration(seconds: 45));
       if (!mounted || !_foreground || generation != _weatherGeneration) return;
       final data = result['data'];
       if (result['ok'] == true && data is Map && data['routes'] is List) {
