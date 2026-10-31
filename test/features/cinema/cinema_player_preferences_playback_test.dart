@@ -82,9 +82,11 @@ class _Backend extends PlatformPlayer {
     PlayerConfiguration configuration, {
     this.failOpen = false,
     this.emitVideo = true,
+    this.rejectOpen,
   }) : super(configuration: configuration);
   final bool failOpen;
   final bool emitVideo;
+  final bool Function(Media media)? rejectOpen;
   void emitVideoDimensions() {
     widthController.add(1280);
     heightController.add(720);
@@ -96,6 +98,9 @@ class _Backend extends PlatformPlayer {
   bool disposed = false;
   @override
   Future<void> open(Playable playable, {bool play = true}) async {
+    if (rejectOpen?.call(playable as Media) == true) {
+      throw StateError('HTTP error 404');
+    }
     if (failOpen) throw StateError('fixture route unavailable');
     opened = playable as Media;
     state = state.copyWith(
@@ -482,6 +487,7 @@ void main() {
     int? initialPosition,
     CinemaTitle? selectedTitle,
     CinemaSource? selectedSource,
+    List<CinemaTitle> variants = const [],
     Player Function(PlayerConfiguration)? playerFactory,
     CinemaNASPlaybackClient? nasPlayback,
     Future<CinemaTitle> Function(CinemaTitle)? resolveNASRatings,
@@ -509,6 +515,7 @@ void main() {
     );
     final playbackPage = CinemaPlayerPage(
       title: selectedTitle ?? _title,
+      variants: variants,
       episodeIndex: initialEpisode,
       subtitleClientFactory: subtitleClientFactory,
       nasPlayback: nasPlayback,
@@ -1020,6 +1027,191 @@ void main() {
       isNot(contains('https://fixture.invalid/extra.mp4')),
     );
   }
+
+  const juliangSource = CinemaSource(
+    id: 'maccms-juliang',
+    name: '巨量资源',
+    kind: CinemaSourceKind.maccms,
+    url: 'https://api.juliang.live/api/provide/vod/',
+  );
+  const juliangTitle = CinemaTitle(
+    id: 'j1',
+    sourceId: 'maccms-juliang',
+    title: '同一作品',
+    year: '2025',
+    category: '电视剧',
+    routes: [
+      CinemaRoute(
+        name: 'jlm3u8',
+        episodes: [
+          CinemaEpisode(
+            name: '第1集',
+            url: 'https://fixture.invalid/juliang.mp4',
+          ),
+          CinemaEpisode(
+            name: '第2集',
+            url: 'https://fixture.invalid/juliang-2.mp4',
+          ),
+        ],
+      ),
+      CinemaRoute(
+        name: 'jlplayer',
+        episodes: [
+          CinemaEpisode(
+            name: '第1集',
+            url: 'https://fixture.invalid/juliang-backup.mp4',
+          ),
+          CinemaEpisode(
+            name: '第2集',
+            url: 'https://fixture.invalid/juliang-backup-2.mp4',
+          ),
+        ],
+      ),
+    ],
+  );
+  testWidgets(
+    'preferred startup compares both Juliang endpoints before opening any player',
+    (tester) async {
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {},
+        autoBest: true,
+        probe: probe,
+        selectedSource: juliangSource,
+        selectedTitle: juliangTitle,
+        initialPosition: 77,
+      );
+      await waitForProbe(tester, probe);
+      expect(backends, isEmpty);
+      expect(probe.requests.keys.toSet(), {
+        'https://fixture.invalid/juliang.mp4',
+        'https://fixture.invalid/juliang-backup.mp4',
+      });
+      probe.complete();
+      await tester.pumpAndSettle();
+      expect(backends, hasLength(1));
+      expect(
+        backends.single.opened!.uri,
+        'https://fixture.invalid/juliang-backup.mp4',
+      );
+      expect(backends.single.opened!.start, const Duration(seconds: 77));
+      await unmount(tester);
+    },
+  );
+  testWidgets(
+    'manual episode choice cancels preferred startup and ignores late probes',
+    (tester) async {
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {},
+        autoBest: true,
+        probe: probe,
+        selectedSource: juliangSource,
+        selectedTitle: juliangTitle,
+      );
+      await waitForProbe(tester, probe);
+      final episode = find.widgetWithText(OutlinedButton, '第2集');
+      await tester.ensureVisible(episode);
+      await tester.tap(episode);
+      await tester.pump();
+      probe.complete();
+      await tester.pumpAndSettle();
+      expect(
+        backends.last.opened!.uri,
+        'https://fixture.invalid/juliang-2.mp4',
+      );
+      expect(
+        backends.where((b) => b.opened?.uri.contains('backup') ?? false),
+        isEmpty,
+      );
+      await unmount(tester);
+    },
+  );
+  testWidgets(
+    'actual preferred open failure tries its other endpoint before another source',
+    (tester) async {
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      final attempted = <String>[];
+      await mount(
+        tester,
+        {},
+        autoBest: true,
+        probe: probe,
+        selectedSource: juliangSource,
+        selectedTitle: juliangTitle,
+        initialPosition: 77,
+        playerFactory: (config) {
+          final backend = _Backend(
+            config,
+            rejectOpen: (media) {
+              attempted.add(media.uri);
+              return media.uri.contains('juliang-backup');
+            },
+          );
+          backends.add(backend);
+          return _Player(backend);
+        },
+      );
+      await waitForProbe(tester, probe);
+      probe.complete();
+      await tester.pumpAndSettle();
+      expect(attempted, [
+        'https://fixture.invalid/juliang-backup.mp4',
+        'https://fixture.invalid/juliang.mp4',
+      ]);
+      expect(backends.last.opened!.start, const Duration(seconds: 77));
+      await unmount(tester);
+    },
+  );
+  testWidgets(
+    'only two unavailable preferred endpoints permit another source to open',
+    (tester) async {
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      final fallback = CinemaTitle(
+        id: _title.id,
+        sourceId: _title.sourceId,
+        title: '同一作品',
+        year: '2025',
+        category: '电视剧',
+        routes: _title.routes,
+      );
+      await mount(
+        tester,
+        {},
+        autoBest: true,
+        probe: probe,
+        selectedSource: juliangSource,
+        selectedTitle: juliangTitle,
+        variants: [fallback],
+        initialPosition: 77,
+      );
+      await waitForProbe(tester, probe);
+      expect(backends, isEmpty);
+      for (final pending in probe.requests.values) {
+        pending.complete(
+          const CinemaMediaProbeResult(
+            ok: false,
+            elapsedMs: 20,
+            reason: 'unavailable',
+          ),
+        );
+      }
+      for (var i = 0; i < 30 && backends.isEmpty; i++) {
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      expect(backends, isNotEmpty);
+      expect(backends.first.opened!.uri, 'https://fixture.invalid/1.mp4');
+      expect(backends.first.opened!.start, const Duration(seconds: 77));
+      probe.complete();
+      await unmount(tester);
+    },
+  );
 
   testWidgets(
     'opening a title automatically chooses measured best line once, retaining progress and pause state',
