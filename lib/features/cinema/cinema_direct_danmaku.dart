@@ -196,10 +196,14 @@ class CinemaDirectDanmakuTimeline implements CinemaDanmakuTimeline {
 
 /// All requests run inside the player. No server process or localhost port.
 class CinemaDirectDanmakuClient implements CinemaDanmakuMatcher {
-  CinemaDirectDanmakuClient({Dio? dio, this.initialPosition = 0})
-    : _dio = dio ?? DioFactory.createForConfig(_networkConfig());
+  CinemaDirectDanmakuClient({
+    Dio? dio,
+    this.initialPosition = 0,
+    this.providers,
+  }) : _dio = dio ?? DioFactory.createForConfig(_networkConfig());
   final Dio _dio;
   final double initialPosition;
+  final Set<String>? providers;
   final _timelines = <CinemaDanmakuTimeline>[];
   bool _closed = false;
   static NetworkConfig _networkConfig() {
@@ -375,7 +379,9 @@ class CinemaDirectDanmakuClient implements CinemaDanmakuMatcher {
     for (final candidate in matches.take(3)) {
       // Prefer a lightweight native JSON source; fall back to another exact work.
       final links = candidate.row['playlinks'];
-      for (final site in cinemaDirectDanmakuProviders.keys) {
+      for (final site in cinemaDirectDanmakuProviders.keys.where(
+        (id) => providers?.contains(id) ?? true,
+      )) {
         _check(cancelToken);
         if (links is! Map || links[site] is! String) continue;
         try {

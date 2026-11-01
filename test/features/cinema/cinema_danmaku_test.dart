@@ -106,6 +106,48 @@ void main() {
     expect(doubled.advance(entries, 3, rate: 2), hasLength(4));
   });
   test(
+    'dense merged sources share the display budget instead of starving one source',
+    () {
+      final entries = [
+        for (final source in ['[aiyifan]', '[renren]'])
+          for (var n = 0; n < 10; n++)
+            DanmakuEntry(
+              message: '$source $n',
+              time: 1,
+              type: 1,
+              color: Colors.white,
+              source: source,
+            ),
+      ];
+      final clock = CinemaDanmakuClock()..advance(entries, 0);
+      final visible = clock.advance(entries, 1);
+      expect(visible.length, 4);
+      expect(visible.map((e) => e.source).toSet(), {'[aiyifan]', '[renren]'});
+    },
+  );
+  test('repeated spam does not consume the unique comment budget', () {
+    DanmakuEntry row(String message) => DanmakuEntry(
+      message: message,
+      time: 1,
+      type: 1,
+      color: Colors.white,
+      source: '[renren]',
+    );
+    final entries = [
+      for (var i = 0; i < 10; i++) row('重复弹幕'),
+      row('另一条1'),
+      row('另一条2'),
+      row('另一条3'),
+    ];
+    final clock = CinemaDanmakuClock()..advance(entries, 0);
+    expect(clock.advance(entries, 1).map((e) => e.message).toSet(), {
+      '重复弹幕',
+      '另一条1',
+      '另一条2',
+      '另一条3',
+    });
+  });
+  test(
     'official flow uses returned 64-bit episode IDs and caches repeat reads',
     () async {
       final adapter = _Adapter();

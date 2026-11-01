@@ -703,6 +703,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     if (playback == null || !playback.ready) return;
     playback.watchdog.reset();
     _cancelTVBackground('用户正在定位播放进度', reset: true);
+    playback.danmaku?.prepareForSeek();
     unawaited(playback.player.seek(target));
   }
 
@@ -900,6 +901,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       playback.watchdog.reset();
       if ((playback.position - position).inMilliseconds.abs() > 1500) {
         _cancelTVBackground('同步播放正在定位进度', reset: true);
+        playback.danmaku?.prepareForSeek();
         await playback.player.seek(position);
       }
       if (!identical(playback, _playback)) return;
@@ -1590,7 +1592,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         player: candidate.player,
         skipSeconds: _preferences.arrowSkipSeconds,
         forwardRate: _preferences.longPressRate,
-        onSeek: candidate.watchdog.reset,
+        onSeek: () {
+          candidate.watchdog.reset();
+          candidate.danmaku?.prepareForSeek();
+        },
         canResume: () =>
             !_closing &&
             identical(_playback, candidate) &&
@@ -5622,6 +5627,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     );
     playback.watchdog.reset();
     _cancelTVBackground('用户正在定位播放进度', reset: true);
+    playback.danmaku?.prepareForSeek();
     unawaited(playback.player.seek(Duration(seconds: target)));
   }
 

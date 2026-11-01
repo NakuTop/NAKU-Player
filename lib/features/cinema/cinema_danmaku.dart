@@ -15,7 +15,7 @@ import 'cinema_media_identity.dart';
 import 'package:kazumi/request/core/dio_factory.dart';
 import 'package:kazumi/request/core/network_config.dart';
 import 'cinema_logvar_client.dart';
-import 'cinema_platform_danmaku.dart';
+import 'cinema_multi_source_danmaku.dart';
 import 'package:kazumi/services/platform/logvar_credential_store.dart';
 import 'package:kazumi/services/platform/naku_device.dart';
 import 'cinema_tv_auxiliary.dart';
@@ -104,8 +104,10 @@ class CinemaDanmakuClock {
   int index = 0;
   double? previous;
   bool reset = false;
+  int _sourceTurn = 0;
   void clear() {
     index = 0;
+    _sourceTurn = 0;
     previous = null;
     reset = true;
   }
@@ -129,6 +131,7 @@ class CinemaDanmakuClock {
     List<DanmakuEntry> entries,
     double time, {
     double rate = 1,
+    bool emit = true,
   }) {
     reset = false;
     final before = previous;
@@ -149,17 +152,31 @@ class CinemaDanmakuClock {
       index = low;
       return const [];
     }
-    final emitted = <DanmakuEntry>[];
-    final seen = <String>{};
+    if (!emit) return const [];
+    final groups = <String, List<DanmakuEntry>>{};
     while (index < entries.length && entries[index].time <= time) {
       final item = entries[index++];
-      if (item.time > before &&
-          item.message.length <= 120 &&
-          seen.add(item.message) &&
-          emitted.length < 4) {
-        emitted.add(item);
+      if (item.time > before && item.message.length <= 120) {
+        final group = groups[item.source] ??= [];
+        if (group.length < 4 && !group.any((e) => e.message == item.message)) {
+          group.add(item);
+        }
       }
     }
+    final emitted = <DanmakuEntry>[], sources = groups.keys.toList();
+    final seen = <String>{};
+    if (sources.isNotEmpty) {
+      final first = _sourceTurn++ % sources.length;
+      for (var row = 0; row < 4 && emitted.length < 4; row++) {
+        for (var n = 0; n < sources.length && emitted.length < 4; n++) {
+          final group = groups[sources[(first + n) % sources.length]]!;
+          if (row < group.length && seen.add(group[row].message)) {
+            emitted.add(group[row]);
+          }
+        }
+      }
+    }
+    emitted.sort((a, b) => a.time.compareTo(b.time));
     return emitted;
   }
 }
@@ -177,6 +194,9 @@ class CinemaDanmakuController extends ChangeNotifier {
     enabled = store.extras['cinemaDanmakuEnabled'] is bool
         ? store.extras['cinemaDanmakuEnabled'] == true
         : store.extras['danmakuAutoMatch'] != false;
+    _selectedSources = cinemaDanmakuSourcesFrom(
+      store.extras[cinemaDanmakuSourcesPreference],
+    );
     if (NakuDevice.isTV) fontSize = 28;
     final style = store.extras['cinemaDanmakuStyle'];
     if (style is Map) {
@@ -292,6 +312,57 @@ class CinemaDanmakuController extends ChangeNotifier {
     await loadAutomatic(force: true);
   }
 
+  late Set<String> _selectedSources;
+  Set<String> get selectedSources => Set.unmodifiable(_selectedSources);
+  final _sourceStates = <String, CinemaDanmakuSourceStatus>{};
+  CinemaDanmakuSourceStatus? sourceStatus(String id) => _sourceStates[id];
+  int? sourceCount(String id) => _timeline is CinemaCombinedDanmakuTimeline
+      ? (_timeline as CinemaCombinedDanmakuTimeline).counts[id]
+      : null;
+  int _sourcePreferenceRevision = 0;
+
+  Future<void> setSelectedSources(Set<String> ids) async {
+    await ready;
+    if (_closed) return;
+    final next = ids.where(cinemaSelectableDanmakuSources.containsKey).toSet();
+    if (setEquals(next, _selectedSources)) return;
+    final revision = ++_sourcePreferenceRevision;
+    final timeline = _timeline;
+    final canReuse =
+        !matching &&
+        timeline is CinemaCombinedDanmakuTimeline &&
+        next.every(timeline.contains);
+    if (canReuse) {
+      _cancelWindowRequest();
+      timeline.select(next);
+    } else {
+      cancelMatching(notify: false);
+      _sourceStates.clear();
+    }
+    _selectedSources = next;
+    entries = entries
+        .where((e) => next.any((id) => e.source == '[$id]'))
+        .toList();
+    clock.clear();
+    _canvas?.clear();
+    matchMessage = next.isEmpty ? '未选择弹幕来源' : '正在同步所选来源';
+    notifyListeners();
+    await store.setExtra(
+      cinemaDanmakuSourcesPreference,
+      cinemaSelectableDanmakuSources.keys.where(next.contains).toList(),
+    );
+    if (_closed || revision != _sourcePreferenceRevision) return;
+    if (canReuse) {
+      await _ensureWindow(
+        player.state.position.inMilliseconds / 1000 - offset,
+        force: true,
+      );
+    } else if (enabled && next.isNotEmpty) {
+      await loadAutomatic(force: true);
+    }
+    if (!_closed && revision == _sourcePreferenceRevision) await _save();
+  }
+
   bool matching = false;
   String matchMessage = '';
   bool get automaticMatching => enabled;
@@ -301,8 +372,9 @@ class CinemaDanmakuController extends ChangeNotifier {
   CinemaDanmakuMatcher? _timelineClient;
   CinemaDanmakuTimeline? _timeline;
   CancelToken? _windowCancel;
+  Timer? _seekWindowTimer;
   int _windowRevision = 0;
-  bool _windowed = false;
+  bool _windowed = false, _multiSourceData = false;
   double _windowStart = 0, _windowEnd = 0;
   double? _loadingAt;
   DateTime? _windowRetryAfter;
@@ -334,22 +406,67 @@ class CinemaDanmakuController extends ChangeNotifier {
   void _syncPlaying() {
     if (enabled && player.state.playing && !player.state.buffering) {
       _canvas?.resume();
+      _seekWindowTimer?.cancel();
+      _seekWindowTimer = null;
+      unawaited(
+        _ensureWindow(player.state.position.inMilliseconds / 1000 - offset),
+      );
     } else {
       _canvas?.pause();
     }
   }
 
+  /// Called before explicit transport seeks; position events confirm the new
+  /// clock. Never leave comments from a future frame frozen during a rewind.
+  void prepareForSeek() {
+    clock.clear();
+    _canvas?.clear();
+    _cancelWindowRequest();
+  }
+
+  void _cancelWindowRequest() {
+    _seekWindowTimer?.cancel();
+    _seekWindowTimer = null;
+    _windowRevision++;
+    _windowCancel?.cancel('danmaku playback position changed');
+    _windowCancel = null;
+    _loadingAt = null;
+    _windowRetryAfter = null;
+  }
+
   void _tick(Duration position) {
-    if (enabled) {
-      unawaited(_ensureWindow(position.inMilliseconds / 1000 - offset));
-    }
-    if (!enabled || !player.state.playing || player.state.buffering) return;
+    final time = position.inMilliseconds / 1000 - offset;
+    final emit = enabled && player.state.playing && !player.state.buffering;
+    // Observe discontinuities even while the video is paused or buffering.
     final batch = clock.advance(
       entries,
-      position.inMilliseconds / 1000 - offset,
+      time,
       rate: player.state.rate,
+      emit: emit,
     );
-    if (clock.reset) _canvas?.clear();
+    if (clock.reset) {
+      _canvas?.clear();
+      _cancelWindowRequest();
+    }
+    if (enabled) {
+      if (clock.reset && !emit) {
+        // A held reverse key seeks ten times a second while paused. Fetch once
+        // it settles instead of cancelling/restarting a request on every tick.
+        _seekWindowTimer = Timer(const Duration(milliseconds: 180), () {
+          _seekWindowTimer = null;
+          if (!_closed && enabled) {
+            unawaited(
+              _ensureWindow(
+                player.state.position.inMilliseconds / 1000 - offset,
+              ),
+            );
+          }
+        });
+      } else if (_seekWindowTimer == null) {
+        unawaited(_ensureWindow(time));
+      }
+    }
+    if (!emit) return;
     for (final entry in batch) {
       if (entry.type == 4) continue;
       _canvas?.addDanmaku(
@@ -380,18 +497,35 @@ class CinemaDanmakuController extends ChangeNotifier {
               data['comments'] is List &&
               (data['comments'] as List).isEmpty
           ? <DanmakuEntry>[]
+          : data is Map && data['multiSource'] == true
+          ? await compute(parseCinemaMultiSourceCache, text)
           : await compute(parseLocalDanmaku, text);
       if (_closed || entries.isNotEmpty) return;
-      entries = loaded;
+      _multiSourceData = data is Map && data['multiSource'] == true;
+      entries = _multiSourceData
+          ? loaded
+                .where(
+                  (entry) =>
+                      _selectedSources.any((id) => entry.source == '[$id]'),
+                )
+                .toList()
+          : loaded;
       _windowed = data is Map && data['windowed'] == true;
       source = data is Map && data['source'] is String
           ? '${data['source']}'
           : '已保存弹幕';
+      if (autoQuery != null &&
+          directClientFactory == null &&
+          cinemaSelectableDanmakuSources.values.any(
+            (name) => source.startsWith('$name ·'),
+          )) {
+        _windowed = true;
+      }
       // Migrate the previous whole-episode NAS cache to bounded direct loading.
       if (autoQuery != null && source.startsWith('NAS ·')) _windowed = true;
       if (_windowed) {
         final at = player.state.position.inMilliseconds / 1000;
-        entries = loaded
+        entries = entries
             .where((e) => e.time >= at - 30 && e.time <= at + 180)
             .take(6000)
             .toList();
@@ -424,6 +558,7 @@ class CinemaDanmakuController extends ChangeNotifier {
     if (!fromAutomaticMatch) {
       cancelMatching(notify: false);
       _windowed = false;
+      _multiSourceData = false;
     }
     await ready;
     if (_closed) return;
@@ -508,6 +643,7 @@ class CinemaDanmakuController extends ChangeNotifier {
       'offset': offset,
       'comments': entries.map((e) => e.toJson()).toList(),
       'windowed': _windowed,
+      'multiSource': _multiSourceData,
     });
     _writes = _writes.catchError((Object _) {}).then((_) async {
       if (utf8.encode(text).length > maxDanmakuImportBytes) return;
@@ -566,6 +702,11 @@ class CinemaDanmakuController extends ChangeNotifier {
         (!force && entries.isNotEmpty && (!_windowed || _timeline != null))) {
       return;
     }
+    if (_selectedSources.isEmpty) {
+      matchMessage = '未选择弹幕来源';
+      notifyListeners();
+      return;
+    }
     final revision = ++_matchRevision;
     final cancel = CancelToken();
     _matchCancel = cancel;
@@ -591,11 +732,15 @@ class CinemaDanmakuController extends ChangeNotifier {
       } else {
         client =
             directClientFactory?.call() ??
-            CinemaPlatformDanmakuClient(
+            CinemaMultiSourceDanmakuClient(
               initialPosition: player.state.position.inMilliseconds / 1000,
             );
       }
       _matchClient = client;
+      if (client is CinemaMultiSourceDanmakuMatcher) {
+        await _loadSelectedSources(client, query, cancel, current);
+        return;
+      }
       final result = await client
           .match(
             query,
@@ -652,6 +797,11 @@ class CinemaDanmakuController extends ChangeNotifier {
       if (!identical(_timelineClient, client)) client?.close();
       if (!_closed && revision == _matchRevision) {
         matching = false;
+        _sourceStates.updateAll(
+          (id, status) => status == CinemaDanmakuSourceStatus.loading
+              ? CinemaDanmakuSourceStatus.unavailable
+              : status,
+        );
         _matchClient = null;
         _matchCancel = null;
         notifyListeners();
@@ -659,30 +809,93 @@ class CinemaDanmakuController extends ChangeNotifier {
     }
   }
 
+  Future<void> _loadSelectedSources(
+    CinemaMultiSourceDanmakuMatcher client,
+    CinemaLogvarQuery query,
+    CancelToken cancel,
+    bool Function() current,
+  ) async {
+    _stopTimeline();
+    final combined = CinemaCombinedDanmakuTimeline()..select(_selectedSources);
+    _timeline = combined;
+    _multiSourceData = true;
+    _timelineClient = client;
+    _windowed = true;
+    _windowStart = 0;
+    _windowEnd = 0;
+    _sourceStates.clear();
+    for (final id in _selectedSources) {
+      _sourceStates[id] = CinemaDanmakuSourceStatus.loading;
+    }
+    entries = [];
+    clock.clear();
+    _canvas?.clear();
+    source = '多源弹幕 · ${query.label}';
+    await client
+        .matchSources(
+          query,
+          sources: Set.of(_selectedSources),
+          cancelToken: cancel,
+          onSource: (result) {
+            if (!current()) return;
+            _sourceStates[result.id] = result.status;
+            if (result.selection case final selection?) {
+              combined.add(result.id, selection);
+              unawaited(
+                _ensureWindow(
+                  player.state.position.inMilliseconds / 1000 - offset,
+                  force: true,
+                ),
+              );
+            }
+            notifyListeners();
+          },
+        )
+        .timeout(const Duration(seconds: 90));
+    if (!current()) return;
+    await _ensureWindow(
+      player.state.position.inMilliseconds / 1000 - offset,
+      force: true,
+    );
+    if (current() && entries.isEmpty) {
+      matchMessage =
+          _sourceStates.values.any(
+            (state) => state == CinemaDanmakuSourceStatus.loaded,
+          )
+          ? '当前时段暂无弹幕，将随播放进度自动获取'
+          : _sourceStates.values.any(
+              (state) => state == CinemaDanmakuSourceStatus.unavailable,
+            )
+          ? '部分来源暂不可用，可重试所选来源'
+          : '所选来源暂无可确认的本集弹幕';
+    }
+  }
+
   void _stopTimeline() {
-    _windowRevision++;
-    _windowCancel?.cancel('danmaku window replaced');
-    _windowCancel = null;
-    _loadingAt = null;
-    _windowRetryAfter = null;
+    _cancelWindowRequest();
     _timeline?.close();
     _timeline = null;
     _timelineClient?.close();
     _timelineClient = null;
   }
 
-  Future<void> _ensureWindow(double position) async {
+  Future<void> _ensureWindow(double position, {bool force = false}) async {
+    if (position < 0) position = 0;
     final timeline = _timeline;
     if (_closed ||
         !enabled ||
         timeline == null ||
-        (_windowRetryAfter != null &&
-            DateTime.now().isBefore(_windowRetryAfter!)) ||
-        (position >= _windowStart && position < _windowEnd - 45) ||
-        (position >= _windowStart && _windowEnd >= timeline.endSeconds)) {
+        (!force &&
+            ((_windowRetryAfter != null &&
+                    DateTime.now().isBefore(_windowRetryAfter!)) ||
+                (position >= _windowStart && position < _windowEnd - 45) ||
+                (position >= _windowStart &&
+                    _windowEnd >= timeline.endSeconds)))) {
       return;
     }
-    if (_loadingAt != null && (position - _loadingAt!).abs() < 30) return;
+    if (!force && _loadingAt != null && (position - _loadingAt!).abs() < 30) {
+      return;
+    }
     _windowCancel?.cancel('new playback position');
     final cancel = _windowCancel = CancelToken();
     final revision = ++_windowRevision;
@@ -706,7 +919,9 @@ class CinemaDanmakuController extends ChangeNotifier {
         entries,
         player.state.position.inMilliseconds / 1000 - offset,
       );
-      matchMessage = next.entries.isEmpty
+      matchMessage = _selectedSources.isEmpty
+          ? '未选择弹幕来源'
+          : next.entries.isEmpty
           ? '当前时段暂无弹幕，将随播放进度自动获取'
           : '已加载 ${entries.length} 条当前时段弹幕${next.partial ? '（部分分片暂不可用）' : ''}';
       notifyListeners();
@@ -861,6 +1076,30 @@ class CinemaDanmakuStylePanel extends StatelessWidget {
                   value: c.enabled,
                   onChanged: (value) => unawaited(c.setEnabled(value)),
                 ),
+                if (c.matchQuery != null)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          key: const ValueKey('cinema-danmaku-sources'),
+                          onPressed: () =>
+                              showCinemaDanmakuSourcesDialog(context, c),
+                          icon: const Icon(Icons.checklist_rounded),
+                          label: Text('选择弹幕来源（${c.selectedSources.length}）'),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: '重新匹配所选来源',
+                        onPressed:
+                            c.enabled &&
+                                !c.matching &&
+                                c.selectedSources.isNotEmpty
+                            ? () => unawaited(c.loadAutomatic(force: true))
+                            : null,
+                        icon: const Icon(Icons.refresh_rounded),
+                      ),
+                    ],
+                  ),
                 if (c.matching) const LinearProgressIndicator(minHeight: 2),
                 if (c.matchQuery case final query?)
                   Row(
@@ -985,6 +1224,12 @@ class _CinemaTVDanmakuPanel extends StatelessWidget {
         ),
         if (query != null)
           CinemaTVAuxiliaryAction(
+            key: const ValueKey('tv-danmaku-sources'),
+            label: '选择弹幕来源（${c.selectedSources.length}）',
+            onPressed: () => showCinemaDanmakuSourcesDialog(context, c),
+          ),
+        if (query != null)
+          CinemaTVAuxiliaryAction(
             key: const ValueKey('tv-danmaku-correct'),
             label: '更正片名 / 年份',
             subtitle: '季集跟随当前视频，不匹配预告或影评',
@@ -1018,6 +1263,85 @@ class _CinemaTVDanmakuPanel extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+Future<void> showCinemaDanmakuSourcesDialog(
+  BuildContext context,
+  CinemaDanmakuController controller,
+) async {
+  final draft = Set.of(controller.selectedSources);
+  final selected = await showDialog<Set<String>>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setState) => ListenableBuilder(
+        listenable: controller,
+        builder: (context, _) => AlertDialog(
+          title: const Text('选择弹幕来源'),
+          content: SizedBox(
+            width: 420,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 420),
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final source in cinemaSelectableDanmakuSources.entries)
+                    CheckboxListTile(
+                      key: ValueKey('danmaku-source-${source.key}'),
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      title: Text(source.value),
+                      subtitle: Text(switch (controller.sourceStatus(
+                        source.key,
+                      )) {
+                        CinemaDanmakuSourceStatus.loading => '正在匹配…',
+                        CinemaDanmakuSourceStatus.loaded =>
+                          controller.sourceCount(source.key) != null &&
+                                  controller.selectedSources.contains(
+                                    source.key,
+                                  )
+                              ? '${controller.sourceCount(source.key)} 条（当前时段）'
+                              : '已匹配',
+                        CinemaDanmakuSourceStatus.empty => '本集暂无匹配',
+                        CinemaDanmakuSourceStatus.unavailable => '暂不可用',
+                        _ => '可与其他来源同时显示',
+                      }),
+                      value: draft.contains(source.key),
+                      onChanged: (value) => setState(() {
+                        if (value == true) {
+                          draft.add(source.key);
+                        } else {
+                          draft.remove(source.key);
+                        }
+                      }),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, Set.of(draft)),
+              child: const Text('应用'),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+  if (selected == null) return;
+  try {
+    await controller.setSelectedSources(selected);
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('弹幕来源设置未能保存，请重试')));
+    }
   }
 }
 
