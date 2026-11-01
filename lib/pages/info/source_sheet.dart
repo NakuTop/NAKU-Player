@@ -25,6 +25,7 @@ import 'package:kazumi/plugins/plugins_controller.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/plugin/captcha_verification_service.dart';
 import 'package:kazumi/services/plugin/plugin_search_service.dart';
+import 'package:kazumi/services/plugin/anime_source_names.dart';
 import 'package:kazumi/services/plugin/rule_engine_models.dart'
     show RuleCancelToken;
 import 'package:kazumi/utils/device.dart';
@@ -70,7 +71,14 @@ class _SourceSheetState extends State<SourceSheet> with KazumiDialogOwner {
       onVerified: _showVerifiedResult,
       onCancelled: (plugin) => _retry(plugin.name),
     );
-    _searchService.queryAllSource(_keyword);
+    _searchService.queryAllSource(
+      _keyword,
+      alternativeKeywords: animeSourceKeywords(
+        chineseTitle: item.nameCn,
+        originalTitle: item.name,
+        aliases: item.alias,
+      ),
+    );
   }
 
   @override
@@ -80,7 +88,10 @@ class _SourceSheetState extends State<SourceSheet> with KazumiDialogOwner {
     super.dispose();
   }
 
-  String _keywordFor(String name) => _sourceKeywords[name] ?? _keyword;
+  String _keywordFor(String name) =>
+      _sourceKeywords[name] ??
+      _searchService.effectiveKeywords[name] ??
+      _keyword;
 
   Plugin _pluginFor(String name) =>
       _pluginsController.pluginList.firstWhere((plugin) => plugin.name == name);

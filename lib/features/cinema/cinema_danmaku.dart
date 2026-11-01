@@ -15,7 +15,7 @@ import 'cinema_media_identity.dart';
 import 'package:kazumi/request/core/dio_factory.dart';
 import 'package:kazumi/request/core/network_config.dart';
 import 'cinema_logvar_client.dart';
-import 'cinema_direct_danmaku.dart';
+import 'cinema_platform_danmaku.dart';
 import 'package:kazumi/services/platform/logvar_credential_store.dart';
 import 'package:kazumi/services/platform/naku_device.dart';
 import 'cinema_tv_auxiliary.dart';
@@ -591,7 +591,7 @@ class CinemaDanmakuController extends ChangeNotifier {
       } else {
         client =
             directClientFactory?.call() ??
-            CinemaDirectDanmakuClient(
+            CinemaPlatformDanmakuClient(
               initialPosition: player.state.position.inMilliseconds / 1000,
             );
       }

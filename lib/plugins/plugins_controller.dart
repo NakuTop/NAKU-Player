@@ -7,6 +7,7 @@ import 'package:kazumi/plugins/plugins.dart';
 import 'package:kazumi/services/plugin/plugin_validity_tracker.dart';
 import 'package:kazumi/services/plugin/plugin_install_time_tracker.dart';
 import 'package:kazumi/request/apis/plugin_catalog_api.dart';
+import 'package:kazumi/request/config/api_endpoints.dart';
 import 'package:kazumi/modules/plugin/plugin_http_module.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/utils/async_serial_queue.dart';
@@ -65,10 +66,10 @@ abstract class _PluginsController with Store {
     PluginLoader? pluginLoader,
     PluginJsonWriter? pluginJsonWriter,
     PluginErrorReporter? errorReporter,
-  })  : _catalogLoader = catalogLoader ?? PluginCatalogApi.getPluginList,
-        _pluginLoader = pluginLoader ?? PluginCatalogApi.getPlugin,
-        _pluginJsonWriter = pluginJsonWriter,
-        _errorReporter = errorReporter ?? _defaultPluginErrorReporter;
+  }) : _catalogLoader = catalogLoader ?? PluginCatalogApi.getPluginList,
+       _pluginLoader = pluginLoader ?? PluginCatalogApi.getPlugin,
+       _pluginJsonWriter = pluginJsonWriter,
+       _errorReporter = errorReporter ?? _defaultPluginErrorReporter;
 
   final PluginCatalogLoader _catalogLoader;
   final PluginLoader _pluginLoader;
@@ -116,6 +117,44 @@ abstract class _PluginsController with Store {
       await newPluginDirectory!.create(recursive: true);
     }
     await _loadAllPlugins();
+    if (Platform.isMacOS) {
+      try {
+        final rules = <Plugin>[];
+        for (final name in const ['AGE', 'MXdm', 'akianime']) {
+          final raw = await rootBundle.loadString('assets/plugins/$name.json');
+          rules.add(Plugin.fromJson(jsonDecode(raw)));
+        }
+        await installRecommendedAnimeRules(rules);
+      } catch (error, stackTrace) {
+        _errorReporter(
+          'Plugin: bundled anime sources unavailable',
+          error,
+          stackTrace,
+        );
+      }
+    }
+  }
+
+  /// Add this release's compatible rules once. Existing edits and subsequent
+  /// user removals are respected; no existing rule is replaced or deleted.
+  Future<int> installRecommendedAnimeRules(Iterable<Plugin> rules) async {
+    final directory = newPluginDirectory;
+    if (directory == null) {
+      throw StateError('Plugin storage is not initialized');
+    }
+    final marker = File('${directory.path}/recommended-anime-20261101.done');
+    if (await marker.exists()) return 0;
+    final names = pluginList.map((p) => pluginNameKey(p.name)).toSet();
+    final missing = rules
+        .where(
+          (p) =>
+              (int.tryParse(p.api) ?? 999) <= ApiEndpoints.apiLevel &&
+              names.add(pluginNameKey(p.name)),
+        )
+        .toList();
+    if (missing.isNotEmpty) await updatePlugins(missing);
+    await marker.writeAsString('20261101\n', flush: true);
+    return missing.length;
   }
 
   // Loads all plugins from the directory, populates the plugin list, and saves to plugins.json if needed
@@ -166,7 +205,14 @@ abstract class _PluginsController with Store {
     final assets = assetManifest.listAssets();
     final jsonFiles = assets.where(
       (String asset) =>
-          asset.startsWith('assets/plugins/') && asset.endsWith('.json'),
+          asset.startsWith('assets/plugins/') &&
+          asset.endsWith('.json') &&
+          (Platform.isMacOS ||
+              !const [
+                'assets/plugins/AGE.json',
+                'assets/plugins/MXdm.json',
+                'assets/plugins/akianime.json',
+              ].contains(asset)),
     );
 
     for (var filePath in jsonFiles) {
