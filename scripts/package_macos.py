@@ -247,7 +247,7 @@ def package(app: Path, output: Path, version: str, *, zip_only: bool = False, so
         with (app / "Contents/Info.plist").open("rb") as stream:
             minimum = str(plistlib.load(stream)["LSMinimumSystemVersion"])
         instructions = installation_text(version, minimum).replace('当前公开版本', '当前安装包')
-        signing_details = run("codesign", "-dv", app)
+        signing_details = run("codesign", "-dv", "--verbose=4", app)
         if "Authority=Apple Development:" in signing_details:
             instructions = instructions.replace("本地 ad-hoc 签名", "Apple Development 开发签名")
         if source_archive is not None:
