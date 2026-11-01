@@ -84,6 +84,30 @@ Future<CinemaPreferredMedia> resolve(CinemaPlaybackCandidate c) async => (
 );
 void main() {
   test(
+    'preferred names normalize whitespace before choosing two distinct endpoints',
+    () {
+      final base = candidate(0);
+      final title = base.title.copyWith(
+        routes: [
+          base.route,
+          CinemaRoute(name: ' JLM3U8 ', episodes: base.route.episodes),
+          base.title.routes[1],
+        ],
+      );
+      final endpoints = cinemaPreferredEndpoints([
+        for (var i = 0; i < title.routes.length; i++)
+          CinemaPlaybackCandidate(
+            title: title,
+            source: preferred,
+            routeIndex: i,
+            episodeIndex: 0,
+          ),
+      ]);
+      expect(endpoints.map((c) => c.routeIndex), [0, 2]);
+    },
+  );
+
+  test(
     'preferred source outranks a faster cached low quality source while its faster endpoint wins',
     () {
       final measurements = [

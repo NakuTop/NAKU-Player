@@ -70,6 +70,7 @@ import 'cinema_ratings_panel.dart';
 import 'cinema_douban_reviews.dart';
 import 'cinema_theme.dart';
 import 'cinema_work_sources.dart';
+import 'cinema_grouping.dart';
 import 'cinema_watch_together.dart';
 import 'cinema_sync_sheet.dart';
 import 'package:window_manager/window_manager.dart';
@@ -245,6 +246,7 @@ class CinemaPlayerPage extends StatefulWidget {
     this.mediaProbe,
     this.mediaCache,
     this.autoSelectBestRoute,
+    this.manualRouteSelection = false,
     this.backgroundPlaybackClock,
   });
 
@@ -268,6 +270,9 @@ class CinemaPlayerPage extends StatefulWidget {
   final CinemaMediaCache? mediaCache;
   @visibleForTesting
   final bool? autoSelectBestRoute;
+
+  /// An explicit source/route choice takes precedence over automatic startup.
+  final bool manualRouteSelection;
   @visibleForTesting
   final Duration Function()? backgroundPlaybackClock;
   final List<CinemaTitle> variants;
@@ -316,6 +321,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   CinemaPlaybackCandidate? _routeComparisonAnchor;
   int _probeCompleted = 0, _probeTotal = 0;
   bool _automaticProbePending = false, _autoBestRoute = true;
+  bool _manualRouteSelection = false;
+  bool get _usesMacPlaybackPolicy =>
+      defaultTargetPlatform == TargetPlatform.macOS && !NakuDevice.isTV;
   bool _probingAutomatic = false;
   String? _probeStatus;
   final Set<String> _cacheBypass = {};
@@ -844,7 +852,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   onSelected: (index) {
                     Navigator.pop(dialog);
                     unawaited(
-                      _playEpisode(_routeIndex, index, playWhenReady: true),
+                      _selectEpisode(_routeIndex, index, playWhenReady: true),
                     );
                   },
                 ),
@@ -964,7 +972,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final end = DateTime.now().add(const Duration(seconds: 10));
     bool current() => _isCurrent(generation) && !cancel.isCancelled;
     if (!_catalogue.variants.any(
-      (v) => cinemaPrefersSource(_catalogue.sourceFor(v)),
+      (v) =>
+          cinemaPrefersSource(_catalogue.sourceFor(v)) &&
+          cinemaVariantQuality(v) > 0,
     )) {
       try {
         await for (final variants in discoverCinemaWorkSources(
@@ -1013,30 +1023,109 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     resolve: (url, legacy) => _resolver.resolve(url, useLegacyParser: legacy),
   );
 
-  Future<void> _startInitialPlayback({int? resumeAt}) async {
-    final anchor = _selection;
+  Future<void> _startInitialPlayback({int? resumeAt}) =>
+      _startPreferredPlayback(
+        anchor: _selection,
+        resumeAt: resumeAt ?? widget.initialPositionSeconds,
+        initial: true,
+      );
+
+  Future<void> _selectEpisode(
+    int routeIndex,
+    int episodeIndex, {
+    int? resumeAt,
+    bool? playWhenReady,
+  }) {
+    if (!_usesMacPlaybackPolicy) {
+      return _playEpisode(
+        routeIndex,
+        episodeIndex,
+        resumeAt: resumeAt,
+        playWhenReady: playWhenReady,
+      );
+    }
+    return _startPreferredPlayback(
+      anchor: CinemaPlaybackCandidate(
+        title: _title,
+        source: _source,
+        routeIndex: routeIndex,
+        episodeIndex: episodeIndex,
+      ),
+      resumeAt: resumeAt,
+      playWhenReady: playWhenReady,
+    );
+  }
+
+  Future<void> _startPreferredPlayback({
+    required CinemaPlaybackCandidate? anchor,
+    int? resumeAt,
+    bool initial = false,
+    bool? playWhenReady,
+  }) async {
+    if (_closing) return;
+    if (anchor == null) {
+      if (initial) {
+        await _playEpisode(
+          _routeIndex,
+          _episodeIndex,
+          resumeAt: resumeAt,
+          initial: true,
+          playWhenReady: playWhenReady,
+        );
+      }
+      return;
+    }
     final offset =
         resumeAt ??
-        widget.initialPositionSeconds ??
-        _positionForEpisode(_routeIndex, _episodeIndex);
+        _positionForEpisode(
+          anchor.routeIndex,
+          anchor.episodeIndex,
+          title: anchor.title,
+        );
     final usePriority =
         _autoBestRoute &&
         widget.offlinePaths == null &&
-        anchor != null &&
+        anchor.source.kind == CinemaSourceKind.maccms &&
+        anchor.route.episodes.isNotEmpty &&
+        (!_usesMacPlaybackPolicy || !_manualRouteSelection) &&
         (cinemaPrefersSource(widget.source) ||
             widget.store.enabledSources.any(cinemaPrefersSource));
     if (!usePriority) {
-      _discovering = _discoverRoutes();
+      _discovering ??= _discoverRoutes();
       await _playEpisode(
-        _routeIndex,
-        _episodeIndex,
+        anchor.routeIndex,
+        anchor.episodeIndex,
+        title: anchor.title,
+        source: anchor.source,
         resumeAt: offset,
-        initial: true,
+        initial: initial,
+        playWhenReady: playWhenReady,
       );
       return;
     }
+    _cancelTVBackground('正在为所选集数检查首选线路', reset: true);
+    _cancelRouteProbe();
     final generation = ++_generation, token = _routeProbeToken = CancelToken();
+    _pendingPlayIntent =
+        playWhenReady ?? (NakuDevice.isTV || _preferences.autoPlay);
+    _automaticProbePending = false;
+    _preferredProbeFailures.clear();
+    _preferredResolved.clear();
+    _probeResults.clear();
+    _recovery.reset();
+    _attempts = CinemaFailoverAttempts();
+    _detailAttempts.clear();
+    _failoverAnchor = anchor;
+    _releasePlayback();
     setState(() {
+      _title = anchor.title;
+      _source = anchor.source;
+      _routeIndex = anchor.routeIndex;
+      _episodeIndex = anchor.episodeIndex;
+      _requiresEpisodeSelection = false;
+      _loading = true;
+      _error = null;
+      _playbackNotice = null;
       _phase = '正在优先检查巨量资源的两个播放端';
       _probingRoutes = _probingAutomatic = true;
       _routeComparisonAnchor = anchor;
@@ -1084,19 +1173,24 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           title: selected.title,
           source: selected.source,
           resumeAt: offset,
-          initial: true,
+          initial: initial,
+          checkedPriority: true,
+          playWhenReady: _pendingPlayIntent,
           selectionNotice: '已选择巨量资源中更快的可用播放端',
         );
       } else if (!cinemaPrefersSource(anchor.source)) {
         await _playEpisode(
           anchor.routeIndex,
           anchor.episodeIndex,
+          title: anchor.title,
+          source: anchor.source,
           resumeAt: offset,
-          initial: true,
+          initial: initial,
+          checkedPriority: true,
+          playWhenReady: _pendingPlayIntent,
         );
       } else {
         _failoverAnchor = anchor;
-        _pendingPlayIntent = NakuDevice.isTV || _preferences.autoPlay;
         _lastPlaybackProgress = (
           titleKey: anchor.title.key,
           routeIndex: anchor.routeIndex,
@@ -1275,10 +1369,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _audibleVolume = _preferences.volume > 0 ? _preferences.volume : 100;
     _superResolution = _preferences.superResolution;
     _reverseEpisodes = widget.store.extras['reverseEpisodes'] == true;
+    _manualRouteSelection = widget.manualRouteSelection;
     _autoBestRoute =
         _source.id != cinemaNASSource.id &&
         (widget.autoSelectBestRoute ??
-            (NakuDevice.isTV || widget.store.extras['autoBestRoute'] != false));
+            (_usesMacPlaybackPolicy
+                ? !_manualRouteSelection
+                : NakuDevice.isTV ||
+                      widget.store.extras['autoBestRoute'] != false));
     _automaticProbePending = _autoBestRoute && widget.offlinePaths == null;
     final cachePrefs = widget.store.extras['mediaCache'];
     if (cachePrefs is Map) {
@@ -1372,6 +1470,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     CinemaSource? source,
     bool automatic = false,
     bool initial = false,
+    bool checkedPriority = false,
     bool? playWhenReady,
     String? selectionNotice,
   }) async {
@@ -1393,7 +1492,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _positionForEpisode(routeIndex, episodeIndex, title: selectedTitle);
     final watch = Stopwatch()..start();
     if (!automatic && !initial) _automaticProbePending = false;
-    if (!automatic && !initial) _preferredProbeFailures.clear();
+    if (!automatic && !initial && !checkedPriority) {
+      _preferredProbeFailures.clear();
+    }
     _cancelTVBackground('播放选择已变化', reset: true);
     _tvCurrentProbePending = false;
     _cancelRouteProbe();
@@ -2874,7 +2975,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           );
           if (next != null) {
             unawaited(
-              _playEpisode(
+              _selectEpisode(
                 _routeIndex,
                 next,
                 resumeAt: 0,
@@ -3270,6 +3371,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         );
 
   Future<void> _loadAndSwitchVariant(CinemaTitle variant) async {
+    _manualRouteSelection = true;
     _automaticProbePending = false;
     _cancelRouteProbe();
     final current = _selection;
@@ -3316,6 +3418,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   void _selectForManual(CinemaTitle title, int routeIndex) {
+    _manualRouteSelection = true;
     _automaticProbePending = false;
     _cancelRouteProbe();
     ++_generation;
@@ -3469,6 +3572,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }) async {
     if (_closing || _selection?.key == best.candidate.key) return;
     if (NakuDevice.isTV && _tvSheetOpen) return;
+    if (!automatic) _manualRouteSelection = true;
     final position = _positionForEpisode(_routeIndex, _episodeIndex);
     final play = NakuDevice.isTV && _playback?.player.state.buffering == true
         ? _pendingPlayIntent
@@ -3775,7 +3879,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final target = _episodeIndex + delta;
     if (target >= 0 && target < (_route?.episodes.length ?? 0)) {
       unawaited(
-        _playEpisode(
+        _selectEpisode(
           _routeIndex,
           target,
           resumeAt: 0,
@@ -4465,7 +4569,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               ),
             ),
             TextButton(
-              onPressed: () => _playEpisode(
+              onPressed: () => _selectEpisode(
                 _routeIndex,
                 _episodeIndex,
                 resumeAt: _playback?.ready == true
@@ -5504,7 +5608,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                               alignment: WrapAlignment.center,
                               children: [
                                 FilledButton.tonalIcon(
-                                  onPressed: () => _playEpisode(
+                                  onPressed: () => _selectEpisode(
                                     _routeIndex,
                                     _episodeIndex,
                                     resumeAt: playback?.ready == true
@@ -5641,6 +5745,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   void _switchLoadedRoute(CinemaTitle title, int route) {
     if (_closing) return;
+    _manualRouteSelection = true;
     _automaticProbePending = false;
     if (_probingRoutes) {
       _cancelRouteProbe();
@@ -5893,23 +5998,59 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         if (widget.offlinePaths == null) ...[
           SwitchListTile.adaptive(
             contentPadding: EdgeInsets.zero,
-            title: const Text('打开影片时自动选线', style: TextStyle(fontSize: 12)),
-            subtitle: const Text(
-              '保留播放进度；手动选择会取消自动切换',
-              style: TextStyle(fontSize: 11),
+            title: Text(
+              _usesMacPlaybackPolicy ? '自动选源（巨量优先）' : '打开影片时自动选线',
+              style: const TextStyle(fontSize: 12),
             ),
-            value: _autoBestRoute,
+            subtitle: Text(
+              _usesMacPlaybackPolicy
+                  ? '巨量无法加载后尝试其他来源；手动选线优先'
+                  : '保留播放进度；手动选择会取消自动切换',
+              style: const TextStyle(fontSize: 11),
+            ),
+            value:
+                _autoBestRoute &&
+                (!_usesMacPlaybackPolicy || !_manualRouteSelection),
             onChanged: (value) {
+              final selecting = _probingRoutes && _probingAutomatic;
+              final position = _positionForEpisode(_routeIndex, _episodeIndex);
+              final play = _playback?.ready == true
+                  ? _playback!.player.state.playing
+                  : _pendingPlayIntent;
               setState(() {
                 _autoBestRoute = value;
+                if (_usesMacPlaybackPolicy) _manualRouteSelection = !value;
                 _automaticProbePending = false;
                 if (!value && _probingAutomatic) {
                   _cancelRouteProbe();
                   _probeStatus = '已关闭自动选线，保留当前线路';
                 }
               });
-              unawaited(widget.store.setExtra('autoBestRoute', value));
-              if (value && _playback?.ready == true) {
+              if (_usesMacPlaybackPolicy) {
+                if (value) {
+                  unawaited(
+                    _startPreferredPlayback(
+                      anchor: _selection,
+                      resumeAt: position,
+                      playWhenReady: play,
+                    ),
+                  );
+                } else if (selecting) {
+                  unawaited(
+                    _playEpisode(
+                      _routeIndex,
+                      _episodeIndex,
+                      resumeAt: position,
+                      playWhenReady: play,
+                    ),
+                  );
+                }
+              } else {
+                unawaited(widget.store.setExtra('autoBestRoute', value));
+              }
+              if (!_usesMacPlaybackPolicy &&
+                  value &&
+                  _playback?.ready == true) {
                 unawaited(_probeRoutes(automatic: true));
               }
             },
@@ -6004,7 +6145,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   width: embedded ? 130 : 118,
                   child: OutlinedButton(
                     key: _isSelectedEpisode(index) ? currentEpisodeKey : null,
-                    onPressed: () => _playEpisode(_routeIndex, index),
+                    onPressed: () => _selectEpisode(_routeIndex, index),
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 8,

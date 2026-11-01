@@ -214,12 +214,20 @@ class _Player implements Player {
 }
 
 class _Repository extends CinemaRepository {
+  _Repository({this.items = const []});
+  final List<CinemaTitle> items;
+  final searches = <String>[];
   @override
   Future<CinemaPage> search(
     CinemaSource source,
     String keyword, {
     int page = 1,
-  }) async => const CinemaPage(items: []);
+  }) async {
+    searches.add(source.id);
+    return CinemaPage(
+      items: items.where((t) => t.sourceId == source.id).toList(),
+    );
+  }
 }
 
 class _EpisodeSubtitleClient extends CinemaOnlineSubtitles {
@@ -520,7 +528,9 @@ void main() {
     bool withLibraryRoute = false,
     NavigatorObserver? navigatorObserver,
     bool? mobileControls,
-    bool autoBest = false,
+    bool? autoBest = false,
+    bool manualRouteSelection = false,
+    CinemaRepository? repository,
     CinemaMediaProbe? probe,
     CinemaMediaCache? cache,
     int? initialPosition,
@@ -561,6 +571,7 @@ void main() {
       mobileControls: mobileControls,
       resolveNASRatings: resolveNASRatings,
       autoSelectBestRoute: autoBest,
+      manualRouteSelection: manualRouteSelection,
       backgroundPlaybackClock: backgroundClock,
       mediaProbe: probe,
       mediaCache: cache,
@@ -569,7 +580,7 @@ void main() {
       source: selectedSource ?? _source,
       store: store,
       watchTogether: together,
-      repository: _Repository(),
+      repository: repository ?? _Repository(),
       ratingsRepository: _Ratings(),
       preferences: prefs,
       windowControls: windowControls,
@@ -1249,6 +1260,243 @@ void main() {
       expect(backends.first.opened!.start, const Duration(seconds: 77));
       probe.complete();
       await unmount(tester);
+    },
+  );
+
+  CinemaTitle fallbackTitle() => CinemaTitle(
+    id: _title.id,
+    sourceId: _title.sourceId,
+    title: juliangTitle.title,
+    year: juliangTitle.year,
+    category: juliangTitle.category,
+    routes: _title.routes,
+  );
+  Future<void> enableMacPriority(WidgetTester tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    await tester.runAsync(() async {
+      await store.addSources([juliangSource]);
+      await store.setExtra('autoBestRoute', false);
+    });
+  }
+
+  testWidgets(
+    'Mac automatic entry ignores legacy opt-out and holds other sources until Juliang is checked',
+    (tester) async {
+      await enableMacPriority(tester);
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {},
+        autoBest: null,
+        probe: probe,
+        selectedTitle: fallbackTitle(),
+        variants: [juliangTitle],
+        initialPosition: 83,
+      );
+      await waitForProbe(tester, probe);
+      expect(backends, isEmpty);
+      expect(probe.calls.toSet(), {
+        'https://fixture.invalid/juliang.mp4',
+        'https://fixture.invalid/juliang-backup.mp4',
+      });
+      probe.complete();
+      await tester.pumpAndSettle();
+      expect(
+        backends.single.opened!.uri,
+        'https://fixture.invalid/juliang-backup.mp4',
+      );
+      expect(backends.single.opened!.start, const Duration(seconds: 83));
+      await unmount(tester);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+  testWidgets(
+    'Mac discovers labelled 4K Juliang even when its ordinary variant is already known',
+    (tester) async {
+      await enableMacPriority(tester);
+      final high = CinemaTitle(
+        id: 'j4k',
+        sourceId: juliangSource.id,
+        title: '同一作品（4K）',
+        year: '2025',
+        category: '电视剧',
+        routes: const [
+          CinemaRoute(
+            name: 'jlm3u8',
+            episodes: [
+              CinemaEpisode(name: '第1集', url: 'https://fixture.invalid/4k.mp4'),
+            ],
+          ),
+          CinemaRoute(
+            name: 'jlplayer',
+            episodes: [
+              CinemaEpisode(
+                name: '第1集',
+                url: 'https://fixture.invalid/4k-backup.mp4',
+              ),
+            ],
+          ),
+        ],
+      );
+      final repository = _Repository(items: [high]);
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {},
+        autoBest: null,
+        probe: probe,
+        repository: repository,
+        selectedSource: juliangSource,
+        selectedTitle: juliangTitle,
+      );
+      await waitForProbe(tester, probe);
+      expect(repository.searches, contains(juliangSource.id));
+      expect(probe.calls.toSet(), {
+        'https://fixture.invalid/4k.mp4',
+        'https://fixture.invalid/4k-backup.mp4',
+      });
+      probe.complete();
+      await tester.pumpAndSettle();
+      expect(
+        backends.single.opened!.uri,
+        'https://fixture.invalid/4k-backup.mp4',
+      );
+      await unmount(tester);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+  testWidgets(
+    'Mac explicit route choice stays selected on entry and episode changes',
+    (tester) async {
+      await enableMacPriority(tester);
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {'autoPlay': true},
+        autoBest: null,
+        probe: probe,
+        viewport: const Size(900, 900),
+        renderToolbar: true,
+        manualRouteSelection: true,
+        selectedTitle: fallbackTitle(),
+        variants: [juliangTitle],
+      );
+      await tester.pumpAndSettle();
+      expect(backends.single.opened!.uri, 'https://fixture.invalid/1.mp4');
+      await tester.ensureVisible(find.byTooltip('下一集'));
+      await tester.tap(find.byTooltip('下一集'));
+      await tester.pumpAndSettle();
+      expect(backends.last.opened!.uri, 'https://fixture.invalid/2.mp4');
+      expect(probe.calls, isEmpty);
+      await unmount(tester);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+  for (final completed in [false, true]) {
+    testWidgets(
+      'Mac ${completed ? 'completed' : 'toolbar'} next episode rechecks Juliang after fallback',
+      (tester) async {
+        await enableMacPriority(tester);
+        final probe = _Probe();
+        addTearDown(() => probe.transport.dio.close(force: true));
+        await mount(
+          tester,
+          {'autoPlay': true, 'autoPlayNext': true},
+          autoBest: null,
+          probe: probe,
+          viewport: const Size(900, 900),
+          renderToolbar: true,
+          selectedSource: juliangSource,
+          selectedTitle: juliangTitle,
+          variants: [fallbackTitle()],
+        );
+        await waitForProbe(tester, probe);
+        for (final pending in probe.requests.values) {
+          pending.complete(
+            const CinemaMediaProbeResult(ok: false, elapsedMs: 20),
+          );
+        }
+        await tester.pumpAndSettle();
+        expect(backends.last.opened!.uri, 'https://fixture.invalid/1.mp4');
+        if (completed) {
+          backends.last.complete();
+          await tester.pump();
+        } else {
+          await tester.ensureVisible(find.byTooltip('下一集'));
+          await tester.tap(find.byTooltip('下一集'));
+        }
+        for (var i = 0; i < 30 && probe.requests.length < 4; i++) {
+          await tester.pump(const Duration(milliseconds: 20));
+        }
+        expect(probe.requests.length, 4);
+        expect(backends, hasLength(1));
+        expect(probe.calls.skip(2).toSet(), {
+          'https://fixture.invalid/juliang-2.mp4',
+          'https://fixture.invalid/juliang-backup-2.mp4',
+        });
+        probe.complete();
+        await tester.pumpAndSettle();
+        expect(
+          backends.last.opened!.uri,
+          'https://fixture.invalid/juliang-backup-2.mp4',
+        );
+        expect(backends.last.opened!.start, Duration.zero);
+        await unmount(tester);
+        debugDefaultTargetPlatformOverride = null;
+      },
+    );
+  }
+  testWidgets(
+    'Mac episode change cancels old preferred probes and ignores their late results',
+    (tester) async {
+      await enableMacPriority(tester);
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {},
+        autoBest: null,
+        probe: probe,
+        viewport: const Size(900, 900),
+        selectedSource: juliangSource,
+        selectedTitle: juliangTitle,
+      );
+      await waitForProbe(tester, probe);
+      final old = probe.requests.values.toList();
+      final episode = find.widgetWithText(OutlinedButton, '第2集');
+      await tester.scrollUntilVisible(
+        episode,
+        500,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(episode);
+      await tester.pump();
+      expect(episode.hitTestable(), findsOneWidget);
+      await tester.tap(episode);
+      for (var i = 0; i < 30 && probe.requests.length < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      expect(probe.requests.length, 4);
+      expect(probe.tokens.take(2).every((t) => t.isCancelled), true);
+      for (final pending in old) {
+        pending.complete(
+          const CinemaMediaProbeResult(ok: true, elapsedMs: 1, mbps: 999),
+        );
+      }
+      await tester.pump();
+      expect(backends, isEmpty);
+      probe.complete();
+      await tester.pumpAndSettle();
+      expect(
+        backends.single.opened!.uri,
+        'https://fixture.invalid/juliang-backup-2.mp4',
+      );
+      await unmount(tester);
+      debugDefaultTargetPlatformOverride = null;
     },
   );
 

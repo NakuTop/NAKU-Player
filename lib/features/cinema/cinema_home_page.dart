@@ -830,6 +830,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     int episode,
     List<CinemaTitle> variants, {
     bool keepBrowseRoute = false,
+    bool manualRouteSelection = false,
     Map<String, String>? offlinePaths,
     int? initialPositionSeconds,
   }) {
@@ -847,6 +848,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                     title: detail,
                     source: source,
                     offlinePaths: offlinePaths,
+                    manualRouteSelection: manualRouteSelection,
                     initialPositionSeconds: initialPositionSeconds,
                     watchTogether: widget.enableWatchTogether
                         ? _together
@@ -1990,7 +1992,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         _search.text = recommendation.title;
         _runSearch();
       },
-      onPlay: (detail, selectedSource, road, episode, allVariants) {
+      onPlay: (detail, selectedSource, road, episode, allVariants, manual) {
         Navigator.pop(context);
         _playTitle(
           detail,
@@ -1998,6 +2000,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           road,
           episode,
           allVariants,
+          manualRouteSelection: manual,
           keepBrowseRoute: keepBrowseRoute,
         );
       },
@@ -3016,9 +3019,16 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               resolveRatingsTitle: _resolveTVRatingTitle,
               artworkRepository: widget.artworkRepository,
               onRecommendationSelected: (_) {},
-              onPlay: (detail, source, road, episode, variants) {
+              onPlay: (detail, source, road, episode, variants, manual) {
                 Navigator.of(detailsContext).pop();
-                _playTitle(detail, source, road, episode, variants);
+                _playTitle(
+                  detail,
+                  source,
+                  road,
+                  episode,
+                  variants,
+                  manualRouteSelection: manual,
+                );
               },
             ),
           ),
@@ -5101,7 +5111,14 @@ class _TitleDetails extends StatefulWidget {
   final CinemaHistory? resume;
   final bool resolvedDetail;
   final ValueChanged<DoubanRecommendation> onRecommendationSelected;
-  final void Function(CinemaTitle, CinemaSource, int, int, List<CinemaTitle>)
+  final void Function(
+    CinemaTitle,
+    CinemaSource,
+    int,
+    int,
+    List<CinemaTitle>,
+    bool,
+  )
   onPlay;
   @override
   State<_TitleDetails> createState() => _TitleDetailsState();
@@ -5462,6 +5479,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
                   tvResume?.routeIndex ?? _preferredRoad(title),
                   tvResume?.episodeIndex ?? 0,
                   _variants,
+                  _variantChosen || _routeChosen,
                 )
               : null,
           icon: const Icon(Icons.play_arrow_rounded, size: 25),
@@ -5540,6 +5558,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
                 selection.routeIndex,
                 selection.episodeIndex,
                 _variants,
+                _variantChosen || _routeChosen,
               );
             },
             icon: const Icon(Icons.history_rounded, size: 18),
@@ -5713,6 +5732,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
                       road,
                       e,
                       _variants,
+                      _variantChosen || _routeChosen,
                     ),
                     child: Text(title.routes[road].episodes[e].name),
                   ),
@@ -5998,7 +6018,14 @@ class _TitleDetailsState extends State<_TitleDetails> {
       ),
     );
     if (selected != null && mounted) {
-      widget.onPlay(title, _selectedSource, road, selected, _variants);
+      widget.onPlay(
+        title,
+        _selectedSource,
+        road,
+        selected,
+        _variants,
+        _variantChosen || _routeChosen,
+      );
     }
   }
 

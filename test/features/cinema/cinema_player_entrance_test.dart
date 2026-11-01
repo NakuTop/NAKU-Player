@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -14,11 +15,13 @@ class _Counter extends StatefulWidget {
 
 class _CounterState extends State<_Counter> {
   int value = 0, builds = 0;
+  Color background = const Color(0xFF8090A0);
+  void changeBackground(Color color) => setState(() => background = color);
   @override
   Widget build(BuildContext context) {
     builds++;
     return ColoredBox(
-      color: const Color(0xFF8090A0),
+      color: background,
       child: Center(
         child: TextButton(
           onPressed: () => setState(() => value++),
@@ -101,16 +104,22 @@ void main() {
       ))!;
       final width = image.width, height = image.height;
       int red(int x, int y) => pixels.getUint8((y * width + x) * 4);
-      // The waiting indicator lights only the tube. No light field or visible
-      // media/content is admitted anywhere in the body before the first frame.
+      // Warm spill is painted over an opaque black field, never by revealing
+      // unready media. The field stays subdued and warm even at full breath.
       for (final fraction in [.35, .50, .80]) {
         final offset = ((height * fraction).floor() * width + width ~/ 2) * 4;
-        expect(pixels.getUint8(offset), 0);
-        expect(pixels.getUint8(offset + 1), 0);
-        expect(pixels.getUint8(offset + 2), 0);
+        final r = pixels.getUint8(offset),
+            g = pixels.getUint8(offset + 1),
+            b = pixels.getUint8(offset + 2);
+        expect(r, inInclusiveRange(0, 41));
+        expect(r, greaterThanOrEqualTo(g));
+        expect(g, greaterThanOrEqualTo(b));
         expect(pixels.getUint8(offset + 3), 255);
       }
-      expect(red(width ~/ 2, (height * .065).floor()), greaterThan(0));
+      expect(
+        red(width ~/ 2, (height * .065).floor()),
+        greaterThanOrEqualTo(red(width ~/ 2, height ~/ 2)),
+      );
       image.dispose();
     });
   }
@@ -612,7 +621,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1050));
     final dim = surface.debugBreathBrightness;
     expect(dim, lessThan(bright));
-    expect(dim, greaterThanOrEqualTo(.82));
+    expect(bright, closeTo(1, .001));
+    expect(dim, closeTo(0, .001));
     expect(surface.debugLampExtent, length);
     expect(childKey.currentState!.builds, builds);
     await expectDarkWithTopLamp(tester);
@@ -645,6 +655,72 @@ void main() {
     final frames = surface.debugFrameCount;
     await tester.pump(const Duration(seconds: 3));
     expect(surface.debugFrameCount, frames);
+  });
+
+  testWidgets('breath switches fully off and expands an opaque warm field', (
+    tester,
+  ) async {
+    await mount(tester);
+    await tester.pump(const Duration(milliseconds: 501));
+    await tester.pump();
+    final surface = state(tester), length = surface.debugLampExtent;
+    Future<({Uint8List pixels, int width, int height})> capture() async {
+      late ({Uint8List pixels, int width, int height}) result;
+      await tester.runAsync(() async {
+        final boundary = tester.renderObject<RenderRepaintBoundary>(
+          find.byKey(const ValueKey('test-player-stage')),
+        );
+        final image = await boundary.toImage();
+        final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+        result = (
+          pixels: data!.buffer.asUint8List(),
+          width: image.width,
+          height: image.height,
+        );
+        image.dispose();
+      });
+      return result;
+    }
+
+    int litBody(({Uint8List pixels, int width, int height}) frame) {
+      var lit = 0, transparent = 0;
+      for (var y = (frame.height * .20).ceil(); y < frame.height; y++) {
+        for (var x = 0; x < frame.width; x++) {
+          final at = (y * frame.width + x) * 4;
+          if (frame.pixels[at] >= 3) lit++;
+          if (frame.pixels[at + 3] != 255) transparent++;
+        }
+      }
+      expect(transparent, 0);
+      return lit;
+    }
+
+    final bright = await capture();
+    childKey.currentState!.changeBackground(Colors.green);
+    await tester.pump();
+    expect(
+      (await capture()).pixels,
+      orderedEquals(bright.pixels),
+      reason: 'the expanding glow must not expose the media beneath it',
+    );
+    await tester.pump(const Duration(milliseconds: 525));
+    final middle = await capture();
+    await tester.pump(const Duration(milliseconds: 525));
+    final off = await capture();
+    expect(surface.debugBreathBrightness, closeTo(0, .001));
+    expect(litBody(bright), greaterThan(litBody(middle) * 2));
+    expect(litBody(middle), greaterThan(0));
+    expect(litBody(off), 0);
+    var offLight = 0;
+    for (var at = 0; at < off.pixels.length; at += 4) {
+      offLight += off.pixels[at] + off.pixels[at + 1] + off.pixels[at + 2];
+    }
+    expect(offLight, 0);
+    await tester.pump(const Duration(milliseconds: 1050));
+    expect(surface.debugBreathBrightness, closeTo(1, .001));
+    expect(litBody(await capture()), litBody(bright));
+    expect(surface.debugLampExtent, length);
+    expect(reveals, 0);
   });
 
   testWidgets('delayed readiness breathes without exposing the media', (

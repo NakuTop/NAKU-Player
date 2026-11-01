@@ -36,7 +36,9 @@ List<CinemaPlaybackCandidate> cinemaPreferredEndpoints(
   final seen = <String>{};
   return choices
       .where(
-        (c) => c.title.key == title.key && seen.add(c.route.name.toLowerCase()),
+        (c) =>
+            c.title.key == title.key &&
+            seen.add(c.route.name.trim().toLowerCase()),
       )
       .take(2)
       .toList();

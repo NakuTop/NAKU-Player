@@ -99,8 +99,7 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
   bool get debugIsBreathing => _breathing.isAnimating;
   @visibleForTesting
   double get debugBreathBrightness => _breathing.isAnimating ? _breathScale : 1;
-  double get _breathScale =>
-      .82 + .18 * (.5 + .5 * math.cos(2 * math.pi * _breathing.value));
+  double get _breathScale => _breathBrightness(_breathing.value);
 
   void _syncBreathing() {
     final needed =
@@ -599,7 +598,19 @@ class _EntrancePainter extends CustomPainter {
     if (lamp <= 0) return;
     final tubeHalfWidth =
         size.width * .34 * _lightingExtent(revealLampExtent, progress);
-    _tube(canvas, origin, tubeHalfWidth, lamp);
+    _waitingSpill(
+      canvas,
+      size,
+      revealBreath,
+      opacity: (1 - energy) * (1 - energy),
+    );
+    _tube(
+      canvas,
+      origin,
+      tubeHalfWidth,
+      lamp,
+      haloScale: ui.lerpDouble(.55 + 1.45 * revealBreath, 1, energy)!,
+    );
     _ellipse(
       canvas,
       fieldCenter,
@@ -611,8 +622,8 @@ class _EntrancePainter extends CustomPainter {
           Offset.zero,
           1,
           [
-            const Color(0xFFFFEDD2).withValues(alpha: .07 * lamp),
-            const Color(0xFFFFEDD2).withValues(alpha: .025 * lamp),
+            const Color(0xFFFFEDD2).withValues(alpha: .07 * lamp * energy),
+            const Color(0xFFFFEDD2).withValues(alpha: .025 * lamp * energy),
             Colors.transparent,
           ],
           const [0, .42, 1],
@@ -621,20 +632,58 @@ class _EntrancePainter extends CustomPainter {
   }
 
   void _waitingLamp(Canvas canvas, Size size) {
-    // Brightness breathes while waiting; observed milestones alone own length.
-    // Keep the core visible, and never expose the media before its first frame.
+    // A full off/on breath expands the warm spill over an opaque black field.
+    // Only observed milestones own length; the unready media stays covered.
+    final brightness = breathe ? _breathBrightness(breathing.value) : 1.0;
+    _waitingSpill(canvas, size, brightness);
     _tube(
       canvas,
       Offset(size.width * .5, size.height * .065),
       size.width * .34 * filament.value,
-      _lampGlow(filament.value) *
-          (breathe
-              ? .82 + .18 * (.5 + .5 * math.cos(2 * math.pi * breathing.value))
-              : 1),
+      _lampGlow(filament.value) * brightness,
+      haloScale: .55 + 1.45 * brightness,
     );
   }
 
-  void _tube(Canvas canvas, Offset origin, double tubeHalfWidth, double lamp) {
+  void _waitingSpill(
+    Canvas canvas,
+    Size size,
+    double brightness, {
+    double opacity = 1,
+  }) {
+    if (brightness <= 0 || opacity <= 0) return;
+    final spread = math.pow(brightness, .7).toDouble();
+    _ellipse(
+      canvas,
+      Offset(size.width * .5, size.height * .11),
+      size.width * (.12 + .68 * spread),
+      size.height * (.10 + .98 * spread),
+      Paint()
+        ..shader = ui.Gradient.radial(
+          Offset.zero,
+          1,
+          [
+            const Color(
+              0xFFFFEDD2,
+            ).withValues(alpha: .16 * brightness * opacity),
+            const Color(
+              0xFFFFEDD2,
+            ).withValues(alpha: .065 * brightness * opacity),
+            Colors.transparent,
+          ],
+          const [0, .38, 1],
+        ),
+    );
+  }
+
+  void _tube(
+    Canvas canvas,
+    Offset origin,
+    double tubeHalfWidth,
+    double lamp, {
+    double haloScale = 1,
+  }) {
+    if (lamp <= 0) return;
     for (final (blur, alpha, width) in const [
       (24.0, .32, 14.0),
       (9.0, .52, 8.0),
@@ -643,10 +692,13 @@ class _EntrancePainter extends CustomPainter {
     ]) {
       final paint = Paint()
         ..color = const Color(0xFFFFF2DE).withValues(alpha: alpha * lamp)
-        ..strokeWidth = width
+        ..strokeWidth = blur > 0 ? width * haloScale : width
         ..strokeCap = StrokeCap.round;
       if (blur > 0) {
-        paint.maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, blur);
+        paint.maskFilter = ui.MaskFilter.blur(
+          ui.BlurStyle.normal,
+          blur * haloScale,
+        );
       }
       canvas.drawLine(
         origin - Offset(tubeHalfWidth, 0),
@@ -676,6 +728,11 @@ double _lampExtent(CinemaPlayerLoadStage stage) => switch (stage) {
 };
 
 double _lampGlow(double extent) => .44 + .46 * extent;
+
+// Ease through complete darkness for a short, unmistakable off phase. This is
+// decorative light only; it never advances the load milestone or first frame.
+double _breathBrightness(double phase) =>
+    _smooth(.04, .96, .5 + .5 * math.cos(2 * math.pi * phase));
 
 double _lightingExtent(double initial, double progress) =>
     initial + (1 - initial) * _smooth(0, 1, progress);
