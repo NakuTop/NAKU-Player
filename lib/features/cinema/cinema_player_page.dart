@@ -85,6 +85,7 @@ import 'cinema_store.dart';
 import 'cinema_player_preferences.dart';
 import 'cinema_video_gestures.dart';
 import 'cinema_player_entrance.dart';
+import 'cinema_player_poster_light.dart';
 import 'cinema_tv_player_controls.dart';
 import 'cinema_tv_motion.dart';
 import 'cinema_tv_media_policy.dart';
@@ -247,6 +248,7 @@ class CinemaPlayerPage extends StatefulWidget {
     this.mediaCache,
     this.autoSelectBestRoute,
     this.manualRouteSelection = false,
+    this.posterImage,
     this.backgroundPlaybackClock,
   });
 
@@ -273,6 +275,8 @@ class CinemaPlayerPage extends StatefulWidget {
 
   /// An explicit source/route choice takes precedence over automatic startup.
   final bool manualRouteSelection;
+  @visibleForTesting
+  final ImageProvider? posterImage;
   @visibleForTesting
   final Duration Function()? backgroundPlaybackClock;
   final List<CinemaTitle> variants;
@@ -459,6 +463,20 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Timer? _historyTimer;
   Timer? _loadTimer;
   int _generation = 0;
+  int _entranceGeneration = 0;
+
+  void _preparePlayerEntrance({bool selectionChanged = false}) {
+    final entrance = _nativeEntranceKey.currentState;
+    // A queued entrance may not have built yet. Coalesce internal requests
+    // until that same visible load has completed, including automatic failover.
+    final revealed =
+        entrance?.widget.generation == _entranceGeneration &&
+        entrance?.hasRevealedPlayback == true;
+    if (selectionChanged || _error != null || revealed) {
+      _entranceGeneration++;
+    }
+  }
+
   Future<void>? _tvDecoderRetirement;
   int _routeIndex = 0;
   int _episodeIndex = 0;
@@ -1103,6 +1121,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       );
       return;
     }
+    _preparePlayerEntrance(selectionChanged: !initial);
     _cancelTVBackground('正在为所选集数检查首选线路', reset: true);
     _cancelRouteProbe();
     final generation = ++_generation, token = _routeProbeToken = CancelToken();
@@ -1174,7 +1193,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           source: selected.source,
           resumeAt: offset,
           initial: initial,
-          checkedPriority: true,
+          continuingLoad: true,
           playWhenReady: _pendingPlayIntent,
           selectionNotice: '已选择巨量资源中更快的可用播放端',
         );
@@ -1186,7 +1205,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           source: anchor.source,
           resumeAt: offset,
           initial: initial,
-          checkedPriority: true,
+          continuingLoad: true,
           playWhenReady: _pendingPlayIntent,
         );
       } else {
@@ -1470,7 +1489,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     CinemaSource? source,
     bool automatic = false,
     bool initial = false,
-    bool checkedPriority = false,
+    bool continuingLoad = false,
     bool? playWhenReady,
     String? selectionNotice,
   }) async {
@@ -1486,13 +1505,16 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             ? true
             : _preferences.autoPlay);
     if (_closing || selectedTitle.routes.isEmpty) return;
+    _preparePlayerEntrance(
+      selectionChanged: !automatic && !initial && !continuingLoad,
+    );
     final route = selectedTitle.routes[routeIndex];
     final offset =
         resumeAt ??
         _positionForEpisode(routeIndex, episodeIndex, title: selectedTitle);
     final watch = Stopwatch()..start();
     if (!automatic && !initial) _automaticProbePending = false;
-    if (!automatic && !initial && !checkedPriority) {
+    if (!automatic && !initial && !continuingLoad) {
       _preferredProbeFailures.clear();
     }
     _cancelTVBackground('播放选择已变化', reset: true);
@@ -3282,6 +3304,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       });
       return;
     }
+    _preparePlayerEntrance();
     final generation = ++_generation;
     final anchor = _failoverAnchor;
     final position = _positionForEpisode(_routeIndex, _episodeIndex);
@@ -3371,6 +3394,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         );
 
   Future<void> _loadAndSwitchVariant(CinemaTitle variant) async {
+    _preparePlayerEntrance(selectionChanged: true);
+    _preferredProbeFailures.clear();
     _manualRouteSelection = true;
     _automaticProbePending = false;
     _cancelRouteProbe();
@@ -3403,6 +3428,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             title: detail,
             source: _catalogue.sourceFor(detail),
             resumeAt: position,
+            continuingLoad: true,
           );
           return;
         }
@@ -3418,6 +3444,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   void _selectForManual(CinemaTitle title, int routeIndex) {
+    _preparePlayerEntrance();
     _manualRouteSelection = true;
     _automaticProbePending = false;
     _cancelRouteProbe();
@@ -5305,194 +5332,209 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         child: Stack(
           fit: StackFit.expand,
           children: [
-            CinemaPlayerEntrance(
-              key: _nativeEntranceKey,
-              generation: _generation,
-              // These are observed milestones, not a simulated download
-              // percentage. An unknown network wait keeps its current lamp.
-              loadStage: playback == null
-                  ? CinemaPlayerLoadStage.connecting
-                  : playback.ready
-                  ? CinemaPlayerLoadStage.waitingForFrame
-                  : CinemaPlayerLoadStage.opening,
-              // The existing generation-safe gate requires open plus real video
-              // dimensions. No timer or poster load can admit the lamp reveal.
-              ready:
-                  !_loading &&
-                  playback?.ready == true &&
-                  playback?.firstFrameRendered == true &&
-                  (playback?.width ?? 0) > 0 &&
-                  (playback?.height ?? 0) > 0,
-              hasError: _error != null || (_closing && !_exitCrtRequested),
-              enabled: nativeCinema && !NakuDevice.isTV,
-              onReveal: () => _playEntranceSound(entranceGeneration),
-              onCancel: () => _stopEntranceSound(entranceGeneration),
-              reduceMotion:
-                  _preferences.disableAnimations ||
-                  MediaQuery.disableAnimationsOf(context),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (playback != null)
-                    CinemaVideoGestures(
-                      controlsInsets: EdgeInsets.only(
-                        top: _pip ? 0 : 52,
-                        bottom: _pip ? 48 : 108,
-                      ),
-                      onTogglePlayback: () {
-                        if (!_loading && !_closing) {
-                          unawaited(_togglePlayback());
-                        }
-                      },
-                      onToggleFullscreen: () => unawaited(_toggleFullscreen()),
-                      onWindowDrag: _usesMacCinemaLayout && !_fullscreen
-                          ? () => unawaited(windowManager.startDragging())
-                          : null,
-                      child: MaterialDesktopVideoControlsTheme(
-                        normal: controlsTheme,
-                        fullscreen: controlsTheme,
-                        child:
-                            widget.videoSurfaceBuilder?.call(
-                              context,
-                              playback.player,
-                            ) ??
-                            (playback.player is CinemaTVNativePlayer
-                                ? CinemaTVNativeVideo(
-                                    key: ValueKey(playback),
-                                    player:
-                                        playback.player as CinemaTVNativePlayer,
-                                    subtitleBottomInset: _tvControlsVisible
-                                        ? CinemaTVControlSurface
-                                              .subtitleClearance
-                                        : 0,
-                                  )
-                                : ListenableBuilder(
-                                    listenable: Listenable.merge([
-                                      widget.store,
-                                      cinemaExternalSubtitleState(
-                                        playback.player,
-                                      ).active,
-                                    ]),
-                                    builder: (context, _) => Video(
+            CinemaPlayerPosterLight(
+              posterUrl: nativeCinema && !NakuDevice.isTV
+                  ? (widget.title.poster.isNotEmpty
+                        ? widget.title.poster
+                        : _title.poster)
+                  : '',
+              image: nativeCinema && !NakuDevice.isTV
+                  ? widget.posterImage
+                  : null,
+              builder: (context, lampColor) => CinemaPlayerEntrance(
+                lampColor: lampColor,
+                key: _nativeEntranceKey,
+                generation: _entranceGeneration,
+                // These are observed milestones, not a simulated download
+                // percentage. An unknown network wait keeps its current lamp.
+                loadStage: playback == null
+                    ? CinemaPlayerLoadStage.connecting
+                    : playback.ready
+                    ? CinemaPlayerLoadStage.waitingForFrame
+                    : CinemaPlayerLoadStage.opening,
+                // The existing generation-safe gate requires open plus real video
+                // dimensions. No timer or poster load can admit the lamp reveal.
+                ready:
+                    !_loading &&
+                    playback?.ready == true &&
+                    playback?.firstFrameRendered == true &&
+                    (playback?.width ?? 0) > 0 &&
+                    (playback?.height ?? 0) > 0,
+                hasError: _error != null || (_closing && !_exitCrtRequested),
+                enabled: nativeCinema && !NakuDevice.isTV,
+                onReveal: () => _playEntranceSound(entranceGeneration),
+                onCancel: () => _stopEntranceSound(entranceGeneration),
+                reduceMotion:
+                    _preferences.disableAnimations ||
+                    MediaQuery.disableAnimationsOf(context),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (playback != null)
+                      CinemaVideoGestures(
+                        controlsInsets: EdgeInsets.only(
+                          top: _pip ? 0 : 52,
+                          bottom: _pip ? 48 : 108,
+                        ),
+                        onTogglePlayback: () {
+                          if (!_loading && !_closing) {
+                            unawaited(_togglePlayback());
+                          }
+                        },
+                        onToggleFullscreen: () =>
+                            unawaited(_toggleFullscreen()),
+                        onWindowDrag: _usesMacCinemaLayout && !_fullscreen
+                            ? () => unawaited(windowManager.startDragging())
+                            : null,
+                        child: MaterialDesktopVideoControlsTheme(
+                          normal: controlsTheme,
+                          fullscreen: controlsTheme,
+                          child:
+                              widget.videoSurfaceBuilder?.call(
+                                context,
+                                playback.player,
+                              ) ??
+                              (playback.player is CinemaTVNativePlayer
+                                  ? CinemaTVNativeVideo(
                                       key: ValueKey(playback),
-                                      controller: playback.controller,
-                                      fit: _preferences.aspectRatio.fit,
-                                      aspectRatio: _preferences
-                                          .aspectRatio
-                                          .frameAspectRatio,
-                                      controls: NakuDevice.isTV || _androidPip
-                                          ? NoVideoControls
-                                          : MaterialDesktopVideoControls,
-                                      subtitleViewConfiguration:
-                                          CinemaSubtitleAppearance.from(
+                                      player:
+                                          playback.player
+                                              as CinemaTVNativePlayer,
+                                      subtitleBottomInset: _tvControlsVisible
+                                          ? CinemaTVControlSurface
+                                                .subtitleClearance
+                                          : 0,
+                                    )
+                                  : ListenableBuilder(
+                                      listenable: Listenable.merge([
+                                        widget.store,
+                                        cinemaExternalSubtitleState(
+                                          playback.player,
+                                        ).active,
+                                      ]),
+                                      builder: (context, _) => Video(
+                                        key: ValueKey(playback),
+                                        controller: playback.controller,
+                                        fit: _preferences.aspectRatio.fit,
+                                        aspectRatio: _preferences
+                                            .aspectRatio
+                                            .frameAspectRatio,
+                                        controls: NakuDevice.isTV || _androidPip
+                                            ? NoVideoControls
+                                            : MaterialDesktopVideoControls,
+                                        subtitleViewConfiguration:
+                                            CinemaSubtitleAppearance.from(
+                                              widget
+                                                  .store
+                                                  .extras['subtitleAppearance'],
+                                            ).configurationFor(
+                                              visible:
+                                                  !cinemaExternalSubtitleState(
+                                                    playback.player,
+                                                  ).active.value,
+                                            ),
+                                        pauseUponEnteringBackgroundMode: false,
+                                      ),
+                                    )),
+                        ),
+                      ),
+                    // Mac loading is opaque and uses only the bounded color
+                    // sampler above. TV retains its visible poster placeholder.
+                    if (nativeCinema && NakuDevice.isTV)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: Offstage(
+                            offstage: playback?.firstFrameRendered == true,
+                            child: _title.poster.isEmpty
+                                ? const SizedBox.shrink()
+                                : Opacity(
+                                    opacity: .54,
+                                    child: CachedNetworkImage(
+                                      key: ValueKey(
+                                        'cinema-opening-poster:${_title.key}',
+                                      ),
+                                      imageUrl: _title.poster,
+                                      memCacheWidth: 1280,
+                                      fit: BoxFit.cover,
+                                      fadeInDuration: Duration.zero,
+                                      errorWidget: (_, _, _) =>
+                                          const SizedBox.shrink(),
+                                    ),
+                                  ),
+                          ),
+                        ),
+                      ),
+                    if (playback != null)
+                      Positioned.fill(
+                        child: ListenableBuilder(
+                          listenable: widget.store,
+                          builder: (context, _) {
+                            final appearance = CinemaSubtitleAppearance.from(
+                              widget.store.extras['subtitleAppearance'],
+                            );
+                            return CinemaExternalSubtitleOverlay(
+                              player: playback.player,
+                              appearance: NakuDevice.isTV && _tvControlsVisible
+                                  ? CinemaSubtitleAppearance(
+                                      fontSize: appearance.fontSize,
+                                      bottom:
+                                          appearance.bottom <
+                                              CinemaTVControlSurface
+                                                  .subtitleClearance
+                                          ? CinemaTVControlSurface
+                                                .subtitleClearance
+                                          : appearance.bottom,
+                                    )
+                                  : appearance,
+                            );
+                          },
+                        ),
+                      ),
+                    if (playback?.danmaku case final danmaku?)
+                      Positioned.fill(
+                        child: CinemaDanmakuOverlay(controller: danmaku),
+                      ),
+                    if (playback != null)
+                      Positioned(
+                        left: 20,
+                        right: 20,
+                        bottom: NakuDevice.isTV && _tvControlsVisible
+                            ? CinemaTVControlSurface.subtitleClearance
+                            : _pip
+                            ? 12
+                            : 74,
+                        child: IgnorePointer(
+                          child: ListenableBuilder(
+                            listenable: playback.liveSubtitles,
+                            builder: (context, _) =>
+                                playback.liveSubtitles.text.isEmpty
+                                ? const SizedBox.shrink()
+                                : Center(
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 14,
+                                        vertical: 7,
+                                      ),
+                                      color: const Color(0xB3000000),
+                                      child: Text(
+                                        playback.liveSubtitles.text,
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: CinemaSubtitleAppearance.from(
                                             widget
                                                 .store
                                                 .extras['subtitleAppearance'],
-                                          ).configurationFor(
-                                            visible:
-                                                !cinemaExternalSubtitleState(
-                                                  playback.player,
-                                                ).active.value,
-                                          ),
-                                      pauseUponEnteringBackgroundMode: false,
-                                    ),
-                                  )),
-                      ),
-                    ),
-                  if (nativeCinema)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: Offstage(
-                          offstage: playback?.firstFrameRendered == true,
-                          child: _title.poster.isEmpty
-                              ? const SizedBox.shrink()
-                              : Opacity(
-                                  opacity: .54,
-                                  child: CachedNetworkImage(
-                                    key: ValueKey(
-                                      'cinema-opening-poster:${_title.key}',
-                                    ),
-                                    imageUrl: _title.poster,
-                                    memCacheWidth: 1280,
-                                    fit: BoxFit.cover,
-                                    fadeInDuration: Duration.zero,
-                                    errorWidget: (_, _, _) =>
-                                        const SizedBox.shrink(),
-                                  ),
-                                ),
-                        ),
-                      ),
-                    ),
-                  if (playback != null)
-                    Positioned.fill(
-                      child: ListenableBuilder(
-                        listenable: widget.store,
-                        builder: (context, _) {
-                          final appearance = CinemaSubtitleAppearance.from(
-                            widget.store.extras['subtitleAppearance'],
-                          );
-                          return CinemaExternalSubtitleOverlay(
-                            player: playback.player,
-                            appearance: NakuDevice.isTV && _tvControlsVisible
-                                ? CinemaSubtitleAppearance(
-                                    fontSize: appearance.fontSize,
-                                    bottom:
-                                        appearance.bottom <
-                                            CinemaTVControlSurface
-                                                .subtitleClearance
-                                        ? CinemaTVControlSurface
-                                              .subtitleClearance
-                                        : appearance.bottom,
-                                  )
-                                : appearance,
-                          );
-                        },
-                      ),
-                    ),
-                  if (playback?.danmaku case final danmaku?)
-                    Positioned.fill(
-                      child: CinemaDanmakuOverlay(controller: danmaku),
-                    ),
-                  if (playback != null)
-                    Positioned(
-                      left: 20,
-                      right: 20,
-                      bottom: NakuDevice.isTV && _tvControlsVisible
-                          ? CinemaTVControlSurface.subtitleClearance
-                          : _pip
-                          ? 12
-                          : 74,
-                      child: IgnorePointer(
-                        child: ListenableBuilder(
-                          listenable: playback.liveSubtitles,
-                          builder: (context, _) =>
-                              playback.liveSubtitles.text.isEmpty
-                              ? const SizedBox.shrink()
-                              : Center(
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 14,
-                                      vertical: 7,
-                                    ),
-                                    color: const Color(0xB3000000),
-                                    child: Text(
-                                      playback.liveSubtitles.text,
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: CinemaSubtitleAppearance.from(
-                                          widget
-                                              .store
-                                              .extras['subtitleAppearance'],
-                                        ).fontSize,
+                                          ).fontSize,
+                                        ),
                                       ),
                                     ),
                                   ),
-                                ),
+                          ),
                         ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
             if (NakuDevice.isTV &&

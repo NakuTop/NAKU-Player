@@ -21,6 +21,7 @@ class CinemaPlayerEntrance extends StatefulWidget {
     this.animateOnEntry = true,
     this.reduceMotion = false,
     this.loadStage = CinemaPlayerLoadStage.connecting,
+    this.lampColor = const Color(0xFFFFF2DE),
     this.onReveal,
     this.onCancel,
     required this.child,
@@ -33,6 +34,7 @@ class CinemaPlayerEntrance extends StatefulWidget {
   /// requested, without ever running the entry lamp or its sound callback.
   final bool animateOnEntry;
   final CinemaPlayerLoadStage loadStage;
+  final Color lampColor;
   final VoidCallback? onReveal, onCancel;
   final Widget child;
 
@@ -69,6 +71,12 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
   bool _revealed = false, _cancelNotified = false;
   bool _disposed = false;
   Completer<void>? _exitCompleter;
+
+  /// Internal source retries continue the same entrance until media is visible.
+  bool get hasRevealedPlayback =>
+      widget.enabled &&
+      (_phase == _EntrancePhase.complete ||
+          (_phase == _EntrancePhase.cancelled && widget.ready));
 
   @visibleForTesting
   String get debugPhase => _phase.name;
@@ -426,6 +434,7 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
                 key: ValueKey('cinema-player-entrance-${_phase.name}'),
                 painter: _EntrancePainter(
                   _phase,
+                  lampColor: widget.lampColor,
                   transition: _animation,
                   filament: _lampAnimation,
                   breathing: _breathing,
@@ -453,6 +462,7 @@ double _smooth(double start, double end, double value) {
 class _EntrancePainter extends CustomPainter {
   _EntrancePainter(
     this.phase, {
+    required this.lampColor,
     required this.transition,
     required this.filament,
     required this.breathing,
@@ -464,6 +474,7 @@ class _EntrancePainter extends CustomPainter {
     required this.showLoadLamp,
   }) : super(repaint: repaint);
   final _EntrancePhase phase;
+  final Color lampColor;
   final Animation<double> transition, filament, breathing;
   final bool breathe;
   final double revealLampExtent, revealBreath;
@@ -622,8 +633,8 @@ class _EntrancePainter extends CustomPainter {
           Offset.zero,
           1,
           [
-            const Color(0xFFFFEDD2).withValues(alpha: .07 * lamp * energy),
-            const Color(0xFFFFEDD2).withValues(alpha: .025 * lamp * energy),
+            lampColor.withValues(alpha: .07 * lamp * energy),
+            lampColor.withValues(alpha: .025 * lamp * energy),
             Colors.transparent,
           ],
           const [0, .42, 1],
@@ -632,7 +643,7 @@ class _EntrancePainter extends CustomPainter {
   }
 
   void _waitingLamp(Canvas canvas, Size size) {
-    // A full off/on breath expands the warm spill over an opaque black field.
+    // A 40%-100% breath expands the poster-colored spill over opaque black.
     // Only observed milestones own length; the unready media stays covered.
     final brightness = breathe ? _breathBrightness(breathing.value) : 1.0;
     _waitingSpill(canvas, size, brightness);
@@ -663,12 +674,8 @@ class _EntrancePainter extends CustomPainter {
           Offset.zero,
           1,
           [
-            const Color(
-              0xFFFFEDD2,
-            ).withValues(alpha: .16 * brightness * opacity),
-            const Color(
-              0xFFFFEDD2,
-            ).withValues(alpha: .065 * brightness * opacity),
+            lampColor.withValues(alpha: .16 * brightness * opacity),
+            lampColor.withValues(alpha: .065 * brightness * opacity),
             Colors.transparent,
           ],
           const [0, .38, 1],
@@ -691,7 +698,7 @@ class _EntrancePainter extends CustomPainter {
       (0.0, 1.0, 2.8),
     ]) {
       final paint = Paint()
-        ..color = const Color(0xFFFFF2DE).withValues(alpha: alpha * lamp)
+        ..color = lampColor.withValues(alpha: alpha * lamp)
         ..strokeWidth = blur > 0 ? width * haloScale : width
         ..strokeCap = StrokeCap.round;
       if (blur > 0) {
@@ -710,6 +717,7 @@ class _EntrancePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_EntrancePainter oldDelegate) =>
+      oldDelegate.lampColor != lampColor ||
       oldDelegate.phase != phase ||
       oldDelegate.transition != transition ||
       oldDelegate.filament != filament ||
@@ -729,10 +737,10 @@ double _lampExtent(CinemaPlayerLoadStage stage) => switch (stage) {
 
 double _lampGlow(double extent) => .44 + .46 * extent;
 
-// Ease through complete darkness for a short, unmistakable off phase. This is
-// decorative light only; it never advances the load milestone or first frame.
+// Keep the filament visible through a 40%-100% breath. This decorative light
+// never advances the load milestone or first frame.
 double _breathBrightness(double phase) =>
-    _smooth(.04, .96, .5 + .5 * math.cos(2 * math.pi * phase));
+    .4 + .6 * _smooth(.04, .96, .5 + .5 * math.cos(2 * math.pi * phase));
 
 double _lightingExtent(double initial, double progress) =>
     initial + (1 - initial) * _smooth(0, 1, progress);

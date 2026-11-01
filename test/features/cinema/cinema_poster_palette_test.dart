@@ -7,6 +7,30 @@ import 'package:kazumi/features/cinema/cinema_poster_palette.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('lamp retains sampled blue hue at a visible lightness', () {
+    const blue = Color(0xFF124494);
+    final lamp = HSLColor.fromColor(cinemaPosterLampColor([blue, blue, blue]));
+    final source = HSLColor.fromColor(blue);
+    expect(lamp.hue, closeTo(source.hue, .75));
+    expect(lamp.saturation, closeTo(source.saturation, .01));
+    expect(lamp.lightness, closeTo(.68, .01));
+  });
+  test('neutral or unavailable artwork does not invent a warm accent', () {
+    expect(cinemaPosterLampColor([]), cinemaNeutralLampColor);
+    final gray = cinemaPosterLampColor([const Color(0xFF353535)]);
+    expect(gray.r, closeTo(gray.g, .001));
+    expect(gray.g, closeTo(gray.b, .001));
+  });
+  test('neutral lettering cannot displace a sampled poster hue', () {
+    final tint = cinemaPosterLampColor([
+      const Color(0xFFCCCCCC),
+      const Color(0xFF235A97),
+      const Color(0xFF999999),
+    ]);
+    expect(tint.b, greaterThan(tint.r));
+    expect(tint.b, greaterThan(tint.g));
+  });
+
   test(
     'palette comes from three artwork regions without changing ownership',
     () async {

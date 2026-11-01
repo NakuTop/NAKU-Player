@@ -622,7 +622,7 @@ void main() {
     final dim = surface.debugBreathBrightness;
     expect(dim, lessThan(bright));
     expect(bright, closeTo(1, .001));
-    expect(dim, closeTo(0, .001));
+    expect(dim, closeTo(.4, .001));
     expect(surface.debugLampExtent, length);
     expect(childKey.currentState!.builds, builds);
     await expectDarkWithTopLamp(tester);
@@ -657,7 +657,7 @@ void main() {
     expect(surface.debugFrameCount, frames);
   });
 
-  testWidgets('breath switches fully off and expands an opaque warm field', (
+  testWidgets('breath stays at 40%-100% while its opaque light field expands', (
     tester,
   ) async {
     await mount(tester);
@@ -706,16 +706,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 525));
     final middle = await capture();
     await tester.pump(const Duration(milliseconds: 525));
-    final off = await capture();
-    expect(surface.debugBreathBrightness, closeTo(0, .001));
-    expect(litBody(bright), greaterThan(litBody(middle) * 2));
-    expect(litBody(middle), greaterThan(0));
-    expect(litBody(off), 0);
-    var offLight = 0;
-    for (var at = 0; at < off.pixels.length; at += 4) {
-      offLight += off.pixels[at] + off.pixels[at + 1] + off.pixels[at + 2];
-    }
-    expect(offLight, 0);
+    final dim = await capture();
+    expect(surface.debugBreathBrightness, closeTo(.4, .001));
+    expect(litBody(bright), greaterThan(litBody(middle)));
+    expect(litBody(middle), greaterThan(litBody(dim)));
+    expect(litBody(dim), greaterThan(0));
     await tester.pump(const Duration(milliseconds: 1050));
     expect(surface.debugBreathBrightness, closeTo(1, .001));
     expect(litBody(await capture()), litBody(bright));

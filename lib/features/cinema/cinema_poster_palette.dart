@@ -2,6 +2,23 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
 
+const cinemaNeutralLampColor = Color(0xFFE3E7ED);
+
+/// Retain an actual sampled hue, lifting only its lightness for a visible tube.
+/// Neutral artwork remains neutral instead of acquiring an invented accent.
+Color cinemaPosterLampColor(List<Color> palette) {
+  if (palette.isEmpty) return cinemaNeutralLampColor;
+  var tint = HSLColor.fromColor(palette.first);
+  for (final color in palette.skip(1)) {
+    final candidate = HSLColor.fromColor(color);
+    if (candidate.saturation > tint.saturation) tint = candidate;
+  }
+  return tint
+      .withAlpha(1)
+      .withLightness(tint.lightness.clamp(.68, .82))
+      .toColor();
+}
+
 /// Sample once per decoded artwork, with a small bounded readback. The caller
 /// retains ownership of [image]; no full-size pixel buffer is ever requested.
 Future<List<Color>> cinemaPosterPalette(ui.Image image) async {

@@ -1150,6 +1150,128 @@ void main() {
       await unmount(tester);
     },
   );
+  for (final rejectFastEndpoint in [false, true]) {
+    testWidgets(
+      'Mac preferred startup has one entrance through probe and open (failover=$rejectFastEndpoint)',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        final probe = _Probe();
+        addTearDown(() => probe.transport.dio.close(force: true));
+        const soundChannel = MethodChannel('naku/desktop-controls');
+        final sounds = <String>[];
+        messenger.setMockMethodCallHandler(soundChannel, (call) async {
+          sounds.add(call.method);
+          return null;
+        });
+        addTearDown(
+          () => messenger.setMockMethodCallHandler(soundChannel, null),
+        );
+        await mount(
+          tester,
+          {},
+          autoBest: true,
+          probe: probe,
+          selectedSource: juliangSource,
+          selectedTitle: juliangTitle,
+          playerFactory: (config) {
+            final backend = _Backend(
+              config,
+              emitVideo: false,
+              rejectOpen: (media) =>
+                  rejectFastEndpoint && media.uri.contains('backup'),
+            );
+            backends.add(backend);
+            return _Player(backend);
+          },
+        );
+        await waitForProbe(tester, probe);
+        await tester.pump(const Duration(milliseconds: 600));
+        final entrance = tester.state<CinemaPlayerEntranceState>(
+          find.byType(CinemaPlayerEntrance),
+        );
+        expect(entrance.debugPhase, 'waiting');
+        final entranceGeneration = entrance.debugGeneration;
+        final extent = entrance.debugLampExtent;
+        probe.complete();
+        for (
+          var i = 0;
+          i < 25 && (backends.isEmpty || backends.last.opened == null);
+          i++
+        ) {
+          await tester.pump(const Duration(milliseconds: 20));
+        }
+        expect(backends.last.opened, isNotNull);
+        expect(
+          entrance.debugGeneration,
+          entranceGeneration,
+          reason:
+              'probe, opening and automatic fallback belong to one loading entrance',
+        );
+        expect(entrance.debugPhase, 'waiting');
+        expect(entrance.debugLampExtent, greaterThanOrEqualTo(extent));
+        backends.last.emitVideoDimensions();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+        expect(entrance.debugPhase, 'lighting');
+        await tester.pump(const Duration(milliseconds: 1600));
+        await tester.pump();
+        expect(entrance.debugPhase, 'complete');
+        expect(
+          sounds.where((m) => m == 'playCinemaStartupSound'),
+          hasLength(1),
+        );
+        await unmount(tester);
+        debugDefaultTargetPlatformOverride = null;
+      },
+    );
+  }
+
+  testWidgets(
+    'Mac next episode starts one new entrance, then continues after its probe',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {'autoPlay': true},
+        autoBest: true,
+        probe: probe,
+        renderToolbar: true,
+        selectedSource: juliangSource,
+        selectedTitle: juliangTitle,
+      );
+      await waitForProbe(tester, probe);
+      probe.complete();
+      await tester.pumpAndSettle();
+      final entrance = tester.state<CinemaPlayerEntranceState>(
+        find.byType(CinemaPlayerEntrance),
+      );
+      expect(entrance.debugPhase, 'complete');
+      final first = entrance.debugGeneration;
+      await tester.tap(find.byTooltip('下一集').hitTestable());
+      for (var i = 0; i < 30 && probe.requests.length < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      expect(probe.requests.length, 4);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(entrance.debugGeneration, first + 1);
+      expect(entrance.debugPhase, 'waiting');
+      probe.complete();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(entrance.debugGeneration, first + 1);
+      expect(entrance.debugPhase, 'lighting');
+      await tester.pump(const Duration(milliseconds: 1600));
+      expect(entrance.debugPhase, 'complete');
+      await unmount(tester);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
   testWidgets(
     'manual episode choice cancels preferred startup and ignores late probes',
     (tester) async {
