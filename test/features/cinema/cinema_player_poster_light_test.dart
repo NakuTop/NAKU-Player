@@ -42,12 +42,13 @@ void main() {
           child: CinemaPlayerPosterLight(
             posterUrl: 'fixture-blue',
             image: provider,
-            builder: (_, tint) {
+            builder: (_, tint, resolved) {
               color = tint;
               return CinemaPlayerEntrance(
                 generation: 7,
                 ready: false,
                 lampColor: tint,
+                lampReady: resolved,
                 child: const ColoredBox(color: Colors.green),
               );
             },
@@ -102,7 +103,7 @@ void main() {
     final folder = Platform.environment['NAKU_QA_SCREENSHOTS'];
     if (folder != null) {
       for (var frame = 0; frame < 20; frame++) {
-        await tester.pump(const Duration(milliseconds: 105));
+        await tester.pump(const Duration(milliseconds: 200));
         await tester.runAsync(() async {
           final boundary =
               stage.currentContext!.findRenderObject()!
@@ -124,6 +125,56 @@ void main() {
   });
 
   testWidgets(
+    'undecoded poster does not display a neutral lamp before its tint',
+    (tester) async {
+      final provider = MemoryImage(Uint8List.fromList([9]));
+      final poster = _Poster();
+      PaintingBinding.instance.imageCache.putIfAbsent(provider, () => poster);
+      final stage = GlobalKey();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RepaintBoundary(
+            key: stage,
+            child: CinemaPlayerPosterLight(
+              posterUrl: 'pending',
+              image: provider,
+              builder: (_, tint, resolved) => CinemaPlayerEntrance(
+                generation: 0,
+                ready: false,
+                lampColor: tint,
+                lampReady: resolved,
+                child: const ColoredBox(color: Colors.green),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 501));
+      await tester.pump();
+      await tester.runAsync(() async {
+        final boundary =
+            stage.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+        final image = await boundary.toImage();
+        final data = (await image.toByteData(
+          format: ui.ImageByteFormat.rawRgba,
+        ))!.buffer.asUint8List();
+        var light = 0;
+        for (var at = 0; at < data.length; at += 4) {
+          light += data[at] + data[at + 1] + data[at + 2];
+        }
+        image.dispose();
+        expect(
+          light,
+          0,
+          reason:
+              'the first visible lamp must already have its resolved poster tint',
+        );
+      });
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'a replaced posters late decode cannot overwrite the current tint',
     (tester) async {
       final oldProvider = MemoryImage(Uint8List.fromList([2]));
@@ -139,7 +190,7 @@ void main() {
         home: CinemaPlayerPosterLight(
           posterUrl: url,
           image: image,
-          builder: (_, color) {
+          builder: (_, color, resolved) {
             tint = color;
             return const SizedBox();
           },
@@ -183,7 +234,7 @@ void main() {
           home: CinemaPlayerPosterLight(
             posterUrl: 'failed',
             image: provider,
-            builder: (_, color) {
+            builder: (_, color, resolved) {
               tint = color;
               return const Text('player ready');
             },
@@ -195,6 +246,44 @@ void main() {
       await tester.pump();
       expect(tint, cinemaNeutralLampColor);
       expect(find.text('player ready'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets(
+    'a timed-out poster locks its visible fallback against late colors',
+    (tester) async {
+      final provider = MemoryImage(Uint8List.fromList([10]));
+      final poster = _Poster();
+      PaintingBinding.instance.imageCache.putIfAbsent(provider, () => poster);
+      Color? tint;
+      bool? ready;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CinemaPlayerPosterLight(
+            posterUrl: 'timeout',
+            image: provider,
+            builder: (_, color, resolved) {
+              tint = color;
+              ready = resolved;
+              return const Text('media keeps loading');
+            },
+          ),
+        ),
+      );
+      expect(ready, false);
+      expect(find.text('media keeps loading'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 2));
+      expect(ready, true);
+      expect(tint, cinemaNeutralLampColor);
+      final blue = await tester.runAsync(() => solidPoster(Colors.blue));
+      addTearDown(blue!.dispose);
+      poster.complete(blue);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+      await tester.pump();
+      expect(tint, cinemaNeutralLampColor);
       await tester.pumpWidget(const SizedBox());
       expect(tester.takeException(), isNull);
     },

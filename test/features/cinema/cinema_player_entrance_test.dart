@@ -618,7 +618,7 @@ void main() {
     expect(surface.debugIsBreathing, true);
     await tester.pump();
     final bright = surface.debugBreathBrightness;
-    await tester.pump(const Duration(milliseconds: 1050));
+    await tester.pump(const Duration(milliseconds: 2000));
     final dim = surface.debugBreathBrightness;
     expect(dim, lessThan(bright));
     expect(bright, closeTo(1, .001));
@@ -632,7 +632,7 @@ void main() {
         find.byKey(const ValueKey('test-player-stage')),
       );
       for (var frame = 0; frame < 20; frame++) {
-        await tester.pump(const Duration(milliseconds: 105));
+        await tester.pump(const Duration(milliseconds: 200));
         await tester.runAsync(() async {
           final image = await boundary.toImage();
           final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
@@ -703,15 +703,15 @@ void main() {
       orderedEquals(bright.pixels),
       reason: 'the expanding glow must not expose the media beneath it',
     );
-    await tester.pump(const Duration(milliseconds: 525));
+    await tester.pump(const Duration(milliseconds: 1000));
     final middle = await capture();
-    await tester.pump(const Duration(milliseconds: 525));
+    await tester.pump(const Duration(milliseconds: 1000));
     final dim = await capture();
     expect(surface.debugBreathBrightness, closeTo(.4, .001));
     expect(litBody(bright), greaterThan(litBody(middle)));
     expect(litBody(middle), greaterThan(litBody(dim)));
     expect(litBody(dim), greaterThan(0));
-    await tester.pump(const Duration(milliseconds: 1050));
+    await tester.pump(const Duration(milliseconds: 2000));
     expect(surface.debugBreathBrightness, closeTo(1, .001));
     expect(litBody(await capture()), litBody(bright));
     expect(surface.debugLampExtent, length);

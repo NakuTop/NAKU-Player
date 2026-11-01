@@ -19,7 +19,8 @@ class CinemaPlayerPosterLight extends StatefulWidget {
 
   final String posterUrl;
   final ImageProvider? image;
-  final Widget Function(BuildContext context, Color color) builder;
+  final Widget Function(BuildContext context, Color color, bool resolved)
+  builder;
 
   @override
   State<CinemaPlayerPosterLight> createState() =>
@@ -31,6 +32,8 @@ class _CinemaPlayerPosterLightState extends State<CinemaPlayerPosterLight> {
   ImageStreamListener? _listener;
   var _ticket = 0;
   bool _initialized = false;
+  bool _resolved = false;
+  Timer? _deadline;
   Color _color = cinemaNeutralLampColor;
 
   @override
@@ -59,9 +62,12 @@ class _CinemaPlayerPosterLightState extends State<CinemaPlayerPosterLight> {
   }
 
   void _attach() {
+    _deadline?.cancel();
+    _deadline = null;
     _detach();
     final ticket = ++_ticket;
     _color = cinemaNeutralLampColor;
+    _resolved = false;
     final url = widget.posterUrl.trim();
     final image =
         widget.image ??
@@ -80,13 +86,21 @@ class _CinemaPlayerPosterLightState extends State<CinemaPlayerPosterLight> {
                 height: 240,
                 policy: ResizeImagePolicy.fit,
               ));
-    if (image == null) return;
+    if (image == null) {
+      _resolved = true;
+      return;
+    }
+    // Resolve a final color before exposing the lamp. A timeout locks neutral
+    // for this poster; a later image must not recolor an already visible lamp.
+    _deadline = Timer(const Duration(seconds: 2), () {
+      _finish(cinemaNeutralLampColor, ticket);
+    });
     final stream = _stream = image.resolve(
       createLocalImageConfiguration(context),
     );
     final listener = _listener = ImageStreamListener(
       (frame, synchronous) {
-        if (!mounted || ticket != _ticket) {
+        if (!mounted || ticket != _ticket || _resolved) {
           frame.dispose();
           return;
         }
@@ -97,30 +111,41 @@ class _CinemaPlayerPosterLightState extends State<CinemaPlayerPosterLight> {
         unawaited(
           palette.then(
             (colors) {
-              if (mounted && ticket == _ticket) {
-                setState(() => _color = cinemaPosterLampColor(colors));
-              }
+              _finish(cinemaPosterLampColor(colors), ticket);
             },
             onError: (Object error, StackTrace stack) {
-              // Missing/failed artwork keeps neutral light and never affects playback.
+              _finish(cinemaNeutralLampColor, ticket);
             },
           ),
         );
       },
       onError: (Object error, StackTrace? stack) {
-        if (ticket == _ticket) _detach();
+        _finish(cinemaNeutralLampColor, ticket);
       },
     );
     stream.addListener(listener);
   }
 
+  void _finish(Color color, int ticket) {
+    if (!mounted || ticket != _ticket || _resolved) return;
+    _deadline?.cancel();
+    _deadline = null;
+    _detach();
+    setState(() {
+      _color = color;
+      _resolved = true;
+    });
+  }
+
   @override
   void dispose() {
     _ticket++;
+    _deadline?.cancel();
     _detach();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => widget.builder(context, _color);
+  Widget build(BuildContext context) =>
+      widget.builder(context, _color, _resolved);
 }

@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
+import 'cinema_source_priority.dart';
 import 'cinema_tv_nas_card.dart';
 import 'cinema_moyu_host.dart';
 import 'cinema_swipe_navigation.dart';
@@ -5130,6 +5132,10 @@ class _TitleDetailsState extends State<_TitleDetails> {
   late Future<CinemaTitle> _detail = widget.resolvedDetail
       ? Future.value(_selectedTitle)
       : widget.repository.detail(_selectedSource, _selectedTitle);
+  String? get _firstSourceId =>
+      defaultTargetPlatform == TargetPlatform.macOS && !NakuDevice.isTV
+      ? cinemaJuliangSourceId(widget.store.enabledSources)
+      : null;
   int _road = 0;
   int _informationTab = 0;
   CinemaTitle? _resolvedInput, _resolvedTitle;
@@ -5160,6 +5166,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
     _variants = orderCinemaVariants(
       _variants,
       widget.store.enabledSources.map((source) => source.id),
+      firstSourceId: _firstSourceId,
     );
     if (widget.resolvedDetail) {
       _discovering = false;
@@ -5186,16 +5193,23 @@ class _TitleDetailsState extends State<_TitleDetails> {
             final priority = widget.store.enabledSources
                 .map((s) => s.id)
                 .toList();
-            setState(() => _variants = orderCinemaVariants(variants, priority));
+            setState(
+              () => _variants = orderCinemaVariants(
+                variants,
+                priority,
+                firstSourceId: _firstSourceId,
+              ),
+            );
             if (!_variantChosen &&
                 widget.resume == null &&
                 _variants.isNotEmpty) {
               final preferred = _variants.first;
               if (preferred.key != _selectedTitle.key &&
-                  orderCinemaVariants([
-                        preferred,
-                        _selectedTitle,
-                      ], priority).first.key ==
+                  orderCinemaVariants(
+                        [preferred, _selectedTitle],
+                        priority,
+                        firstSourceId: _firstSourceId,
+                      ).first.key ==
                       preferred.key) {
                 _selectVariant(preferred, automatic: true);
               }

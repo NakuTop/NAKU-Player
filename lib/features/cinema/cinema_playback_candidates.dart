@@ -118,6 +118,7 @@ class CinemaPlaybackCatalogue {
     required Iterable<CinemaTitle> variants,
     required Iterable<CinemaSource> sources,
     required this.repository,
+    this.firstSourceId,
     this.detailTimeout = const Duration(seconds: 18),
   }) : _anchor = title,
        _sources = {
@@ -134,6 +135,7 @@ class CinemaPlaybackCatalogue {
             .variants
             .where((item) => _sources.containsKey(item.sourceId)),
         _sources.keys,
+        firstSourceId: firstSourceId,
       ),
     );
     _loaded[title.key] = title;
@@ -145,6 +147,7 @@ class CinemaPlaybackCatalogue {
   final CinemaTitle _anchor;
   final Map<String, CinemaSource> _sources;
   final CinemaRepository repository;
+  final String? firstSourceId;
   final Duration detailTimeout;
   late List<CinemaTitle> variants;
   void addVariants(Iterable<CinemaTitle> values) {
@@ -156,6 +159,7 @@ class CinemaPlaybackCatalogue {
           ...values,
         ]).first.variants.where((v) => _sources.containsKey(v.sourceId)),
         _sources.keys,
+        firstSourceId: firstSourceId,
       ),
     );
     for (final item in variants) {

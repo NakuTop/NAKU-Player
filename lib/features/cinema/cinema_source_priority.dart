@@ -12,6 +12,12 @@ bool cinemaPrefersSource(CinemaSource source) =>
     (source.id == 'maccms-juliang' ||
         Uri.tryParse(source.url)?.host.toLowerCase() == 'api.juliang.live');
 
+/// Default catalogue placement only; this does not rank measured media reads.
+String? cinemaJuliangSourceId(Iterable<CinemaSource> sources) => sources
+    .where((source) => source.enabled && cinemaPrefersSource(source))
+    .firstOrNull
+    ?.id;
+
 /// These are the provider's two real playback endpoints, not two API hosts.
 bool cinemaPreferredEndpoint(CinemaPlaybackCandidate candidate) =>
     cinemaPrefersSource(candidate.source) &&

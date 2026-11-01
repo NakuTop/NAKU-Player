@@ -296,14 +296,21 @@ int? _year(String text, _Kind kind) {
 /// Provider route and episode order are never changed.
 List<CinemaTitle> orderCinemaVariants(
   Iterable<CinemaTitle> values,
-  Iterable<String> ids,
-) {
+  Iterable<String> ids, {
+  String? firstSourceId,
+}) {
   final priority = <String, int>{};
   for (final id in ids) {
     priority.putIfAbsent(id, () => priority.length);
   }
   final entries = values.toList().indexed.toList()
     ..sort((a, b) {
+      if (firstSourceId != null) {
+        final first = (b.$2.sourceId == firstSourceId ? 1 : 0).compareTo(
+          a.$2.sourceId == firstSourceId ? 1 : 0,
+        );
+        if (first != 0) return first;
+      }
       final quality = cinemaVariantQuality(
         b.$2,
       ).compareTo(cinemaVariantQuality(a.$2));

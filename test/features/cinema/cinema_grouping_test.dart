@@ -20,6 +20,26 @@ CinemaTitle _title(
 
 void main() {
   test(
+    'explicit source placement comes first without changing ordinary quality order',
+    () {
+      final ordinary = _title('jl', source: 'juliang');
+      final high = _title('4k', source: 'other', name: '星际穿越4K');
+      expect(
+        orderCinemaVariants([high, ordinary], ['other', 'juliang']).first,
+        high,
+      );
+      expect(
+        orderCinemaVariants(
+          [high, ordinary],
+          ['other', 'juliang'],
+          firstSourceId: 'juliang',
+        ),
+        [ordinary, high],
+      );
+    },
+  );
+
+  test(
     'detail keeps freshly loaded routes even if its 4K card has a higher quality label',
     () {
       final card = CinemaTitle(

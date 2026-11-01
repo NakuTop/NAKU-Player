@@ -22,6 +22,7 @@ class CinemaPlayerEntrance extends StatefulWidget {
     this.reduceMotion = false,
     this.loadStage = CinemaPlayerLoadStage.connecting,
     this.lampColor = const Color(0xFFFFF2DE),
+    this.lampReady = true,
     this.onReveal,
     this.onCancel,
     required this.child,
@@ -35,6 +36,7 @@ class CinemaPlayerEntrance extends StatefulWidget {
   final bool animateOnEntry;
   final CinemaPlayerLoadStage loadStage;
   final Color lampColor;
+  final bool lampReady;
   final VoidCallback? onReveal, onCancel;
   final Widget child;
 
@@ -111,7 +113,10 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
 
   void _syncBreathing() {
     final needed =
-        _allowed && _waitingInDark && _phase == _EntrancePhase.waiting;
+        _allowed &&
+        widget.lampReady &&
+        _waitingInDark &&
+        _phase == _EntrancePhase.waiting;
     if (needed && !_breathing.isAnimating) {
       _breathing.repeat();
     } else if (!needed) {
@@ -147,7 +152,7 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
     _lampAnimation = AnimationController(vsync: this)..addListener(_countFrame);
     _breathing = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 2100),
+      duration: const Duration(milliseconds: 4000),
     )..addListener(_countFrame);
     _paintAnimation = Listenable.merge([
       _animation,
@@ -443,7 +448,7 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
                   repaint: _paintAnimation,
                   revealLampExtent: _revealLampExtent,
                   waitingInDark: _waitingInDark,
-                  showLoadLamp: _foreground,
+                  showLoadLamp: _foreground && widget.lampReady,
                 ),
               ),
             ),
@@ -603,6 +608,7 @@ class _EntrancePainter extends CustomPainter {
           fieldTransform.storage,
         ),
     );
+    if (!showLoadLamp) return;
     final baseGlow = _lampGlow(revealLampExtent) * revealBreath;
     final lamp =
         (baseGlow + (1 - baseGlow) * energy) * (1 - energy * energy * energy);
