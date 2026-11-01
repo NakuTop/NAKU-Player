@@ -156,3 +156,18 @@ NAKU_SPARKLE_BIN=/path/to/Sparkle/bin
 日常使用只保留 `/Applications/NAKU播放器.app`。构建和升级验证产生的 `.app` 会被 Spotlight / Launch Services 识别，不能把历史副本直接留作备份。验证后应先用 `ditto` 压缩归档、解压逐文件校验，确认没有进程使用旧路径，再按旧路径注销 Launch Services 并移除已归档的展开副本。备份 ZIP 放在 `.noindex` 目录；不得删除用户的片源、收藏、历史或签名钥匙。
 
 验收鼠标问题时必须包含实际鼠标点击，AX 语义按钮调用成功不能替代鼠标命中测试。自动化工具无法发送有效坐标点击时，应记录限制并让用户测试已安装的具体版本。
+
+## 差分更新（后续 macOS 正式发布必做）
+
+保留并发布完整 ZIP。完整归档上传后、启用更新目录前，对上一正式版调用：
+
+```sh
+python3 scripts/publish_macos_delta.py \
+  --old-archive /path/to/previous-release.zip \
+  --new-archive /path/to/current-release.zip \
+  --feed appcast.xml --sparkle-bin /path/to/Sparkle/bin
+```
+
+该命令自动生成 format 4 差分、应用补丁、逐文件对比新版内容和权限、核验代码签名、签署差分、上传且匿名下载校验，最后添加 deltaFrom 并重新签署 Feed。只使用既有钥匙串身份，不导出私钥，不覆盖已发布附件。成功后提交并推送更新目录；再从实际 Feed URL 读取验证。必须保留完整 enclosure；无对应差分的旧版和差分失败的客户端使用完整包。
+
+当前 format 4 适用于 Sparkle 2.7 及以上的旧客户端；现有 macOS 客户端使用 2.9.6。不得为更早运行时强行生成 format 4。首次发布没有上一正式包时仅发布完整包。差分生成失败时不得伪称已启用；保留完整包发布并报告原因。
