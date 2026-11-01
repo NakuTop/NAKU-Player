@@ -213,6 +213,31 @@ void main() {
   });
 
   test(
+    'a failed URL reservation cannot reject another episode forever',
+    () async {
+      DioFactory.downloadDio.httpClientAdapter = _Adapter(
+        (_) => ResponseBody.fromString('expired', 403),
+      );
+      final one = _episode(
+        '${media.path}/1',
+        'https://fixture.invalid/reused.mp4',
+      );
+      await complete(one);
+      expect(one.status, DownloadStatus.failed);
+      DioFactory.downloadDio.httpClientAdapter = _Adapter(
+        (_) => _bytes(List.generate(64, (i) => i)),
+      );
+      final two = _episode(
+        '${media.path}/2',
+        'https://fixture.invalid/reused.mp4',
+        number: 2,
+      );
+      await complete(two);
+      expect(two.status, DownloadStatus.completed);
+    },
+  );
+
+  test(
     'different URLs serving identical bytes are not both completed',
     () async {
       final content = List.generate(64, (i) => i);

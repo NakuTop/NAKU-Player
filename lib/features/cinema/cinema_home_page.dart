@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
+import 'package:flutter/services.dart';
 import 'cinema_source_priority.dart';
 import 'cinema_tv_nas_card.dart';
 import 'cinema_moyu_host.dart';
@@ -127,6 +128,34 @@ class _CatalogState {
   bool loading = false, searching = false, initialized = false;
   int page = 1, pageCount = 1, generation = 0;
   DateTime? fetchedAt;
+  _BrowseSnapshot? browseSnapshot;
+}
+
+class _BrowseSnapshot {
+  _BrowseSnapshot(_CatalogState s)
+    : items = s.items,
+      filters = s.filters,
+      yearWasChosen = s.yearWasChosen,
+      itemsContext = s.itemsContext,
+      error = s.error,
+      initialized = s.initialized,
+      page = s.page,
+      pageCount = s.pageCount;
+  final List<CinemaTitle> items;
+  final CinemaFilters filters;
+  final bool yearWasChosen, initialized;
+  final String? itemsContext, error;
+  final int page, pageCount;
+  void restore(_CatalogState s) {
+    s.items = items;
+    s.filters = filters;
+    s.yearWasChosen = yearWasChosen;
+    s.itemsContext = itemsContext;
+    s.error = error;
+    s.initialized = initialized;
+    s.page = page;
+    s.pageCount = pageCount;
+  }
 }
 
 class CinemaHomePage extends StatefulWidget {
@@ -232,6 +261,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   int _sectionRevision = 0, _desktopSearchRevision = 0;
   bool _showSourceManager = false;
   bool _animeOpened = false;
+  String _animeSearchQuery = '';
+  int _animeSearchRevision = 0;
   String _applicationVersion = '正在读取版本';
   final _catalogs = {
     for (final section in _Section.values) section: _CatalogState(),
@@ -258,6 +289,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   String? get _error => _catalog.error;
   bool get _loading => _catalog.loading;
   bool get _searching => _catalog.searching;
+  bool get _desktopSearchActive =>
+      _searching ||
+      (_section == _Section.anime && _animeSearchQuery.isNotEmpty);
   int get _page => _catalog.page;
   int get _pageCount => _catalog.pageCount;
 
@@ -1193,7 +1227,13 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   Future<void> _selectSection(_Section value) async {
     _sectionSwipe.value = 0;
-    if (value == _section && !_showSourceManager) return;
+    if (value == _section && !_showSourceManager) {
+      if (_searching ||
+          (value == _Section.anime && _animeSearchQuery.isNotEmpty)) {
+        await _exitSearch();
+      }
+      return;
+    }
     ++_sectionRevision;
     _scrollActivity.reset();
     setState(() {
@@ -1343,9 +1383,10 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     final section = _section;
     final keyword = loadMore ? state.activeKeyword : state.search.text.trim();
     if (keyword.isEmpty) {
-      await _browse();
+      await _exitSearch();
       return;
     }
+    if (!state.searching) state.browseSnapshot = _BrowseSnapshot(state);
     final resetFilters =
         !loadMore && (!state.searching || state.activeKeyword != keyword);
     final generation = loadMore ? state.generation : ++state.generation;
@@ -1444,6 +1485,36 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     if (mounted && generation == state.generation) {
       _changed(state, () => state.loading = false);
       unawaited(_preloadRatings(section));
+    }
+  }
+
+  Future<void> _exitSearch() async {
+    ++_desktopSearchRevision;
+    final state = _catalog;
+    ++state.generation;
+    state.discoveryCancel?.cancel();
+    FocusManager.instance.primaryFocus?.unfocus();
+    final saved = state.browseSnapshot;
+    setState(() {
+      if (_section == _Section.anime) {
+        _animeSearchQuery = '';
+        ++_animeSearchRevision;
+      }
+      state.search.clear();
+      state.searching = false;
+      state.loading = false;
+      state.activeKeyword = '';
+      state.sourceStatus.clear();
+      state.searchPages.clear();
+      state.searchMore.clear();
+      state.discovery = const CinemaSearchDiscovery();
+      state.discoveryLoading = false;
+      state.discoveryMessage = '';
+      saved?.restore(state);
+      state.browseSnapshot = null;
+    });
+    if (_isCatalog && !(saved?.initialized ?? state.initialized)) {
+      await _browse();
     }
   }
 
@@ -2089,21 +2160,31 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         : index > 0
         ? sections[index - 1]
         : null;
-    return CinemaMoyuHost(
-      session: _moyuSession,
-      child: CinemaSwipeNavigation(
-        key: const ValueKey('cinema-home-swipe'),
-        destination: (_section, _showAnimeDestination, _showSourceManager),
-        onProgress: (progress) => _sectionSwipe.value = progress,
-        backLabel: previous != null ? _sectionLabel(previous) : null,
-        forwardLabel: index >= 0 && index + 1 < sections.length
-            ? _sectionLabel(sections[index + 1])
-            : null,
-        onBack: previous != null ? () => _selectSection(previous) : null,
-        onForward: index >= 0 && index + 1 < sections.length
-            ? () => _selectSection(sections[index + 1])
-            : null,
-        child: _buildHome(context),
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () {
+          if (_desktopSearchActive) unawaited(_exitSearch());
+        },
+      },
+      child: FocusScope(
+        autofocus: true,
+        child: CinemaMoyuHost(
+          session: _moyuSession,
+          child: CinemaSwipeNavigation(
+            key: const ValueKey('cinema-home-swipe'),
+            destination: (_section, _showAnimeDestination, _showSourceManager),
+            onProgress: (progress) => _sectionSwipe.value = progress,
+            backLabel: previous != null ? _sectionLabel(previous) : null,
+            forwardLabel: index >= 0 && index + 1 < sections.length
+                ? _sectionLabel(sections[index + 1])
+                : null,
+            onBack: previous != null ? () => _selectSection(previous) : null,
+            onForward: index >= 0 && index + 1 < sections.length
+                ? () => _selectSection(sections[index + 1])
+                : null,
+            child: _buildHome(context),
+          ),
+        ),
       ),
     );
   }
@@ -2281,6 +2362,10 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                                                 _section == _Section.anime,
                                               ) ??
                                               CinemaAnimePage(
+                                                searchQuery: _animeSearchQuery,
+                                                searchRevision:
+                                                    _animeSearchRevision,
+                                                onReturnBrowse: _exitSearch,
                                                 initialTab: widget
                                                     .initialStartup
                                                     .animeTab
@@ -3075,6 +3160,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                                 _section == _Section.anime,
                               ) ??
                               CinemaAnimePage(
+                                searchQuery: _animeSearchQuery,
+                                searchRevision: _animeSearchRevision,
+                                onReturnBrowse: _exitSearch,
                                 initialTab:
                                     widget.initialStartup.animeTab.index,
                                 active: _section == _Section.anime,
@@ -3154,19 +3242,46 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                           decoration: InputDecoration(
                             isDense: true,
                             filled: false,
-                            hintText: '搜索电影、剧集或演员',
-                            prefixIcon: const Icon(
-                              Icons.search_rounded,
-                              size: 18,
-                            ),
-                            suffixIcon: IconButton(
-                              tooltip: '搜索',
-                              onPressed: _submitDesktopSearch,
-                              icon: const Icon(
-                                Icons.arrow_forward_rounded,
-                                size: 17,
-                              ),
-                            ),
+                            hintText: _section == _Section.anime
+                                ? '搜索动漫'
+                                : '搜索电影、剧集或演员',
+                            prefixIcon: _desktopSearchActive
+                                ? IconButton(
+                                    tooltip: '返回浏览',
+                                    onPressed: _exitSearch,
+                                    icon: const Icon(
+                                      Icons.arrow_back_rounded,
+                                      size: 18,
+                                    ),
+                                  )
+                                : const Icon(Icons.search_rounded, size: 18),
+                            suffixIcon:
+                                ValueListenableBuilder<TextEditingValue>(
+                                  valueListenable: _search,
+                                  builder: (_, value, _) => Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (value.text.isNotEmpty ||
+                                          _desktopSearchActive)
+                                        IconButton(
+                                          tooltip: '清空搜索',
+                                          onPressed: _exitSearch,
+                                          icon: const Icon(
+                                            Icons.close_rounded,
+                                            size: 17,
+                                          ),
+                                        ),
+                                      IconButton(
+                                        tooltip: '搜索',
+                                        onPressed: _submitDesktopSearch,
+                                        icon: const Icon(
+                                          Icons.arrow_forward_rounded,
+                                          size: 17,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                             border: InputBorder.none,
                             enabledBorder: InputBorder.none,
                             focusedBorder: const UnderlineInputBorder(
@@ -3385,6 +3500,14 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   Future<void> _submitDesktopSearch() async {
     final submission = ++_desktopSearchRevision;
     final query = _search.text;
+    if (_section == _Section.anime) {
+      FocusManager.instance.primaryFocus?.unfocus();
+      setState(() {
+        _animeSearchQuery = query.trim();
+        ++_animeSearchRevision;
+      });
+      return;
+    }
     if (!_isCatalog) {
       final target = _catalogs[_Section.movies]!;
       final opening = _selectSection(_Section.movies);
@@ -3896,6 +4019,16 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (searching)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: TextButton.icon(
+                      key: const ValueKey('cinema-exit-search'),
+                      onPressed: _exitSearch,
+                      icon: const Icon(Icons.arrow_back_rounded, size: 18),
+                      label: const Text('返回浏览'),
+                    ),
+                  ),
                 if (aggregated) ...[
                   Row(
                     children: [

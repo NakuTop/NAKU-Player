@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:kazumi/services/download/download_library.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobx/mobx.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
@@ -142,6 +143,10 @@ void main() {
   testWidgets(
     'real download page preserves pause resume retry playback and delete confirmation',
     (tester) async {
+      tester.view.physicalSize = const Size(1100, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       final record = DownloadRecord(
         0,
         '真实下载管理流程',
@@ -472,6 +477,9 @@ class _DownloadUiController implements DownloadController {
   @override
   Future<void> resumeAllDownloads(int bangumiId, String pluginName) async =>
       calls.add('resume-all');
+  @override
+  Future<void> deleteEntries(Iterable<DownloadEntry> entries) async =>
+      calls.add('delete-record');
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

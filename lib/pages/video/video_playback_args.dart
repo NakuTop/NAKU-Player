@@ -2,6 +2,7 @@ import 'package:kazumi/modules/bangumi/bangumi_item.dart';
 import 'package:kazumi/modules/download/download_module.dart';
 import 'package:kazumi/modules/roads/road_module.dart';
 import 'package:kazumi/plugins/plugins.dart';
+import 'package:kazumi/services/download/download_library.dart';
 
 /// Route arguments for '/video/'. Entry points hand playback context over
 /// through the route instead of pre-filling a shared controller, which lets
@@ -45,10 +46,12 @@ class OfflineVideoPlaybackArgs extends VideoPlaybackArgs {
     required this.episodeNumber,
     required this.road,
     required this.downloadedEpisodes,
+    this.downloadEntries = const [],
   });
 
   final String pluginName;
   final int episodeNumber;
   final int road;
   final List<DownloadEpisode> downloadedEpisodes;
+  final List<DownloadEntry> downloadEntries;
 }

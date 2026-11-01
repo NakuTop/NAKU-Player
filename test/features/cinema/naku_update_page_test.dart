@@ -52,7 +52,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('NAKU Player Android'), findsOneWidget);
-      expect(find.text('自动下载和安装'), findsNothing);
+      expect(find.text('自动下载并提示更新'), findsNothing);
       await tester.tap(find.text('检查更新'));
       await tester.pumpAndSettle();
       expect(checked, 1);
@@ -79,7 +79,7 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: NakuUpdatePage()));
       await tester.pump(const Duration(seconds: 6));
       expect(find.text('NAKU播放器 · Windows'), findsOneWidget);
-      expect(find.text('自动下载和安装'), findsNothing);
+      expect(find.text('自动下载并提示更新'), findsNothing);
       expect(calls, isEmpty);
       await tester.pumpWidget(const SizedBox.shrink());
     } finally {
@@ -92,7 +92,7 @@ void main() {
   ) async {
     await tester.pumpWidget(const MaterialApp(home: NakuUpdatePage()));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('自动下载和安装'));
+    await tester.tap(find.text('自动下载并提示更新'));
     await tester.pumpAndSettle();
     final call = calls.singleWhere((call) => call.method == 'configure');
     expect(call.arguments, {

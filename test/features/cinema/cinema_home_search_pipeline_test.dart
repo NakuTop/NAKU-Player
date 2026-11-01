@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_filters.dart';
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
@@ -261,6 +262,47 @@ void main() {
     });
     return positions.map((p) => p.index).toList();
   }
+
+  testWidgets(
+    'back restores browse filters immediately and ignores late search results',
+    (tester) async {
+      await mount(tester);
+      await tester.tap(find.byKey(const ValueKey('catalog-sort-latest')));
+      await tester.pumpAndSettle();
+      await year(tester, '', '2025');
+      final browses = repository.browses.length;
+      repository.delayedKeywords.add('旧查询');
+      await search(tester, '旧查询', settle: false);
+      await tester.tap(find.byKey(const ValueKey('cinema-exit-search')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<CinemaFilterBar>(find.byType(CinemaFilterBar)).value.year,
+        '2025',
+      );
+      expect(
+        tester.widget<TextField>(find.byType(TextField).first).controller!.text,
+        isEmpty,
+      );
+      expect(repository.browses.length, browses);
+      for (final request in repository.pending.keys.toList()) {
+        repository.complete(
+          int.parse(request.source.split('-').last),
+          request.keyword,
+        );
+      }
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('cinema-exit-search')), findsNothing);
+      expect(find.text('旧结果0'), findsNothing);
+      await search(tester, '新查询');
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('cinema-exit-search')), findsNothing);
+      expect(
+        tester.widget<CinemaFilterBar>(find.byType(CinemaFilterBar)).value.year,
+        '2025',
+      );
+    },
+  );
 
   testWidgets(
     'new searches clear the previous catalogue or search year filter',

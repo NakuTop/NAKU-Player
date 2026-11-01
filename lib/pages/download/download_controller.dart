@@ -15,6 +15,7 @@ import 'package:kazumi/services/download/background_download_service.dart';
 import 'package:kazumi/services/download/download_sleep_guard.dart';
 import 'package:kazumi/services/download/download_manager.dart';
 import 'package:kazumi/services/download/download_catalog.dart';
+import 'package:kazumi/services/download/download_library.dart';
 import 'package:kazumi/utils/format.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/storage/storage.dart';
@@ -407,6 +408,17 @@ abstract class _DownloadController with Store {
     return null;
   }
 
+  Map<String, String> _resumeHeaders(Plugin plugin, DownloadEpisode episode) {
+    if (episode.requestHeadersJson.isNotEmpty) {
+      try {
+        return Map<String, String>.from(jsonDecode(episode.requestHeadersJson));
+      } catch (_) {
+        // Legacy records can resume with the source's current headers.
+      }
+    }
+    return plugin.buildHttpHeaders();
+  }
+
   DownloadRecord? getRecord(int bangumiId, String pluginName) {
     return _repository.getRecordByBangumiId(bangumiId, pluginName);
   }
@@ -607,7 +619,7 @@ abstract class _DownloadController with Store {
             selection.number,
             selection.name,
             selection.road,
-            DownloadStatus.resolving,
+            DownloadStatus.pending,
             0,
             0,
             0,
@@ -619,7 +631,7 @@ abstract class _DownloadController with Store {
             0,
             selection.url,
           );
-      episode.status = DownloadStatus.resolving;
+      episode.status = DownloadStatus.pending;
       episode.errorMessage = '';
       record.episodes[selection.number] = episode;
       added.add(episode);
@@ -834,6 +846,24 @@ abstract class _DownloadController with Store {
 
     try {
       final cinemaRecord = _repository.getRecord(request.recordKey);
+      final queued = cinemaRecord?.episodes[request.episodeNumber];
+      if (queued == null ||
+          lease.isCancelled ||
+          queued.episodePageUrl != request.episodePageUrl ||
+          !{
+            DownloadStatus.pending,
+            DownloadStatus.resolving,
+          }.contains(queued.status)) {
+        return;
+      }
+      queued.status = DownloadStatus.resolving;
+      await _repository.updateEpisode(
+        request.recordKey,
+        request.episodeNumber,
+        queued,
+      );
+      _refreshRecord(request.recordKey);
+      if (lease.isCancelled) return;
       if (cinemaRecord?.isCinema == true) {
         await _resolveCinemaAndEnqueue(cinemaRecord!, request, lease);
         return;
@@ -866,11 +896,14 @@ abstract class _DownloadController with Store {
         if (lease.isCancelled) {
           throw const VideoSourceCancelledException();
         }
-        final source = await lease.resolve(
-          fullUrl,
-          useLegacyParser: plugin.useLegacyParser,
-          timeout: const Duration(seconds: 30),
-        );
+        final source =
+            CinemaEpisode(name: episode.episodeName, url: fullUrl).isDirect
+            ? VideoSource(url: fullUrl, offset: 0, type: VideoSourceType.online)
+            : await lease.resolve(
+                fullUrl,
+                useLegacyParser: plugin.useLegacyParser,
+                timeout: const Duration(seconds: 30),
+              );
         m3u8Url = source.url;
       } on VideoSourceTimeoutException {
         if (lease.isCancelled) {
@@ -913,8 +946,10 @@ abstract class _DownloadController with Store {
 
       if (freshEpisode.status != DownloadStatus.resolving) return;
 
+      final httpHeaders = plugin.buildHttpHeaders();
       freshEpisode.networkM3u8Url = m3u8Url;
-      freshEpisode.status = DownloadStatus.downloading;
+      freshEpisode.requestHeadersJson = jsonEncode(httpHeaders);
+      freshEpisode.status = DownloadStatus.pending;
       await _repository.updateEpisode(
         request.recordKey,
         request.episodeNumber,
@@ -923,8 +958,16 @@ abstract class _DownloadController with Store {
       _refreshRecord(request.recordKey);
 
       await _startBackgroundServiceIfNeeded();
+      if (lease.isCancelled ||
+          freshEpisode.status != DownloadStatus.pending ||
+          _repository
+                  .getRecord(request.recordKey)
+                  ?.episodes[request.episodeNumber]
+                  ?.episodePageUrl !=
+              request.episodePageUrl) {
+        return;
+      }
 
-      final httpHeaders = plugin.buildHttpHeaders();
       bool adBlockerEnabled =
           _repository.getForceAdBlocker() || plugin.adBlocker;
 
@@ -949,6 +992,14 @@ abstract class _DownloadController with Store {
           request.recordKey,
           request.bangumiId,
           request.episodeNumber,
+        );
+      }
+    } catch (_) {
+      if (!lease.isCancelled) {
+        _failEpisode(
+          request.recordKey,
+          request.episodeNumber,
+          '无法添加下载，请重试或更换下载线路',
         );
       }
     } finally {
@@ -1032,7 +1083,7 @@ abstract class _DownloadController with Store {
       await _enqueueDirect(record, episode, priority: priority);
       return;
     }
-    episode.status = DownloadStatus.resolving;
+    episode.status = DownloadStatus.pending;
     episode.errorMessage = '';
     await _repository.updateEpisode(record.key, episode.episodeNumber, episode);
     _refreshRecord(record.key);
@@ -1235,6 +1286,8 @@ abstract class _DownloadController with Store {
     if (record == null) return;
     final episode = record.episodes[episodeNumber];
     if (episode == null) return;
+    // Repeated clicks and a work-wide resume must not restart live workers.
+    if (!downloadCanResume(episode.status)) return;
 
     if (record.isCinema) {
       await _retryCinema(record, episode);
@@ -1247,17 +1300,21 @@ abstract class _DownloadController with Store {
       return;
     }
 
-    if (episode.networkM3u8Url.isNotEmpty) {
-      episode.status = DownloadStatus.downloading;
+    _cancelResolve(recordKey, episodeNumber);
+    if (episode.status == DownloadStatus.paused &&
+        episode.networkM3u8Url.isNotEmpty) {
+      episode.status = DownloadStatus.pending;
       episode.errorMessage = '';
-      episode.progressPercent = 0.0;
-      episode.downloadedSegments = 0;
       await _repository.updateEpisode(recordKey, episodeNumber, episode);
       _refreshRecord(recordKey);
 
       await _startBackgroundServiceIfNeeded();
+      if (_repository.getRecord(recordKey)?.episodes[episodeNumber]?.status !=
+          DownloadStatus.pending) {
+        return;
+      }
 
-      final httpHeaders = plugin.buildHttpHeaders();
+      final httpHeaders = _resumeHeaders(plugin, episode);
       bool adBlockerEnabled =
           _repository.getForceAdBlocker() || plugin.adBlocker;
 
@@ -1274,11 +1331,12 @@ abstract class _DownloadController with Store {
         ),
       );
     } else {
-      _cancelResolve(recordKey, episodeNumber);
-      episode.status = DownloadStatus.resolving;
+      episode.status = DownloadStatus.pending;
       episode.errorMessage = '';
-      episode.progressPercent = 0.0;
-      episode.downloadedSegments = 0;
+      // A failure may mean an expired URL or an advertisement captured by the
+      // parser. Re-resolve the original episode; the manager validates partials.
+      episode.networkM3u8Url = '';
+      episode.requestHeadersJson = '';
       await _repository.updateEpisode(recordKey, episodeNumber, episode);
       _refreshRecord(recordKey);
 
@@ -1413,7 +1471,7 @@ abstract class _DownloadController with Store {
         ),
       );
     } else {
-      episode.status = DownloadStatus.resolving;
+      episode.status = DownloadStatus.pending;
       episode.errorMessage = '';
       await _repository.updateEpisode(recordKey, episodeNumber, episode);
       _refreshRecord(recordKey);
@@ -1443,8 +1501,7 @@ abstract class _DownloadController with Store {
             .where(
               (e) =>
                   e.value.status == DownloadStatus.paused ||
-                  e.value.status == DownloadStatus.failed ||
-                  e.value.status == DownloadStatus.pending,
+                  e.value.status == DownloadStatus.failed,
             )
             .toList()
           ..sort((a, b) => a.key.compareTo(b.key));
@@ -1468,6 +1525,64 @@ abstract class _DownloadController with Store {
     return record.episodes.values
         .where((e) => e.status == DownloadStatus.completed)
         .length;
+  }
+
+  Future<void> pauseEntries(Iterable<DownloadEntry> entries) async {
+    for (final entry in entries.toList()) {
+      final current = _repository
+          .getRecord(entry.record.key)
+          ?.episodes[entry.episode.episodeNumber];
+      if (current == null || !downloadIsActive(current.status)) continue;
+      await pauseDownload(
+        entry.record.bangumiId,
+        entry.record.pluginName,
+        current.episodeNumber,
+      );
+    }
+  }
+
+  Future<void> resumeEntries(Iterable<DownloadEntry> entries) async {
+    for (final entry in entries.toList()) {
+      final current = _repository
+          .getRecord(entry.record.key)
+          ?.episodes[entry.episode.episodeNumber];
+      if (current == null || !downloadCanResume(current.status)) continue;
+      await retryDownload(
+        bangumiId: entry.record.bangumiId,
+        pluginName: entry.record.pluginName,
+        episodeNumber: current.episodeNumber,
+      );
+    }
+  }
+
+  Future<void> deleteEntries(Iterable<DownloadEntry> entries) async {
+    final selected = {for (final e in entries) e.key: e};
+    // Cancel the entire selection first, before any filesystem operation awaits.
+    for (final e in selected.values) {
+      _cancelResolve(e.record.key, e.episode.episodeNumber);
+      _downloadManager.cancel(e.record.key, e.episode.episodeNumber);
+    }
+    final byRecord = <String, List<DownloadEntry>>{};
+    for (final e in selected.values) {
+      byRecord.putIfAbsent(e.record.key, () => []).add(e);
+    }
+    for (final group in byRecord.values) {
+      final record = _repository.getRecord(group.first.record.key);
+      if (record == null) continue;
+      if (record.episodes.keys.every(
+        (n) => selected.containsKey((record.key, n)),
+      )) {
+        await deleteRecord(record.bangumiId, record.pluginName);
+      } else {
+        for (final e in group) {
+          await deleteEpisode(
+            record.bangumiId,
+            record.pluginName,
+            e.episode.episodeNumber,
+          );
+        }
+      }
+    }
   }
 }
 

@@ -13,6 +13,13 @@ with tempfile.TemporaryDirectory(prefix='naku-updater-native-') as directory:
     swift = path / 'main.swift'
     swift.write_text('import Cocoa\nimport Sparkle\n' + observer + '''
 private let observer = NakuUpdaterObserver()
+let suite = "naku-update-policy-test-" + UUID().uuidString
+let preferences = UserDefaults(suiteName: suite)!
+var enabled = 0
+NakuUpdaterObserver.adoptAutomaticDownloadDefault(defaults: preferences) { enabled += 1 }
+NakuUpdaterObserver.adoptAutomaticDownloadDefault(defaults: preferences) { enabled += 1 }
+precondition(enabled == 1, "Automatic download defaults must migrate once and preserve later preferences")
+preferences.removePersistentDomain(forName: suite)
 let selectors = [
   "updater:didFindValidUpdate:",
   "updater:willDownloadUpdate:withRequest:",
@@ -29,7 +36,30 @@ for name in selectors {
   precondition(observer.responds(to: NSSelectorFromString(name)), "Missing Sparkle callback: \\(name)")
 }
 let updater = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: observer, userDriverDelegate: observer).updater
+private final class PromptController: SPUStandardUpdaterController {
+ var prompts = 0
+ override func checkForUpdates(_ sender: Any?) { prompts += 1 }
+}
 let item = SUAppcastItem(dictionary: ["title": "Test", "sparkle:version": "999", "enclosure": ["url": "https://example.invalid/update.zip", "sparkle:version": "999"]])!
+do {
+ let promptObserver = NakuUpdaterObserver()
+ let prompt = PromptController(startingUpdater: false, updaterDelegate: promptObserver, userDriverDelegate: promptObserver)
+ promptObserver.controller = prompt
+ let checks = prompt.updater.automaticallyChecksForUpdates
+ let downloads = prompt.updater.automaticallyDownloadsUpdates
+ prompt.updater.automaticallyChecksForUpdates = true
+ prompt.updater.automaticallyDownloadsUpdates = true
+ precondition(!promptObserver.updater(prompt.updater, willInstallUpdateOnQuit: item, immediateInstallationBlock: {}))
+ promptObserver.updater(prompt.updater, didFinishUpdateCycleFor: .updatesInBackground, error: nil)
+ precondition(prompt.prompts == 0, "Wait for the automatic download cycle to finish")
+ RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+ precondition(prompt.prompts == 1, "Show the ready-to-install update exactly once")
+ promptObserver.updater(prompt.updater, didFinishUpdateCycleFor: .updatesInBackground, error: nil)
+ RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+ precondition(prompt.prompts == 1)
+ prompt.updater.automaticallyChecksForUpdates = checks
+ prompt.updater.automaticallyDownloadsUpdates = downloads
+}
 var resumed = 0
 observer.setPlaybackSession("nas", active: true)
 observer.setPlaybackSession("web", active: true)

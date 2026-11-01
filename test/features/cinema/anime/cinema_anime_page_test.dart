@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_ce/hive.dart';
@@ -74,7 +74,7 @@ void main() {
     await directory.delete(recursive: true);
   });
 
-  Future<void> mount(WidgetTester tester) async {
+  Future<void> mount(WidgetTester tester, {String query = ''}) async {
     tester.view.reset();
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1;
@@ -98,7 +98,8 @@ void main() {
                   Expanded(
                     child: ValueListenableBuilder<bool>(
                       valueListenable: active,
-                      builder: (_, value, _) => CinemaAnimePage(active: value),
+                      builder: (_, value, _) =>
+                          CinemaAnimePage(active: value, searchQuery: query),
                     ),
                   ),
                 ],
@@ -136,6 +137,20 @@ void main() {
     await tester.tap(find.byKey(ValueKey('anime-tab-$index')));
     await tester.pumpAndSettle();
   }
+
+  testWidgets(
+    'global anime query opens anime search and Escape returns to popular',
+    (tester) async {
+      await mount(tester, query: '死神');
+      expect(adapter.searchKeywords, ['死神']);
+      expect(find.byType(SearchPage), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.byType(PopularPage), findsOneWidget);
+      expect(find.byType(SearchPage), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'keeps original pages lazy and preserves scroll and local search state',

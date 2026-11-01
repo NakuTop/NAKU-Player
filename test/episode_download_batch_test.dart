@@ -7,9 +7,11 @@ import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/modules/download/download_module.dart';
 import 'package:kazumi/pages/download/download_controller.dart';
 import 'package:kazumi/plugins/plugins_controller.dart';
+import 'package:kazumi/plugins/plugins.dart';
 import 'package:kazumi/repositories/download_repository.dart';
 import 'package:kazumi/request/core/network_config.dart';
 import 'package:kazumi/services/download/download_manager.dart';
+import 'package:kazumi/services/download/download_library.dart';
 import 'package:kazumi/services/download/download_sleep_guard.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:kazumi/services/video_source/services.dart';
@@ -36,6 +38,21 @@ class _Manager extends Fake implements IDownloadManager {
   Future<void> enqueuePriority(DownloadRequest request) => enqueue(request);
   @override
   void pause(String record, int episode) {}
+  @override
+  void cancel(String record, int episode) {}
+  @override
+  Future<void> deleteEpisodeFiles(
+    int id,
+    String plugin,
+    int number, {
+    DownloadEpisode? episode,
+  }) async {}
+  @override
+  Future<void> deleteRecordFiles(
+    int id,
+    String plugin, {
+    DownloadRecord? record,
+  }) async {}
 }
 
 class _Resolver implements IVideoSourceService {
@@ -112,6 +129,7 @@ void main() {
   late DownloadController controller;
   late VideoSourceResolverPool pool;
   late _Resolver resolver;
+  late PluginsController plugins;
   late DownloadSleepGuard sleepGuard;
   final powerStates = <bool>[];
   setUpAll(() async {
@@ -129,6 +147,12 @@ void main() {
     repository = DownloadRepository();
     manager = _Manager();
     resolver = _Resolver();
+    plugins = PluginsController();
+    plugins.pluginList.add(
+      Plugin.fromTemplate()
+        ..name = 'anime-fixture'
+        ..baseUrl = 'https://anime.invalid',
+    );
     pool = VideoSourceResolverPool(createService: () => resolver);
     powerStates.clear();
     sleepGuard = DownloadSleepGuard(
@@ -140,7 +164,7 @@ void main() {
     controller = DownloadController(
       repository,
       manager,
-      PluginsController(),
+      plugins,
       resolverPool: pool,
       sleepGuard: sleepGuard,
     );
@@ -293,6 +317,160 @@ void main() {
     await _until(() => manager.requests.isNotEmpty);
     expect(manager.requests.single.m3u8Url, endsWith('/retry.m3u8'));
   });
+  test(
+    'failed anime URL is re-resolved; paused partial retains its progress',
+    () async {
+      final record = DownloadRecord(
+        412916,
+        '死神 千年血战篇-诀别谭-',
+        '',
+        'anime-fixture',
+        {},
+        DateTime(2026),
+      );
+      final episode = DownloadEpisode(
+        3,
+        '第03集',
+        0,
+        DownloadStatus.failed,
+        .42,
+        100,
+        42,
+        '',
+        '',
+        'https://cdn.invalid/expired.m3u8',
+        null,
+        'expired',
+        200,
+        '/episode/3',
+      );
+      record.episodes[3] = episode;
+      await repository.putRecord(record);
+      await controller.retryDownload(
+        bangumiId: record.bangumiId,
+        pluginName: record.pluginName,
+        episodeNumber: 3,
+      );
+      await _until(
+        () => resolver.pending.isNotEmpty || manager.requests.isNotEmpty,
+      );
+      expect(manager.requests, isEmpty);
+      expect(episode.progressPercent, .42);
+      resolver.pending.single.complete(
+        const VideoSource(
+          url: 'https://cdn.invalid/fresh.m3u8',
+          offset: 0,
+          type: VideoSourceType.online,
+        ),
+      );
+      await _until(() => manager.requests.isNotEmpty);
+      expect(manager.requests.single.m3u8Url, endsWith('/fresh.m3u8'));
+      await controller.pauseDownload(record.bangumiId, record.pluginName, 3);
+      await controller.retryDownload(
+        bangumiId: record.bangumiId,
+        pluginName: record.pluginName,
+        episodeNumber: 3,
+      );
+      await _until(() => manager.requests.length == 2);
+      expect(episode.progressPercent, .42);
+    },
+  );
+  test(
+    'late anime resolution after pause cannot enqueue or lose paused state',
+    () async {
+      final record = DownloadRecord(
+        412916,
+        '死神',
+        '',
+        'anime-fixture',
+        {},
+        DateTime(2026),
+      );
+      await controller.startEpisodeDownloads(
+        media: record,
+        selections: const [
+          DownloadSelection(number: 1, name: '第1集', road: 0, url: '/episode/1'),
+        ],
+      );
+      await _until(() => resolver.pending.isNotEmpty);
+      await controller.pauseDownload(record.bangumiId, record.pluginName, 1);
+      resolver.pending.single.complete(
+        const VideoSource(
+          url: 'https://cdn.invalid/late.m3u8',
+          offset: 0,
+          type: VideoSourceType.online,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+      expect(manager.requests, isEmpty);
+      expect(
+        repository.getRecord(record.key)!.episodes[1]!.status,
+        DownloadStatus.paused,
+      );
+    },
+  );
+  test(
+    'cross-source batch deletion cancels all selected resolvers before deleting and retains unselected episodes',
+    () async {
+      final a = DownloadRecord(
+        412916,
+        '死神',
+        '',
+        'anime-fixture',
+        {},
+        DateTime(2026),
+      );
+      final b = DownloadRecord(
+        412916,
+        '死神',
+        '',
+        'other-source',
+        {},
+        DateTime(2026),
+      );
+      await controller.startEpisodeDownloads(
+        media: a,
+        selections: const [
+          DownloadSelection(number: 1, name: '第1集', road: 0, url: '/1'),
+          DownloadSelection(number: 2, name: '第2集', road: 0, url: '/2'),
+        ],
+      );
+      await controller.startEpisodeDownloads(
+        media: b,
+        selections: const [
+          DownloadSelection(number: 1, name: '第1集', road: 0, url: '/other/1'),
+        ],
+      );
+      await _until(() => resolver.pending.length == 1);
+      expect(
+        repository.getRecord(a.key)!.episodes[2]!.status,
+        DownloadStatus.pending,
+      );
+      await controller.deleteEntries([
+        DownloadEntry(a, a.episodes[1]!),
+        DownloadEntry(b, b.episodes[1]!),
+      ]);
+      expect(repository.getRecord(b.key), isNull);
+      expect(repository.getRecord(a.key)!.episodes.keys, [2]);
+      resolver.pending[0].complete(
+        const VideoSource(
+          url: 'https://cdn.invalid/old.m3u8',
+          offset: 0,
+          type: VideoSourceType.online,
+        ),
+      );
+      await _until(() => resolver.pending.length == 2);
+      resolver.pending[1].complete(
+        const VideoSource(
+          url: 'https://cdn.invalid/two.m3u8',
+          offset: 0,
+          type: VideoSourceType.online,
+        ),
+      );
+      await _until(() => manager.requests.isNotEmpty);
+      expect(manager.requests.single.episodeNumber, 2);
+    },
+  );
   test(
     'video direct mode applies to playback/download config without changing API proxy',
     () async {

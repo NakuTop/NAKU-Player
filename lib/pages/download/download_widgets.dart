@@ -5,6 +5,7 @@ import 'package:kazumi/features/cinema/cinema_theme.dart';
 import 'package:kazumi/bean/widget/kazumi_menu.dart';
 import 'package:kazumi/bean/widget/loading_indicator.dart';
 import 'package:kazumi/modules/download/download_module.dart';
+import 'package:kazumi/services/download/download_library.dart';
 import 'package:kazumi/utils/format.dart';
 
 const Duration _kExpandDuration = Duration(milliseconds: 250);
@@ -20,6 +21,10 @@ class DownloadRecordCard extends StatelessWidget {
     required this.onDeleteAll,
     required this.totalSpeed,
     required this.episodeTileBuilder,
+    this.work,
+    this.leading,
+    this.onPauseAll,
+    this.onSelectEpisodes,
   });
 
   final DownloadRecord record;
@@ -28,6 +33,9 @@ class DownloadRecordCard extends StatelessWidget {
   final VoidCallback onResumeAll;
   final VoidCallback onDeleteAll;
   final double totalSpeed;
+  final DownloadWork? work;
+  final Widget? leading;
+  final VoidCallback? onPauseAll, onSelectEpisodes;
 
   final List<Widget> Function() episodeTileBuilder;
 
@@ -35,7 +43,8 @@ class DownloadRecordCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    final episodes = record.episodes.values;
+    final episodes =
+        work?.entries.map((e) => e.episode) ?? record.episodes.values;
     final totalCount = episodes.length;
     final completedCount = episodes
         .where((e) => e.status == DownloadStatus.completed)
@@ -53,6 +62,12 @@ class DownloadRecordCard extends StatelessWidget {
               e.status == DownloadStatus.resolving ||
               e.status == DownloadStatus.pending,
         )
+        .length;
+    final failedCount = episodes
+        .where((e) => e.status == DownloadStatus.failed)
+        .length;
+    final pausedCount = episodes
+        .where((e) => e.status == DownloadStatus.paused)
         .length;
     final aggregateProgress = totalCount == 0
         ? 0.0
@@ -76,6 +91,8 @@ class DownloadRecordCard extends StatelessWidget {
         meta += ' · ${formatSpeed(totalSpeed)}';
       }
     }
+    if (pausedCount > 0) meta += ' · $pausedCount 已暂停';
+    if (failedCount > 0) meta += ' · $failedCount 失败';
 
     final episodeContent = expanded
         ? Padding(
@@ -109,6 +126,7 @@ class DownloadRecordCard extends StatelessWidget {
                       ),
                       child: Row(
                         children: [
+                          ?leading,
                           ClipRRect(
                             borderRadius: BorderRadius.circular(10),
                             child: record.bangumiCover.isEmpty
@@ -146,7 +164,9 @@ class DownloadRecordCard extends StatelessWidget {
                                 ),
                                 const SizedBox(height: 8),
                                 Text(
-                                  record.displaySource,
+                                  work == null
+                                      ? record.displaySource
+                                      : '${work!.isAnime ? '动漫' : '影视'} · ${work!.sources.join(' / ')}',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: textTheme.bodySmall?.copyWith(
@@ -175,6 +195,16 @@ class DownloadRecordCard extends StatelessWidget {
                                 label: '全部开始',
                                 onPressed: onResumeAll,
                               ),
+                              if (onPauseAll != null)
+                                KazumiMenuItem(
+                                  label: '全部暂停',
+                                  onPressed: onPauseAll!,
+                                ),
+                              if (onSelectEpisodes != null)
+                                KazumiMenuItem(
+                                  label: '选择集数',
+                                  onPressed: onSelectEpisodes!,
+                                ),
                               KazumiMenuItem(
                                 label: '全部删除',
                                 destructive: true,
@@ -235,6 +265,8 @@ class DownloadEpisodeTile extends StatelessWidget {
     required this.statusText,
     this.actions = const [],
     this.onPlay,
+    this.sourceLabel = '',
+    this.selection,
   });
 
   final DownloadEpisode episode;
@@ -242,6 +274,8 @@ class DownloadEpisodeTile extends StatelessWidget {
   final List<Widget> actions;
 
   final VoidCallback? onPlay;
+  final String sourceLabel;
+  final Widget? selection;
 
   @override
   Widget build(BuildContext context) {
@@ -260,6 +294,7 @@ class DownloadEpisodeTile extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
         child: Row(
           children: [
+            ?selection,
             _EpisodeStatusBadge(episode: episode),
             const SizedBox(width: 12),
             Expanded(
@@ -275,6 +310,15 @@ class DownloadEpisodeTile extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 2),
+                  if (sourceLabel.isNotEmpty)
+                    Text(
+                      sourceLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: textTheme.labelSmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
                   Tooltip(
                     message: statusText,
                     child: Text(

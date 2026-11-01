@@ -150,11 +150,19 @@ class _SpeedTracker {
 }
 
 class DownloadManager implements IDownloadManager {
-  final Map<String, int> _resolvedOwners = {};
+  final Map<String, DownloadRequest> _resolvedOwners = {};
 
   bool _reserveSource(DownloadRequest request) {
     final identity = '${request.recordKey}\u0000${request.m3u8Url}';
-    int? owner = _resolvedOwners[identity];
+    final reserved = _resolvedOwners[identity];
+    // A failed/re-resolved task no longer owns this URL. Keeping the old owner
+    // forever can reject unrelated later attempts even after a transfer failed.
+    if (reserved != null &&
+        (reserved.episode.status == DownloadStatus.failed ||
+            reserved.episode.networkM3u8Url != reserved.m3u8Url)) {
+      _resolvedOwners.remove(identity);
+    }
+    int? owner = _resolvedOwners[identity]?.episodeNumber;
     final record = GStorage.downloads.get(request.recordKey);
     for (final other in record?.episodes.values ?? <DownloadEpisode>[]) {
       if (other.episodeNumber != request.episodeNumber &&
@@ -181,7 +189,7 @@ class DownloadManager implements IDownloadManager {
       );
       return false;
     }
-    _resolvedOwners[identity] = request.episodeNumber;
+    _resolvedOwners[identity] = request;
     return true;
   }
 
@@ -382,6 +390,11 @@ class DownloadManager implements IDownloadManager {
       request.episode.status = DownloadStatus.pending;
       _queue.add(request);
       _activeTasks[key] = task;
+      _notifyProgress(
+        request.recordKey,
+        request.episodeNumber,
+        request.episode,
+      );
     }
   }
 
@@ -1366,7 +1379,8 @@ class DownloadManager implements IDownloadManager {
     }
     _resolvedOwners.removeWhere(
       (source, owner) =>
-          source.startsWith('$recordKey\u0000') && owner == episodeNumber,
+          source.startsWith('$recordKey\u0000') &&
+          owner.episodeNumber == episodeNumber,
     );
   }
 

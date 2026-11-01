@@ -26,10 +26,20 @@ void provideCinemaAnimeControllers(Scoped scoped) {
 /// NAKU navigation around the complete original anime pages. Keeping this host
 /// mounted preserves each page's filters, requests, input and scroll position.
 class CinemaAnimePage extends StatefulWidget {
-  const CinemaAnimePage({super.key, this.active = true, this.initialTab = 0});
+  const CinemaAnimePage({
+    super.key,
+    this.active = true,
+    this.initialTab = 0,
+    this.searchQuery = '',
+    this.searchRevision = 0,
+    this.onReturnBrowse,
+  });
 
   final bool active;
   final int initialTab;
+  final String searchQuery;
+  final int searchRevision;
+  final VoidCallback? onReturnBrowse;
 
   @override
   State<CinemaAnimePage> createState() => _CinemaAnimePageState();
@@ -45,7 +55,9 @@ class _CinemaAnimePageState extends State<CinemaAnimePage> with RouteAware {
   ];
   final _pages = <int, Widget>{};
   final _focusScope = FocusScopeNode(debugLabel: 'NAKU anime');
-  late int _selected = widget.initialTab.clamp(0, _destinations.length - 1);
+  late int _selected = widget.searchQuery.isNotEmpty
+      ? 2
+      : widget.initialTab.clamp(0, _destinations.length - 1);
   bool _covered = false;
   PageRoute<void>? _route;
 
@@ -75,6 +87,9 @@ class _CinemaAnimePageState extends State<CinemaAnimePage> with RouteAware {
   void didUpdateWidget(covariant CinemaAnimePage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.active && !widget.active) _focusScope.unfocus();
+    if (oldWidget.searchRevision != widget.searchRevision) {
+      _selected = widget.searchQuery.isEmpty ? 0 : 2;
+    }
   }
 
   @override
@@ -94,25 +109,40 @@ class _CinemaAnimePageState extends State<CinemaAnimePage> with RouteAware {
     super.dispose();
   }
 
-  Widget _page(int index) => _pages.putIfAbsent(
-    index,
-    () => switch (index) {
-      0 => PopularPage(
-        controller: context.read<PopularController>(),
-        embedded: true,
-      ),
-      1 => TimelinePage(
-        controller: context.read<TimelineController>(),
-        embedded: true,
-      ),
-      2 => SearchPage(
+  Widget _page(int index) {
+    if (index == 2) {
+      return _pages[2] = SearchPage(
         controller: context.read<SearchPageController>(),
         embedded: true,
-      ),
-      3 => const SizedBox.shrink(),
-      _ => MyPage(controller: inject<MyController>(), embedded: true),
-    },
-  );
+        initialQuery: widget.searchQuery,
+        searchRevision: widget.searchRevision,
+        onReturnBrowse: () {
+          _focusScope.unfocus();
+          setState(() => _selected = 0);
+          widget.onReturnBrowse?.call();
+        },
+      );
+    }
+    return _pages.putIfAbsent(
+      index,
+      () => switch (index) {
+        0 => PopularPage(
+          controller: context.read<PopularController>(),
+          embedded: true,
+        ),
+        1 => TimelinePage(
+          controller: context.read<TimelineController>(),
+          embedded: true,
+        ),
+        2 => SearchPage(
+          controller: context.read<SearchPageController>(),
+          embedded: true,
+        ),
+        3 => const SizedBox.shrink(),
+        _ => MyPage(controller: inject<MyController>(), embedded: true),
+      },
+    );
+  }
 
   void _select(int index) {
     if (index == 3) {
@@ -130,6 +160,7 @@ class _CinemaAnimePageState extends State<CinemaAnimePage> with RouteAware {
   Widget build(BuildContext context) {
     final covered =
         !widget.active || _covered || RouteVisibility.isCoveredOf(context);
+    if (_selected != 2 && _pages.containsKey(2)) _page(2);
     _page(_selected);
     final theme = Theme.of(context);
     return Theme(

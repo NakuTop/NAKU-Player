@@ -254,8 +254,15 @@ class DownloadCatalog {
           } else {
             episode.localM3u8Path = local.path;
           }
-        } else {
+        } else if ({
+          DownloadStatus.pending,
+          DownloadStatus.resolving,
+          DownloadStatus.downloading,
+        }.contains(episode.status)) {
           episode.status = DownloadStatus.paused;
+          if (episode.errorMessage.isEmpty) {
+            episode.errorMessage = '上次下载已中断，继续后恢复下载';
+          }
         }
       }
     }

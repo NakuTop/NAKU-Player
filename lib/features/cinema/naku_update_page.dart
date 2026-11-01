@@ -139,8 +139,8 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
                       : (v) => _change(checks: v),
                 ),
                 SwitchListTile.adaptive(
-                  title: const Text('自动下载和安装'),
-                  subtitle: const Text('后台下载并验证后弹出安装提示；观看视频时不会自动重启。'),
+                  title: const Text('自动下载并提示更新'),
+                  subtitle: const Text('优先下载对应差分包，验证后弹出更新窗口；观看视频时不会自动重启。'),
                   value: _state?['automaticDownloads'] == true,
                   onChanged: _state == null || _busy
                       ? null

@@ -97,6 +97,15 @@ private final class GlassContentViewController: NSViewController {
 // Observe Sparkle's verified feed and keep automatic update prompts visible.
 // Archive/feed signature validation and installation remain owned by Sparkle.
 private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
+  // Adopt the requested default once, including existing installations. Later
+  // explicit changes in Software Update remain owned by Sparkle preferences.
+  static func adoptAutomaticDownloadDefault(defaults: UserDefaults = .standard,
+      enable: () -> Void) {
+    let key = "NakuAutomaticDownloadPromptPolicyV1"
+    guard !defaults.bool(forKey: key) else { return }
+    enable()
+    defaults.set(true, forKey: key)
+  }
   weak var controller: SPUStandardUpdaterController?
   private var installationPromptPending = false
   private var playbackSessions = Set<String>()
@@ -190,9 +199,13 @@ private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStanda
     if error != nil { cancelDeferredInstallation() }
     guard installationPromptPending else { return }
     installationPromptPending = false
-    guard error == nil, updater.automaticallyChecksForUpdates,
-      updater.automaticallyDownloadsUpdates else { return }
-    controller?.checkForUpdates(nil)
+    guard error == nil else { return }
+    let generation = installationGeneration
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.installationGeneration == generation,
+        updater.automaticallyChecksForUpdates, updater.automaticallyDownloadsUpdates else { return }
+      self.controller?.checkForUpdates(nil)
+    }
   }
 
   func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
@@ -633,12 +646,17 @@ class MainFlutterWindow: NSWindow {
     // Keep one native controller alive for the window lifetime. Sparkle owns its
     // persisted preferences, signature validation, scheduler, and installer UI.
     let updater = SPUStandardUpdaterController(
-      startingUpdater: true, updaterDelegate: updaterObserver, userDriverDelegate: updaterObserver)
+      startingUpdater: false, updaterDelegate: updaterObserver, userDriverDelegate: updaterObserver)
     // Set the persisted value as well as Info.plist's fresh-install default:
     // existing installations must adopt the requested hourly schedule too.
     updater.updater.updateCheckInterval = 3600
     updaterController = updater
     updaterObserver.controller = updater
+    NakuUpdaterObserver.adoptAutomaticDownloadDefault {
+      updater.updater.automaticallyChecksForUpdates = true
+      updater.updater.automaticallyDownloadsUpdates = true
+    }
+    updater.startUpdater()
     // Sparkle recommends doing an additional launch check immediately after
     // start, before the next runloop; respect the persisted opt-out preference.
     if updater.updater.automaticallyChecksForUpdates {

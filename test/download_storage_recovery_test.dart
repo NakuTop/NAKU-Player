@@ -66,13 +66,55 @@ void main() {
     await root.delete(recursive: true);
   });
 
+  test(
+    'catalog recovery preserves failure causes instead of relabeling them paused',
+    () async {
+      final catalog = DownloadCatalog(Directory(p.join(root.path, 'index')));
+      final record = DownloadRecord(
+        412916,
+        '死神',
+        '',
+        'fixture',
+        {},
+        DateTime(2026),
+      );
+      for (var n = 1; n <= 3; n++) {
+        record.episodes[n] = DownloadEpisode(
+          n,
+          '第$n集',
+          0,
+          n == 1
+              ? DownloadStatus.failed
+              : n == 2
+              ? DownloadStatus.pending
+              : DownloadStatus.paused,
+          .4,
+          10,
+          4,
+          '',
+          '',
+          '',
+          null,
+          n == 1 ? '解析结果与第2集重复' : '',
+          100,
+          '/$n',
+        );
+      }
+      await catalog.save(record);
+      final recovered = (await catalog.recover([])).single;
+      expect(recovered.episodes[1]!.status, DownloadStatus.failed);
+      expect(recovered.episodes[1]!.errorMessage, '解析结果与第2集重复');
+      expect(recovered.episodes[2]!.status, DownloadStatus.paused);
+      expect(recovered.episodes[2]!.errorMessage, contains('中断'));
+      expect(recovered.episodes[3]!.progressPercent, .4);
+    },
+  );
+
   for (final mode in ['hold', 'legacy-hold']) {
     test(
       'OS lock against $mode preserves bytes and records after restart',
       () async {
-        final dart = p.normalize(
-          p.join(Directory.current.path, '../toolchains/flutter/bin/dart'),
-        );
+        final dart = (Platform.environment['DART_EXECUTABLE'] ?? 'dart');
         const script = 'test/native/storage_guard_probe.dart';
         final holder = await Process.start(dart, [
           'run',
@@ -168,9 +210,7 @@ void main() {
     final bytes = List.generate(117, (i) => (i * 31) % 256);
     await db.writeAsBytes(bytes);
     final result = await Process.run(
-      p.normalize(
-        p.join(Directory.current.path, '../toolchains/flutter/bin/dart'),
-      ),
+      (Platform.environment['DART_EXECUTABLE'] ?? 'dart'),
       ['run', 'test/native/storage_guard_probe.dart', 'probe', root.path],
     );
     expect(result.exitCode, 73, reason: '${result.stderr}');
@@ -181,9 +221,7 @@ void main() {
   test(
     'a crashed database owner releases only the OS lock and records reopen intact',
     () async {
-      final dart = p.normalize(
-        p.join(Directory.current.path, '../toolchains/flutter/bin/dart'),
-      );
+      final dart = (Platform.environment['DART_EXECUTABLE'] ?? 'dart');
       const script = 'test/native/storage_guard_probe.dart';
       final holder = await Process.start(dart, [
         'run',
@@ -268,9 +306,7 @@ void main() {
   test(
     'an unknown future adapter preserves the database instead of resetting it',
     () async {
-      final dart = p.normalize(
-        p.join(Directory.current.path, '../toolchains/flutter/bin/dart'),
-      );
+      final dart = (Platform.environment['DART_EXECUTABLE'] ?? 'dart');
       const script = 'test/native/storage_guard_probe.dart';
       final written = await Process.run(dart, [
         'run',
