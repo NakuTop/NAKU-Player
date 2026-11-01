@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_logvar_client.dart';
 import 'package:kazumi/features/cinema/cinema_overseas_danmaku.dart';
 import 'package:kazumi/features/cinema/cinema_platform_danmaku.dart';
+import 'package:kazumi/features/cinema/cinema_overseas_danmaku_parser.dart';
+import 'package:flutter/foundation.dart';
 
 class _Adapter implements HttpClientAdapter {
   _Adapter(this.respond);
@@ -22,6 +24,33 @@ class _Adapter implements HttpClientAdapter {
     return data is ResponseBody
         ? data
         : ResponseBody.fromString(jsonEncode(data), 200);
+  }
+
+  @override
+  void close({bool force = false}) {}
+}
+
+class _HangingAdapter implements HttpClientAdapter {
+  _HangingAdapter({this.aiyifanWins = false});
+  final bool aiyifanWins;
+  final started = Completer<void>(), cancelled = Completer<void>();
+  final cancellation = <Future<void>>[];
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? body,
+    Future<void>? cancel,
+  ) async {
+    if (aiyifanWins && options.uri.host != 'api.pleasfun.com') {
+      return ResponseBody.fromString(jsonEncode(_aiFixture(options)), 200);
+    }
+    if (!started.isCompleted) started.complete();
+    final done = cancel!.then((_) {
+      if (!cancelled.isCompleted) cancelled.complete();
+    });
+    cancellation.add(done);
+    await done;
+    throw StateError('adapter request cancelled');
   }
 
   @override
@@ -167,6 +196,119 @@ class _Matcher implements CinemaDanmakuMatcher {
 }
 
 void main() {
+  test(
+    'first successful platform cancels the losing pending network request',
+    () async {
+      final adapter = _HangingAdapter(aiyifanWins: true);
+      final client = CinemaOverseasDanmakuClient(
+        dio: Dio()..httpClientAdapter = adapter,
+      );
+      addTearDown(client.close);
+      final result = await client
+          .match(query)
+          .timeout(const Duration(seconds: 5));
+      expect(result!.provider, '爱一帆');
+      await adapter.cancelled.future.timeout(const Duration(seconds: 1));
+    },
+  );
+  test(
+    'external cancellation settles match while both platforms are stalled',
+    () async {
+      final adapter = _HangingAdapter();
+      final client = CinemaOverseasDanmakuClient(
+        dio: Dio()..httpClientAdapter = adapter,
+      );
+      addTearDown(client.close);
+      final token = CancelToken();
+      final pending = client.match(query, cancelToken: token);
+      final assertion = expectLater(
+        pending,
+        throwsA(
+          isA<DioException>().having(
+            (e) => e.type,
+            'type',
+            DioExceptionType.cancel,
+          ),
+        ),
+      );
+      await adapter.started.future;
+      token.cancel('切集');
+      await assertion.timeout(const Duration(seconds: 1));
+      await Future.wait(
+        adapter.cancellation,
+      ).timeout(const Duration(seconds: 1));
+    },
+  );
+  test(
+    'close cancels direct provider requests without cancelling caller token',
+    () async {
+      final adapter = _HangingAdapter();
+      final client = CinemaOverseasDanmakuClient(
+        dio: Dio()..httpClientAdapter = adapter,
+      );
+      final token = CancelToken();
+      final pending = client.matchRenren(query, cancelToken: token);
+      final assertion = expectLater(pending, throwsA(anything));
+      await adapter.started.future;
+      client.close();
+      await assertion.timeout(const Duration(seconds: 1));
+      await adapter.cancelled.future.timeout(const Duration(seconds: 1));
+      expect(token.isCancelled, isFalse);
+    },
+  );
+  test(
+    'large worker parse normalizes, deduplicates and sorts plain values',
+    () async {
+      final rows = List<Map>.generate(
+        1000,
+        (i) => {
+          'second': 1000 - i,
+          'contxt': '<b>弹幕 $i</b>  &amp; 测试',
+          'color': '#ff0000',
+          'position': 1,
+        },
+      );
+      rows.addAll([
+        rows.first,
+        {'second': -1, 'contxt': 'invalid'},
+      ]);
+      final result = await compute(parseOverseasComments, (
+        rows: rows,
+        renren: false,
+        leadInSeconds: 0.0,
+      ));
+      expect(result.length, 1000);
+      expect(result.first.time, 1);
+      expect(result.last.message, '弹幕 0 & 测试');
+      expect(result.first.color, 0xffff0000);
+      expect(result.first.type, 5);
+    },
+  );
+  test('worker decoder handles bounded gzip and nested JSON', () async {
+    final raw = Uint8List.fromList(
+      gzip.encode(
+        utf8.encode(
+          jsonEncode(
+            jsonEncode([
+              {'p': '6,5,25,16711680', 'd': 'test'},
+            ]),
+          ),
+        ),
+      ),
+    );
+    final data = await compute(decodeOverseasResponse, raw);
+    expect(data, [
+      {'p': '6,5,25,16711680', 'd': 'test'},
+    ]);
+    final tooLarge = Uint8List.fromList(
+      gzip.encode(List.filled(8 * 1024 * 1024 + 1, 32)),
+    );
+    await expectLater(
+      compute(decodeOverseasResponse, tooLarge),
+      throwsFormatException,
+    );
+  });
+
   test(
     'aiyifan selects exact numbered episode and uniqueID, not array index or episodeId',
     () async {

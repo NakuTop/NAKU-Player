@@ -440,6 +440,9 @@ void main() {
   late CinemaWatchTogether together;
   final backends = <_Backend>[];
   const channel = MethodChannel('window_manager');
+  const screenChannel = MethodChannel(
+    'dev.leanflutter.plugins/screen_retriever',
+  );
   const visibilityChannel = MethodChannel('naku/cinema-player-window-test');
   late DesktopWindowControls windowControls;
   late Map<String, dynamic> nativeWindowState;
@@ -461,6 +464,19 @@ void main() {
       clientFactory: (_, _) => throw StateError('fixture must stay offline'),
     );
     await together.initialize();
+    messenger.setMockMethodCallHandler(
+      screenChannel,
+      (call) async => {
+        'displays': [
+          {
+            'id': 'main',
+            'size': {'width': 1440.0, 'height': 1000.0},
+            'visiblePosition': {'dx': 0.0, 'dy': 24.0},
+            'visibleSize': {'width': 1440.0, 'height': 976.0},
+          },
+        ],
+      },
+    );
     backends.clear();
     visibilityCalls.clear();
     nativeWindowState = {
@@ -487,6 +503,7 @@ void main() {
     windowControls.dispose();
     messenger.setMockMethodCallHandler(visibilityChannel, null);
     messenger.setMockMethodCallHandler(channel, null);
+    messenger.setMockMethodCallHandler(screenChannel, null);
     together.dispose();
     store.dispose();
     await directory.delete(recursive: true);
@@ -2500,6 +2517,7 @@ void main() {
       addTearDown(() async {
         await events.close();
         messenger.setMockMethodCallHandler(channel, null);
+        messenger.setMockMethodCallHandler(screenChannel, null);
       });
       messenger.setMockMethodCallHandler(CinemaNASClient.channel, (call) async {
         if (call.method == 'ensure') return {'namespace': 'a' * 64};

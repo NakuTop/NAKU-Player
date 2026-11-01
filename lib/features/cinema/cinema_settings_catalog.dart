@@ -136,7 +136,7 @@ const cinemaSettingsGroups = <CinemaSettingsGroup>[
     CinemaSettingsDestination(
       id: 'storage',
       title: '存储与日志',
-      description: '图片缓存与错误日志',
+      description: '图片、视频分片缓存与错误日志',
       icon: Icons.storage_rounded,
       route: '/settings/storage',
     ),

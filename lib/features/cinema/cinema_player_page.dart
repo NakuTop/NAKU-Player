@@ -25,6 +25,9 @@ import 'cinema_external_subtitles.dart';
 import 'cinema_season_subtitle_controller.dart';
 import 'cinema_mobile_playback_bar.dart';
 import 'cinema_media_cache.dart';
+import 'cinema_pause_cache_policy.dart';
+import 'package:kazumi/services/platform/macos_playback_power.dart';
+import 'package:kazumi/services/platform/desktop_window_bounds.dart';
 import 'cinema_media_transport.dart';
 import 'cinema_media_routing.dart';
 import 'cinema_route_probe.dart';
@@ -1158,9 +1161,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Future<void> _restoreWindow() async {
     await windowManager.setAlwaysOnTop(_windowWasOnTop);
     await windowManager.setAspectRatio(0);
-    await windowManager.setMinimumSize(const Size(800, 600));
     final bounds = _windowBounds;
-    if (bounds != null) await windowManager.setBounds(bounds);
+    if (bounds != null) {
+      await restoreDesktopWindowBounds(bounds);
+    } else {
+      await windowManager.setMinimumSize(const Size(800, 600));
+    }
   }
 
   Future<void> _applyShader(
@@ -1275,6 +1281,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       unawaited(_cache.configure(CinemaCachePreferences.parse(cachePrefs)));
     }
 
+    _cache.addListener(_pauseCachePreferencesChanged);
+    if (Platform.isMacOS) {
+      MacOSPlaybackPower.instance.addListener(_pauseCachePreferencesChanged);
+      unawaited(MacOSPlaybackPower.instance.initialize());
+    }
     DesktopExitTasks.instance.register(this, _saveBeforeApplicationExit);
     _windowControls.register(this, _windowVisibilityChanged);
     _bindTogether();
@@ -1761,6 +1772,25 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         }
         if (!_isCurrent(generation)) return;
         await applyCinemaTrackPreferences(candidate.player, widget.store);
+        if (Platform.isMacOS) {
+          candidate.pauseCache = CinemaPauseCachePolicy(
+            onChanged: (conserving) async {
+              if (!_isCurrent(generation) || !identical(_playback, candidate)) {
+                return;
+              }
+              candidate.cacheSession?.backgroundPrefetchAllowed = !conserving;
+              if (conserving) candidate.cancelNextWarmup('长时间暂停，减少后台预取');
+              for (final name in ['cache-secs', 'demuxer-readahead-secs']) {
+                if (!_isCurrent(generation) ||
+                    !identical(_playback, candidate) ||
+                    candidate.pauseCache?.conserving != conserving) {
+                  return;
+                }
+                await native.setProperty(name, conserving ? '1' : '86400');
+              }
+            },
+          );
+        }
         candidate.logStage('native-config-ready');
       }
       candidate.logStage('open-start');
@@ -2755,6 +2785,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }),
       playback.player.stream.buffering.listen((value) {
         if (!current()) return;
+        _syncPauseCache(playback);
         if (value) playback.cancelNextWarmup('当前视频正在缓冲，暂停下一集预热');
         playback.cacheSession?.update(
           playback.position,
@@ -2768,6 +2799,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       playback.player.stream.playing.listen((playing) {
         if (!current()) return;
         playback.watchdog.reset();
+        _syncPauseCache(playback);
         _syncTVActivity();
         if (NakuDevice.isTV) {
           if (!playing) {
@@ -2914,6 +2946,30 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     );
   }
 
+  void _syncPauseCache(_CinemaPlayback playback) {
+    if (!Platform.isMacOS || !identical(_playback, playback) || _closing) {
+      return;
+    }
+    final state = playback.player.state;
+    playback.pauseCache?.update(
+      playing: state.playing,
+      buffering: state.buffering,
+      ready: playback.ready,
+      lowPowerMode: MacOSPlaybackPower.instance.lowPowerMode,
+      backgrounded:
+          _windowControls.hidden ||
+          _backgroundPaused ||
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.hidden ||
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused,
+      enabled: _cache.preferences.pauseEconomy,
+    );
+  }
+
+  void _pauseCachePreferencesChanged() {
+    final playback = _playback;
+    if (playback != null) _syncPauseCache(playback);
+  }
+
   void _updateReady(_CinemaPlayback playback, int generation) {
     if (!_isCurrent(generation) ||
         playback.ready ||
@@ -2922,6 +2978,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return;
     }
     playback.ready = true;
+    _syncPauseCache(playback);
     if ((_usesMacCinemaLayout || NakuDevice.isTV) &&
         widget.videoSurfaceBuilder == null &&
         !playback.firstFrameRendered) {
@@ -3313,6 +3370,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   Future<void> _warmNext(_CinemaPlayback playback, int generation) async {
     if (_source.id == cinemaNASSource.id) return;
+    if (playback.pauseCache?.conserving == true) return;
     if (NakuDevice.isTV && !_tvBackgroundAllowed(playback)) return;
     if (_probingRoutes ||
         !_isCurrent(generation) ||
@@ -3666,7 +3724,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         if (native is NativePlayer) {
           try {
             for (final entry
-                in policy.nativeProperties(_preferences.bufferSize).entries) {
+                in policy.rateProperties(_preferences.bufferSize).entries) {
               if (!mounted || !identical(playback, _playback)) return;
               await native.setProperty(entry.key, entry.value);
             }
@@ -3909,6 +3967,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _stopEntranceSound();
       _cancelTVBackground('应用已离开前台', reset: true);
     }
+    final playback = _playback;
+    if (playback != null) _syncPauseCache(playback);
     final revision = ++_lifecycleRevision;
     if (!_fullscreenChanging &&
         _fullscreenTransition == null &&
@@ -3933,9 +3993,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     if (!mounted || _closing) return;
     if (!hidden) {
       _backgroundPaused = false;
+      final playback = _playback;
+      if (playback != null) _syncPauseCache(playback);
       return;
     }
     _stopEntranceSound();
+    final playback = _playback;
+    if (playback != null) _syncPauseCache(playback);
     if (!_windowControls.blocksPlayback) return;
     _backgroundPaused = true;
     await _playback?.player.pause();
@@ -3959,6 +4023,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   @override
   void dispose() {
+    _cache.removeListener(_pauseCachePreferencesChanged);
+    if (Platform.isMacOS) {
+      MacOSPlaybackPower.instance.removeListener(_pauseCachePreferencesChanged);
+    }
     CinemaTVPlaybackActivity.instance.release(this);
     _stopEntranceSound();
     _tvControlsTimer?.cancel();
@@ -6067,6 +6135,7 @@ class _CinemaPlayback {
   Map<String, String> mediaHeaders = const {};
   VideoSourceFormat mediaFormat = VideoSourceFormat.auto;
   CinemaCacheSession? cacheSession;
+  CinemaPauseCachePolicy? pauseCache;
   CinemaNASPlaybackSession? nasSession;
   Stopwatch? firstFrameWatch;
   bool warmedNext = false;
@@ -6087,6 +6156,7 @@ class _CinemaPlayback {
 
   Future<void> dispose() => _disposal ??= _dispose();
   Future<void> _dispose() async {
+    pauseCache?.close();
     firstFrameTimer?.cancel();
     // Reading player also initializes its route binding if creation was lazy.
     final disposingPlayer = player;

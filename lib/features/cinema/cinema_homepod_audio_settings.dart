@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:kazumi/services/platform/homepod_audio_controls.dart';
 
 import 'cinema_theme.dart';
@@ -52,13 +53,16 @@ class _CinemaHomePodAudioSettingsState
     super.dispose();
   }
 
-  String get statusText => controls.installing
+  String get statusText => controls.restoring
+      ? '正在关闭音频连接…'
+      : controls.installing
       ? '请在系统安装器中完成驱动安装'
       : switch (controls.status) {
           'connecting' => '正在连接…',
           'streaming' =>
             '已连接${controls.deviceName == null ? '' : ' · ${controls.deviceName}'}',
           'error' => '连接未建立',
+          'interrupted' => '输出已停止 · 需要重新开启',
           _ => controls.enabled ? '输出已开启' : '已关闭',
         };
 
@@ -80,6 +84,7 @@ class _CinemaHomePodAudioSettingsState
             value: controls.enabled || controls.installing,
             onChanged:
                 controls.supported &&
+                    !controls.restoring &&
                     !controls.discovering &&
                     !controls.checkingDriver
                 ? (value) {
@@ -126,7 +131,8 @@ class _CinemaHomePodAudioSettingsState
                   ),
               ],
               onChanged:
-                  controls.enabled ||
+                  controls.restoring ||
+                      controls.enabled ||
                       controls.connecting ||
                       controls.installing ||
                       controls.checkingDriver ||
@@ -138,7 +144,8 @@ class _CinemaHomePodAudioSettingsState
             TextButton.icon(
               key: const ValueKey('homepod-discover'),
               onPressed:
-                  controls.discovering ||
+                  controls.restoring ||
+                      controls.discovering ||
                       controls.checkingDriver ||
                       controls.connecting ||
                       controls.installing
@@ -167,7 +174,8 @@ class _CinemaHomePodAudioSettingsState
             TextButton.icon(
               key: const ValueKey('homepod-check-driver'),
               onPressed:
-                  controls.driverInstalled &&
+                  !controls.restoring &&
+                      controls.driverInstalled &&
                       !controls.needsDriverUpdate &&
                       !controls.enabled &&
                       !controls.audioRouteActive &&
@@ -192,6 +200,12 @@ class _CinemaHomePodAudioSettingsState
               style: const TextStyle(color: CinemaTheme.muted, fontSize: 13),
             ),
             if (controls.enabled && controls.status == 'streaming') ...[
+              const SizedBox(height: 6),
+              Text(
+                controls.connectionHealthText,
+                key: const ValueKey('homepod-connection-health'),
+                style: const TextStyle(color: CinemaTheme.muted, fontSize: 13),
+              ),
               const SizedBox(height: 14),
               Row(
                 children: [
@@ -235,6 +249,21 @@ class _CinemaHomePodAudioSettingsState
                 ),
               ),
           ],
+          if (controls.diagnostics.available)
+            TextButton.icon(
+              key: const ValueKey('homepod-copy-diagnostics'),
+              icon: const Icon(Icons.copy_rounded),
+              label: const Text('复制连接诊断'),
+              onPressed: () async {
+                await Clipboard.setData(
+                  ClipboardData(text: controls.diagnosticReport),
+                );
+                if (!context.mounted) return;
+                ScaffoldMessenger.maybeOf(
+                  context,
+                )?.showSnackBar(const SnackBar(content: Text('连接诊断已复制')));
+              },
+            ),
           if (controls.error != null)
             Padding(
               padding: const EdgeInsets.only(top: 12),

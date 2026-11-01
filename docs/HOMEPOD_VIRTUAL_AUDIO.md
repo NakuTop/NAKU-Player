@@ -141,3 +141,51 @@ The local Flutter regression run completed with 1,554 passing and 47 skipped
 visible test cases (plus 238 successful loading/setup events). Native PCM,
 sender, and driver/client contract checks also pass. These
 results do not replace the listening acceptance above.
+
+
+## 3.1 session interruption and diagnostics
+
+The sender's Unisson-derived pacing, FIR/PI drift correction and receiver
+latency remain unchanged. These changes affect session ownership and visibility:
+
+- `NSWorkspace.willSleepNotification` invalidates a connecting/active capture
+  session and stops the virtual-audio tap before sleep. Wake leaves output off
+  and explains that a new explicit connection is required.
+- A session-scoped UDP `NWConnection` to the selected HomePod address observes
+  that destination's path and records its first satisfied egress interface as its
+  baseline. It never calls send or receive and sends no application payload. A
+  change in the default Internet/VPN route alone is not treated as a HomePod
+  failure. An unavailable path or changed egress interface stops the
+  session, clears stale Bonjour resolutions and asks the user to discover again.
+  Ordinary path updates on the same interface do not restart it. There is no
+  automatic reconnect or receiver-latency adjustment.
+- A short-lock cancellation token is invalidated immediately on the UI thread.
+  Capture startup checks it before starting, after the slow attach/arm XPC stages,
+  and before/after route changes. Start and cleanup are ordered on the same
+  session queue, so old cleanup completes before a new capture can own the route.
+  The UI reports a closing state and keeps polling until cleanup completes.
+  Cancellation never waits on the main thread for the two XPC requests (each
+  has a five-second timeout). Sleep/quit additionally attempt immediate route
+  recovery through the stored lease; the broker also restores an armed route if
+  its reader process exits. CoreAudio property calls have no explicit app-level
+  timeout. The capture queue's start/stop path does not synchronously enter the
+  main queue. The existing restoration guard changes an output only if it is still NAKU's virtual device;
+  a manual user-selected output remains authoritative.
+- The settings page derives health from consecutive samples at least one second
+  apart. Advancing capture/send counters mean progress even for silent PCM;
+  only new underrun/drop/late/reset/retransmit increments report a current
+  fluctuation. This is a local pipeline observation, not proof of audible
+  continuity, network loss rate or acoustic latency.
+- Copy Connection Diagnostics includes only finite numeric counters and a
+  whitelist of session/interruption states. It excludes device names, service
+  IDs, network addresses, URLs, arbitrary error text and credentials. The final
+  sender counters remain available after disconnection until a new connection.
+
+Offline checks: `python3 scripts/test_homepod_session_native.py` exercises stale
+startup rejection, immediate cancellation during slow IPC, cleanup/new-start ordering and path
+baseline/loss/interface-change decisions. Dart tests cover health deltas,
+silent audio, counter reset, interrupted sessions staying off, and the exact
+clipboard allowlist. Native typecheck and the full app build validate integration.
+Actual Mac sleep/wake, Wi-Fi/Ethernet transitions and a user switching the output
+during an interruption still require device acceptance; no acoustic measurement
+is implied by these checks.

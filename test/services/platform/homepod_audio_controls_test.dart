@@ -62,6 +62,49 @@ void main() {
         .setMockMethodCallHandler(channel, null);
   });
 
+  test(
+    'native sleep interruption stays off without automatic reconnection',
+    () async {
+      await controls.discover();
+      await controls.enable();
+      final connects = calls.where((call) => call.method == 'enable').length;
+      handler(
+        (call) async => {
+          ...off,
+          'status': 'interrupted',
+          'interruptionReason': 'sleep',
+          'error': 'Mac 已唤醒，请重新开启。',
+          'packetsSent': 100,
+          'capturedFrames': 35200,
+        },
+      );
+      await controls.refresh();
+      expect(controls.enabled, false);
+      expect(controls.audioRouteActive, false);
+      expect(controls.status, 'interrupted');
+      expect(controls.interruptionReason, 'sleep');
+      expect(controls.error, 'Mac 已唤醒，请重新开启。');
+      expect(controls.diagnostics.available, true);
+      await controls.refresh();
+      expect(calls.where((call) => call.method == 'enable').length, connects);
+    },
+  );
+
+  test(
+    'native cleanup keeps controls gated until restoration finishes',
+    () async {
+      var closing = true;
+      handler((call) async => {...off, 'restoring': closing});
+      await controls.initialize();
+      expect(controls.restoring, true);
+      expect(await controls.enable(), false);
+      expect(calls.where((call) => call.method == 'enable'), isEmpty);
+      closing = false;
+      await controls.refresh();
+      expect(controls.restoring, false);
+    },
+  );
+
   test('initialization reads state only and remains off', () async {
     expect(controls.enabled, false);
     expect(calls, isEmpty);

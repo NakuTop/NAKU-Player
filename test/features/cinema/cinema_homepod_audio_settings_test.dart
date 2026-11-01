@@ -8,6 +8,57 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   const channel = MethodChannel('test/homepod-settings');
 
+  testWidgets('diagnostic copy excludes device information and raw errors', (
+    tester,
+  ) async {
+    String? clipboard;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+          if (call.method == 'Clipboard.setData') {
+            clipboard = (call.arguments as Map)['text'] as String;
+          }
+          return null;
+        });
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          channel,
+          (call) async => {
+            'supported': true,
+            'enabled': false,
+            'status': 'interrupted',
+            'interruptionReason': 'network',
+            'deviceName': 'Private bedroom',
+            'address': '192.168.1.2',
+            'error': 'Private network failure',
+            'packetsSent': 123,
+            'senderUnderruns': 2,
+          },
+        );
+    final controls = HomePodAudioControls(
+      channel: channel,
+      platform: TargetPlatform.macOS,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: CinemaHomePodAudioSettings(controls: controls)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('输出已停止 · 需要重新开启'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('homepod-copy-diagnostics')));
+    await tester.pumpAndSettle();
+    expect(clipboard, contains('123'));
+    expect(clipboard, contains('network'));
+    expect(clipboard, isNot(contains('Private')));
+    expect(clipboard, isNot(contains('192.168')));
+    await tester.pumpWidget(const SizedBox());
+    controls.dispose();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null);
+  });
+
   testWidgets(
     'system output starts off and permissions are requested only on enable',
     (tester) async {

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'homepod_audio_diagnostics.dart';
 
 @immutable
 class HomePodAudioDevice {
@@ -48,12 +49,15 @@ class HomePodAudioControls extends ChangeNotifier {
   HomePodAudioControls({
     MethodChannel? channel,
     TargetPlatform? platform,
+    DateTime Function()? now,
     this.pollInterval = const Duration(seconds: 2),
     this.installationTimeout = const Duration(minutes: 5),
-  }) : _channel = channel ?? const MethodChannel('naku/homepod-audio'),
+  }) : _now = now ?? DateTime.now,
+       _channel = channel ?? const MethodChannel('naku/homepod-audio'),
        supported = (platform ?? defaultTargetPlatform) == TargetPlatform.macOS;
 
   static final instance = HomePodAudioControls();
+  final DateTime Function() _now;
   final MethodChannel _channel;
   final Duration pollInterval;
   final Duration installationTimeout;
@@ -70,12 +74,23 @@ class HomePodAudioControls extends ChangeNotifier {
   String? _volumeError;
   bool discovering = false;
   bool connecting = false;
+  bool restoring = false;
   bool checkingDriver = false;
   String? driverCheckMessage;
   String status = 'off';
   String? error, deviceName, selectedDeviceId;
   double? latencyMs;
   List<HomePodAudioDevice> devices = const [];
+  String? interruptionReason;
+  HomePodAudioDiagnostics diagnostics = HomePodAudioDiagnostics.decode(
+    const {},
+  );
+  final _healthSampler = HomePodHealthSampler();
+  String get connectionHealthText => _healthSampler.health.label;
+  String get diagnosticReport => diagnostics.report(
+    status: status,
+    interruptionReason: interruptionReason,
+  );
 
   Future<void>? _initializing;
   Timer? _poller;
@@ -104,6 +119,7 @@ class HomePodAudioControls extends ChangeNotifier {
     final needed =
         !_disposed &&
         (audioRouteActive ||
+            restoring ||
             (supported && (_viewers > 0 || enabled || installing)));
     if (needed) {
       _poller ??= Timer.periodic(pollInterval, (_) => unawaited(refresh()));
@@ -146,6 +162,17 @@ class HomePodAudioControls extends ChangeNotifier {
     _audioRouteActive = value['routeActive'] is bool
         ? value['routeActive'] as bool
         : enabled && status == 'streaming';
+    restoring = value['restoring'] == true;
+    final reason = value['interruptionReason'];
+    interruptionReason = const {'sleep', 'network'}.contains(reason)
+        ? reason as String
+        : null;
+    diagnostics = HomePodAudioDiagnostics.decode(value);
+    if (enabled && status == 'streaming') {
+      _healthSampler.sample(diagnostics, _now());
+    } else {
+      _healthSampler.reset();
+    }
     final reportedVolume = value['receiverVolume'];
     if (reportedVolume is num && reportedVolume.isFinite) {
       receiverVolume = reportedVolume.toDouble().clamp(0, 100);
@@ -209,6 +236,7 @@ class HomePodAudioControls extends ChangeNotifier {
     await initialize();
     if (_disposed ||
         !supported ||
+        restoring ||
         discovering ||
         connecting ||
         installing ||
@@ -247,6 +275,7 @@ class HomePodAudioControls extends ChangeNotifier {
   Future<bool> enable() async {
     if (_disposed ||
         !supported ||
+        restoring ||
         connecting ||
         enabled ||
         discovering ||
@@ -259,6 +288,7 @@ class HomePodAudioControls extends ChangeNotifier {
     if (_disposed ||
         generation != _generation ||
         !supported ||
+        restoring ||
         connecting ||
         enabled ||
         discovering ||
@@ -397,6 +427,7 @@ class HomePodAudioControls extends ChangeNotifier {
   Future<bool> checkDriver() async {
     if (_disposed ||
         !supported ||
+        restoring ||
         enabled ||
         audioRouteActive ||
         installing ||
@@ -410,6 +441,7 @@ class HomePodAudioControls extends ChangeNotifier {
     if (_disposed ||
         generation != _generation ||
         !supported ||
+        restoring ||
         !driverInstalled ||
         needsDriverUpdate ||
         enabled ||
@@ -453,6 +485,9 @@ class HomePodAudioControls extends ChangeNotifier {
   Future<bool> _connect(int generation, String id) async {
     if (_disposed || generation != _generation) return false;
     _desiredEnabled = true;
+    _healthSampler.reset();
+    diagnostics = HomePodAudioDiagnostics.decode(const {});
+    interruptionReason = null;
     enabled = true;
     connecting = true;
     status = 'connecting';

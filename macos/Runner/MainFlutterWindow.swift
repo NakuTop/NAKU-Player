@@ -351,8 +351,10 @@ class MainFlutterWindow: NSWindow {
   private let nasMovies = NakuNASMovies()
   private var desktopControls: NakuDesktopWindowController?
   private var cinemaStartupSound: NakuCinemaStartupSound?
+  private var playbackPowerObserver: NSObjectProtocol?
 
   deinit {
+    if let token = playbackPowerObserver { NotificationCenter.default.removeObserver(token) }
     cinemaStartupSound?.stop()
     if let activity = downloadActivity { ProcessInfo.processInfo.endActivity(activity) }
   }
@@ -372,6 +374,19 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    let playbackPowerChannel = FlutterMethodChannel(name: "naku/playback-power",
+      binaryMessenger: flutterViewController.engine.binaryMessenger)
+    playbackPowerChannel.setMethodCallHandler { call, result in
+      if call.method == "state" {
+        result(["lowPowerMode": ProcessInfo.processInfo.isLowPowerModeEnabled])
+      } else { result(FlutterMethodNotImplemented) }
+    }
+    playbackPowerObserver = NotificationCenter.default.addObserver(
+      forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main
+    ) { _ in
+      playbackPowerChannel.invokeMethod("changed", arguments:
+        ["lowPowerMode": ProcessInfo.processInfo.isLowPowerModeEnabled])
+    }
     NakuSubtitleTools.register(with: flutterViewController.engine.binaryMessenger)
     NakuHomePodAudio.register(with: flutterViewController.engine.binaryMessenger)
     NakuHomePodAudio.shared.onEnabledChange = { [weak self] active in

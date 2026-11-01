@@ -46,6 +46,34 @@ class _DelayedCancellationTransport extends CinemaMediaTransport {
   }
 }
 
+class _ObservedTransport extends CinemaMediaTransport {
+  _ObservedTransport() : super(dio: Dio());
+  CancelToken? prefetchCancel;
+  @override
+  Future<Uint8List> bytes(
+    Uri uri,
+    Map<String, String> headers, {
+    CancelToken? cancel,
+    int limit = 2 * 1024 * 1024,
+    bool partial = false,
+    String? range,
+    bool metadata = false,
+    Duration timeout = const Duration(seconds: 20),
+  }) {
+    prefetchCancel ??= cancel;
+    return super.bytes(
+      uri,
+      headers,
+      cancel: cancel,
+      limit: limit,
+      partial: partial,
+      range: range,
+      metadata: metadata,
+      timeout: timeout,
+    );
+  }
+}
+
 void main() {
   late HttpServer origin;
   late Directory directory;
@@ -55,10 +83,12 @@ void main() {
   bool online = true;
   Completer<void>? gate;
   Completer<void>? started;
+  Completer<void>? relayStarted;
   setUp(() async {
     online = true;
     gate = null;
     started = null;
+    relayStarted = null;
     hits.clear();
     directory = await Directory.systemTemp.createTemp('naku-buffer-cache-');
     origin = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -76,6 +106,11 @@ void main() {
           return;
         }
         if (started != null && !started!.isCompleted) started!.complete();
+        if ((hits[request.uri.path] ?? 0) > 1 &&
+            relayStarted != null &&
+            !relayStarted!.isCompleted) {
+          relayStarted!.complete();
+        }
         await gate?.future;
         final range = RegExp(
           r'^bytes=(\d+)-(\d*)$',
@@ -291,6 +326,61 @@ void main() {
       expect(await foreground, data);
       expect(hits['/seg.ts'], 1);
       await opened.session.close();
+    },
+  );
+
+  test(
+    'one timed-out adopter cannot release another foreground waiter',
+    () async {
+      await cache.shutdown();
+      cache.dispose();
+      cache.transport.dio.close(force: true);
+      final transport = _ObservedTransport();
+      cache = CinemaMediaCache(
+        directory: directory,
+        transport: transport,
+        prefetchAdoptionTimeout: const Duration(milliseconds: 500),
+      );
+      gate = Completer<void>();
+      started = Completer<void>();
+      relayStarted = Completer<void>();
+      try {
+        final opened = (await cache.open(
+          url('vod.m3u8'),
+          {},
+          backgroundPrefetchAllowed: false,
+        ))!;
+        final playlist = String.fromCharCodes(await read(opened.url));
+        final media = playlist
+            .split('\n')
+            .firstWhere((l) => l.startsWith('http'));
+        opened.session.backgroundPrefetchAllowed = true;
+        await started!.future.timeout(const Duration(seconds: 2));
+        final first = read(media);
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        final second = read(media);
+        // The first adopter times out and starts a direct relay while the second
+        // still owns the original prefetch. The origin holds both responses.
+        await relayStarted!.future.timeout(const Duration(seconds: 2));
+        opened.session.backgroundPrefetchAllowed = false;
+        await cache.clear();
+        expect(
+          transport.prefetchCancel?.isCancelled,
+          false,
+          reason: 'The second foreground waiter still owns this request',
+        );
+        gate!.complete();
+        expect(await first.timeout(const Duration(seconds: 2)), data);
+        expect(await second.timeout(const Duration(seconds: 2)), data);
+        expect(
+          hits['/seg.ts'],
+          2,
+          reason: 'Only the original prefetch and first timed-out relay run',
+        );
+        await opened.session.close();
+      } finally {
+        if (!gate!.isCompleted) gate!.complete();
+      }
     },
   );
 

@@ -1,3 +1,4 @@
+import 'package:kazumi/services/platform/desktop_window_bounds.dart';
 import 'cinema_swipe_navigation.dart';
 import 'package:kazumi/features/cinema/naku_update_service.dart';
 import 'package:kazumi/services/platform/desktop_fullscreen.dart';
@@ -510,9 +511,8 @@ class _CinemaWebviewPageState extends State<CinemaWebviewPage> {
     final bounds = _videoWindowBounds;
     if (bounds == null) return;
     await windowManager.setAspectRatio(0);
-    await windowManager.setMinimumSize(const Size(800, 600));
     await windowManager.setAlwaysOnTop(_videoWindowOnTop);
-    await windowManager.setBounds(bounds);
+    await restoreDesktopWindowBounds(bounds);
     _videoWindowBounds = null;
   }
 

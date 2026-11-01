@@ -19,17 +19,20 @@ class CinemaCachePreferences {
     this.quotaMB = 2048,
     this.forwardSeconds = 300,
     this.nextSeconds = 90,
+    this.pauseEconomy = true,
   });
-  final bool enabled;
+  final bool enabled, pauseEconomy;
   final int quotaMB, forwardSeconds, nextSeconds;
   Map<String, dynamic> toJson() => {
     'enabled': enabled,
     'quotaMB': quotaMB,
     'forwardSeconds': forwardSeconds,
     'nextSeconds': nextSeconds,
+    'pauseEconomy': pauseEconomy,
   };
   factory CinemaCachePreferences.parse(Map raw) => CinemaCachePreferences(
     enabled: raw['enabled'] != false,
+    pauseEconomy: raw['pauseEconomy'] != false,
     quotaMB: (raw['quotaMB'] is int ? raw['quotaMB'] as int : 2048).clamp(
       128,
       8192,
@@ -81,7 +84,9 @@ class CinemaCacheSession {
     if (!allowed) {
       // A player may already be consuming this exact in-flight segment. Only
       // cancel speculative work, never a promoted foreground response.
-      if (!cache._promoted.contains(_fetchKey)) _token?.cancel('当前播放优先，暂停后台预取');
+      if (!cache._promoted.containsKey(_fetchKey)) {
+        _token?.cancel('当前播放优先，暂停后台预取');
+      }
     } else if (!closed && !buffering) {
       unawaited(cache._prefetch(this));
     }
@@ -107,6 +112,7 @@ class CinemaCacheSession {
       index = '${_resources.length}';
       _ids[key] = index;
       _resources[index] = _Resource(uri, manifest, persist);
+      cache._protectionRevision++;
     }
     return Uri.parse(
       'http://127.0.0.1:${cache._server!.port}/${cache._secret}/$id/$index${manifest ? '/stream.m3u8' : '/segment'}',
@@ -125,7 +131,7 @@ class CinemaCacheSession {
     }
     this.buffering = buffering;
     if (buffering) {
-      if (!cache._promoted.contains(_fetchKey)) _token?.cancel('播放优先');
+      if (!cache._promoted.containsKey(_fetchKey)) _token?.cancel('播放优先');
     } else if (backgroundPrefetchAllowed && !prefetching && !closed) {
       unawaited(cache._prefetch(this));
     }
@@ -140,6 +146,7 @@ class CinemaCacheSession {
       request.cancel('播放已结束');
     }
     cache._sessions.remove(id);
+    cache._protectionRevision++;
     await cache._prune();
   }
 }
@@ -153,12 +160,14 @@ class CinemaMediaCache extends ChangeNotifier {
     Directory? directory,
     CinemaMediaTransport? transport,
     this.preferences = const CinemaCachePreferences(),
+    this.prefetchAdoptionTimeout = const Duration(seconds: 20),
   }) : _directory = directory,
        transport = transport ?? CinemaMediaTransport();
   static final instance = CinemaMediaCache();
   Directory? _directory;
   final CinemaMediaTransport transport;
   CinemaCachePreferences preferences;
+  final Duration prefetchAdoptionTimeout;
   HttpServer? _server;
   Future<void>? _starting;
   final _secret = List.generate(
@@ -167,8 +176,23 @@ class CinemaMediaCache extends ChangeNotifier {
   ).join();
   final Map<String, CinemaCacheSession> _sessions = {};
   final Map<String, Future<File?>> _pending = {};
-  final Set<String> _promoted = {};
-  final Set<String> _pinned = {};
+  final Map<String, int> _promoted = {};
+  final Map<String, int> _pinned = {};
+  int _protectionRevision = 0;
+
+  void _retain(Map<String, int> leases, String key) {
+    leases.update(key, (count) => count + 1, ifAbsent: () => 1);
+  }
+
+  void _release(Map<String, int> leases, String key) {
+    final count = leases[key];
+    if (count == null || count <= 1) {
+      leases.remove(key);
+    } else {
+      leases[key] = count - 1;
+    }
+  }
+
   int _serial = 0, _foreground = 0, _background = 0;
   int bytesUsed = 0, hits = 0;
   String? error;
@@ -213,7 +237,9 @@ class CinemaMediaCache extends ChangeNotifier {
 
   void _rememberOwner(String key, CinemaCacheSession session) {
     final title = session.titleKey;
-    if (title != null) (_owners[key] ??= {}).add(title);
+    if (title != null && (_owners[key] ??= {}).add(title)) {
+      _protectionRevision++;
+    }
   }
 
   Future<void> _saveOwners() async {
@@ -282,6 +308,7 @@ class CinemaMediaCache extends ChangeNotifier {
       backgroundPrefetchAllowed: backgroundPrefetchAllowed,
     );
     _sessions[session.id] = session;
+    _protectionRevision++;
     session._timer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (!session.closed &&
           !session.buffering &&
@@ -469,7 +496,7 @@ class CinemaMediaCache extends ChangeNotifier {
       }
       final range = request.headers.value('range');
       final key = _key(resource.uri, session.headers, range);
-      _pinned.add(key);
+      _retain(_pinned, key);
       try {
         var cached =
             preferences.enabled && resource.persist && _cacheable(resource.uri)
@@ -490,16 +517,16 @@ class CinemaMediaCache extends ChangeNotifier {
         if (cached == null && pending != null) {
           // Adopt an in-flight warmup for this exact segment instead of
           // cancelling it and downloading the same bytes a second time.
-          _promoted.add(pendingKey);
+          _retain(_promoted, pendingKey);
           _yieldBackground();
           try {
             cached = await pending.timeout(
-              const Duration(seconds: 20),
+              prefetchAdoptionTimeout,
               onTimeout: () => null,
             );
             completeFile = pendingKey == wholeKey;
           } finally {
-            _promoted.remove(pendingKey);
+            _release(_promoted, pendingKey);
           }
         }
         // FFmpeg commonly sends bytes=0- even for whole HLS segments. A warmed
@@ -517,7 +544,10 @@ class CinemaMediaCache extends ChangeNotifier {
           completeFile = cached != null;
         }
         if (cached != null) {
-          _rememberOwner(cached.uri.pathSegments.last.replaceFirst('.bin', ''), session);
+          _rememberOwner(
+            cached.uri.pathSegments.last.replaceFirst('.bin', ''),
+            session,
+          );
           session.hits++;
           hits++;
           _notify();
@@ -564,7 +594,7 @@ class CinemaMediaCache extends ChangeNotifier {
           );
         }
       } finally {
-        _pinned.remove(key);
+        _release(_pinned, key);
         if (bytesUsed > preferences.quotaMB * 1024 * 1024) {
           await _prune();
         }
@@ -583,7 +613,7 @@ class CinemaMediaCache extends ChangeNotifier {
 
   void _yieldBackground() {
     for (final session in _sessions.values) {
-      if (!_promoted.contains(session._fetchKey)) {
+      if (!_promoted.containsKey(session._fetchKey)) {
         session._token?.cancel('播放优先');
       }
     }
@@ -760,7 +790,10 @@ class CinemaMediaCache extends ChangeNotifier {
         );
       }
     }
-    if (!master && !live) session._playlists[base.toString()] = segments;
+    if (!master && !live) {
+      session._playlists[base.toString()] = segments;
+      _protectionRevision++;
+    }
     return out.join('\n');
   }
 
@@ -850,7 +883,10 @@ class CinemaMediaCache extends ChangeNotifier {
 
   Future<void> _prune() => _serialized(_pruneUnlocked);
 
-  Future<void> _pruneUnlocked() async {
+  Future<void> _pruneUnlocked({
+    Set<String> preserve = const {},
+    bool protectActive = false,
+  }) async {
     if (_directory == null || !await _directory!.exists()) return;
     final files = <({File file, FileStat stat})>[];
     await for (final entity in _directory!.list(followLinks: false)) {
@@ -868,6 +904,8 @@ class CinemaMediaCache extends ChangeNotifier {
     files.sort((a, b) => a.stat.modified.compareTo(b.stat.modified));
     bytesUsed = files.fold(0, (sum, f) => sum + f.stat.size);
     final quota = preferences.quotaMB * 1024 * 1024;
+    var revision = -1;
+    var liveProtection = <String>{};
     for (final item in files) {
       final name = item.file.uri.pathSegments.last.replaceFirst('.bin', '');
       final owners = _owners[name];
@@ -882,7 +920,16 @@ class CinemaMediaCache extends ChangeNotifier {
           owners != null &&
           !owners.any(_historyKeys!.contains);
       if (bytesUsed <= quota && !orphan) continue;
-      if (_pinned.contains(name) || (orphan && active)) continue;
+      if (protectActive && revision != _protectionRevision) {
+        liveProtection = _protectedKeys();
+        revision = _protectionRevision;
+      }
+      if (_pinned.containsKey(name) ||
+          preserve.contains(name) ||
+          liveProtection.contains(name) ||
+          (orphan && active)) {
+        continue;
+      }
       try {
         await item.file.delete();
         bytesUsed -= item.stat.size;
@@ -897,19 +944,84 @@ class CinemaMediaCache extends ChangeNotifier {
     _notify();
   }
 
+  Set<String> _protectedKeys() {
+    final result = {..._pinned.keys};
+    for (final session in _sessions.values) {
+      if (session.closed) continue;
+      final title = session.titleKey;
+      if (title != null) {
+        result.addAll(
+          _owners.entries
+              .where((entry) => entry.value.contains(title))
+              .map((entry) => entry.key),
+        );
+      }
+      for (final resource in session._resources.values) {
+        if (!resource.manifest && resource.persist) {
+          result.add(_key(resource.uri, session.headers, null));
+        }
+      }
+      for (final playlist in session._playlists.values) {
+        for (final segment in playlist) {
+          result.add(_key(segment.uri, session.headers, segment.range));
+        }
+      }
+    }
+    return result;
+  }
+
+  /// Snapshot of temporary video fragments only. Downloads and library data
+  /// are outside this directory. Active titles/resources share clear() guards.
+  Future<({int totalBytes, int protectedBytes, int clearableBytes})>
+  usage() async {
+    await initialize();
+    return _serialized(() async {
+      final protected = _protectedKeys();
+      var total = 0, retained = 0;
+      await for (final entity in _directory!.list(followLinks: false)) {
+        if (entity is! File || !entity.path.endsWith('.bin')) continue;
+        final stat = await entity.stat();
+        if (stat.type != FileSystemEntityType.file) continue;
+        total += stat.size;
+        final key = entity.uri.pathSegments.last.replaceFirst('.bin', '');
+        if (protected.contains(key)) retained += stat.size;
+      }
+      return (
+        totalBytes: total,
+        protectedBytes: retained,
+        clearableBytes: total - retained,
+      );
+    });
+  }
+
   Future<void> clear() async {
     await initialize();
     for (final session in _sessions.values) {
-      session._token?.cancel('清理缓存');
+      if (!_promoted.containsKey(session._fetchKey)) {
+        session._token?.cancel('清理缓存');
+      }
     }
     await _serialized(() async {
+      var protected = _protectedKeys();
+      var revision = _protectionRevision;
       await for (final entity in _directory!.list(followLinks: false)) {
-        if (entity is File && entity.path.endsWith('.bin') &&
-            !_pinned.contains(entity.uri.pathSegments.last.replaceFirst('.bin', ''))) {
-          try { await entity.delete(); } on FileSystemException { /* In use. */ }
+        if (revision != _protectionRevision) {
+          protected = _protectedKeys();
+          revision = _protectionRevision;
+        }
+        final key = entity.uri.pathSegments.last.replaceFirst('.bin', '');
+        if (entity is File &&
+            entity.path.endsWith('.bin') &&
+            !_pinned.containsKey(key) &&
+            !protected.contains(key)) {
+          try {
+            await entity.delete();
+          } on FileSystemException {
+            /* In use. */
+          }
         }
       }
-      await _pruneUnlocked();
+      await _pruneUnlocked(preserve: protected, protectActive: true);
     });
   }
 

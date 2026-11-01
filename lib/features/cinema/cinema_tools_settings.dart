@@ -335,12 +335,13 @@ class _CinemaToolsSettingsPageState extends State<CinemaToolsSettingsPage> {
                           value: prefs.enabled,
                           title: const Text('后台预缓存'),
                           subtitle: const Text(
-                            'HLS 分段缓存可跨播放复用；暂停时继续填充，卡顿时让出带宽',
+                            'HLS 分段缓存可跨播放复用；短暂停继续填充，卡顿时让出带宽',
                           ),
                           onChanged: _busy
                               ? null
                               : (v) => _configure(
                                   CinemaCachePreferences(
+                                    pauseEconomy: prefs.pauseEconomy,
                                     enabled: v,
                                     quotaMB: prefs.quotaMB,
                                     forwardSeconds: prefs.forwardSeconds,
@@ -348,6 +349,25 @@ class _CinemaToolsSettingsPageState extends State<CinemaToolsSettingsPage> {
                                   ),
                                 ),
                         ),
+                        if (Platform.isMacOS)
+                          SwitchListTile.adaptive(
+                            title: const Text('暂停时节省流量与耗电'),
+                            subtitle: const Text(
+                              '暂停 30 秒，或在隐藏窗口、系统低电量模式下暂停时减少预读；继续播放后恢复。已有缓存保留。',
+                            ),
+                            value: prefs.pauseEconomy,
+                            onChanged: _busy
+                                ? null
+                                : (value) => _configure(
+                                    CinemaCachePreferences(
+                                      enabled: prefs.enabled,
+                                      quotaMB: prefs.quotaMB,
+                                      forwardSeconds: prefs.forwardSeconds,
+                                      nextSeconds: prefs.nextSeconds,
+                                      pauseEconomy: value,
+                                    ),
+                                  ),
+                          ),
                         Text('磁盘上限 ${prefs.quotaMB} MB'),
                         CinemaSwipeExclusion(
                           child: Slider(
@@ -360,6 +380,7 @@ class _CinemaToolsSettingsPageState extends State<CinemaToolsSettingsPage> {
                             },
                             onChanged: (v) => setState(
                               () => _draftCache = CinemaCachePreferences(
+                                pauseEconomy: prefs.pauseEconomy,
                                 enabled: prefs.enabled,
                                 quotaMB: v.round(),
                                 forwardSeconds: prefs.forwardSeconds,
@@ -381,6 +402,7 @@ class _CinemaToolsSettingsPageState extends State<CinemaToolsSettingsPage> {
                             },
                             onChanged: (v) => setState(
                               () => _draftCache = CinemaCachePreferences(
+                                pauseEconomy: prefs.pauseEconomy,
                                 enabled: prefs.enabled,
                                 quotaMB: prefs.quotaMB,
                                 forwardSeconds: v.round(),
@@ -402,6 +424,7 @@ class _CinemaToolsSettingsPageState extends State<CinemaToolsSettingsPage> {
                             },
                             onChanged: (v) => setState(
                               () => _draftCache = CinemaCachePreferences(
+                                pauseEconomy: prefs.pauseEconomy,
                                 enabled: prefs.enabled,
                                 quotaMB: prefs.quotaMB,
                                 forwardSeconds: prefs.forwardSeconds,

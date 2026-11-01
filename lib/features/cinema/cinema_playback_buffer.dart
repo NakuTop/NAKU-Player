@@ -12,12 +12,23 @@ class CinemaPlaybackBufferPolicy {
       remainingSeconds(position, bufferedUntil) >= 20;
   int prefetchSeconds(int base) =>
       (base * rate.clamp(1, 8)).ceil().clamp(base, 900);
-  Map<String, String> nativeProperties(int bufferBytes) {
+
+  /// A rate change may overlap a slow pause/resume write. Only the pause
+  /// controller owns these time horizons after player initialization.
+  Map<String, String> rateProperties(int bufferBytes) =>
+      nativeProperties(bufferBytes)
+        ..remove('cache-secs')
+        ..remove('demuxer-readahead-secs');
+
+  Map<String, String> nativeProperties(
+    int bufferBytes, {
+    bool conserving = false,
+  }) {
     final total = bufferBytes.clamp(2 * 1024 * 1024, 256 * 1024 * 1024);
     final backwards = (total ~/ 16).clamp(512 * 1024, 16 * 1024 * 1024);
     // Keep reading while paused and playing until the byte budget or EOF.
     // A 30-second horizon used to make a large selected cache mostly unused.
-    const seconds = 86400;
+    final seconds = conserving ? 1 : 86400;
     final refillSeconds = (5 * rate).ceil().clamp(3, 20);
     return {
       'cache': 'yes',

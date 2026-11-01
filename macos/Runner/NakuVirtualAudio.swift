@@ -193,15 +193,19 @@ final class NakuVirtualAudioCapture {
     if DispatchQueue.getSpecific(key: queueKey) == true { return try body() }
     return try queue.sync(execute: body)
   }
-  func start() throws {
+  func start(shouldContinue: @escaping () -> Bool = { true }) throws {
     try serial {
       guard self.reader == nil else { return }
-      do { try self.startAvailable() } catch { self.stopAvailable(); throw error }
+      do { try self.startAvailable(shouldContinue: shouldContinue) } catch { self.stopAvailable(); throw error }
     }
   }
   func stop() { serial { self.stopAvailable() } }
 
-  private func startAvailable() throws {
+  private func startAvailable(shouldContinue: () -> Bool) throws {
+    func checkCancellation() throws {
+      guard shouldContinue() else { throw NakuVirtualAudioError.unavailable("音频连接已取消。") }
+    }
+    try checkCancellation()
     guard let virtual = NakuVirtualAudioDriver.device(NakuVirtualAudioDriver.uid) else { throw NakuVirtualAudioError.driverRequired }
     let output = NakuVirtualAudioDriver.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice)
     let system = NakuVirtualAudioDriver.defaultDevice(kAudioHardwarePropertyDefaultSystemOutputDevice)
@@ -214,6 +218,7 @@ final class NakuVirtualAudioCapture {
       throw NakuVirtualAudioError.unavailable("无法连接 NAKU 虚拟声卡服务：\(String(cString: error))")
     }
     reader = connection
+    try checkCancellation()
     guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: true),
           let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2048) else { throw NakuPCMTapError.format }
     converter = try NakuPCMConverter(inputFormat: format); scratch = buffer
@@ -225,9 +230,13 @@ final class NakuVirtualAudioCapture {
       }
     }
     guard armed else { throw NakuVirtualAudioError.unavailable("无法准备音频输出恢复：\(String(cString: error))") }
+    try checkCancellation()
     UserDefaults.standard.set(previous, forKey: NakuVirtualAudioDriver.leaseKey)
+    try checkCancellation()
     try NakuVirtualAudioDriver.setDefault(kAudioHardwarePropertyDefaultOutputDevice, virtual)
+    try checkCancellation()
     try NakuVirtualAudioDriver.setDefault(kAudioHardwarePropertyDefaultSystemOutputDevice, virtual)
+    try checkCancellation()
     let timer = DispatchSource.makeTimerSource(queue: queue)
     timer.schedule(deadline: .now(), repeating: .milliseconds(2), leeway: .milliseconds(1))
     timer.setEventHandler { [weak self] in self?.drain() }

@@ -2,17 +2,18 @@
 // Native adaptation of huangxd-/danmu_api's aiyifan and renren protocols.
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/painting.dart';
+import 'package:flutter/foundation.dart';
 import 'package:html/parser.dart' as html;
 import 'package:kazumi/modules/danmaku/danmaku_module.dart';
 import 'package:kazumi/request/core/dio_factory.dart';
 import 'package:kazumi/request/core/network_config.dart';
 import 'cinema_logvar_client.dart';
+import 'cinema_overseas_danmaku_parser.dart';
 
 String aiyifanAppSignature(String query, String timestamp, String key) =>
     md5.convert(utf8.encode('$query$timestamp$key')).toString();
@@ -43,77 +44,43 @@ int _id(String value) => int.parse(
   radix: 16,
 );
 
-DanmakuEntry? _entry(
-  dynamic time,
-  dynamic message,
-  String source,
-  dynamic color,
-  dynamic mode,
-) {
-  final seconds = double.tryParse('$time');
-  final text = _text(message);
-  if (seconds == null ||
-      !seconds.isFinite ||
-      seconds < 0 ||
-      seconds >= 86400 ||
-      text.isEmpty ||
-      text.length > 120) {
-    return null;
-  }
-  final hex = '$color'.replaceFirst('#', '').replaceFirst('0x', '');
-  final rgb = color is int ? color : int.tryParse(hex, radix: 16) ?? 0xffffff;
-  final type = int.tryParse('$mode') ?? 1;
-  return DanmakuEntry(
-    time: seconds,
-    message: text,
-    color: Color(0xff000000 | (rgb & 0xffffff)),
-    type: [1, 4, 5].contains(type) ? type : 1,
-    source: '[$source]',
-  );
-}
-
-List<DanmakuEntry> _bounded(Iterable<DanmakuEntry?> values) {
-  final seen = <String>{};
-  return values
-      .whereType<DanmakuEntry>()
-      .where(
-        (e) => seen.add('${e.time.toStringAsFixed(2)}:${e.type}:${e.message}'),
-      )
-      .take(80000)
-      .toList()
-    ..sort((a, b) => a.time.compareTo(b.time));
-}
-
-List<DanmakuEntry> parseAiyifanComments(List<Map> rows) => _bounded(
-  rows.map(
-    (r) => _entry(
-      r['second'],
-      r['contxt'] ?? r['content'],
-      'aiyifan',
-      r['color'] ?? 0xffffff,
-      r['position'] == 1 ? 5 : 1,
+List<DanmakuEntry> _entries(List<OverseasComment> values) => [
+  for (final value in values)
+    DanmakuEntry(
+      time: value.time,
+      message: value.message,
+      color: Color(value.color),
+      type: value.type,
+      source: value.source,
     ),
-  ),
+];
+
+List<DanmakuEntry> parseAiyifanComments(List<Map> rows) => _entries(
+  parseOverseasComments((rows: rows, renren: false, leadInSeconds: 0)),
 );
 
 List<DanmakuEntry> parseRenrenComments(
   List<Map> rows, {
   double leadInSeconds = 0,
-}) => _bounded(
-  rows.map((r) {
-    final p = '${r['p'] ?? ''}'.split(',');
-    if (p.length < 4) return null;
-    final seconds = double.tryParse(p[0]);
-    if (seconds == null) return null;
-    return _entry(
-      seconds - leadInSeconds,
-      r['d'] ?? r['content'],
-      'renren',
-      int.tryParse(p[3]) ?? 0xffffff,
-      p[1],
-    );
-  }),
+}) => _entries(
+  parseOverseasComments((
+    rows: rows,
+    renren: true,
+    leadInSeconds: leadInSeconds,
+  )),
 );
+
+/// Drop the owned token when finished so an external, long-lived token does not
+/// retain a completed request/response through its non-removable future listener.
+final class _CancellationLink {
+  _CancellationLink(CancelToken? parent, this.owned) {
+    unawaited(parent?.whenCancel.then(_cancel));
+    if (parent?.isCancelled == true) owned?.cancel(parent!.cancelError);
+  }
+  CancelToken? owned;
+  void _cancel(DioException error) => owned?.cancel(error);
+  void dispose() => owned = null;
+}
 
 class CinemaOverseasDanmakuClient implements CinemaDanmakuMatcher {
   CinemaOverseasDanmakuClient({Dio? dio, DateTime Function()? now})
@@ -121,7 +88,8 @@ class CinemaOverseasDanmakuClient implements CinemaDanmakuMatcher {
       _now = now ?? DateTime.now;
   final Dio _dio;
   final DateTime Function() _now;
-  final _lifetime = CancelToken();
+  final _activeRequests = <CancelToken>{};
+  final _activeMatches = <CancelToken>{};
   bool _closed = false;
   ({String publicKey, String privateKey, DateTime fetched})? _signing;
 
@@ -154,48 +122,65 @@ class CinemaOverseasDanmakuClient implements CinemaDanmakuMatcher {
   }) async {
     _check(token);
     const limit = 8 * 1024 * 1024;
-    final response = await _dio.request<ResponseBody>(
-      url,
-      data: body == null ? null : jsonEncode(body),
-      cancelToken: token ?? _lifetime,
-      options: Options(
-        method: body == null ? 'GET' : 'POST',
-        followRedirects: false,
-        responseType: ResponseType.stream,
-        headers: {
-          'User-Agent': 'Mozilla/5.0',
-          'Accept-Encoding': 'identity',
-          if (body != null) 'Content-Type': 'application/json;charset=utf-8',
-          ...?headers,
-        },
-        validateStatus: (s) => s == 200 || allow404 && s == 404,
-      ),
-    );
-    final bytes = BytesBuilder(copy: false);
-    await for (final part in response.data!.stream) {
-      _check(token);
-      if (bytes.length + part.length > limit) {
-        throw const FormatException('平台弹幕数据过大');
-      }
-      bytes.add(part);
-    }
-    if (response.statusCode == 404) return const [];
-    var raw = bytes.takeBytes();
-    if (raw.length > 2 && raw[0] == 31 && raw[1] == 139) {
-      final decoded = BytesBuilder(copy: false);
-      await for (final part in gzip.decoder.bind(Stream.value(raw))) {
+    final requestToken = CancelToken();
+    final link = _CancellationLink(token, requestToken);
+    _activeRequests.add(requestToken);
+    try {
+      final response = await _dio.request<ResponseBody>(
+        url,
+        data: body == null ? null : jsonEncode(body),
+        cancelToken: requestToken,
+        options: Options(
+          method: body == null ? 'GET' : 'POST',
+          followRedirects: false,
+          responseType: ResponseType.stream,
+          headers: {
+            'User-Agent': 'Mozilla/5.0',
+            'Accept-Encoding': 'identity',
+            if (body != null) 'Content-Type': 'application/json;charset=utf-8',
+            ...?headers,
+          },
+          validateStatus: (s) => s == 200 || allow404 && s == 404,
+        ),
+      );
+      final bytes = BytesBuilder(copy: false);
+      await for (final part in response.data!.stream) {
         _check(token);
-        if (decoded.length + part.length > limit) {
+        if (bytes.length + part.length > limit) {
           throw const FormatException('平台弹幕数据过大');
         }
-        decoded.add(part);
+        bytes.add(part);
       }
-      raw = decoded.takeBytes();
+      _check(token);
+      if (response.statusCode == 404) return const [];
+      final raw = bytes.takeBytes();
+      // Large JSON, UTF-8 and gzip work must not monopolize Flutter's UI isolate.
+      final result =
+          raw.length >= 32 * 1024 ||
+              raw.length > 2 && raw[0] == 31 && raw[1] == 139
+          ? await compute(decodeOverseasResponse, raw)
+          : await decodeOverseasResponse(raw);
+      _check(token);
+      return result;
+    } finally {
+      _activeRequests.remove(requestToken);
+      link.dispose();
     }
-    var result = jsonDecode(utf8.decode(raw));
-    if (result is String) result = jsonDecode(result);
+  }
+
+  Future<List<DanmakuEntry>> _parseComments(
+    List<Map> rows,
+    CancelToken? token, {
+    bool renren = false,
+    double leadInSeconds = 0,
+  }) async {
     _check(token);
-    return result;
+    final batch = (rows: rows, renren: renren, leadInSeconds: leadInSeconds);
+    final values = rows.length >= 256
+        ? await compute(parseOverseasComments, batch)
+        : parseOverseasComments(batch);
+    _check(token);
+    return _entries(values);
   }
 
   @override
@@ -214,37 +199,67 @@ class CinemaOverseasDanmakuClient implements CinemaDanmakuMatcher {
       throw const FormatException('公开片名或集数无效');
     }
     _check(cancelToken);
-    final calls = [
-      () =>
-          matchRenren(query, cancelToken: cancelToken, onProgress: onProgress),
-      () =>
-          matchAiyifan(query, cancelToken: cancelToken, onProgress: onProgress),
-    ];
+    final operation = CancelToken();
+    final link = _CancellationLink(cancelToken, operation);
+    _activeMatches.add(operation);
+    final children = [CancelToken(), CancelToken()];
+    final calls = [matchRenren, matchAiyifan];
     final answer = Completer<CinemaLogvarSelection?>();
     var remaining = calls.length, failures = 0;
-    for (final call in calls) {
-      unawaited(() async {
-        try {
-          final value = await call();
-          if (value != null && !answer.isCompleted) answer.complete(value);
-        } catch (_) {
-          failures++;
-        } finally {
-          if (--remaining == 0 && !answer.isCompleted) {
-            if (cancelToken?.isCancelled == true) {
-              answer.completeError(cancelToken!.cancelError!);
-            } else if (failures > 0) {
-              answer.completeError(
-                const FormatException('海外平台弹幕暂时无法连接，下次播放会重试'),
-              );
-            } else {
-              answer.complete(null);
+    void cancelChildren(Object reason) {
+      for (final token in children) {
+        token.cancel(reason);
+      }
+    }
+
+    unawaited(
+      operation.whenCancel.then((error) {
+        if (!answer.isCompleted) answer.completeError(error);
+        cancelChildren(error);
+      }),
+    );
+    try {
+      for (var index = 0; index < calls.length; index++) {
+        final call = calls[index], child = children[index];
+        unawaited(() async {
+          try {
+            final value = await call(
+              query,
+              cancelToken: child,
+              onProgress: (message) {
+                if (!answer.isCompleted && !operation.isCancelled) {
+                  onProgress?.call(message);
+                }
+              },
+            );
+            if (value != null && !answer.isCompleted) {
+              _check(operation);
+              answer.complete(value);
+              cancelChildren('已匹配到平台弹幕');
+            }
+          } catch (_) {
+            failures++;
+          } finally {
+            if (--remaining == 0 && !answer.isCompleted) {
+              if (operation.isCancelled) {
+                answer.completeError(operation.cancelError!);
+              } else if (failures > 0) {
+                answer.completeError(
+                  const FormatException('海外平台弹幕暂时无法连接，下次播放会重试'),
+                );
+              } else {
+                answer.complete(null);
+              }
             }
           }
-        }
-      }());
+        }());
+      }
+      return await answer.future;
+    } finally {
+      cancelChildren('弹幕匹配已结束');
+      _activeMatches.remove(operation);
+      link.dispose();
     }
-    return answer.future;
   }
 
   bool _matches(
@@ -497,8 +512,9 @@ class CinemaOverseasDanmakuClient implements CinemaDanmakuMatcher {
         cancelToken,
         params: {'mediaKey': media, 'videoId': video, 'videoType': type},
       );
-      final entries = parseAiyifanComments(
+      final entries = await _parseComments(
         _rows(_map(comments['data'])['list']),
+        cancelToken,
       );
       if (entries.isNotEmpty) {
         return _selection(query, candidate.work, video, entries, '爱一帆');
@@ -736,8 +752,10 @@ class CinemaOverseasDanmakuClient implements CinemaDanmakuMatcher {
           _check(cancelToken);
         }
       }
-      final entries = parseRenrenComments(
+      final entries = await _parseComments(
         comments ?? [],
+        cancelToken,
+        renren: true,
         leadInSeconds: max(0, leadInMs) / 1000,
       );
       if (entries.isNotEmpty) {
@@ -751,7 +769,9 @@ class CinemaOverseasDanmakuClient implements CinemaDanmakuMatcher {
   void close() {
     if (_closed) return;
     _closed = true;
-    _lifetime.cancel('closed');
+    for (final token in [..._activeMatches, ..._activeRequests]) {
+      token.cancel('closed');
+    }
     _dio.close(force: true);
     _signing = null;
   }
