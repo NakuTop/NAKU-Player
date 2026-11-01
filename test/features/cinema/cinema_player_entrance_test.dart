@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -237,8 +238,8 @@ void main() {
     final idleFrames = surface.debugFrameCount;
     await tester.pump(const Duration(seconds: 5));
     expect(surface.debugLampExtent, initialExtent);
-    expect(surface.debugFrameCount, idleFrames);
-    expect(surface.debugIsAnimating, isFalse);
+    expect(surface.debugFrameCount, greaterThan(idleFrames));
+    expect(surface.debugIsBreathing, isTrue);
 
     loadStage = CinemaPlayerLoadStage.opening;
     await tester.pumpWidget(host());
@@ -274,19 +275,19 @@ void main() {
     expect(surface.debugLampExtent, surface.debugLampTarget);
     expect(surface.debugLampExtent, lessThan(1));
     expect(surface.debugPhase, 'waiting');
-    expect(surface.debugIsAnimating, isFalse);
+    expect(surface.debugIsBreathing, isTrue);
     expect(reveals, 0);
     await expectDarkWithTopLamp(tester);
     final settledFrames = surface.debugFrameCount;
     await tester.pump(const Duration(seconds: 20));
-    expect(surface.debugFrameCount, settledFrames);
+    expect(surface.debugFrameCount, greaterThan(settledFrames));
     expect(surface.debugLampExtent, previous);
 
     // Lower transient milestones cannot make the same source's tube retreat.
     loadStage = CinemaPlayerLoadStage.connecting;
     await tester.pumpWidget(host());
     expect(surface.debugLampExtent, previous);
-    expect(surface.debugIsAnimating, isFalse);
+    expect(surface.debugIsBreathing, isTrue);
     ready = true;
     await tester.pumpWidget(host());
     expect(surface.debugPhase, 'lighting');
@@ -371,7 +372,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 501));
     expect(surface.debugPhase, 'waiting');
     expect(surface.debugLampExtent, closeTo(.10, .0001));
-    expect(surface.debugIsAnimating, isFalse);
+    expect(surface.debugIsBreathing, isTrue);
     expect(tester.takeException(), isNull);
   });
 
@@ -597,17 +598,66 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('delayed readiness stays black without a running ticker', (
+  testWidgets('waiting breathes brightness only and leaves media builds idle', (
+    tester,
+  ) async {
+    await mount(tester);
+    await tester.pump(const Duration(milliseconds: 501));
+    final surface = state(tester);
+    final length = surface.debugLampExtent,
+        builds = childKey.currentState!.builds;
+    expect(surface.debugIsBreathing, true);
+    await tester.pump();
+    final bright = surface.debugBreathBrightness;
+    await tester.pump(const Duration(milliseconds: 1050));
+    final dim = surface.debugBreathBrightness;
+    expect(dim, lessThan(bright));
+    expect(dim, greaterThanOrEqualTo(.82));
+    expect(surface.debugLampExtent, length);
+    expect(childKey.currentState!.builds, builds);
+    await expectDarkWithTopLamp(tester);
+    final output = Platform.environment['NAKU_QA_SCREENSHOTS'];
+    if (output != null) {
+      final boundary = tester.renderObject<RenderRepaintBoundary>(
+        find.byKey(const ValueKey('test-player-stage')),
+      );
+      for (var frame = 0; frame < 20; frame++) {
+        await tester.pump(const Duration(milliseconds: 105));
+        await tester.runAsync(() async {
+          final image = await boundary.toImage();
+          final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+          await Directory(output).create(recursive: true);
+          await File(
+            '$output/lamp-${frame.toString().padLeft(2, '0')}.png',
+          ).writeAsBytes(bytes!.buffer.asUint8List());
+          image.dispose();
+        });
+      }
+    }
+
+    ready = true;
+    await tester.pumpWidget(host());
+    expect(surface.debugIsBreathing, false);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1551));
+    expect(surface.debugPhase, 'complete');
+    expect(surface.debugIsAnimating, false);
+    final frames = surface.debugFrameCount;
+    await tester.pump(const Duration(seconds: 3));
+    expect(surface.debugFrameCount, frames);
+  });
+
+  testWidgets('delayed readiness breathes without exposing the media', (
     tester,
   ) async {
     await mount(tester);
     await tester.pump(const Duration(milliseconds: 501));
     expect(state(tester).debugPhase, 'waiting');
-    expect(state(tester).debugIsAnimating, isFalse);
+    expect(state(tester).debugIsBreathing, isTrue);
     final frames = state(tester).debugFrameCount;
     await tester.pump(const Duration(seconds: 4));
     expect(state(tester).debugPhase, 'waiting');
-    expect(state(tester).debugFrameCount, frames);
+    expect(state(tester).debugFrameCount, greaterThan(frames));
     expect(reveals, 0);
     ready = true;
     await tester.pumpWidget(host());
@@ -663,7 +713,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 501));
     await tester.pump(const Duration(seconds: 2));
     expect(state(tester).debugPhase, 'waiting');
-    expect(state(tester).debugIsAnimating, isFalse);
+    expect(state(tester).debugIsBreathing, isTrue);
     expect(reveals, 1);
     ready = true;
     await tester.pumpWidget(host());
@@ -687,7 +737,7 @@ void main() {
       ready = false;
       await tester.pumpWidget(host());
       expect(state(tester).debugPhase, 'waiting');
-      expect(state(tester).debugIsAnimating, isFalse);
+      expect(state(tester).debugIsBreathing, isTrue);
       expect(cancellations, 1);
       ready = true;
       await tester.pumpWidget(host());

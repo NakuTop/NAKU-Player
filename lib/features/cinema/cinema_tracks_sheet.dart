@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'cinema_theme.dart';
 import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -72,21 +73,26 @@ Future<void> showCinemaTracksSheet(
         context: context,
         isScrollControlled: true,
         constraints: const BoxConstraints(maxWidth: 680),
-        builder: (_) => SizedBox(
-          height: MediaQuery.sizeOf(context).height * .85,
-          child: CinemaTracksPanel(
-            player: player,
-            store: store,
-            title: title,
-            imdbId: imdbId,
-            nasControls: nasControls,
-            liveSubtitles: liveSubtitles,
-            category: category,
-            episodeName: episodeName,
-            episodeNumber: episodeNumber,
-            automation: automation,
-            autoSync: autoSync,
-            onSubtitleApplied: onSubtitleApplied,
+        backgroundColor: CinemaTheme.panelDataFor(
+          context,
+        ).bottomSheetTheme.backgroundColor,
+        builder: (_) => CinemaPanelTheme(
+          child: SizedBox(
+            height: MediaQuery.sizeOf(context).height * .85,
+            child: CinemaTracksPanel(
+              player: player,
+              store: store,
+              title: title,
+              imdbId: imdbId,
+              nasControls: nasControls,
+              liveSubtitles: liveSubtitles,
+              category: category,
+              episodeName: episodeName,
+              episodeNumber: episodeNumber,
+              automation: automation,
+              autoSync: autoSync,
+              onSubtitleApplied: onSubtitleApplied,
+            ),
           ),
         ),
       );

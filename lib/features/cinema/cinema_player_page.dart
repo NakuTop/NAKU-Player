@@ -296,9 +296,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   static Color get _background => CinemaTheme.background;
   static Color get _surface => CinemaTheme.surface;
   static const _line = CinemaTheme.border;
-  static const _text = Color(0xFFF3EEE5);
-  static const _muted = Color(0xFFA6A39C);
-  static const _copper = CinemaTheme.copper;
+  static const _text = CinemaTheme.text;
+  static const _muted = CinemaTheme.muted;
+  bool get _refinedPalette =>
+      Theme.of(context).platform == TargetPlatform.macOS && !NakuDevice.isTV;
+  Color get _copper => CinemaTheme.of(context).colorScheme.primary;
 
   final _resolver = WebViewVideoSourceService();
   final _health = CinemaSourceHealth.instance;
@@ -4440,7 +4442,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         const SizedBox(height: 16),
         Text(
           _hasNext ? '本集已结束，可以继续下一集。' : '播放已结束。',
-          style: const TextStyle(color: _copper),
+          style: TextStyle(color: _copper),
         ),
       ],
       if (_historyError != null) ...[
@@ -4454,7 +4456,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         const SizedBox(height: 14),
         Row(
           children: [
-            const Icon(Icons.info_outline_rounded, size: 17, color: _copper),
+            Icon(Icons.info_outline_rounded, size: 17, color: _copper),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
@@ -4653,17 +4655,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (_error == null)
-                  const Icon(
-                    Icons.hourglass_top_rounded,
-                    color: _copper,
-                    size: 38,
-                  )
+                  Icon(Icons.hourglass_top_rounded, color: _copper, size: 38)
                 else
-                  const Icon(
-                    Icons.error_outline_rounded,
-                    color: _copper,
-                    size: 38,
-                  ),
+                  Icon(Icons.error_outline_rounded, color: _copper, size: 38),
                 const SizedBox(height: 22),
                 Text(
                   _error ?? (_loading ? _phase : '正在等待视频首帧'),
@@ -4765,9 +4759,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         buttonBarHeight: _pip ? 48 : 72,
         automaticallyImplySkipNextButton: false,
         automaticallyImplySkipPreviousButton: false,
-        seekBarPositionColor: const Color(0xFF3388FF),
-        seekBarThumbColor: const Color(0xFF3388FF),
-        volumeBarActiveColor: const Color(0xFF3388FF),
+        seekBarPositionColor: _refinedPalette
+            ? CinemaTheme.controlTint
+            : const Color(0xFF3388FF),
+        seekBarThumbColor: _refinedPalette
+            ? CinemaTheme.controlTint
+            : const Color(0xFF3388FF),
+        volumeBarActiveColor: _refinedPalette
+            ? CinemaTheme.controlTint
+            : const Color(0xFF3388FF),
         primaryButtonBar: const [],
         bufferingIndicatorBuilder:
             nativeCinema && (_loading || waitingForFirstFrame)
@@ -5431,7 +5431,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           if (_loading || waitingForFirstFrame)
-                            const SizedBox(
+                            SizedBox(
                               width: 28,
                               height: 28,
                               child: CircularProgressIndicator(
@@ -5440,7 +5440,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                               ),
                             )
                           else
-                            const Icon(
+                            Icon(
                               Icons.error_outline_rounded,
                               color: _copper,
                               size: 30,
@@ -5735,7 +5735,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: _copper.withValues(alpha: .09),
-        border: Border.all(color: _copper.withValues(alpha: .55)),
+        border: Border.all(
+          color: _copper.withValues(alpha: _refinedPalette ? .20 : .55),
+        ),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
@@ -5745,7 +5747,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (_probingRoutes)
-                const SizedBox(
+                SizedBox(
                   width: 18,
                   height: 18,
                   child: CircularProgressIndicator(
@@ -5767,7 +5769,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                       : best != null
                       ? '本次最佳线路'
                       : '测速结果',
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: _copper,
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
@@ -5939,7 +5941,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                     avatar:
                         best?.candidate.title.key == detail.key &&
                             best?.candidate.routeIndex == i
-                        ? const Icon(
+                        ? Icon(
                             Icons.workspace_premium,
                             color: _copper,
                             size: 18,
@@ -5948,10 +5950,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                     side:
                         best?.candidate.title.key == detail.key &&
                             best?.candidate.routeIndex == i
-                        ? const BorderSide(color: _copper, width: 1.5)
+                        ? BorderSide(
+                            color: _copper.withValues(
+                              alpha: _refinedPalette ? .3 : 1,
+                            ),
+                            width: _refinedPalette ? 1 : 1.5,
+                          )
                         : null,
                     onSelected: (_) => _switchLoadedRoute(detail, i),
-                    selectedColor: _copper.withValues(alpha: .25),
+                    selectedColor: _copper.withValues(
+                      alpha: _refinedPalette ? .12 : .25,
+                    ),
                   ),
                 if (detail.routes.isEmpty)
                   Text(

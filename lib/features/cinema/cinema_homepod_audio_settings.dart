@@ -11,18 +11,20 @@ Future<void> showCinemaHomePodAudioSettings(
   HomePodAudioControls? controls,
 }) => showDialog<void>(
   context: context,
-  builder: (_) => AlertDialog(
-    title: const Text('HomePod 低延迟输出'),
-    content: SizedBox(
-      width: 460,
-      child: CinemaHomePodAudioSettings(controls: controls),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('完成'),
+  builder: (_) => CinemaPanelTheme(
+    child: AlertDialog(
+      title: const Text('HomePod 低延迟输出'),
+      content: SizedBox(
+        width: 460,
+        child: CinemaHomePodAudioSettings(controls: controls),
       ),
-    ],
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('完成'),
+        ),
+      ],
+    ),
   ),
 );
 
@@ -212,7 +214,7 @@ class _CinemaHomePodAudioSettingsState
                   const Expanded(child: Text('HomePod 音量')),
                   Text(
                     '${(_draftReceiverVolume ?? controls.receiverVolume).round()}%',
-                    style: const TextStyle(color: CinemaTheme.copper),
+                    style: TextStyle(color: CinemaTheme.accent),
                   ),
                 ],
               ),
@@ -242,10 +244,7 @@ class _CinemaHomePodAudioSettingsState
                 padding: const EdgeInsets.only(top: 6),
                 child: Text(
                   '发送缓冲目标 · ${controls.latencyMs!.round()} ms',
-                  style: const TextStyle(
-                    color: CinemaTheme.copper,
-                    fontSize: 13,
-                  ),
+                  style: TextStyle(color: CinemaTheme.accent, fontSize: 13),
                 ),
               ),
           ],

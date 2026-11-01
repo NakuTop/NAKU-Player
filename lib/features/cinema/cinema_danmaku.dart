@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'cinema_theme.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data' show BytesBuilder;
@@ -992,9 +993,14 @@ Future<void> showCinemaDanmakuSheet(
         context: context,
         isScrollControlled: true,
         constraints: const BoxConstraints(maxWidth: 480),
-        builder: (_) => SizedBox(
-          height: (MediaQuery.sizeOf(context).height * .8).clamp(0, 510),
-          child: CinemaDanmakuStylePanel(controller: controller),
+        backgroundColor: CinemaTheme.panelDataFor(
+          context,
+        ).bottomSheetTheme.backgroundColor,
+        builder: (_) => CinemaPanelTheme(
+          child: SizedBox(
+            height: (MediaQuery.sizeOf(context).height * .8).clamp(0, 510),
+            child: CinemaDanmakuStylePanel(controller: controller),
+          ),
         ),
       );
 
@@ -1273,62 +1279,64 @@ Future<void> showCinemaDanmakuSourcesDialog(
   final draft = Set.of(controller.selectedSources);
   final selected = await showDialog<Set<String>>(
     context: context,
-    builder: (context) => StatefulBuilder(
-      builder: (context, setState) => ListenableBuilder(
-        listenable: controller,
-        builder: (context, _) => AlertDialog(
-          title: const Text('选择弹幕来源'),
-          content: SizedBox(
-            width: 420,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 420),
-              child: ListView(
-                shrinkWrap: true,
-                children: [
-                  for (final source in cinemaSelectableDanmakuSources.entries)
-                    CheckboxListTile(
-                      key: ValueKey('danmaku-source-${source.key}'),
-                      contentPadding: EdgeInsets.zero,
-                      controlAffinity: ListTileControlAffinity.leading,
-                      title: Text(source.value),
-                      subtitle: Text(switch (controller.sourceStatus(
-                        source.key,
-                      )) {
-                        CinemaDanmakuSourceStatus.loading => '正在匹配…',
-                        CinemaDanmakuSourceStatus.loaded =>
-                          controller.sourceCount(source.key) != null &&
-                                  controller.selectedSources.contains(
-                                    source.key,
-                                  )
-                              ? '${controller.sourceCount(source.key)} 条（当前时段）'
-                              : '已匹配',
-                        CinemaDanmakuSourceStatus.empty => '本集暂无匹配',
-                        CinemaDanmakuSourceStatus.unavailable => '暂不可用',
-                        _ => '可与其他来源同时显示',
-                      }),
-                      value: draft.contains(source.key),
-                      onChanged: (value) => setState(() {
-                        if (value == true) {
-                          draft.add(source.key);
-                        } else {
-                          draft.remove(source.key);
-                        }
-                      }),
-                    ),
-                ],
+    builder: (context) => CinemaPanelTheme(
+      child: StatefulBuilder(
+        builder: (context, setState) => ListenableBuilder(
+          listenable: controller,
+          builder: (context, _) => AlertDialog(
+            title: const Text('选择弹幕来源'),
+            content: SizedBox(
+              width: 420,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 420),
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final source in cinemaSelectableDanmakuSources.entries)
+                      CheckboxListTile(
+                        key: ValueKey('danmaku-source-${source.key}'),
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: Text(source.value),
+                        subtitle: Text(switch (controller.sourceStatus(
+                          source.key,
+                        )) {
+                          CinemaDanmakuSourceStatus.loading => '正在匹配…',
+                          CinemaDanmakuSourceStatus.loaded =>
+                            controller.sourceCount(source.key) != null &&
+                                    controller.selectedSources.contains(
+                                      source.key,
+                                    )
+                                ? '${controller.sourceCount(source.key)} 条（当前时段）'
+                                : '已匹配',
+                          CinemaDanmakuSourceStatus.empty => '本集暂无匹配',
+                          CinemaDanmakuSourceStatus.unavailable => '暂不可用',
+                          _ => '可与其他来源同时显示',
+                        }),
+                        value: draft.contains(source.key),
+                        onChanged: (value) => setState(() {
+                          if (value == true) {
+                            draft.add(source.key);
+                          } else {
+                            draft.remove(source.key);
+                          }
+                        }),
+                      ),
+                  ],
+                ),
               ),
             ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, Set.of(draft)),
+                child: const Text('应用'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, Set.of(draft)),
-              child: const Text('应用'),
-            ),
-          ],
         ),
       ),
     ),
@@ -1355,10 +1363,12 @@ Future<void> showCinemaDanmakuMatchDialog(
     context: context,
     useRootNavigator: !NakuDevice.isTV,
     animationStyle: NakuDevice.isTV ? AnimationStyle.noAnimation : null,
-    builder: (_) => _DanmakuMatchDialog(
-      query: query,
-      originalTitle: controller.autoQuery!.title,
-      canReset: controller.hasMatchOverride,
+    builder: (_) => CinemaPanelTheme(
+      child: _DanmakuMatchDialog(
+        query: query,
+        originalTitle: controller.autoQuery!.title,
+        canReset: controller.hasMatchOverride,
+      ),
     ),
   );
   if (edit == null) return;

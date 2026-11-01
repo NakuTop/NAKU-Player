@@ -46,7 +46,10 @@ class SettingsDetailScaffold extends StatelessWidget {
   final Widget? bottomNavigationBar;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      CinemaPanelTheme(child: Builder(builder: _build));
+
+  Widget _build(BuildContext context) {
     final scope = SettingsPaneScope.of(context);
     final PreferredSizeWidget appBar;
 

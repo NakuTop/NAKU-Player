@@ -1809,10 +1809,12 @@ void main() {
       );
       await tester.pump(const Duration(milliseconds: 600));
       expect(entrance.debugPhase, 'waiting');
-      expect(entrance.debugIsAnimating, isFalse);
+      expect(entrance.debugIsBreathing, isTrue);
       final frames = entrance.debugFrameCount;
+      final waitingExtent = entrance.debugLampExtent;
       await tester.pump(const Duration(seconds: 3));
-      expect(entrance.debugFrameCount, frames);
+      expect(entrance.debugFrameCount, greaterThan(frames));
+      expect(entrance.debugLampExtent, waitingExtent);
       expect(
         soundCalls.where((c) => c.method == 'playCinemaStartupSound'),
         isEmpty,

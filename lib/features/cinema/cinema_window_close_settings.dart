@@ -64,7 +64,7 @@ class _CinemaWindowCloseSettingsState extends State<CinemaWindowCloseSettings> {
           horizontal: 22,
           vertical: 14,
         ),
-        leading: const Icon(Icons.close_rounded, color: CinemaTheme.copper),
+        leading: Icon(Icons.close_rounded, color: CinemaTheme.accent),
         title: const Text('关闭窗口时'),
         subtitle: const Padding(
           padding: EdgeInsets.only(top: 5),

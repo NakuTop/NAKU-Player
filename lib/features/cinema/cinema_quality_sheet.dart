@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'cinema_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
@@ -11,9 +12,14 @@ Future<void> showCinemaQualitySheet(BuildContext context, Player player) =>
       context: context,
       isScrollControlled: true,
       constraints: const BoxConstraints(maxWidth: 760),
-      builder: (_) => SizedBox(
-        height: MediaQuery.sizeOf(context).height * .82,
-        child: CinemaQualitySheet(player: player),
+      backgroundColor: CinemaTheme.panelDataFor(
+        context,
+      ).bottomSheetTheme.backgroundColor,
+      builder: (_) => CinemaPanelTheme(
+        child: SizedBox(
+          height: MediaQuery.sizeOf(context).height * .82,
+          child: CinemaQualitySheet(player: player),
+        ),
       ),
     );
 

@@ -54,9 +54,9 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   static const _closeDuration = Duration(milliseconds: 500);
   static const _lightDuration = Duration(milliseconds: 1550);
-  late final AnimationController _animation, _lampAnimation;
+  late final AnimationController _animation, _lampAnimation, _breathing;
   late final Listenable _paintAnimation;
-  double _lampTarget = .10, _revealLampExtent = .10;
+  double _lampTarget = .10, _revealLampExtent = .10, _revealBreath = 1;
   static const _lampSpring = SpringDescription(
     mass: 1,
     stiffness: 324,
@@ -74,7 +74,9 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
   String get debugPhase => _phase.name;
   @visibleForTesting
   bool get debugIsAnimating =>
-      _animation.isAnimating || _lampAnimation.isAnimating;
+      _animation.isAnimating ||
+      _lampAnimation.isAnimating ||
+      _breathing.isAnimating;
   @visibleForTesting
   int get debugGeneration => widget.generation;
   @visibleForTesting
@@ -93,6 +95,22 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
   double get debugLampVelocity => _lampAnimation.velocity;
   @visibleForTesting
   double get debugLampTarget => _lampTarget;
+  @visibleForTesting
+  bool get debugIsBreathing => _breathing.isAnimating;
+  @visibleForTesting
+  double get debugBreathBrightness => _breathing.isAnimating ? _breathScale : 1;
+  double get _breathScale =>
+      .82 + .18 * (.5 + .5 * math.cos(2 * math.pi * _breathing.value));
+
+  void _syncBreathing() {
+    final needed =
+        _allowed && _waitingInDark && _phase == _EntrancePhase.waiting;
+    if (needed && !_breathing.isAnimating) {
+      _breathing.repeat();
+    } else if (!needed) {
+      _breathing.stop();
+    }
+  }
 
   bool get _waitingInDark =>
       widget.animateOnEntry &&
@@ -120,7 +138,15 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
       ..addStatusListener(_statusChanged)
       ..addListener(_countFrame);
     _lampAnimation = AnimationController(vsync: this)..addListener(_countFrame);
-    _paintAnimation = Listenable.merge([_animation, _lampAnimation]);
+    _breathing = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2100),
+    )..addListener(_countFrame);
+    _paintAnimation = Listenable.merge([
+      _animation,
+      _lampAnimation,
+      _breathing,
+    ]);
   }
 
   void _countFrame() => _frameCount++;
@@ -167,6 +193,7 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
       _lampAnimation.value = _lampTarget;
       setState(() => _phase = _EntrancePhase.waiting);
     }
+    _syncBreathing();
   }
 
   void _retargetLamp() {
@@ -205,6 +232,9 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
     _cancelNotified = false;
     _animation.stop();
     _lampAnimation.stop();
+    _breathing.stop();
+    _breathing.value = 0;
+    _revealBreath = 1;
     _lampTarget = widget.animateOnEntry ? _lampExtent(widget.loadStage) : 0;
     _lampAnimation.value = _lampTarget;
     _revealLampExtent = _lampTarget;
@@ -232,6 +262,7 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
         _light();
       } else {
         setState(() => _phase = _EntrancePhase.waiting);
+        _syncBreathing();
       }
     } else if (_phase == _EntrancePhase.lighting) {
       setState(() => _phase = _EntrancePhase.complete);
@@ -249,6 +280,8 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
     // Continue from the lamp that was actually painted. A fast first frame
     // must not jump the lamp to the final waiting milestone before it reveals.
     _revealLampExtent = _lampAnimation.value;
+    _revealBreath = _breathing.isAnimating ? _breathScale : 1;
+    _breathing.stop();
     _lampAnimation.stop();
     setState(() => _phase = _EntrancePhase.lighting);
     _animation.duration = _lightDuration;
@@ -281,6 +314,7 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
     }
     _animation.stop();
     _lampAnimation.stop();
+    _breathing.stop();
     final phase = widget.animateOnEntry
         ? _EntrancePhase.cancelled
         : _EntrancePhase.complete;
@@ -301,6 +335,7 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
     _notifyCancel();
     _animation.stop();
     _lampAnimation.stop();
+    _breathing.stop();
     if (canAnimate) {
       setState(() => _phase = _EntrancePhase.exiting);
       _animation.duration = _closeDuration;
@@ -316,6 +351,7 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
     if (completion == null) return;
     _animation.stop();
     _lampAnimation.stop();
+    _breathing.stop();
     final changed = _phase != _EntrancePhase.exited;
     _phase = _EntrancePhase.exited;
     if (rebuild && !_disposed && mounted && changed) setState(() {});
@@ -341,6 +377,9 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
       ..removeListener(_countFrame)
       ..dispose();
     _lampAnimation
+      ..removeListener(_countFrame)
+      ..dispose();
+    _breathing
       ..removeListener(_countFrame)
       ..dispose();
     super.dispose();
@@ -390,6 +429,9 @@ class CinemaPlayerEntranceState extends State<CinemaPlayerEntrance>
                   _phase,
                   transition: _animation,
                   filament: _lampAnimation,
+                  breathing: _breathing,
+                  breathe: _breathing.isAnimating,
+                  revealBreath: _revealBreath,
                   repaint: _paintAnimation,
                   revealLampExtent: _revealLampExtent,
                   waitingInDark: _waitingInDark,
@@ -414,14 +456,18 @@ class _EntrancePainter extends CustomPainter {
     this.phase, {
     required this.transition,
     required this.filament,
+    required this.breathing,
+    required this.breathe,
+    required this.revealBreath,
     required Listenable repaint,
     required this.revealLampExtent,
     required this.waitingInDark,
     required this.showLoadLamp,
   }) : super(repaint: repaint);
   final _EntrancePhase phase;
-  final Animation<double> transition, filament;
-  final double revealLampExtent;
+  final Animation<double> transition, filament, breathing;
+  final bool breathe;
+  final double revealLampExtent, revealBreath;
   final bool waitingInDark, showLoadLamp;
   double get progress => transition.value;
 
@@ -547,7 +593,7 @@ class _EntrancePainter extends CustomPainter {
           fieldTransform.storage,
         ),
     );
-    final baseGlow = _lampGlow(revealLampExtent);
+    final baseGlow = _lampGlow(revealLampExtent) * revealBreath;
     final lamp =
         (baseGlow + (1 - baseGlow) * energy) * (1 - energy * energy * energy);
     if (lamp <= 0) return;
@@ -575,13 +621,16 @@ class _EntrancePainter extends CustomPainter {
   }
 
   void _waitingLamp(Canvas canvas, Size size) {
-    // Interpolate only towards observed work, then stop the ticker. Unknown
-    // network time never fills the tube or admits a light cone into the body.
+    // Brightness breathes while waiting; observed milestones alone own length.
+    // Keep the core visible, and never expose the media before its first frame.
     _tube(
       canvas,
       Offset(size.width * .5, size.height * .065),
       size.width * .34 * filament.value,
-      _lampGlow(filament.value),
+      _lampGlow(filament.value) *
+          (breathe
+              ? .82 + .18 * (.5 + .5 * math.cos(2 * math.pi * breathing.value))
+              : 1),
     );
   }
 
@@ -612,6 +661,9 @@ class _EntrancePainter extends CustomPainter {
       oldDelegate.phase != phase ||
       oldDelegate.transition != transition ||
       oldDelegate.filament != filament ||
+      oldDelegate.breathing != breathing ||
+      oldDelegate.breathe != breathe ||
+      oldDelegate.revealBreath != revealBreath ||
       oldDelegate.revealLampExtent != revealLampExtent ||
       oldDelegate.waitingInDark != waitingInDark ||
       oldDelegate.showLoadLamp != showLoadLamp;

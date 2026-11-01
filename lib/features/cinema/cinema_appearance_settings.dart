@@ -61,8 +61,8 @@ class CinemaAppearanceSettings extends StatelessWidget {
                   ),
                   Text(
                     '$percent%',
-                    style: const TextStyle(
-                      color: CinemaTheme.copper,
+                    style: TextStyle(
+                      color: CinemaTheme.accent,
                       fontFeatures: [FontFeature.tabularFigures()],
                     ),
                   ),
@@ -117,8 +117,10 @@ class CinemaAppearanceSettings extends StatelessWidget {
               const SizedBox(height: 20),
               DecoratedBox(
                 decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF6B432A), Color(0xFF1C2633)],
+                  gradient: LinearGradient(
+                    colors: CinemaTheme.refinedControls
+                        ? const [Color(0xFF4E5967), Color(0xFF20242B)]
+                        : const [Color(0xFF6B432A), Color(0xFF1C2633)],
                   ),
                   borderRadius: BorderRadius.circular(16),
                 ),
@@ -132,9 +134,9 @@ class CinemaAppearanceSettings extends StatelessWidget {
                   ),
                   child: Row(
                     children: [
-                      const Icon(
+                      Icon(
                         Icons.play_circle_fill_rounded,
-                        color: CinemaTheme.copper,
+                        color: CinemaTheme.accent,
                         size: 32,
                       ),
                       const SizedBox(width: 12),

@@ -8,18 +8,20 @@ Future<void> showCinemaDesktopWindowSettings(
   DesktopWindowControls? controls,
 }) => showDialog<void>(
   context: context,
-  builder: (_) => AlertDialog(
-    title: const Text('窗口与快捷隐藏'),
-    content: SizedBox(
-      width: 460,
-      child: CinemaDesktopWindowSettings(controls: controls),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('完成'),
+  builder: (_) => CinemaPanelTheme(
+    child: AlertDialog(
+      title: const Text('窗口与快捷隐藏'),
+      content: SizedBox(
+        width: 460,
+        child: CinemaDesktopWindowSettings(controls: controls),
       ),
-    ],
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('完成'),
+        ),
+      ],
+    ),
   ),
 );
 
@@ -142,7 +144,7 @@ class _CinemaDesktopWindowSettingsState
                 const Expanded(child: Text('窗口不透明度')),
                 Text(
                   '${(opacity * 100).round()}%',
-                  style: const TextStyle(color: CinemaTheme.copper),
+                  style: TextStyle(color: CinemaTheme.accent),
                 ),
               ],
             ),

@@ -36,7 +36,15 @@ abstract final class CinemaTheme {
       );
   static double _panelAlpha(double opacity, double base, double scale) =>
       opacity >= .999 ? 1 : base + opacity * scale;
+  // Warm light remains a cinematic effect; macOS controls use the same silver
+  // contrast as the navigation and native frost instead of the legacy orange.
   static const copper = Color(0xFFFF9F0A);
+  static const controlTint = Color(0xFFE3E7ED);
+  static const selectionFill = Color(0x1FFFFFFF);
+  static const controlInk = Color(0xFF17191E);
+  static bool get refinedControls =>
+      defaultTargetPlatform == TargetPlatform.macOS && !NakuDevice.isTV;
+  static Color get accent => refinedControls ? controlTint : copper;
   static const text = Color(0xFFF5F5F7);
   static const muted = Color(0xFFB3B0B5);
   static const border = Color(0x18FFFFFF);
@@ -56,12 +64,29 @@ abstract final class CinemaTheme {
   }
 
   static ThemeData get data => dataFor(CinemaAppearance.instance);
-  static ThemeData of(BuildContext context) =>
-      dataFor(CinemaAppearanceScope.of(context));
-  static ThemeData dataFor(CinemaAppearance appearance) {
+  static ThemeData of(BuildContext context) => dataFor(
+    CinemaAppearanceScope.of(context),
+    platform: Theme.of(context).platform,
+  );
+
+  /// Bottom sheets can be launched from the State context above a player's
+  /// local Theme. Capture a complete cinema theme before pushing that route.
+  static ThemeData panelDataFor(BuildContext context) {
+    final inherited = Theme.of(context);
+    return inherited.platform == TargetPlatform.macOS && !NakuDevice.isTV
+        ? of(context)
+        : inherited;
+  }
+
+  static ThemeData dataFor(
+    CinemaAppearance appearance, {
+    TargetPlatform? platform,
+  }) {
     final opacity = appearance.effectiveBackgroundOpacity;
     final fontFamily = _fontFamily;
-    final platform = defaultTargetPlatform;
+    platform ??= defaultTargetPlatform;
+    final refined = platform == TargetPlatform.macOS && !NakuDevice.isTV;
+    final accent = refined ? controlTint : copper;
     if (_cached != null &&
         _cachedOpacity == opacity &&
         _cachedFont == fontFamily &&
@@ -76,6 +101,7 @@ abstract final class CinemaTheme {
     _cachedPlatform = platform;
     _cachedTV = NakuDevice.isTV;
     return _cached = ThemeData(
+      platform: platform,
       useMaterial3: true,
       splashFactory: NakuDevice.isTV
           ? NoSplash.splashFactory
@@ -106,13 +132,13 @@ abstract final class CinemaTheme {
           : pageTransitionsTheme2024,
       scaffoldBackgroundColor: background,
       colorScheme: ColorScheme.dark(
-        primary: copper,
+        primary: accent,
         onPrimary: Colors.black,
         surface: surface,
         onSurface: text,
-        secondary: copper,
+        secondary: accent,
         onSecondary: Colors.black,
-        tertiary: copper,
+        tertiary: accent,
         onTertiary: Colors.black,
         primaryContainer: const Color(0xFF323234),
         onPrimaryContainer: text,
@@ -147,24 +173,32 @@ abstract final class CinemaTheme {
       ),
       cardTheme: CardThemeData(
         color: surface,
+        surfaceTintColor: refined ? Colors.transparent : null,
         elevation: 0,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: refined
+              ? const BorderSide(color: border, width: .5)
+              : BorderSide.none,
+        ),
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: NakuDevice.isTV
+        backgroundColor: NakuDevice.isTV || (refined && opacity >= .999)
             ? const Color(0xFF1B1B1D)
             : const Color(0xF01B1B1D),
         surfaceTintColor: Colors.transparent,
         elevation: NakuDevice.isTV ? 0 : null,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       ),
-      bottomSheetTheme: const BottomSheetThemeData(
-        backgroundColor: Color(0xEA18181A),
+      bottomSheetTheme: BottomSheetThemeData(
+        backgroundColor: refined && opacity >= .999
+            ? const Color(0xFF202126)
+            : const Color(0xEA18181A),
         surfaceTintColor: Colors.transparent,
         showDragHandle: true,
       ),
       popupMenuTheme: PopupMenuThemeData(
-        color: NakuDevice.isTV
+        color: NakuDevice.isTV || (refined && opacity >= .999)
             ? const Color(0xFF1B1B1D)
             : const Color(0xF01B1B1D),
         surfaceTintColor: Colors.transparent,
@@ -217,8 +251,8 @@ abstract final class CinemaTheme {
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          backgroundColor: copper,
-          foregroundColor: Colors.black,
+          backgroundColor: accent,
+          foregroundColor: refined ? controlInk : Colors.black,
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
@@ -242,6 +276,77 @@ abstract final class CinemaTheme {
               ),
             ),
       ),
+      // Explicit roles prevent Material controls deriving tinted orange
+      // containers from an older route's ColorScheme seed.
+      textButtonTheme: refined
+          ? TextButtonThemeData(
+              style: TextButton.styleFrom(foregroundColor: controlTint),
+            )
+          : null,
+      switchTheme: refined
+          ? SwitchThemeData(
+              thumbColor: WidgetStateProperty.resolveWith(
+                (states) => states.contains(WidgetState.disabled)
+                    ? const Color(0x668E939D)
+                    : states.contains(WidgetState.selected)
+                    ? controlTint
+                    : muted,
+              ),
+              trackColor: WidgetStateProperty.resolveWith(
+                (states) => states.contains(WidgetState.selected)
+                    ? const Color(0xFF505660)
+                    : const Color(0xFF2B2E34),
+              ),
+              trackOutlineColor: const WidgetStatePropertyAll(
+                Color(0x30FFFFFF),
+              ),
+            )
+          : null,
+      checkboxTheme: refined
+          ? CheckboxThemeData(
+              fillColor: WidgetStateProperty.resolveWith(
+                (states) => states.contains(WidgetState.selected)
+                    ? (states.contains(WidgetState.disabled)
+                          ? const Color(0x668E939D)
+                          : controlTint)
+                    : Colors.transparent,
+              ),
+              checkColor: const WidgetStatePropertyAll(controlInk),
+              side: const BorderSide(color: Color(0x60FFFFFF), width: 1.3),
+            )
+          : null,
+      radioTheme: refined
+          ? RadioThemeData(
+              fillColor: WidgetStateProperty.resolveWith(
+                (states) => states.contains(WidgetState.disabled)
+                    ? const Color(0x668E939D)
+                    : controlTint,
+              ),
+            )
+          : null,
+      sliderTheme: refined
+          ? const SliderThemeData(
+              activeTrackColor: controlTint,
+              thumbColor: controlTint,
+              inactiveTrackColor: Color(0x30FFFFFF),
+              overlayColor: Color(0x18FFFFFF),
+              valueIndicatorColor: Color(0xFF454A53),
+              valueIndicatorTextStyle: TextStyle(color: text),
+            )
+          : null,
+      progressIndicatorTheme: refined
+          ? const ProgressIndicatorThemeData(
+              color: controlTint,
+              linearTrackColor: Color(0x20FFFFFF),
+            )
+          : null,
+      listTileTheme: refined
+          ? const ListTileThemeData(
+              selectedColor: text,
+              selectedTileColor: selectionFill,
+              iconColor: muted,
+            )
+          : null,
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: const Color(0x10FFFFFF),
@@ -269,6 +374,16 @@ abstract final class CinemaTheme {
       ),
     );
   }
+}
+
+/// A complete theme boundary for sheets and legacy settings destinations.
+/// It changes inherited color roles without adding another blur or material.
+class CinemaPanelTheme extends StatelessWidget {
+  const CinemaPanelTheme({super.key, required this.child});
+  final Widget child;
+  @override
+  Widget build(BuildContext context) =>
+      Theme(data: CinemaTheme.panelDataFor(context), child: child);
 }
 
 /// Restrict each blur to its panel, keeping large poster grids inexpensive.

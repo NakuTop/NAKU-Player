@@ -36,7 +36,10 @@ class CinemaSettingsPage extends StatelessWidget {
   final CinemaNavigationPreferences? navigationPreferences;
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
+  Widget build(BuildContext context) =>
+      CinemaPanelTheme(child: Builder(builder: _build));
+
+  Widget _build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final inset = constraints.maxWidth < 600 ? 16.0 : 28.0;
       final width = (constraints.maxWidth - inset * 2).clamp(0.0, 1080.0);
@@ -134,7 +137,8 @@ class CinemaSettingsPage extends StatelessWidget {
                             title: 'HomePod 低延迟输出',
                             compact: refined,
                             subtitle: refined ? '' : '将整个 Mac 的声音送到 HomePod',
-                            onTap: () => showCinemaHomePodAudioSettings(context),
+                            onTap: () =>
+                                showCinemaHomePodAudioSettings(context),
                           ),
                         ],
                         if (!refined)
@@ -368,7 +372,8 @@ class CinemaSettingsPage extends StatelessWidget {
                             title: 'HomePod 低延迟输出',
                             compact: true,
                             subtitle: '',
-                            onTap: () => showCinemaHomePodAudioSettings(context),
+                            onTap: () =>
+                                showCinemaHomePodAudioSettings(context),
                           ),
                           destination('sync'),
                           destination('proxy'),
@@ -460,43 +465,47 @@ class CinemaSettingsPage extends StatelessWidget {
     required String subtitle,
     required VoidCallback onTap,
     bool compact = false,
-  }) => ListTile(
-    key: ValueKey(key),
-    contentPadding: EdgeInsets.symmetric(
-      horizontal: compact ? 10 : 22,
-      vertical: compact ? 8 : 14,
-    ),
-    minLeadingWidth: compact ? 20 : null,
-    horizontalTitleGap: compact ? 12 : null,
-    shape: compact
-        ? RoundedRectangleBorder(borderRadius: BorderRadius.circular(9))
-        : null,
-    leading: Icon(
-      icon,
-      color: compact ? CinemaTheme.muted : CinemaTheme.copper,
-      size: compact ? 19 : 23,
-    ),
-    title: Text(
-      title,
-      style: TextStyle(
-        fontSize: compact ? 14 : null,
-        fontWeight: FontWeight.w500,
+  }) => Builder(
+    builder: (context) => ListTile(
+      key: ValueKey(key),
+      contentPadding: EdgeInsets.symmetric(
+        horizontal: compact ? 10 : 22,
+        vertical: compact ? 8 : 14,
       ),
-    ),
-    subtitle: subtitle.isEmpty
-        ? null
-        : Padding(
-            padding: const EdgeInsets.only(top: 5),
-            child: Text(
-              subtitle,
-              style: const TextStyle(color: CinemaTheme.muted, fontSize: 12),
+      minLeadingWidth: compact ? 20 : null,
+      horizontalTitleGap: compact ? 12 : null,
+      shape: compact
+          ? RoundedRectangleBorder(borderRadius: BorderRadius.circular(9))
+          : null,
+      leading: Icon(
+        icon,
+        color: compact || Theme.of(context).platform == TargetPlatform.macOS
+            ? CinemaTheme.muted
+            : CinemaTheme.copper,
+        size: compact ? 19 : 23,
+      ),
+      title: Text(
+        title,
+        style: TextStyle(
+          fontSize: compact ? 14 : null,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+      subtitle: subtitle.isEmpty
+          ? null
+          : Padding(
+              padding: const EdgeInsets.only(top: 5),
+              child: Text(
+                subtitle,
+                style: const TextStyle(color: CinemaTheme.muted, fontSize: 12),
+              ),
             ),
-          ),
-    trailing: Icon(
-      Icons.chevron_right_rounded,
-      color: CinemaTheme.muted,
-      size: compact ? 16 : 21,
+      trailing: Icon(
+        Icons.chevron_right_rounded,
+        color: CinemaTheme.muted,
+        size: compact ? 16 : 21,
+      ),
+      onTap: onTap,
     ),
-    onTap: onTap,
   );
 }

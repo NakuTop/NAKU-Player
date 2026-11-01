@@ -133,7 +133,15 @@ class SplitListGroup extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         for (int i = 0; i < children.length; i++) ...[
-          if (i > 0) SizedBox(height: cinema ? 0 : splitListRowGap),
+          if (i > 0)
+            cinema
+                ? const Divider(
+                    height: .5,
+                    thickness: .5,
+                    indent: 16,
+                    endIndent: 16,
+                  )
+                : const SizedBox(height: splitListRowGap),
           SplitListRow(
             topRadius: i == 0 ? outerRadius : splitListInnerRadius,
             bottomRadius: i == children.length - 1
