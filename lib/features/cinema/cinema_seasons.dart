@@ -10,10 +10,6 @@ String cinemaSourceQuery(String title) => title.trim().replaceAll(
   '',
 );
 
-final _seasonSuffix = RegExp(
-  r'(?:第[一二三四五六七八九十0-9]{1,3}季|\s+season\s+\d{1,2}|\s+s\d{1,2})$',
-  caseSensitive: false,
-);
 final _seasonId = RegExp(r'^(\d+)~s([1-9][0-9]?)$');
 final _episode = RegExp(
   r'^(?:第\s*(\d{1,2})\s*季\s*第\s*(\d{1,4})\s*集|s(\d{1,2})\s*e(\d{1,4}))$',
@@ -28,10 +24,26 @@ List<String> cinemaWorkQueries(CinemaTitle title) {
   final name = cinemaSourceQuery(cinemaMediaBaseTitle(title.title));
   return {
     name,
-    name.replaceFirst(_seasonSuffix, '').trim(),
+    if (cinemaSeasonName(name) case final season?) season.work,
     for (final alias in title.aliases.split(RegExp(r'[/／]')).take(1))
       cinemaSourceQuery(alias),
   }.where((query) => query.isNotEmpty).take(3).toList();
+}
+
+/// The same bounded query set is used regardless of how the season was typed.
+List<String> cinemaSeasonQueries(CinemaSeasonName season) {
+  final work = cinemaSourceQuery(season.work);
+  final number = season.number;
+  return [
+    if (RegExp(r'[\u3400-\u9fff]').hasMatch(work)) ...[
+      '$work第$number季',
+      '$work第${cinemaChineseSeasonNumber(number)}季',
+    ] else ...[
+      '$work Season $number',
+      '$work S${number.toString().padLeft(2, '0')}',
+    ],
+    work,
+  ];
 }
 
 /// Split explicitly season-labelled bundles, never infer a season from order.
@@ -39,7 +51,7 @@ List<String> cinemaWorkQueries(CinemaTitle title) {
 List<CinemaTitle> cinemaSplitSeasons(CinemaTitle title) {
   if (!RegExp(r'^\d+$').hasMatch(title.id) ||
       !title.category.contains('剧') ||
-      _seasonSuffix.hasMatch(cinemaSourceQuery(title.title)) ||
+      cinemaSeasonName(title.title) != null ||
       title.routes.isEmpty) {
     return [title];
   }

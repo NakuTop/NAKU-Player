@@ -107,9 +107,19 @@ List<CinemaTitleGroup> groupCinemaTitles(
 }) {
   final groups = <_Group>[];
   final byName = <String, List<_Group>>{};
-  final seen = <(String, String)>{};
+  final unique = <String, CinemaTitle>{};
   for (final title in items) {
-    if (!seen.add((title.sourceId, title.id))) continue;
+    unique.putIfAbsent(title.key, () => title);
+  }
+  final order = {
+    for (final (index, title) in unique.values.indexed) title.key: index,
+  };
+  // A bundle season can omit the year and external ID. Resolve ordinary
+  // editions first so an ambiguous projection cannot pick a conflicting work.
+  for (final title in [
+    ...unique.values.where((title) => !cinemaIsSeasonProjection(title)),
+    ...unique.values.where(cinemaIsSeasonProjection),
+  ]) {
     final candidate = _Candidate(title);
     final possible = (byName[candidate.name] ?? const <_Group>[])
         .where((group) => group.accepts(candidate))
@@ -129,22 +139,23 @@ List<CinemaTitleGroup> groupCinemaTitles(
       byName.putIfAbsent(candidate.name, () => []).add(group);
     }
   }
-  return [
-    for (final group in groups)
-      CinemaTitleGroup(
-        key: group.variants.first.key,
-        variants: group.variants,
-        preferredSourceId: preferredSourceId,
-        sourcePriority: sourcePriority,
-      ),
-  ];
+  final result = groups.map((group) {
+    group.variants.sort((a, b) => order[a.key]!.compareTo(order[b.key]!));
+    return CinemaTitleGroup(
+      key: group.variants.first.key,
+      variants: group.variants,
+      preferredSourceId: preferredSourceId,
+      sourcePriority: sourcePriority,
+    );
+  }).toList();
+  return result..sort((a, b) => order[a.key]!.compareTo(order[b.key]!));
 }
 
 enum _Kind { movie, series, anime, documentary, commentary, unknown }
 
 class _Candidate {
   _Candidate(this.title)
-    : name = _normalizeName(title.title),
+    : name = cinemaSeasonTitleKey(title.title),
       doubanId = title.doubanId.trim(),
       kind = _kind(title.category),
       year = _year(title.year, _kind(title.category));
@@ -208,55 +219,6 @@ class _Group {
     year ??= candidate.year;
     if (kind == _Kind.unknown) kind = candidate.kind;
   }
-}
-
-String _normalizeName(String value) {
-  var name = cinemaMediaBaseTitle(value).toLowerCase();
-  const language = r'(?:原声版|普通话版|国语版|英语版)';
-  name = name.replaceFirst(
-    RegExp(
-      r'\s*(?:[（(]\s*' +
-          language +
-          r'\s*[）)]|\[\s*' +
-          language +
-          r'\s*\]|【\s*' +
-          language +
-          r'\s*】|' +
-          language +
-          r')\s*$',
-    ),
-    '',
-  );
-  name = name.replaceAll(RegExp(r'\s+'), '');
-  return name.replaceAllMapped(RegExp(r'第([一二三四五六七八九十0-9]{1,3})季'), (match) {
-    final number = _seasonNumber(match[1]!);
-    return number == null ? match[0]! : '第$number季';
-  });
-}
-
-int? _seasonNumber(String text) {
-  final arabic = int.tryParse(text);
-  if (arabic != null) return arabic >= 1 && arabic <= 99 ? arabic : null;
-  const digits = {
-    '一': 1,
-    '二': 2,
-    '三': 3,
-    '四': 4,
-    '五': 5,
-    '六': 6,
-    '七': 7,
-    '八': 8,
-    '九': 9,
-  };
-  if (text == '十') return 10;
-  if (digits.containsKey(text)) return digits[text];
-  if (RegExp(r'^十[一二三四五六七八九]$').hasMatch(text)) {
-    return 10 + digits[text[1]]!;
-  }
-  if (RegExp(r'^[二三四五六七八九]十[一二三四五六七八九]?$').hasMatch(text)) {
-    return digits[text[0]]! * 10 + (text.length == 3 ? digits[text[2]]! : 0);
-  }
-  return null;
 }
 
 _Kind _kind(String value) {

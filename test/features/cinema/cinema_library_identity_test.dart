@@ -89,6 +89,53 @@ void main() {
       Map<String, dynamic>.from(jsonDecode(await file.readAsString()) as Map);
 
   test(
+    'old season spellings consolidate without losing route or progress',
+    () async {
+      final chinese = _title(
+        'a',
+        name: '美国恐怖故事 第十二季',
+        year: '2023',
+        category: '欧美剧',
+        douban: '34942478',
+      );
+      final numeric = _title(
+        'b',
+        name: '美国恐怖故事 第１２季',
+        year: '2023',
+        category: '欧美剧',
+        douban: '34942478',
+      );
+      final other = _title(
+        'b',
+        id: '43',
+        name: '美国恐怖故事 第十一季',
+        year: '2023',
+        category: '欧美剧',
+        douban: '34942478',
+      );
+      await write(
+        favorites: [chinese.toJson(), numeric.toJson(), other.toJson()],
+        history: [
+          _history(chinese, 1, 900),
+          _history(numeric, 3, 123),
+          _history(other, 2, 10),
+        ],
+      );
+      final library = store();
+      await library.load();
+      expect(library.favorites, hasLength(2));
+      expect(library.history, hasLength(2));
+      expect(library.history.first.title.key, numeric.key);
+      expect(library.history.first.positionSeconds, 123);
+      expect(library.history.first.title.routes.single.name, 'b-route');
+      expect(
+        library.historyCacheKeys,
+        containsAll([chinese.key, numeric.key, other.key]),
+      );
+    },
+  );
+
+  test(
     'legacy duplicates consolidate with exact backup and latest complete progress',
     () async {
       final a = _title('a');

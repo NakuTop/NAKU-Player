@@ -29,6 +29,76 @@ String cinemaMediaBaseTitle(String title) {
       : name.replaceAll(RegExp(r'\s+'), ' ').trim();
 }
 
+typedef CinemaSeasonName = ({String work, int number});
+
+const _seasonDigits = '零一二三四五六七八九';
+final _seasonAtEnd = RegExp(
+  r'(?:第\s*)?([0-9０-９一二两兩三四五六七八九十]+)\s*季$'
+  r'|(?:[\s:：_–—-]+|(?<=[\u3400-\u9fff]))(?:season\s*|s)([0-9０-９]+)$',
+  caseSensitive: false,
+);
+
+int? _seasonNumber(String value) {
+  final text = value
+      .replaceAll('两', '二')
+      .replaceAll('兩', '二')
+      .replaceAllMapped(
+        RegExp(r'[０-９]'),
+        (match) => String.fromCharCode(match[0]!.codeUnitAt(0) - 0xfee0),
+      );
+  final digits = int.tryParse(text);
+  if (digits != null) return digits >= 1 && digits <= 99 ? digits : null;
+  if (text.length == 1 && _seasonDigits.contains(text)) {
+    return _seasonDigits.indexOf(text);
+  }
+  final tens = RegExp(r'^([一二三四五六七八九]?)十([一二三四五六七八九]?)$').firstMatch(text);
+  if (tens == null) return null;
+  final high = tens[1]!.isEmpty ? 1 : _seasonDigits.indexOf(tens[1]!);
+  final low = tens[2]!.isEmpty ? 0 : _seasonDigits.indexOf(tens[2]!);
+  return high * 10 + low;
+}
+
+String cinemaChineseSeasonNumber(int number) {
+  if (number < 10) return _seasonDigits[number];
+  return '${number < 20 ? '' : _seasonDigits[number ~/ 10]}十'
+      '${number % 10 == 0 ? '' : _seasonDigits[number % 10]}';
+}
+
+/// Only an explicit season label changes identity. Bare sequel numbers and
+/// the name of an unsplit series remain distinct.
+CinemaSeasonName? cinemaSeasonName(String value) {
+  final name = cinemaMediaBaseTitle(value);
+  final match = _seasonAtEnd.firstMatch(name);
+  if (match == null) return null;
+  final number = _seasonNumber(match[1] ?? match[2]!);
+  final work = name
+      .substring(0, match.start)
+      .replaceFirst(RegExp(r'[\s:：_–—-]+$'), '')
+      .trim();
+  return number == null || work.isEmpty ? null : (work: work, number: number);
+}
+
+String cinemaSeasonTitleKey(String value) {
+  final name = cinemaMediaBaseTitle(value);
+  final season = cinemaSeasonName(name);
+  final canonical = season == null
+      ? name.replaceAllMapped(RegExp(r'第\s*([0-9０-９一二两兩三四五六七八九十]+)\s*季'), (
+          match,
+        ) {
+          final number = _seasonNumber(match[1]!);
+          return number == null ? match[0]! : '第$number季';
+        })
+      : '${season.work}第${season.number}季';
+  return canonical.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+}
+
+bool cinemaMatchesSeason(String title, CinemaSeasonName query) {
+  final season = cinemaSeasonName(title);
+  if (season == null || season.number != query.number) return false;
+  String key(String work) => work.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+  return key(season.work).contains(key(query.work));
+}
+
 /// A source's 4K/2160p/UHD label is a catalogue signal, not a media probe.
 bool cinemaIs4KLabel(String value) => RegExp(
   r'(?:^|[^a-z0-9])(?:4\s*k|2160p|uhd)(?=$|[^a-z0-9\u3400-\u9fff]|电影|電影|剧|劇|专区|專區|资源|資源)|超高清',

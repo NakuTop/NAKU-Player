@@ -65,6 +65,63 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test(
+    'season spellings share one search and retain only the requested season',
+    () async {
+      final adapter = _Adapter((options, _) {
+        final query = options.uri.queryParameters['wd'];
+        return ResponseBody.fromString(
+          jsonEncode({
+            'page': 1,
+            'pagecount': 1,
+            'list': [
+              if (query == '美国恐怖故事第十二季')
+                {
+                  'vod_id': '43991',
+                  'vod_name': '美国恐怖故事 第十二季',
+                  'type_name': '欧美剧',
+                  'vod_year': '2023',
+                },
+              if (query == '美国恐怖故事')
+                {
+                  'vod_id': '629627612989227013',
+                  'vod_name': '美国恐怖故事',
+                  'type_name': '欧美剧',
+                  'vod_year': '2011',
+                  'vod_play_from': 'hls',
+                  'vod_play_url':
+                      'S11E01\$https://media.example/11.m3u8'
+                      '#第 12 季 第 1 集\$https://media.example/12.m3u8',
+                },
+            ],
+          }),
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      });
+      final repository = _repository(adapter);
+      for (final name in [
+        '美国恐怖故事第12季',
+        '美国恐怖故事十二季',
+        '美国恐怖故事 第１２季',
+        '美国恐怖故事 S12',
+      ]) {
+        final result = await repository.search(_source, name);
+        expect(result.items.map((title) => title.id), [
+          '43991',
+          '629627612989227013~s12',
+        ]);
+        expect(
+          result.items.last.routes.single.episodes.single.url,
+          endsWith('/12.m3u8'),
+        );
+      }
+      expect(adapter.requests, hasLength(3));
+    },
+  );
+
+  test(
     'same trimmed search coalesces and subsequent discovery reuses its response',
     () async {
       final started = Completer<void>(), release = Completer<void>();

@@ -6,6 +6,7 @@ import 'package:kazumi/request/core/network_config.dart';
 import 'package:kazumi/plugins/plugins.dart';
 
 import 'cinema_models.dart';
+import 'cinema_media_identity.dart';
 import 'cinema_source_health.dart';
 import 'cinema_seasons.dart';
 
@@ -178,9 +179,56 @@ class CinemaRepository {
         (source.kind == CinemaSourceKind.kazumi && page > 1)) {
       return const CinemaPage(items: []);
     }
-    // Keep case and interior whitespace: those can affect remote semantics.
+    final season = cinemaSeasonName(query);
+    if (source.kind == CinemaSourceKind.maccms && season != null) {
+      final key = (
+        source.id,
+        _sourceIdentity(source),
+        cinemaSeasonQueries(season).first,
+        page,
+      );
+      return _searches.load(key, () => _searchSeason(source, season, page));
+    }
+    // Keep case and interior whitespace for general provider searches.
     final key = (source.id, _sourceIdentity(source), query, page);
     return _searches.load(key, () => _search(source, query, page));
+  }
+
+  Future<CinemaPage> _searchSeason(
+    CinemaSource source,
+    CinemaSeasonName season,
+    int page,
+  ) async {
+    Object? failure;
+    final results = await Future.wait(
+      cinemaSeasonQueries(season).map((query) async {
+        try {
+          return await _search(source, query, page);
+        } catch (error) {
+          failure ??= error;
+          return null;
+        }
+      }),
+    );
+    final pages = results.whereType<CinemaPage>().toList();
+    if (pages.isEmpty) throw failure!;
+    final items = <String, CinemaTitle>{};
+    var pageCount = 1;
+    for (final result in pages) {
+      if (result.pageCount > pageCount) pageCount = result.pageCount;
+      for (final title in result.items) {
+        if (cinemaMatchesSeason(title.title, season)) {
+          items.putIfAbsent(title.key, () => title);
+        }
+      }
+    }
+    return CinemaPage(
+      items: items.values.toList(),
+      categories: pages.first.categories,
+      page: page,
+      pageCount: pageCount,
+      total: items.length,
+    );
   }
 
   Future<CinemaPage> _search(

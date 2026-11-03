@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'cinema_media_identity.dart';
 import 'cinema_models.dart';
 import 'cinema_theme.dart';
 
@@ -6,6 +7,8 @@ String cinemaSearchKey(String value) =>
     value.toLowerCase().replaceAll(RegExp(r'[\s·・,，、/：:;；\-_.()（）]'), '');
 
 bool cinemaMatchesKeyword(CinemaTitle title, String keyword) {
+  final season = cinemaSeasonName(keyword);
+  if (season != null) return cinemaMatchesSeason(title.title, season);
   final key = cinemaSearchKey(keyword);
   return key.isEmpty ||
       [

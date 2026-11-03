@@ -66,10 +66,10 @@ void main() {
         isCurrent: () => true,
       ).last;
       final selected = results.singleWhere((r) => r.sourceId == _source.id);
-      expect(adapter.requests.map((r) => r.uri.queryParameters['wd']), [
-        '绝望写手第三季',
-        '绝望写手',
-      ]);
+      expect(
+        adapter.requests.map((r) => r.uri.queryParameters['wd']),
+        unorderedEquals(['绝望写手第3季', '绝望写手第三季', '绝望写手']),
+      );
       expect(selected.id, '629306141028909058~s3');
       expect(
         selected.year,
@@ -92,8 +92,9 @@ void main() {
         '629306141028909058',
       );
       // Search and homepage share the same normalized request cache.
+      final requestCount = adapter.requests.length;
       await repository.search(_source, '绝望写手 第三季');
-      expect(adapter.requests.length, 3);
+      expect(adapter.requests.length, requestCount);
     },
   );
 
