@@ -199,13 +199,11 @@ private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStanda
     if error != nil { cancelDeferredInstallation() }
     guard installationPromptPending else { return }
     installationPromptPending = false
-    guard error == nil else { return }
-    let generation = installationGeneration
-    DispatchQueue.main.async { [weak self] in
-      guard let self, self.installationGeneration == generation,
-        updater.automaticallyChecksForUpdates, updater.automaticallyDownloadsUpdates else { return }
-      self.controller?.checkForUpdates(nil)
-    }
+    guard updateCheck == .updatesInBackground, error == nil, !updater.sessionInProgress,
+      updater.automaticallyChecksForUpdates, updater.automaticallyDownloadsUpdates else { return }
+    // Sparkle has released the driver here. Request the staged update before
+    // returning, as the scheduler reserves another session to probe its state.
+    controller?.checkForUpdates(nil)
   }
 
   func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {

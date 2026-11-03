@@ -50,10 +50,9 @@ do {
  prompt.updater.automaticallyChecksForUpdates = true
  prompt.updater.automaticallyDownloadsUpdates = true
  precondition(!promptObserver.updater(prompt.updater, willInstallUpdateOnQuit: item, immediateInstallationBlock: {}))
+ precondition(prompt.prompts == 0, "Wait until the automatic session finishes")
  promptObserver.updater(prompt.updater, didFinishUpdateCycleFor: .updatesInBackground, error: nil)
- precondition(prompt.prompts == 0, "Wait for the automatic download cycle to finish")
- RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
- precondition(prompt.prompts == 1, "Show the ready-to-install update exactly once")
+ precondition(prompt.prompts == 1, "Open the prompt before Sparkle reserves another session for its scheduler")
  promptObserver.updater(prompt.updater, didFinishUpdateCycleFor: .updatesInBackground, error: nil)
  RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
  precondition(prompt.prompts == 1)
