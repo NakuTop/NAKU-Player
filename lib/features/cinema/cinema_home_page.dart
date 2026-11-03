@@ -1227,6 +1227,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   Future<void> _selectSection(_Section value) async {
     _sectionSwipe.value = 0;
+    if (value == _Section.favorites || value == _Section.history) {
+      unawaited(_nasSync?.refresh());
+    }
     if (value == _section && !_showSourceManager) {
       if (_searching ||
           (value == _Section.anime && _animeSearchQuery.isNotEmpty)) {

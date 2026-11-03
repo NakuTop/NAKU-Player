@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:kazumi/modules/collect/collect_module.dart';
 import 'package:kazumi/modules/history/history_sync.dart';
@@ -14,7 +14,7 @@ import 'cinema_nas_sync_model.dart';
 import 'cinema_store.dart';
 
 /// Owned by the home page, so syncing continues outside the NAS browser.
-class CinemaNASSync extends ChangeNotifier {
+class CinemaNASSync extends ChangeNotifier with WidgetsBindingObserver {
   CinemaNASSync(this.store, {CinemaNASClient? client, File? file})
     : client = client ?? CinemaNASClient(),
       _file = file;
@@ -26,7 +26,12 @@ class CinemaNASSync extends ChangeNotifier {
   String _published = '';
   int _sequence = 0;
   bool _closed = false, _running = false, _paused = false, _enabled = true;
+  bool _observing = false, _flushQueued = false;
+  bool _captureNeedsSave = false;
   Timer? _timer, _debounce;
+  String? _pullRevision;
+  List<String> _pullSnapshots = const [];
+  DateTime? _retryPollAfter;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   String status = '登录 NAS 后可同步全部历史与收藏';
   String? path;
@@ -38,6 +43,19 @@ class CinemaNASSync extends ChangeNotifier {
   final _equal = const DeepCollectionEqualityForSync();
   Future<void>? _starting;
   Future<void> _saveTail = Future.value();
+
+  static List<String>? _snapshotTokens(Object? value) {
+    if (value is! List ||
+        value.length > 100 ||
+        value.toSet().length != value.length ||
+        !value.every(
+          (token) =>
+              token is String && RegExp(r'^[a-f0-9]{32}$').hasMatch(token),
+        )) {
+      return null;
+    }
+    return List<String>.from(value);
+  }
 
   Future<void> start() => _starting ??= _start();
   Future<void> _start() async {
@@ -64,6 +82,12 @@ class CinemaNASSync extends ChangeNotifier {
         _sequence = raw['sequence'] as int;
         _published = raw['published'] as String? ?? '';
         _enabled = raw['enabled'] != false;
+        final revision = raw['pullRevision'];
+        final snapshots = _snapshotTokens(raw['pullSnapshots']);
+        if (revision is String && revision.length <= 128 && snapshots != null) {
+          _pullRevision = revision;
+          _pullSnapshots = snapshots;
+        }
         if (raw['lastSuccess'] is String) {
           lastSuccess = DateTime.tryParse(raw['lastSuccess']);
         }
@@ -80,16 +104,44 @@ class CinemaNASSync extends ChangeNotifier {
       } catch (_) {
         /* Standalone cinema builds may not initialize anime boxes. */
       }
-      _timer = Timer.periodic(
-        const Duration(seconds: 60),
-        (_) => unawaited(sync()),
-      );
+      WidgetsBinding.instance.addObserver(this);
+      _observing = true;
+      _schedulePoll(WidgetsBinding.instance.lifecycleState);
       if (_state != null) unawaited(sync());
     } catch (_) {
       _paused = true;
       status = '同步状态读取失败，已保留本地资料，请检查后重试';
       _notify();
     }
+  }
+
+  void _schedulePoll(AppLifecycleState? lifecycle) {
+    _timer?.cancel();
+    final visible =
+        lifecycle == null ||
+        lifecycle == AppLifecycleState.resumed ||
+        lifecycle == AppLifecycleState.inactive;
+    _timer = Timer.periodic(
+      Duration(seconds: Platform.isMacOS && visible ? 12 : 60),
+      (_) {
+        if (_retryPollAfter?.isAfter(DateTime.now()) != true) unawaited(sync());
+      },
+    );
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _schedulePoll(state);
+    if (state == AppLifecycleState.resumed) unawaited(refresh());
+  }
+
+  Future<void> refresh() async {
+    final recent = lastSuccess;
+    if (recent != null &&
+        DateTime.now().difference(recent) < const Duration(seconds: 3)) {
+      return;
+    }
+    await sync();
   }
 
   Future<void> bind(String namespace) async {
@@ -132,9 +184,21 @@ class CinemaNASSync extends ChangeNotifier {
   }
 
   void _changed() {
-    if (_closed || _running || !_enabled || _paused || _state == null) return;
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(seconds: 5), () => unawaited(sync()));
+    if (_closed ||
+        !_enabled ||
+        _paused ||
+        _state == null ||
+        _debounce?.isActive == true) {
+      return;
+    }
+    _debounce = Timer(const Duration(seconds: 1), () {
+      _debounce = null;
+      if (_running) {
+        _flushQueued = true;
+      } else {
+        unawaited(sync());
+      }
+    });
   }
 
   Future<Map<String, dynamic>> _capture() async {
@@ -174,6 +238,7 @@ class CinemaNASSync extends ChangeNotifier {
         ...expected.keys,
         ...desired.keys,
       }.where((k) => k.startsWith('ah:'))) {
+        if (_equal.equals(expected[k], desired[k])) continue;
         final key = k.substring(3), old = GStorage.histories.get(key);
         if (!_equal.equals(
           old == null ? null : HistorySyncCodec.historyToJson(old),
@@ -198,6 +263,7 @@ class CinemaNASSync extends ChangeNotifier {
       ...expected.keys,
       ...desired.keys,
     }.where((k) => k.startsWith('af:'))) {
+      if (_equal.equals(expected[k], desired[k])) continue;
       final id = int.parse(k.substring(3)), v = desired[k];
       final f = v == null
           ? null
@@ -226,47 +292,86 @@ class CinemaNASSync extends ChangeNotifier {
     final state = _state!;
     bool active() =>
         !_closed && !_paused && _enabled && identical(state, _state);
+    var succeeded = false;
     try {
-      state.observe(await _capture());
-      await _save(); // Durable local mutations precede any network request.
+      final initialized = state.initialized;
+      final localChanged = state.observe(await _capture());
+      _captureNeedsSave |= localChanged || !initialized;
+      if (_captureNeedsSave || _pending != null) {
+        await _save(); // Durable local mutations precede any network request.
+        _captureNeedsSave = false;
+      }
       if (!active()) return;
       if (_pending != null) await _pushPending(state);
       if (!active()) return;
+      var needsPublication =
+          state.entries.isNotEmpty && state.encode() != _published;
       final remote = await client.call('syncPull', {
         'namespace': state.account,
+        if (_pullRevision != null) 'revision': _pullRevision,
+        'snapshots': _pullSnapshots,
       });
       if (!active()) return;
-      final documents = remote['documents'];
-      if (documents is! List || documents.any((v) => v is! String)) {
-        throw const FormatException('NAS 同步响应无效');
-      }
-      // Validate every revision before applying any remote value.
-      final incoming = documents.map((v) => state.decode(v as String)).toList();
-      state.observe(
-        await _capture(),
-      ); // Edits made during the request win a new version.
-      for (final document in incoming) {
-        state.merge(document);
+      final revision = remote['revision'];
+      final unchanged = remote['notModified'] == true;
+      var snapshots = _pullSnapshots;
+      if (unchanged) {
+        if (_pullRevision == null || revision != _pullRevision) {
+          throw const FormatException('NAS 同步版本无效');
+        }
+      } else {
+        final documents = remote['documents'];
+        if (documents is! List || documents.any((v) => v is! String)) {
+          throw const FormatException('NAS 同步响应无效');
+        }
+        final tokens = remote['snapshots'];
+        if (tokens == null) {
+          snapshots = const [];
+        } else {
+          final checked = _snapshotTokens(tokens);
+          if (checked == null ||
+              checked
+                      .where((token) => !_pullSnapshots.contains(token))
+                      .length !=
+                  documents.length) {
+            throw const FormatException('NAS 同步文件版本不完整');
+          }
+          snapshots = checked;
+        }
+        // Validate all documents before applying any remote values, and
+        // version edits that arrived while the NAS request was in flight.
+        final incoming = documents
+            .map((v) => state.decode(v as String))
+            .toList();
+        needsPublication = state.observe(await _capture()) || needsPublication;
+        for (final document in incoming) {
+          state.merge(document);
+        }
+        if (!active()) return;
+        final expected = Map<String, dynamic>.from(state.baseline);
+        final desired = state.visible;
+        if (!_equal.equals(expected, desired)) {
+          final skipped = await _apply(expected, desired);
+          state.baseline = {
+            for (final item in desired.entries)
+              if (!skipped.contains(item.key)) item.key: item.value,
+            for (final k in skipped)
+              if (expected.containsKey(k)) k: expected[k],
+          };
+          needsPublication =
+              state.observe(await _capture()) || needsPublication;
+        }
+        // Data pulled from another writer is already on the NAS. Do not
+        // upload it back unless this client also has an unpublished edit.
+        if (!needsPublication) _published = state.encode();
+        await _save();
       }
       if (!active()) return;
-      final expected = Map<String, dynamic>.from(state.baseline);
-      final desired = state.visible;
-      if (!_equal.equals(expected, desired)) {
-        final skipped = await _apply(expected, desired);
-        state.baseline = {
-          for (final item in desired.entries)
-            if (!skipped.contains(item.key)) item.key: item.value,
-          for (final k in skipped)
-            if (expected.containsKey(k)) k: expected[k],
-        };
-        // Record local edits that raced an application; never silently drop them.
-        state.observe(await _capture());
-      }
-      await _save();
-      if (!active()) return;
-      if (state.encode() != _published) {
+      final document = state.encode();
+      final needsPush = document != _published;
+      if (needsPush) {
         _sequence++;
-        _pending = {'sequence': _sequence, 'document': state.encode()};
+        _pending = {'sequence': _sequence, 'document': document};
         await _save();
         await _pushPending(state);
       }
@@ -274,9 +379,24 @@ class CinemaNASSync extends ChangeNotifier {
       path = remote['path'] as String?;
       lastSuccess = DateTime.now();
       status = '全部历史和收藏已同步至 NAS';
-      await _save();
+      final previousRevision = _pullRevision;
+      final previousSnapshots = _pullSnapshots;
+      _pullRevision = revision is String && revision.length <= 128
+          ? revision
+          : null;
+      _pullSnapshots = snapshots;
+      try {
+        if (!unchanged || localChanged || needsPush) await _save();
+      } catch (_) {
+        _pullRevision = previousRevision;
+        _pullSnapshots = previousSnapshots;
+        rethrow;
+      }
+      _retryPollAfter = null;
+      succeeded = true;
     } catch (error) {
       if (active()) {
+        _retryPollAfter = DateTime.now().add(const Duration(seconds: 30));
         status = error is FormatException
             ? '同步数据校验失败，本地资料已保留'
             : error is PlatformException
@@ -284,8 +404,11 @@ class CinemaNASSync extends ChangeNotifier {
             : '待同步：请检查 NAS 连接，本地资料已保留';
       }
     } finally {
+      final again = _flushQueued;
+      _flushQueued = false;
       _running = false;
       _notify();
+      if (succeeded && again) _changed();
     }
   }
 
@@ -314,6 +437,8 @@ class CinemaNASSync extends ChangeNotifier {
       'pending': _pending,
       'sequence': _sequence,
       'published': _published,
+      'pullRevision': _pullRevision,
+      'pullSnapshots': _pullSnapshots,
       'enabled': _enabled,
       'lastSuccess': lastSuccess?.toIso8601String(),
     });
@@ -334,6 +459,7 @@ class CinemaNASSync extends ChangeNotifier {
   @override
   void dispose() {
     _closed = true;
+    if (_observing) WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
     _debounce?.cancel();
     store.removeListener(_changed);

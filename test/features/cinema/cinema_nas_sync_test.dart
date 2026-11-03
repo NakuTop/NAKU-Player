@@ -44,6 +44,8 @@ class Paths extends PathProviderPlatform {
 class Cloud extends CinemaNASClient {
   final Map<String, Map<String, dynamic>> revisions = {};
   bool fail = false, corrupt = false, loseAck = false;
+  bool conditional = false;
+  int unchangedPulls = 0;
   int pushes = 0;
   @override
   Future<Map<String, dynamic>> call(
@@ -57,8 +59,18 @@ class Cloud extends CinemaNASClient {
     if (method == 'catalog') return {'video_arr': [], 'is_last_page': true};
     if (fail) throw const SocketException('offline');
     if (method == 'syncPull') {
+      final revision = 'rev-${revisions.length}';
+      if (conditional && args?['revision'] == revision) {
+        unchangedPulls++;
+        return {
+          'path': '/home/test/NakuPlayer',
+          'revision': revision,
+          'notModified': true,
+        };
+      }
       return {
         'path': '/home/test/NakuPlayer',
+        if (conditional) 'revision': revision,
         'documents': corrupt
             ? ['bad-json']
             : [for (final v in revisions.values) v['document']],
@@ -313,6 +325,112 @@ void main() {
     await tester.runAsync(() => store.flush());
     store.dispose();
   });
+  test(
+    'unchanged NAS revisions skip document transfer and still upload local edits',
+    () async {
+      await GStorage.histories.clear();
+      await GStorage.collectibles.clear();
+      final cloud = Cloud()..conditional = true;
+      final store = CinemaStore(
+        file: File('${root.path}/conditional-library.json'),
+        defaults: [],
+      );
+      final sync = CinemaNASSync(
+        store,
+        client: cloud,
+        file: File('${root.path}/conditional-sync.json'),
+      );
+      addTearDown(() async {
+        sync.dispose();
+        await store.flush();
+        store.dispose();
+      });
+      await sync.bind(account);
+      await settled(sync);
+      final previousPushes = cloud.pushes;
+      await store.toggleFavorite(movie);
+      await sync.sync();
+      expect(cloud.unchangedPulls, 1);
+      expect(cloud.pushes, previousPushes + 1);
+      expect(
+        cloud.revisions.values.last['document'],
+        contains('cf:${movie.key}'),
+      );
+      expect(sync.status, '全部历史和收藏已同步至 NAS');
+    },
+  );
+  test(
+    'manual pull transfers only new remote snapshots without uploading them again',
+    () async {
+      await GStorage.histories.clear();
+      await GStorage.collectibles.clear();
+      final first = CinemaNASSyncState(account, deviceA)
+        ..observe({'cf:${movie.key}': movie.toJson()});
+      final second = CinemaNASSyncState(account, deviceB)
+        ..observe({'cf:${other.key}': other.toJson()});
+      final tokenA = List.filled(32, 'a').join();
+      final tokenB = List.filled(32, 'b').join();
+      var pulls = 0;
+      var pushes = 0;
+      final client = CinemaNASClient(
+        invoke: (method, args) async {
+          if (method == 'syncPush') {
+            pushes++;
+            return {};
+          }
+          expect(method, 'syncPull');
+          if (++pulls == 1) {
+            expect(args?['snapshots'], isEmpty);
+            return {
+              'revision': 'rev-a',
+              'snapshots': [tokenA],
+              'documents': [first.encode()],
+            };
+          }
+          if (pulls == 3) {
+            expect(args?['revision'], 'rev-b');
+            expect(args?['snapshots'], [tokenA, tokenB]);
+            return {'revision': 'rev-b', 'notModified': true};
+          }
+          expect(args?['revision'], 'rev-a');
+          expect(args?['snapshots'], [tokenA]);
+          return {
+            'revision': 'rev-b',
+            'snapshots': [tokenA, tokenB],
+            'documents': [second.encode()],
+          };
+        },
+      );
+      final store = CinemaStore(
+        file: File('${root.path}/delta-library.json'),
+        defaults: [],
+      );
+      final file = File('${root.path}/delta-sync.json');
+      var sync = CinemaNASSync(store, client: client, file: file);
+      addTearDown(() async {
+        sync.dispose();
+        await store.flush();
+        store.dispose();
+      });
+      await sync.bind(account);
+      await settled(sync);
+      expect(store.favorites.map((title) => title.key), [movie.key]);
+      await sync.sync();
+      expect(
+        store.favorites.map((title) => title.key),
+        unorderedEquals([movie.key, other.key]),
+      );
+      expect(pushes, 0);
+      expect(sync.status, '全部历史和收藏已同步至 NAS');
+      sync.dispose();
+      sync = CinemaNASSync(store, client: client, file: file);
+      await sync.start();
+      await settled(sync);
+      expect(pulls, 3);
+      expect(pushes, 0);
+      expect(sync.status, '全部历史和收藏已同步至 NAS');
+    },
+  );
   test('restart retries the exact unacknowledged immutable revision', () async {
     final cloud = Cloud()..loseAck = true;
     final store = CinemaStore(

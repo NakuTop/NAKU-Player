@@ -207,6 +207,7 @@ actor NASMovieSession {
     private var qrDeviceHint = ""
     private var qrGeneration = 0
     private var generation = 0
+    private var syncDirectoryHint: (generation: Int, path: String)?
     private let homeDisplayCookies: NASHomeDisplayCookies?
     private var homeDisplayInvalidation: Task<Void,Never>?
     private var homeDisplayAuthorization: (generation: Int, task: Task<[String:Any],Never>)?
@@ -868,8 +869,9 @@ actor NASMovieSession {
         }
         throw NASMovieError.response
     }
-    func syncRead(path: String) async throws -> Data {
+    func syncRead(path: String, expectedGeneration: Int? = nil) async throws -> Data {
         let attempt=generation
+        guard expectedGeneration == nil || expectedGeneration == attempt else { throw NASMovieError.expired }
         guard let base,!token.isEmpty else { throw NASMovieError.expired }
         var u=URLComponents(url:base.appendingPathComponent("ugreen/v1/filemgr/downloadFile"),resolvingAgainstBaseURL:false)!
         u.queryItems=[URLQueryItem(name:"paths",value:path),URLQueryItem(name:"token",value:token),URLQueryItem(name:"coding",value:"true")]
@@ -911,38 +913,87 @@ actor NASMovieSession {
         guard attempt == generation else { throw NASMovieError.expired }
         guard readback == bytes else { throw NASMovieError.response }
     }
-    func syncPull(expected: String) async throws -> [String:Any] {
+    private func syncFiles() async throws -> (String, [[String:Any]]) {
+        let attempt=generation
+        let dir: String
+        if let hint=syncDirectoryHint,hint.generation == attempt { dir=hint.path }
+        else { dir=try await syncDirectory() }
+        do {
+            let files=try await syncList(path:dir)
+            guard attempt == generation else { throw NASMovieError.expired }
+            syncDirectoryHint=(attempt,dir)
+            return (dir,files)
+        } catch {
+            if attempt == generation { syncDirectoryHint=nil }
+            throw error
+        }
+    }
+    func syncPull(expected: String, knownRevision: String? = nil, knownSnapshots: [String]? = nil) async throws -> [String:Any] {
         _ = try await ensure(expected:expected)
         let attempt=generation
         guard namespace == expected else { throw NASMovieError.configuration }
-        let dir=try await syncDirectory(),files=try await syncList(path:dir)
+        let (dir,files)=try await syncFiles()
         guard attempt == generation else { throw NASMovieError.expired }
-        var latest=[String:(Int,String)]()
+        var latest=[String:(Int,String,[String:Any])]()
         for file in files {
             guard let name=file["name"] as? String,name.range(of:"^[a-f0-9-]{36}-[0-9]{12}\\.json$",options:.regularExpression) != nil else { continue }
             let device=String(name.prefix(36)),seq=Int(name.dropFirst(37).dropLast(5)) ?? 0
-            if seq > (latest[device]?.0 ?? -1) { latest[device]=(seq,name) }
+            if seq > (latest[device]?.0 ?? -1) { latest[device]=(seq,name,file) }
         }
         guard latest.count <= 100 else { throw NASMovieError.response }
-        var documents=[String]()
-        for (_,item) in latest.sorted(by:{$0.key < $1.key}) {
-            guard attempt == generation else { throw NASMovieError.expired }
-            let bytes=try await syncRead(path:dir+"/"+item.1)
-            guard attempt == generation else { throw NASMovieError.expired }
-            guard let text=String(data:bytes,encoding:.utf8) else { throw NASMovieError.response }
-            documents.append(text)
+        let sorted=latest.sorted(by:{$0.key < $1.key})
+        let metadata=sorted.map { (_,item) -> [String] in
+            [item.1]+["size","file_size","modify_time","mtime"].map { key in
+                let value=item.2[key]
+                return (value as? String) ?? (value as? NSNumber)?.stringValue ?? ""
+            }
         }
-        return ["documents":documents,"path":dir]
+        let fingerprint=try JSONSerialization.data(withJSONObject:[expected,dir,metadata])
+        let revision=SHA256.hash(data:fingerprint).map{String(format:"%02x",$0)}.joined()
+        if knownRevision == revision { return ["notModified":true,"revision":revision,"path":dir] }
+        var wanted=metadata.map{$0[0]},snapshots: [String]?
+        if let knownSnapshots,knownSnapshots.count <= 100,
+           knownSnapshots.allSatisfy({$0.range(of:"^[a-f0-9]{32}$",options:.regularExpression) != nil}) {
+            let known=Set(knownSnapshots)
+            let current=try metadata.map { item -> String in
+                let data=try JSONSerialization.data(withJSONObject:[expected,dir,item])
+                return SHA256.hash(data:data).prefix(16).map{String(format:"%02x",$0)}.joined()
+            }
+            wanted=zip(wanted,current).compactMap{known.contains($0.1) ? nil : $0.0}
+            snapshots=current
+        }
+        let paths=wanted.map{dir+"/"+$0}
+        // Bound the number of simultaneous NAS reads. Return no partial batch
+        // if any required snapshot fails, so the client can retry it intact.
+        let documents=try await withThrowingTaskGroup(of:(Int,String).self) { group in
+            var rows=Array(repeating:"",count:paths.count),next=0
+            func enqueue(_ index: Int) {
+                group.addTask { [self] in
+                    let bytes=try await syncRead(path:paths[index],expectedGeneration:attempt)
+                    guard let text=String(data:bytes,encoding:.utf8) else { throw NASMovieError.response }
+                    return (index,text)
+                }
+            }
+            while next < min(3,paths.count) { enqueue(next);next+=1 }
+            while let (index,text)=try await group.next() {
+                rows[index]=text
+                if next < paths.count { enqueue(next);next+=1 }
+            }
+            return rows
+        }
+        guard attempt == generation else { throw NASMovieError.expired }
+        var result: [String:Any]=["documents":documents,"revision":revision,"path":dir]
+        if let snapshots { result["snapshots"]=snapshots }
+        return result
     }
     func syncPush(expected: String, device: String, sequence: Int, document: String) async throws -> [String:Any] {
         _ = try await ensure(expected:expected)
         let attempt=generation
         guard namespace == expected else { throw NASMovieError.configuration }
         guard device.range(of:"^[a-f0-9-]{36}$",options:.regularExpression) != nil,sequence > 0,sequence < 1000000000000 else { throw NASMovieError.configuration }
-        let dir=try await syncDirectory(),name=device+"-"+String(format:"%012lld",Int64(sequence))+".json",bytes=Data(document.utf8)
+        let (dir,files)=try await syncFiles()
+        let name=device+"-"+String(format:"%012lld",Int64(sequence))+".json",bytes=Data(document.utf8)
         // Immutable revisions: another device can never overwrite this writer.
-        guard attempt == generation else { throw NASMovieError.expired }
-        let files=try await syncList(path:dir)
         guard attempt == generation else { throw NASMovieError.expired }
         if files.contains(where:{$0["name"] as? String == name}) {
             guard try await syncRead(path:dir+"/"+name) == bytes else { throw NASMovieError.response }
@@ -950,14 +1001,12 @@ actor NASMovieSession {
         guard attempt == generation else { throw NASMovieError.expired }
         // Keep recent verified revisions of this writer. Other devices and
         // arbitrary files are never included in housekeeping.
-        try? await syncPrune(directory:dir,device:device,sequence:sequence)
+        try? await syncPrune(directory:dir,device:device,sequence:sequence,files:files)
         return ["path":dir+"/"+name]
     }
-    func syncPrune(directory: String, device: String, sequence: Int) async throws {
+    private func syncPrune(directory: String, device: String, sequence: Int, files: [[String:Any]]) async throws {
         let attempt=generation
         guard device.range(of:"^[a-f0-9-]{36}$",options:.regularExpression) != nil else { throw NASMovieError.configuration }
-        let files=try await syncList(path:directory)
-        guard attempt == generation else { throw NASMovieError.expired }
         let old=files.compactMap { file -> String? in
             guard let name=file["name"] as? String,name.hasPrefix(device+"-"),
                   name.count == 54,name.hasSuffix(".json"),
@@ -965,6 +1014,7 @@ actor NASMovieSession {
             return directory+"/"+name
         }
         if !old.isEmpty {
+            guard attempt == generation else { throw NASMovieError.expired }
             _ = try await fileJSON("v2/filemgr/delPaths",method:"POST",body:["paths":old,"forever":true])
         }
     }
@@ -1298,7 +1348,7 @@ final class NakuNASMovies {
                 case "autoConnect": value=try await session.autoConnect(expected:args["namespace"] as? String ?? "",force:args["force"] as? Bool ?? false)
                 case "pairingIdentity": value=try await session.pairingIdentity(code:args["code"] as? String ?? "")
                 case "homeDisplayAuthorize": value=await session.homeDisplayAuthorize()
-                case "syncPull": value=try await session.syncPull(expected:args["namespace"] as? String ?? "")
+                case "syncPull": value=try await session.syncPull(expected:args["namespace"] as? String ?? "",knownRevision:args["revision"] as? String,knownSnapshots:args["snapshots"] as? [String])
                 case "syncPush": value=try await session.syncPush(expected:args["namespace"] as? String ?? "",device:args["device"] as? String ?? "",sequence:args["sequence"] as? Int ?? 0,document:args["document"] as? String ?? "")
                 case "restoreAt": value=try await session.restoreAt(address:args["address"] as? String ?? "",expected:args["namespace"] as? String ?? "",remember:args["remember"] as? Bool ?? true)
                 case "connectionInfo": value=try await session.connectionInfo(expected:args["namespace"] as? String,refresh:args["refresh"] as? Bool ?? false)
