@@ -153,25 +153,27 @@ void main() {
     },
   );
 
-  test('only explicit trailing language editions are removed', () {
-    final suffixes = ['（原声版）', '(普通话版)', '【国语版】', '[英语版]', ' 原声版', '英语版'];
-    final input = [
-      _title('base'),
-      for (var i = 0; i < suffixes.length; i++)
-        _title('language-$i', name: '星际穿越${suffixes[i]}'),
-      _title('cut', name: '星际穿越（导演剪辑版）'),
-      _title('inside', name: '星际穿越（国语版）幕后'),
-      _title('punctuation', name: '星际：穿越'),
-    ];
-    final groups = groupCinemaTitles(input);
-    expect(groups, hasLength(4));
-    expect(groups.first.variants, hasLength(1 + suffixes.length));
-    expect(groups.skip(1).map((group) => group.representative.id), [
-      'cut',
-      'inside',
-      'punctuation',
-    ]);
-  });
+  test(
+    'language editions and colon variants merge but descriptive cuts stay distinct',
+    () {
+      final suffixes = ['（原声版）', '(普通话版)', '【国语版】', '[英语版]', ' 原声版', '英语版'];
+      final input = [
+        _title('base'),
+        for (var i = 0; i < suffixes.length; i++)
+          _title('language-$i', name: '星际穿越${suffixes[i]}'),
+        _title('cut', name: '星际穿越（导演剪辑版）'),
+        _title('inside', name: '星际穿越（国语版）幕后'),
+        _title('punctuation', name: '星际：穿越'),
+      ];
+      final groups = groupCinemaTitles(input);
+      expect(groups, hasLength(3));
+      expect(groups.first.variants, hasLength(2 + suffixes.length));
+      expect(groups.skip(1).map((group) => group.representative.id), [
+        'cut',
+        'inside',
+      ]);
+    },
+  );
 
   test(
     'conflicting nonempty Douban IDs never share a group through an ID-less item',
@@ -229,8 +231,13 @@ void main() {
         _title('series', category: '欧美剧', doubanId: '1889243'),
         _title('wrong-name', name: '另一部电影', doubanId: '1889243'),
       ]);
-      expect(groups, hasLength(4));
-      expect(groups.first.variants.map((title) => title.id), [
+      // Missing metadata must not arbitrarily select among conflicting works.
+      expect(groups, hasLength(5));
+      final unambiguous = groupCinemaTitles([
+        _title('unknown', year: '', category: '', doubanId: '1889243'),
+        _title('known', doubanId: '1889243'),
+      ]);
+      expect(unambiguous.single.variants.map((title) => title.id), [
         'unknown',
         'known',
       ]);

@@ -114,12 +114,24 @@ List<CinemaTitleGroup> groupCinemaTitles(
   final order = {
     for (final (index, title) in unique.values.indexed) title.key: index,
   };
-  // A bundle season can omit the year and external ID. Resolve ordinary
-  // editions first so an ambiguous projection cannot pick a conflicting work.
-  for (final title in [
-    ...unique.values.where((title) => !cinemaIsSeasonProjection(title)),
-    ...unique.values.where(cinemaIsSeasonProjection),
-  ]) {
+  // Resolve ordinary editions and stronger identities first so incomplete
+  // metadata or season projections cannot arbitrarily pick a conflicting work.
+  final prioritized = unique.values.toList()
+    ..sort((a, b) {
+      final projection = (cinemaIsSeasonProjection(a) ? 1 : 0).compareTo(
+        cinemaIsSeasonProjection(b) ? 1 : 0,
+      );
+      if (projection != 0) return projection;
+      final identity = (b.doubanId.trim().isNotEmpty ? 1 : 0).compareTo(
+        a.doubanId.trim().isNotEmpty ? 1 : 0,
+      );
+      if (identity != 0) return identity;
+      final year = (_year(b.year, _kind(b.category)) != null ? 1 : 0).compareTo(
+        _year(a.year, _kind(a.category)) != null ? 1 : 0,
+      );
+      return year != 0 ? year : order[a.key]!.compareTo(order[b.key]!);
+    });
+  for (final title in prioritized) {
     final candidate = _Candidate(title);
     final possible = (byName[candidate.name] ?? const <_Group>[])
         .where((group) => group.accepts(candidate))
@@ -155,7 +167,7 @@ enum _Kind { movie, series, anime, documentary, commentary, unknown }
 
 class _Candidate {
   _Candidate(this.title)
-    : name = cinemaSeasonTitleKey(title.title),
+    : name = cinemaWorkTitleKey(title.title, title.year),
       doubanId = title.doubanId.trim(),
       kind = _kind(title.category),
       year = _year(title.year, _kind(title.category));
@@ -241,7 +253,7 @@ _Kind _kind(String value) {
 }
 
 int? _year(String text, _Kind kind) {
-  final value = text.trim();
+  final value = cinemaIdentityTypography(text).trim();
   if (RegExp(r'^[1-9][0-9]{3}$').hasMatch(value)) return int.parse(value);
   if (kind != _Kind.series && kind != _Kind.anime) return null;
   final range = RegExp(

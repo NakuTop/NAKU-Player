@@ -21,9 +21,9 @@ bool cinemaIsSeasonProjection(CinemaTitle title) =>
     _seasonId.hasMatch(title.id);
 
 List<String> cinemaWorkQueries(CinemaTitle title) {
-  final name = cinemaSourceQuery(cinemaMediaBaseTitle(title.title));
+  final name = cinemaSourceQuery(cinemaCleanWorkTitle(title.title, title.year));
   return {
-    name,
+    ...cinemaWorkSearchQueries(name),
     if (cinemaSeasonName(name) case final season?) season.work,
     for (final alias in title.aliases.split(RegExp(r'[/／]')).take(1))
       cinemaSourceQuery(alias),

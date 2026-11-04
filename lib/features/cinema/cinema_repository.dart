@@ -191,7 +191,55 @@ class CinemaRepository {
     }
     // Keep case and interior whitespace for general provider searches.
     final key = (source.id, _sourceIdentity(source), query, page);
-    return _searches.load(key, () => _search(source, query, page));
+    return _searches.load(
+      key,
+      () => source.kind == CinemaSourceKind.maccms
+          ? _searchEquivalent(source, query, page)
+          : _search(source, query, page),
+    );
+  }
+
+  Future<CinemaPage> _searchEquivalent(
+    CinemaSource source,
+    String query,
+    int page,
+  ) async {
+    final queries = cinemaWorkSearchQueries(query);
+    if (queries.length == 1) return _search(source, query, page);
+    Object? failure;
+    final results = await Future.wait(
+      queries.map((q) async {
+        try {
+          return await _search(source, q, page);
+        } catch (error) {
+          failure ??= error;
+          return null;
+        }
+      }),
+    );
+    final pages = results.whereType<CinemaPage>().toList();
+    if (pages.isEmpty) throw failure!;
+    final items = <String, CinemaTitle>{};
+    var pageCount = 1;
+    for (final (index, result) in results.indexed) {
+      if (result == null) continue;
+      if (result.pageCount > pageCount) pageCount = result.pageCount;
+      for (final title in result.items) {
+        if (index > 0 &&
+            cinemaWorkTitleKey(title.title, title.year) !=
+                cinemaWorkTitleKey(query, title.year)) {
+          continue;
+        }
+        items.putIfAbsent(title.key, () => title);
+      }
+    }
+    return CinemaPage(
+      items: items.values.toList(),
+      categories: pages.first.categories,
+      page: page,
+      pageCount: pageCount,
+      total: items.length,
+    );
   }
 
   Future<CinemaPage> _searchSeason(

@@ -89,6 +89,57 @@ void main() {
       Map<String, dynamic>.from(jsonDecode(await file.readAsString()) as Map);
 
   test(
+    'year and edition duplicates retain latest progress, original records and exact backup',
+    () async {
+      final a = _title('a', name: '验收电影：黎明', year: '2026', douban: ''),
+          b = _title('b', name: '验收电影:黎明（2026 4K）', year: '2026', douban: '');
+      final remake = _title(
+        'b',
+        id: '43',
+        name: '验收电影：黎明',
+        year: '2006',
+        douban: '',
+      );
+      final original = await write(
+        favorites: [a.toJson(), b.toJson(), remake.toJson()],
+        history: [
+          _history(a, 1, 900),
+          _history(b, 3, 123),
+          _history(remake, 2, 80),
+        ],
+      );
+      final library = store();
+      await library.load();
+      expect(library.favorites, hasLength(2));
+      expect(library.history, hasLength(2));
+      expect(library.history.first.title.key, b.key);
+      expect(library.history.first.positionSeconds, 123);
+      expect(library.history.first.title.routes.single.name, 'b-route');
+      expect(
+        library.isFavorite(
+          _title('other', name: '验收电影：黎明2026国语版', year: '2026', douban: ''),
+        ),
+        isTrue,
+      );
+      expect(library.historyCacheKeys, containsAll([a.key, b.key, remake.key]));
+      expect(
+        await File('${file.path}.pre-work-dedup-v1.bak').readAsString(),
+        original,
+      );
+      final raw = await saved();
+      expect(
+        (raw['history'] as List).first['nakuWorkEntriesV1'],
+        contains(equals(_history(a, 1, 900))),
+      );
+      final encoded = await file.readAsString();
+      final reopened = store();
+      await reopened.load();
+      expect(await file.readAsString(), encoded);
+      expect(reopened.history.first.positionSeconds, 123);
+    },
+  );
+
+  test(
     'old season spellings consolidate without losing route or progress',
     () async {
       final chinese = _title(

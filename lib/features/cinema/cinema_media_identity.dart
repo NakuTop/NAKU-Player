@@ -11,7 +11,17 @@ final _editionOnly = RegExp(
   caseSensitive: false,
 );
 
+/// Normalize provider typography without changing original persisted labels.
+String cinemaIdentityTypography(String value) => value
+    .replaceAllMapped(
+      RegExp(r'[！-～]'),
+      (m) => String.fromCharCode(m[0]!.codeUnitAt(0) - 0xfee0),
+    )
+    .replaceAll('　', ' ')
+    .replaceAll(RegExp(r'[\u200b-\u200f\ufeff]'), '');
+
 String cinemaMediaBaseTitle(String title) {
+  title = cinemaIdentityTypography(title);
   var name = title
       .trim()
       .replaceAllMapped(
@@ -89,7 +99,7 @@ String cinemaSeasonTitleKey(String value) {
           return number == null ? match[0]! : '第$number季';
         })
       : '${season.work}第${season.number}季';
-  return canonical.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+  return canonical.toLowerCase().replaceAll(RegExp(r'[\s:：]+'), '');
 }
 
 bool cinemaMatchesSeason(String title, CinemaSeasonName query) {
@@ -122,3 +132,66 @@ bool cinemaExplicitSubtitleEpisode(String value) => RegExp(
   r'(?:^|[^a-z0-9])S\d{1,2}[ ._-]*E\d{1,4}(?!\d)|第\s*[零一二两三四五六七八九十百\d]+\s*[集话話]',
   caseSensitive: false,
 ).hasMatch(value);
+
+/// Strip year labels only when they agree with the source's release year.
+/// Preserve sequel numbers, unknown years and substantive edition labels.
+String cinemaCleanWorkTitle(String title, String releaseYear) {
+  var name = cinemaMediaBaseTitle(title);
+  final year = cinemaIdentityTypography(releaseYear).trim();
+  if (!RegExp(r'^(19|20)\d{2}$').hasMatch(year)) return name;
+  final suffix = RegExp(
+    r'(?:[\s._·—–-]*[（(\[【]?' + year + r'(?:年)?(?:版)?[）)\]】]?)$',
+  );
+  final prefix = RegExp(r'^[（(\[【]' + year + r'(?:年)?[）)\]】]\s*');
+  final labelStart = RegExp(
+    '^$year'
+    r'(?:年)?(?:版)?[\s,，/_-]*',
+  );
+  final separated = RegExp(r'[\s._·—–（(\[【-]' + year);
+  for (var i = 0; i < 4; i++) {
+    final unlabelled = name.replaceAllMapped(
+      RegExp(r'[（(\[【]([^）)\]】]+)[）)\]】]'),
+      (m) {
+        final part = m[1]!, rest = part.replaceFirst(labelStart, '');
+        return rest != part && (rest.isEmpty || _editionOnly.hasMatch(rest))
+            ? ''
+            : m[0]!;
+      },
+    );
+    final next = cinemaMediaBaseTitle(
+      unlabelled.replaceFirst(prefix, '').replaceFirst(suffix, '').trim(),
+    );
+    if (next == name ||
+        next.length < 2 ||
+        !RegExp(r'\p{L}', unicode: true).hasMatch(next)) {
+      break;
+    }
+    if (RegExp(r'\d$').hasMatch(next) && !separated.hasMatch(name)) break;
+    name = next;
+  }
+  return name;
+}
+
+String cinemaWorkTitleKey(String title, String year) =>
+    cinemaSeasonTitleKey(cinemaCleanWorkTitle(title, year));
+
+/// At most three equivalent queries. Expanded results still require exact
+/// metadata-backed work matching; never accept fuzzy sequel/remake matches.
+List<String> cinemaWorkSearchQueries(String value) {
+  final original = value.trim(),
+      normalized = cinemaIdentityTypography(value).trim();
+  final year =
+      RegExp(
+        r'(?:19|20)\d{2}(?=(?:年)?(?:版)?[)\]】]?$)',
+      ).firstMatch(normalized)?[0] ??
+      RegExp(r'^[([【]((?:19|20)\d{2})(?:年)?[)\]】]').firstMatch(normalized)?[1];
+  final plain = year == null
+      ? normalized
+      : cinemaCleanWorkTitle(normalized, year);
+  return {
+    original,
+    plain,
+    plain.replaceAll(':', '：'),
+    normalized,
+  }.where((q) => q.isNotEmpty).take(3).toList();
+}

@@ -65,6 +65,57 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test(
+    'equivalent year searches retain exact work and both colon spellings',
+    () async {
+      final adapter = _Adapter((options, _) {
+        final query = options.uri.queryParameters['wd'];
+        return ResponseBody.fromString(
+          jsonEncode({
+            'page': 1,
+            'pagecount': 1,
+            'list': [
+              if (query == '生化危机：爆发夜') ...[
+                {
+                  'vod_id': '633084638071357445',
+                  'vod_name': '生化危机：爆发夜',
+                  'type_name': '恐怖片',
+                  'vod_year': '2026',
+                },
+                {
+                  'vod_id': '2',
+                  'vod_name': '生化危机：爆发夜',
+                  'type_name': '恐怖片',
+                  'vod_year': '2006',
+                },
+                {
+                  'vod_id': '3',
+                  'vod_name': '生化危机：其他续作',
+                  'type_name': '恐怖片',
+                  'vod_year': '2026',
+                },
+              ],
+            ],
+          }),
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      });
+      final repository = _repository(adapter);
+      final result = await repository.search(_source, '生化危机：爆发夜2026');
+      expect(result.items.map((x) => x.id), ['633084638071357445']);
+      expect(adapter.requests, hasLength(3));
+      expect(
+        adapter.requests.map((x) => x.uri.queryParameters['wd']),
+        containsAll(['生化危机：爆发夜', '生化危机:爆发夜']),
+      );
+      await repository.search(_source, '生化危机：爆发夜2026');
+      expect(adapter.requests, hasLength(3));
+    },
+  );
+
+  test(
     'season spellings share one search and retain only the requested season',
     () async {
       final adapter = _Adapter((options, _) {
