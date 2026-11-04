@@ -206,12 +206,16 @@ class _AppWidgetState extends State<AppWidget>
     }
   }
 
-  // The close button follows the saved choice; menu Quit bypasses this choice.
+  // macOS closes to the menu bar; explicit Quit still saves and exits.
   @override
   Future<void> onWindowClose() async {
     if (_isHandlingWindowClose || _closeActions.isQuitting || !mounted) return;
     _isHandlingWindowClose = true;
     try {
+      if (Platform.isMacOS) {
+        await _closeActions.hide();
+        return;
+      }
       var action = switch (GStorage.getSetting(SettingsKeys.exitBehavior)) {
         0 => ExitDialogAction.exit,
         1 => ExitDialogAction.minimizeToTray,

@@ -355,14 +355,16 @@ class CinemaSettingsPage extends StatelessWidget {
                               onTap: () =>
                                   showCinemaDesktopWindowSettings(context),
                             ),
-                          _entry(
-                            key: 'settings-window-close-entry',
-                            icon: Icons.close_rounded,
-                            title: '关闭窗口时',
-                            compact: true,
-                            subtitle: '',
-                            onTap: () => _openWindowClose(context),
-                          ),
+                          if (Theme.of(context).platform !=
+                              TargetPlatform.macOS)
+                            _entry(
+                              key: 'settings-window-close-entry',
+                              icon: Icons.close_rounded,
+                              title: '关闭窗口时',
+                              compact: true,
+                              subtitle: '',
+                              onTap: () => _openWindowClose(context),
+                            ),
                         ]),
                         const SizedBox(height: 34),
                         group('系统与同步', [

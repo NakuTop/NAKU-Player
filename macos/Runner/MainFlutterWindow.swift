@@ -106,7 +106,73 @@ private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStanda
     enable()
     defaults.set(true, forKey: key)
   }
+  static let checkInterval: TimeInterval = 3 * 60 * 60
+  static let checkGrace: TimeInterval = 30
   weak var controller: SPUStandardUpdaterController?
+  private var checkTimer: Timer?
+  private var checkObservers = [(NotificationCenter, NSObjectProtocol)]()
+
+  deinit {
+    checkTimer?.invalidate()
+    for (center, token) in checkObservers { center.removeObserver(token) }
+  }
+
+  // Sparkle remains the primary scheduler. The one-shot fallback covers a
+  // missed deadline and sleep/wake without a polling loop or a second download.
+  func startAutomaticCheckFallback() {
+    guard checkObservers.isEmpty else { return }
+    for (center, name) in [
+      (NSWorkspace.shared.notificationCenter, NSWorkspace.didWakeNotification),
+      (NotificationCenter.default, NSApplication.didBecomeActiveNotification)
+    ] {
+      let token = center.addObserver(forName: name, object: nil, queue: .main) {
+        [weak self] _ in self?.refreshAutomaticCheckFallback()
+      }
+      checkObservers.append((center, token))
+    }
+    refreshAutomaticCheckFallback()
+  }
+
+  static func secondsUntilFallback(lastCheck: Date?, now: Date) -> TimeInterval {
+    guard let lastCheck else { return checkGrace }
+    let elapsed = now.timeIntervalSince(lastCheck)
+    return max(0, checkInterval + checkGrace - max(0, elapsed))
+  }
+
+  func refreshAutomaticCheckFallback() {
+    checkTimer?.invalidate()
+    checkTimer = nil
+    guard let updater = controller?.updater, updater.automaticallyChecksForUpdates else { return }
+    let delay = Self.secondsUntilFallback(lastCheck: updater.lastUpdateCheckDate, now: Date())
+    scheduleAutomaticCheckFallback(after: delay)
+  }
+
+  private func scheduleAutomaticCheckFallback(after delay: TimeInterval) {
+    let timer = Timer(timeInterval: max(0.1, delay), repeats: false) { [weak self] _ in
+      guard let self, let updater = self.controller?.updater,
+            updater.automaticallyChecksForUpdates else { return }
+      let now = Date()
+      // Sparkle may have checked since this timer was armed.
+      let remaining = updater.lastUpdateCheckDate.map {
+        Self.secondsUntilFallback(lastCheck: $0, now: now)
+      } ?? 0
+      if remaining > 0 {
+        self.scheduleAutomaticCheckFallback(after: remaining)
+      } else if updater.sessionInProgress || !updater.canCheckForUpdates {
+        // A visible offer, download or installer already owns this cycle.
+        // Its completion callback will arm the next deadline.
+        if !updater.canCheckForUpdates {
+          self.scheduleAutomaticCheckFallback(after: Self.checkGrace)
+        }
+      } else {
+        updater.checkForUpdatesInBackground()
+        self.scheduleAutomaticCheckFallback(after: Self.checkInterval + Self.checkGrace)
+      }
+    }
+    timer.tolerance = min(5, max(0, delay / 10))
+    checkTimer = timer
+    RunLoop.main.add(timer, forMode: .common)
+  }
   private var installationPromptPending = false
   private var playbackSessions = Set<String>()
   private var deferredInstallation: (() -> Void)?
@@ -196,10 +262,11 @@ private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStanda
   }
   func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck,
       error: Error?) {
+    defer { refreshAutomaticCheckFallback() }
     if error != nil { cancelDeferredInstallation() }
-    guard installationPromptPending else { return }
+    guard updateCheck == .updatesInBackground, installationPromptPending else { return }
     installationPromptPending = false
-    guard updateCheck == .updatesInBackground, error == nil, !updater.sessionInProgress,
+    guard error == nil, !updater.sessionInProgress,
       updater.automaticallyChecksForUpdates, updater.automaticallyDownloadsUpdates else { return }
     // Sparkle has released the driver here. Request the staged update before
     // returning, as the scheduler reserves another session to probe its state.
@@ -216,12 +283,24 @@ private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStanda
     lastError = "更新失败（\(failure.code)）：\(failure.localizedDescription)"
     status = "检查或安装失败"
   }
+  var supportsGentleScheduledUpdateReminders: Bool { true }
+
+  func standardUserDriverShouldHandleShowingScheduledUpdate(_ update: SUAppcastItem,
+      andInImmediateFocus immediateFocus: Bool) -> Bool {
+    // Sparkle's default waits for another activation if the regular app has
+    // been running for a while. Take ownership of the timing, not the UI.
+    installationPromptPending = false
+    return false
+  }
+
   func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool,
       forUpdate update: SUAppcastItem, state: SPUUserUpdateState) {
-    guard handleShowingUpdate, !state.userInitiated else { return }
-    // Sparkle explicitly permits promoting an existing scheduled update via
-    // checkForUpdates. Do it on the next loop after the alert is constructed.
-    DispatchQueue.main.async { [weak self] in self?.controller?.checkForUpdates(nil) }
+    guard !handleShowingUpdate, !state.userInitiated, let controller,
+          controller.updater.automaticallyChecksForUpdates else { return }
+    // Sparkle defers this delegate callback until its existing alert can be
+    // focused. This reuses the alert and does not fetch or install again.
+    if NSApp?.isHidden == true { NSApp.unhide(nil) }
+    controller.checkForUpdates(nil)
   }
 }
 
@@ -646,8 +725,8 @@ class MainFlutterWindow: NSWindow {
     let updater = SPUStandardUpdaterController(
       startingUpdater: false, updaterDelegate: updaterObserver, userDriverDelegate: updaterObserver)
     // Set the persisted value as well as Info.plist's fresh-install default:
-    // existing installations must adopt the requested hourly schedule too.
-    updater.updater.updateCheckInterval = 3600
+    // existing installations must adopt the three-hour schedule too.
+    updater.updater.updateCheckInterval = NakuUpdaterObserver.checkInterval
     updaterController = updater
     updaterObserver.controller = updater
     NakuUpdaterObserver.adoptAutomaticDownloadDefault {
@@ -660,6 +739,7 @@ class MainFlutterWindow: NSWindow {
     if updater.updater.automaticallyChecksForUpdates {
       updater.updater.checkForUpdatesInBackground()
     }
+    updaterObserver.startAutomaticCheckFallback()
     let updateChannel = FlutterMethodChannel(
       name: "naku/updater", binaryMessenger: flutterViewController.engine.binaryMessenger)
     updateChannel.setMethodCallHandler { call, result in
@@ -714,6 +794,7 @@ class MainFlutterWindow: NSWindow {
         // foreground check here would turn automatic downloads into a manual
         // update offer. Every subsequent app launch also checks immediately.
         updater.updater.resetUpdateCycleAfterShortDelay()
+        self.updaterObserver.refreshAutomaticCheckFallback()
         result(nil)
       default:
         result(FlutterMethodNotImplemented)

@@ -1409,10 +1409,6 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _scheduleTVControlsHide();
     }
     unawaited(_updatePlaybackLease.start());
-    _nasConnectionTimer = Timer.periodic(
-      const Duration(seconds: 15),
-      (_) => unawaited(_checkNASConnection()),
-    );
     unawaited(_resolveNASRatingIdentity());
     _rate = _preferences.rate;
     _volume = _preferences.initialVolume;
@@ -1560,6 +1556,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final old = _playback;
     _stopEntranceSound();
     final generation = ++_generation;
+    _nasConnectionTimer?.cancel();
+    _nasConnectionTimer = null;
     unawaited(_together.clearPlaybackMedia(_syncOwner));
     _resolver.cancel();
     _loadTimer?.cancel();
@@ -1662,6 +1660,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       Map<String, String> mediaHeaders = const {};
       final nas = localFile == null && isNASMediaReference(episode.url);
       if (nas) {
+        _nasConnectionTimer = Timer.periodic(
+          const Duration(seconds: 15),
+          (_) => unawaited(_checkNASConnection()),
+        );
         setState(() => _phase = '正在准备 NAS 播放流');
         if (NakuDevice.isTV) await CinemaTVMediaEnvironment.instance.refresh();
         if (!_isCurrent(generation)) return;
@@ -2463,6 +2465,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _loading ||
         _checkingNASConnection ||
         playback == null ||
+        !_usesNASPlayback ||
+        _nasOptions == null ||
         reference == null) {
       return;
     }

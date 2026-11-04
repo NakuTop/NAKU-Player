@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import 'cinema_theme.dart';
+
 /// Slow, low-light poster color diffusing inside the caller's frosted surface.
 ///
 /// This transparent layer adds neither a backdrop filter nor an image sample.
@@ -31,6 +33,7 @@ class CinemaPosterAtmosphereState extends State<CinemaPosterAtmosphere>
   final _frame = _AtmosphereFrame();
   late final Ticker _ticker;
   Duration _lastFrame = Duration.zero;
+  int _lastPaintSlot = 0;
   bool _foreground = true, _motionAllowed = true;
 
   bool get _canAnimate => widget.active && _foreground && _motionAllowed;
@@ -50,6 +53,7 @@ class CinemaPosterAtmosphereState extends State<CinemaPosterAtmosphere>
     super.didChangeDependencies();
     _motionAllowed =
         !MediaQuery.disableAnimationsOf(context) &&
+        !CinemaAppearanceScope.of(context).reduceMotion &&
         TickerMode.valuesOf(context).enabled;
     _syncTicker();
   }
@@ -73,6 +77,7 @@ class CinemaPosterAtmosphereState extends State<CinemaPosterAtmosphere>
     if (_canAnimate) {
       if (!_ticker.isActive) {
         _lastFrame = Duration.zero;
+        _lastPaintSlot = 0;
         _ticker.start();
       }
     } else if (_ticker.isActive) {
@@ -82,6 +87,14 @@ class CinemaPosterAtmosphereState extends State<CinemaPosterAtmosphere>
   }
 
   void _tick(Duration elapsed) {
+    if (defaultTargetPlatform == TargetPlatform.macOS) {
+      // A 24-second ambient color cycle does not need to redraw three large
+      // gradients at 60–120 Hz. Playback and input keep their own frame rates.
+      final slot =
+          elapsed.inMicroseconds * 30 ~/ Duration.microsecondsPerSecond;
+      if (slot <= _lastPaintSlot) return;
+      _lastPaintSlot = slot;
+    }
     final previous = _lastFrame;
     _lastFrame = elapsed;
     // Ticker already measures from start. Its first callback can legitimately
@@ -126,13 +139,13 @@ class _AtmosphereFrame extends ChangeNotifier {
     final supplied = palette?.take(3).map((color) {
       final hsl = HSLColor.fromColor(color);
       final softened = hsl
-          .withSaturation(hsl.saturation.clamp(0.0, .62))
-          .withLightness(hsl.lightness.clamp(.18, .42))
+          .withSaturation(hsl.saturation.clamp(0.0, .78))
+          .withLightness(hsl.lightness.clamp(.30, .52))
           .toColor();
       // Stronger local opacity must not produce a bright reading surface.
       // Scale channels together so the poster hue survives the luminance cap.
       final peak = math.max(softened.r, math.max(softened.g, softened.b));
-      final scale = peak > .47 ? .47 / peak : 1.0;
+      final scale = peak > .68 ? .68 / peak : 1.0;
       return softened.withValues(
         alpha: 1,
         red: softened.r * scale,
@@ -183,7 +196,7 @@ class _AtmospherePainter extends CustomPainter {
     // Three broad, asymmetric fields stay near the poster's reading surface;
     // their outer tails dissolve into the caller's neutral charcoal below.
     final fieldHeight = math.min(size.height, size.width * .85);
-    final baseRadius = size.width * .41;
+    final baseRadius = size.width * .55;
     final paint = Paint();
     for (var index = 0; index < 3; index++) {
       final turn = angle + index * math.pi * 2 / 3;
@@ -193,7 +206,7 @@ class _AtmospherePainter extends CustomPainter {
       );
       final radius = baseRadius * (_radius[index] + .10 * math.sin(turn + 1.1));
       final color = frame.colors[index];
-      final strength = .29 + .025 * math.sin(turn - .7);
+      final strength = .48 + .06 * math.sin(turn - .7);
       paint.shader = ui.Gradient.radial(center, radius, [
         color.withValues(alpha: strength),
         color.withValues(alpha: strength * .72),

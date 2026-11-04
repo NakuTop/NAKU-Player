@@ -93,7 +93,11 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   bool _loggedIn = false, _busy = false, _last = true, _hasSaved = false;
   String? _error;
   String _name = '我的 NAS';
-  final _collectionCache = <String, Map<String, dynamic>>{};
+  final _collectionLabels = <String, String>{};
+  final _collectionLabelChanges = ValueNotifier<int>(0);
+  // Keep quick access to a few small collections without retaining every
+  // response fetched just to display its count.
+  final _recentCollections = <String, Map<String, dynamic>>{};
   final _collectionPending = <String>{};
   final _collectionFailed = <String>{};
   int _countWorkers = 0;
@@ -101,9 +105,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
   String _collectionKey(Map<String, dynamic> row) =>
       '${_client.namespace}|${nasInt(row['media_lib_set_id'])}|${row['collection_id']}';
 
-  String _collectionLabel(Map<String, dynamic> row) {
-    final data = _collectionCache[_collectionKey(row)];
-    if (data == null) return '合集';
+  String _collectionLabel(Map<String, dynamic> data) {
     final entries = nasRows(data['video_arr']);
     final total = nasInt(data['total_num']);
     if (total > entries.length) return '$total项资源';
@@ -117,15 +119,58 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     return '${entries.length}项资源';
   }
 
+  void _rememberCollection(String key, Map<String, dynamic> data) {
+    final label = _collectionLabel(data);
+    if (_collectionLabels[key] != label) {
+      _collectionLabels[key] = label;
+      _collectionLabelChanges.value++;
+    }
+    final rows = data['video_arr'];
+    if (rows is! List || rows.length > 40) return;
+    _recentCollections.remove(key);
+    _recentCollections[key] = data;
+    if (_recentCollections.length > 4) {
+      _recentCollections.remove(_recentCollections.keys.first);
+    }
+  }
+
+  void _clearCollections() {
+    _collectionLabels.clear();
+    _recentCollections.clear();
+  }
+
+  Widget _catalogSubtitle(
+    Map<String, dynamic> row,
+    int type,
+    int year, {
+    required double fontSize,
+  }) {
+    final style = TextStyle(color: CinemaTheme.muted, fontSize: fontSize);
+    if (type != 3) {
+      return Text(
+        [
+          if (year >= 1000 && year <= 9999) '$year',
+          type == 2 ? '剧集' : '电影',
+        ].join(' · '),
+        style: style,
+      );
+    }
+    final key = _collectionKey(row);
+    return ValueListenableBuilder<int>(
+      valueListenable: _collectionLabelChanges,
+      builder: (_, _, _) => Text(_collectionLabels[key] ?? '合集', style: style),
+    );
+  }
+
   // Resolve a few cards at a time without holding up catalog interaction.
   void _resolveCollectionCounts() {
-    if (!mounted || !_loggedIn) return;
+    if (!mounted || !_loggedIn || !widget.active) return;
     while (_countWorkers < 3) {
       final candidates = _items.where((row) {
         final key = _collectionKey(row);
         return nasInt(row['type']) == 3 &&
             '${row['collection_id'] ?? ''}'.isNotEmpty &&
-            !_collectionCache.containsKey(key) &&
+            !_collectionLabels.containsKey(key) &&
             !_collectionPending.contains(key) &&
             !_collectionFailed.contains(key);
       });
@@ -145,7 +190,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
               _loggedIn &&
               generation == _generation &&
               key == _collectionKey(row)) {
-            setState(() => _collectionCache[key] = data);
+            _rememberCollection(key, data);
           }
         } catch (_) {
           if (mounted && generation == _generation) _collectionFailed.add(key);
@@ -185,9 +230,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       _lanCandidates = List<String>.from(cached['candidates']);
       _libraries = List<Map<String, dynamic>>.from(cached['libraries']);
       _items = List<Map<String, dynamic>>.from(cached['items']);
-      _collectionCache.addAll(
-        Map<String, Map<String, dynamic>>.from(cached['collections']),
-      );
+      _collectionLabels.addAll(Map<String, String>.from(cached['collections']));
       _library = cached['library'];
       _page = cached['page'];
       _total = cached['total'];
@@ -243,7 +286,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
           _loggedIn = false;
           _items = [];
           _libraries = [];
-          _collectionCache.clear();
+          _clearCollections();
         });
         await _restore();
         return;
@@ -251,6 +294,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       // Preserve the loaded pages, filter and scroll position. Refresh the
       // first page quietly; pagination remains available without a reload.
       if (_page == 1) await _load(background: true);
+      _resolveCollectionCounts();
     } catch (_) {
       // A temporary transport error must not replace the cached library.
     }
@@ -275,7 +319,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       'candidates': List<String>.of(_lanCandidates),
       'libraries': List<Map<String, dynamic>>.of(_libraries),
       'items': List<Map<String, dynamic>>.of(_items),
-      'collections': Map<String, Map<String, dynamic>>.of(_collectionCache),
+      'collections': Map<String, String>.of(_collectionLabels),
       'library': _library,
       'page': _page,
       'total': _total,
@@ -366,7 +410,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       _password.clear();
       _items = [];
       _libraries = [];
-      _collectionCache.clear();
+      _clearCollections();
       _collectionFailed.clear();
       _error = null;
     });
@@ -440,6 +484,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     for (final c in [_address, _username, _password, _search]) {
       c.dispose();
     }
+    _collectionLabelChanges.dispose();
     super.dispose();
   }
 
@@ -543,7 +588,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     if (_busy) return;
     final generation = ++_generation;
     if (!more && !background) {
-      _collectionCache.clear();
+      _clearCollections();
       _collectionFailed.clear();
     }
     final page = more ? _page + 1 : 1;
@@ -793,14 +838,19 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
       _error = null;
     });
     Map<String, dynamic>? selected;
+    final key = _collectionKey(row);
+    final generation = _generation;
     try {
       final data =
-          _collectionCache[_collectionKey(row)] ??
+          _recentCollections[key] ??
           await _client.call('collection', {
             'id': '${row['collection_id'] ?? ''}',
             'library': nasInt(row['media_lib_set_id']),
           });
-      if (!mounted) return;
+      if (!mounted || generation != _generation || key != _collectionKey(row)) {
+        return;
+      }
+      _rememberCollection(key, data);
       final entries = nasRows(data['video_arr']);
       setState(() => _busy = false);
       selected = await showDialog<Map<String, dynamic>>(
@@ -813,19 +863,20 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
             width: 600,
             child: entries.isEmpty
                 ? const Text('此合集暂无可播放内容。')
-                : ListView(
+                : ListView.builder(
                     shrinkWrap: true,
-                    children: [
-                      for (final item in entries)
-                        ListTile(
-                          title: Text(item['name']?.toString() ?? '未命名'),
-                          subtitle: Text(
-                            nasInt(item['type']) == 2 ? '剧集 · 选择分集' : '电影',
-                          ),
-                          trailing: const Icon(Icons.chevron_right),
-                          onTap: () => Navigator.pop(ctx, item),
+                    itemCount: entries.length,
+                    itemBuilder: (_, index) {
+                      final item = entries[index];
+                      return ListTile(
+                        title: Text(item['name']?.toString() ?? '未命名'),
+                        subtitle: Text(
+                          nasInt(item['type']) == 2 ? '剧集 · 选择分集' : '电影',
                         ),
-                    ],
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => Navigator.pop(ctx, item),
+                      );
+                    },
                   ),
           ),
           actions: [
@@ -1162,7 +1213,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
     widget.cache?.clear();
     widget.sync?.pause();
     _generation++;
-    _collectionCache.clear();
+    _clearCollections();
     _collectionFailed.clear();
     await CinemaWatchTogether.instance.pauseNASPairing();
     await _client.call('forget');
@@ -1359,21 +1410,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                         ),
                       ),
                       const SizedBox(height: 4),
-                      Text(
-                        [
-                          if (type != 3 && year >= 1000 && year <= 9999)
-                            '$year',
-                          switch (type) {
-                            2 => '剧集',
-                            3 => _collectionLabel(row),
-                            _ => '电影',
-                          },
-                        ].join(' · '),
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: CinemaTheme.muted,
-                        ),
-                      ),
+                      _catalogSubtitle(row, type, year, fontSize: 14),
                     ],
                   ),
                 ),
@@ -1518,14 +1555,6 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                     final row = _items[index];
                     final type = nasInt(row['type']);
                     final year = nasInt(row['year']);
-                    final subtitle = [
-                      if (type != 3 && year >= 1000 && year <= 9999) '$year',
-                      switch (type) {
-                        2 => '剧集',
-                        3 => _collectionLabel(row),
-                        _ => '电影',
-                      },
-                    ].join(' · ');
                     return CinemaTVFocus(
                       child: InkWell(
                         borderRadius: BorderRadius.circular(12),
@@ -1558,13 +1587,7 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                               ),
                             ),
                             const SizedBox(height: 4),
-                            Text(
-                              subtitle,
-                              style: const TextStyle(
-                                color: CinemaTheme.muted,
-                                fontSize: 12,
-                              ),
-                            ),
+                            _catalogSubtitle(row, type, year, fontSize: 12),
                           ],
                         ),
                       ),
@@ -1618,6 +1641,29 @@ class _NASPosterState extends State<_NASPoster> {
     future: _url,
     builder: (context, snapshot) {
       if (!snapshot.hasData || snapshot.data!.isEmpty) return _placeholder();
+      if (Platform.isMacOS) {
+        return LayoutBuilder(
+          builder: (context, bounds) {
+            final scale = MediaQuery.devicePixelRatioOf(context);
+            // Bucket nearby sizes so a window resize can reuse decoded posters.
+            int pixels(double size) => size.isFinite
+                ? ((size * scale / 64).ceil() * 64).clamp(128, 768)
+                : 640;
+            return Image(
+              image: ResizeImage(
+                NetworkImage(snapshot.data!),
+                width: pixels(bounds.maxWidth),
+                height: pixels(bounds.maxHeight),
+                policy: ResizeImagePolicy.fit,
+              ),
+              filterQuality: FilterQuality.medium,
+              fit: BoxFit.cover,
+              excludeFromSemantics: true,
+              errorBuilder: (_, _, _) => _placeholder(),
+            );
+          },
+        );
+      }
       return Image.network(
         snapshot.data!,
         cacheWidth: NakuDevice.isTV ? 640 : null,

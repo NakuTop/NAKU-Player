@@ -140,9 +140,7 @@ void main() {
     });
   }
 
-  testWidgets('desktop window-close entry opens persisted native choices', (
-    tester,
-  ) async {
+  testWidgets('macOS hides obsolete window-close preferences', (tester) async {
     tester.view.physicalSize = const Size(1280, 960);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -163,22 +161,11 @@ void main() {
         ),
       ),
     );
-    final entry = find.byKey(const ValueKey('settings-window-close-entry'));
-    await tester.ensureVisible(entry);
-    await tester.pumpAndSettle();
-    await tester.tap(entry);
-    await tester.pumpAndSettle();
-    final choices = tester.widget<DropdownButton<int>>(
-      find.byKey(const ValueKey('window-close-behavior')),
+    expect(
+      find.byKey(const ValueKey('settings-window-close-entry')),
+      findsNothing,
     );
-    expect(choices.value, [0, 1, 2].contains(stored) ? stored : 2);
-    expect(choices.items!.map((item) => item.value), [0, 1, 2]);
     expect(GStorage.getSetting(SettingsKeys.exitBehavior), stored);
-    await tester.tap(find.text('完成'));
-    await tester.pumpAndSettle();
-    expect(find.byType(AlertDialog), findsNothing);
-    expect(find.byType(CinemaSettingsPage), findsOneWidget);
-    expect(tester.takeException(), isNull);
   });
 
   test(

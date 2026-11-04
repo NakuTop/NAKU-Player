@@ -101,7 +101,7 @@ class _InterfaceSettingsPageState extends State<InterfaceSettingsPage> {
               ),
             ],
           ),
-          if (isDesktop())
+          if (isDesktop() && Theme.of(context).platform != TargetPlatform.macOS)
             SettingsSection(
               title: const Text('窗口行为'),
               tiles: [

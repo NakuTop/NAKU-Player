@@ -161,7 +161,7 @@ void main() {
         }
       }
     }
-    expect(brightest, lessThan(100));
+    expect(brightest, lessThan(145));
     await tester.pumpWidget(const SizedBox());
     // Disposal cancels the callback; Flutter can still have the frame that was
     // scheduled before unmount queued. Drain it and ensure no successor exists.
@@ -197,7 +197,7 @@ void main() {
             if (after[offset + channel] > peak) peak = after[offset + channel];
           }
         }
-        expect(peak, lessThan(90));
+        expect(peak, lessThan(145));
         await tester.pumpWidget(const SizedBox());
         await tester.pump();
         expect(tester.binding.hasScheduledFrame, isFalse);

@@ -29,6 +29,12 @@ import 'package:kazumi/services/player/macos_playback_profile.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (Platform.isMacOS) {
+    // Limit retained decoded images. Visible artwork keeps its live references,
+    // and Flutter releases unused entries on system memory pressure.
+    PaintingBinding.instance.imageCache.maximumSize = 256;
+    PaintingBinding.instance.imageCache.maximumSizeBytes = 64 * 1024 * 1024;
+  }
   await NakuDevice.initialize();
   registerEchHttpLicenses();
   registerBangumiDataLicenses();

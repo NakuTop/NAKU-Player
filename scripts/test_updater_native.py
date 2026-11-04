@@ -30,6 +30,8 @@ let selectors = [
   "updater:userDidMakeChoice:forUpdate:state:",
   "updaterShouldRelaunchApplication:",
   "updater:shouldPostponeRelaunchForUpdate:untilInvokingBlock:",
+  "supportsGentleScheduledUpdateReminders",
+  "standardUserDriverShouldHandleShowingScheduledUpdate:andInImmediateFocus:",
   "standardUserDriverWillHandleShowingUpdate:forUpdate:state:"
 ]
 for name in selectors {
@@ -41,6 +43,12 @@ private final class PromptController: SPUStandardUpdaterController {
  override func checkForUpdates(_ sender: Any?) { prompts += 1 }
 }
 let item = SUAppcastItem(dictionary: ["title": "Test", "sparkle:version": "999", "enclosure": ["url": "https://example.invalid/update.zip", "sparkle:version": "999"]])!
+let now = Date(timeIntervalSince1970: 100_000)
+precondition(NakuUpdaterObserver.checkInterval == 10_800)
+precondition(NakuUpdaterObserver.secondsUntilFallback(lastCheck: now - 10_799, now: now) == 31)
+precondition(NakuUpdaterObserver.secondsUntilFallback(lastCheck: now - 15_000, now: now) == 0)
+precondition(NakuUpdaterObserver.secondsUntilFallback(lastCheck: now + 10, now: now) == 10_830)
+precondition(!observer.standardUserDriverShouldHandleShowingScheduledUpdate(item, andInImmediateFocus: false))
 do {
  let promptObserver = NakuUpdaterObserver()
  let prompt = PromptController(startingUpdater: false, updaterDelegate: promptObserver, userDriverDelegate: promptObserver)
@@ -120,5 +128,5 @@ print("Playback installation guard verified: overlapping sessions, queued race, 
 print("Sparkle delegate selectors verified: \\(selectors.count)")
 ''')
     executable = path / 'updater-check'
-    subprocess.run(['swiftc', str(swift), '-F', str(framework), '-framework', 'Sparkle', '-Xlinker', '-rpath', '-Xlinker', str(framework), '-o', str(executable)], check=True)
+    subprocess.run(['swiftc', '-module-cache-path', str(path / 'module-cache'), str(swift), '-F', str(framework), '-framework', 'Sparkle', '-Xlinker', '-rpath', '-Xlinker', str(framework), '-o', str(executable)], check=True)
     subprocess.run([str(executable)], check=True)
