@@ -56,6 +56,18 @@ struct NASMovieCredentials: Codable {
     let username: String
     let password: String
 }
+enum NASMovieSavedLogin {
+    case password(NASMovieCredentials)
+    case qr(NASMovieSavedQR)
+
+    var address: String {
+        switch self { case .password(let value): return value.address; case .qr(let value): return value.address }
+    }
+    var username: String {
+        switch self { case .password(let value): return value.username; case .qr(let value): return value.username }
+    }
+}
+
 struct NASMovieCredentialStore {
     let service: String
     init(service: String = "com.nakutop.naku.nas-movies.credentials") { self.service=service }
@@ -210,7 +222,10 @@ actor NASMovieSession {
     private var syncDirectoryHint: (generation: Int, path: String)?
     private let homeDisplayCookies: NASHomeDisplayCookies?
     private var homeDisplayInvalidation: Task<Void,Never>?
-    private var homeDisplayAuthorization: (generation: Int, task: Task<[String:Any],Never>)?
+    private var homeDisplayAuthorization: (generation: Int, id: UUID, task: Task<[String:Any],Never>)?
+    private var restoration: (id: UUID, task: Task<[String:Any],Error>)?
+    private var authenticatingGeneration: Int?
+    private var automaticRestoreSuspended = false
     private var playbackGeneration = 0
     private var activePlayback: NASActivePlayback?
     private var lanCandidates=[String](),remoteAddress=""
@@ -221,8 +236,15 @@ actor NASMovieSession {
     private let credentialStore = NASMovieCredentialStore()
     private let clientID = UUID().uuidString + "PC-darwin"
     private let session: URLSession
-    init(transport: URLSession? = nil, homeDisplayCookies: NASHomeDisplayCookies? = nil) {
+    private let loadSavedLogin: () throws -> NASMovieSavedLogin?
+    init(transport: URLSession? = nil, homeDisplayCookies: NASHomeDisplayCookies? = nil,
+         loadSavedLogin: (() throws -> NASMovieSavedLogin?)? = nil) {
         session=transport ?? Self.makeSession();self.homeDisplayCookies=homeDisplayCookies
+        self.loadSavedLogin=loadSavedLogin ?? {
+            if let saved=try NASMovieCredentialStore().load() {return .password(saved)}
+            if let saved=try NASMovieCredentialStore(service:"com.nakutop.naku.nas-movies.qr-session").loadValue(NASMovieSavedQR.self) {return .qr(saved)}
+            return nil
+        }
     }
     private static func makeSession() -> URLSession {
         let c = URLSessionConfiguration.ephemeral
@@ -230,7 +252,7 @@ actor NASMovieSession {
         c.timeoutIntervalForRequest = 20; c.timeoutIntervalForResource = 30
         return URLSession(configuration: c, delegate: NASMovieNoRedirect(), delegateQueue: nil)
     }
-    @discardableResult func logout() -> Task<Void,Never> {
+    @discardableResult func logout(preservingRestoration: Bool = false) -> Task<Void,Never> {
         playbackGeneration += 1
         if let active=activePlayback {
             active.heartbeat.cancel();active.socket.cancel(with:.normalClosure,reason:nil)
@@ -239,7 +261,12 @@ actor NASMovieSession {
         }
         activePlayback=nil;lanCandidates=[];remoteAddress="";connectionInfoLoaded=false;autoRouteStatus=""
         generation += 1; namespace = ""; sessionName = ""; sessionUsername = ""; base = nil; token = ""; publicKey = ""; staticToken = ""
-        homeDisplayAuthorization=nil
+        if preservingRestoration {
+            homeDisplayAuthorization?.generation=generation
+        } else {
+            homeDisplayAuthorization=nil;restoration=nil
+        }
+        authenticatingGeneration=nil
         let attempt=generation,cookies=homeDisplayCookies
         let invalidation=Task { @MainActor in
             await (cookies ?? NASHomeDisplayCookies.shared).invalidateCredential(generation:attempt)
@@ -250,6 +277,7 @@ actor NASMovieSession {
     // Public callbacks wait for this exact reset; internal login/QR paths keep
     // synchronous generation capture by calling logout() directly.
     @discardableResult func logoutAndInvalidateDisplay() async -> Int {
+        automaticRestoreSuspended=true
         let invalidation=logout(),attempt=generation
         await invalidation.value
         return attempt
@@ -324,13 +352,20 @@ actor NASMovieSession {
     }
     func login(address: String, username: String, password: String, remember: Bool? = nil) async throws -> [String:Any] {
         logout()
-        let attempt = generation
+        return try await authenticatePassword(address:address,username:username,password:password,remember:remember)
+    }
+    private func authenticatePassword(address: String, username: String, password: String, remember: Bool?) async throws -> [String:Any] {
+        let attempt=generation
+        authenticatingGeneration=attempt
+        defer {if authenticatingGeneration == attempt {authenticatingGeneration=nil}}
         guard !username.isEmpty, !password.isEmpty else { throw NASMovieError.configuration }
         let origin = try await resolveOrigin(address)
+        guard generation == attempt else {throw NASMovieError.expired}
         let (challenge,ch) = try await send(origin.appendingPathComponent("ugreen/v1/verify/check"),method:"POST",body:["username":username])
         _ = challenge
         guard ch.statusCode == 200, let encoded = ch.value(forHTTPHeaderField:"X-Rsa-Token"),
               let der = Data(base64Encoded:encoded), let key = String(data:der,encoding:.utf8) else { throw NASMovieError.crypto }
+        guard generation == attempt else {throw NASMovieError.expired}
         let (bytes,http) = try await send(origin.appendingPathComponent("ugreen/v1/verify/login"),method:"POST",body:["username":username,"password":try RSAEncryption.encrypt(password,publicKey:key),"keepalive":false,"otp":true,"is_simple":true])
         let result = try json(bytes), code = result["code"] as? Int ?? http.statusCode
         guard http.statusCode == 200, code == 200, let d = result["data"] as? [String:Any] else { throw NASMovieError.login(code) }
@@ -347,6 +382,7 @@ actor NASMovieSession {
         namespace = Self.namespace(serial:d["sn"] as? String ?? origin.host ?? "", username:username)
         captureConnectionInfo(d)
         sessionName=d["nas_name"] as? String ?? "NAS"; sessionUsername=username
+        automaticRestoreSuspended=false
         return currentSession()
     }
     static func namespace(serial: String, username: String) -> String {
@@ -359,9 +395,10 @@ actor NASMovieSession {
         return ["name":sessionName,"namespace":namespace,"address":base.absoluteString,"username":sessionUsername]
     }
     func savedLogin() throws -> [String:Any] {
-        if let saved=try credentialStore.load() { return ["address":saved.address,"username":saved.username] }
-        if let saved=try qrStore.loadValue(NASMovieSavedQR.self) { return ["address":saved.address,"username":saved.username,"qr":true] }
-        return [:]
+        guard let saved=try loadSavedLogin() else {return [:]}
+        var metadata:[String:Any]=["address":saved.address,"username":saved.username]
+        if case .qr = saved {metadata["qr"]=true}
+        return metadata
     }
     static func loginCacheKey(address: String, username: String) -> String {
         SHA256.hash(data:Data((address+"|"+username).utf8)).map {String(format:"%02x",$0)}.joined()
@@ -419,20 +456,49 @@ actor NASMovieSession {
         }
         return await selectAutoRoute(lan:cache["lan"] as? [String] ?? [],remote:remotes,hint:hint,transport:transport)
     }
-    func restore() async throws -> [String:Any] {
-        let metadata=try savedLogin(),address=metadata["address"] as? String ?? "",username=metadata["username"] as? String ?? ""
+    func restore(automatically: Bool = false, expected: String? = nil) async throws -> [String:Any] {
+        if automatically && automaticRestoreSuspended {throw NASMovieError.expired}
+        if let active=restoration {
+            let result=try await active.task.value
+            guard expected == nil || namespace == expected else {throw NASMovieError.configuration}
+            return result
+        }
+        guard authenticatingGeneration == nil,let saved=try loadSavedLogin() else {throw NASMovieError.expired}
+        // A refresh must never replace the current session with another saved account.
+        guard expected == nil || saved.username == sessionUsername else {throw NASMovieError.configuration}
+        let id=UUID(),attempt=generation
+        let task=Task {
+            defer {if restoration?.id == id {restoration=nil}}
+            return try await restoreSaved(saved,generation:attempt,expected:expected)
+        }
+        restoration=(id,task)
+        return try await task.value
+    }
+    private func restoreSaved(_ saved: NASMovieSavedLogin, generation attempt: Int, expected: String?) async throws -> [String:Any] {
+        guard generation == attempt else {throw NASMovieError.expired}
         let cache=UserDefaults.standard.dictionary(forKey:"NakuNASAutoRouteV1") ?? [:]
-        let route=await Self.restorationRoute(address:address,username:username,cache:cache,transport:session)
-        let selected=route ?? address
+        // Refresh a rejected session against its current connection. Only a cold
+        // restore needs discovery of a reachable LAN/remote route.
+        let current=expected == nil ? nil:base?.absoluteString
+        let route=current == nil ? await Self.restorationRoute(address:saved.address,username:saved.username,cache:cache,transport:session):nil
+        guard generation == attempt,authenticatingGeneration == nil else {throw NASMovieError.expired}
+        let selected=current ?? route ?? saved.address
+        logout(preservingRestoration:true)
+        let restoring=generation
         let result:[String:Any]
-        if let saved=try credentialStore.load() {
-            result=try await login(address:selected,username:saved.username,password:saved.password,remember:nil)
-        } else if let saved=try qrStore.loadValue(NASMovieSavedQR.self) {
-            result=try await adoptQR(NASMovieSavedQR(address:selected,token:saved.token,publicKey:saved.publicKey,staticToken:saved.staticToken,
-                authType:saved.authType,username:saved.username,serial:saved.serial,name:saved.name,uid:saved.uid,ugk:saved.ugk),remember:nil)
-        } else {throw NASMovieError.expired}
+        switch saved {
+        case .password(let value):
+            result=try await authenticatePassword(address:selected,username:value.username,password:value.password,remember:nil)
+        case .qr(let value):
+            result=try await adoptQR(NASMovieSavedQR(address:selected,token:value.token,publicKey:value.publicKey,staticToken:value.staticToken,
+                authType:value.authType,username:value.username,serial:value.serial,name:value.name,uid:value.uid,ugk:value.ugk),
+                remember:nil,restoringGeneration:restoring)
+        }
+        guard generation == restoring else {throw NASMovieError.expired}
+        if let required=expected ?? (route == nil ? nil:cache["namespace"] as? String),required != namespace {
+            logout();throw NASMovieError.configuration
+        }
         if route != nil {
-            guard cache["namespace"] as? String == namespace else {logout();throw NASMovieError.configuration}
             remoteAddress=(cache["remote"] as? [String])?.first ?? ""
             lanCandidates=cache["lan"] as? [String] ?? []
         }
@@ -506,7 +572,7 @@ actor NASMovieSession {
             do { _ = try await api("v1/user/current/user"); return ["namespace":namespace] }
             catch NASMovieError.expired { /* Reopen saved credentials exactly once. */ }
         }
-        let info=try await restore()
+        let info=try await restore(automatically:true)
         guard namespace == expected else { logout(); throw NASMovieError.configuration }
         return info
     }
@@ -580,9 +646,13 @@ actor NASMovieSession {
         return value
     }
     private func adoptQR(_ saved: NASMovieSavedQR, remember: Bool?, qrAttempt: Int? = nil,
-                         discoverAccount: Bool = false) async throws -> [String:Any] {
+                         discoverAccount: Bool = false, restoringGeneration: Int? = nil) async throws -> [String:Any] {
         guard discoverAccount || (!saved.username.isEmpty && !saved.serial.isEmpty) else { throw NASQRError.accountMismatch }
-        logout(); let attempt=generation
+        if let restoringGeneration {guard generation == restoringGeneration else {throw NASMovieError.expired}}
+        else {logout()}
+        let attempt=generation
+        authenticatingGeneration=attempt
+        defer {if authenticatingGeneration == attempt {authenticatingGeneration=nil}}
         base=try Self.origin(saved.address); token=saved.token; publicKey=saved.publicKey
         staticToken=saved.staticToken; authType=saved.authType; ugk=saved.ugk
         do {
@@ -608,8 +678,9 @@ actor NASMovieSession {
                 if remember { try qrStore.saveValue(verified) } else { try qrStore.forget() }
                 try credentialStore.forget()
             }
+            automaticRestoreSuspended=false
             return ["name":verified.name,"namespace":namespace,"username":username]
-        } catch { logout(); throw error }
+        } catch {if generation == attempt {logout()};throw error}
     }
     static func pairingCode(_ raw: String) throws -> String {
         let alphabet=Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
@@ -625,7 +696,7 @@ actor NASMovieSession {
     // NAS login gates participation; the pairing code selects the existing
     // Syncplay room. No counterpart account entry or NAS-to-NAS binding needed.
     func pairingIdentity(code raw: String) async throws -> [String:Any] {
-        if namespace.isEmpty { _ = try await restore() }
+        if namespace.isEmpty { _ = try await restore(automatically:true) }
         let attempt=generation
         let current=try await api("v1/user/current/user")
         guard generation == attempt,let own=current["username"] as? String,!own.isEmpty,!namespace.isEmpty else {throw NASMovieError.expired}
@@ -710,14 +781,14 @@ actor NASMovieSession {
     // failure cannot run invalidation after a newer renewal has succeeded.
     func homeDisplayAuthorizationTask() -> Task<[String:Any],Never> {
         if let active=homeDisplayAuthorization,active.generation == generation {return active.task}
-        let attempt=generation
-        let invalidation=homeDisplayInvalidation
-        let task=Task {
-            let result=await performHomeDisplayAuthorization(generation:attempt,after:invalidation)
-            if homeDisplayAuthorization?.generation == attempt {homeDisplayAuthorization=nil}
+        let id=UUID()
+        let task=Task<[String:Any],Never> {
+            guard let active=homeDisplayAuthorization,active.id == id else {return NASHomeDisplayError.sessionChanged.diagnostic}
+            let result=await authorizeHomeDisplayWithRestoration(generation:active.generation)
+            if homeDisplayAuthorization?.id == id {homeDisplayAuthorization=nil}
             return result
         }
-        homeDisplayAuthorization=(attempt,task)
+        homeDisplayAuthorization=(generation,id,task)
         return task
     }
     func homeDisplayAuthorize() async -> [String:Any] {
@@ -806,6 +877,37 @@ actor NASMovieSession {
         // Never return the account, serial, namespace, request URL or proof.
         return ["nasSessionVerified":sessionVerified,"nasDeviceVerified":deviceVerified,
                 "nasSessionCheck":current.check,"nasDeviceCheck":deviceCheck]
+    }
+    private func authorizeHomeDisplayWithRestoration(generation attempt: Int) async -> [String:Any] {
+        guard generation == attempt else {return NASHomeDisplayError.sessionChanged.diagnostic}
+        if namespace.isEmpty || restoration != nil {
+            do { _ = try await restore(automatically:true) }
+            catch {return homeDisplayRestorationFailure(error,previousSession:false)}
+            guard !namespace.isEmpty,homeDisplayAuthorization?.generation == generation else {return NASHomeDisplayError.sessionChanged.diagnostic}
+            return await performHomeDisplayAuthorization(generation:generation,after:homeDisplayInvalidation)
+        }
+        let result=await performHomeDisplayAuthorization(generation:attempt,after:homeDisplayInvalidation)
+        guard generation == attempt else {return NASHomeDisplayError.sessionChanged.diagnostic}
+        guard result["nasSessionCheck"] as? String == "authentication_rejected" else {return result}
+        // The website's 401 alone is not evidence that a local login expired.
+        // Reauthenticate once only when the NAS itself rejected this session.
+        let expected=namespace
+        do { _ = try await restore(automatically:true,expected:expected) }
+        catch {return homeDisplayRestorationFailure(error,previousSession:true)}
+        guard namespace == expected,homeDisplayAuthorization?.generation == generation else {return NASHomeDisplayError.sessionChanged.diagnostic}
+        return await performHomeDisplayAuthorization(generation:generation,after:homeDisplayInvalidation)
+    }
+    private func homeDisplayRestorationFailure(_ error: Error, previousSession: Bool) -> [String:Any] {
+        switch error {
+        case NASMovieError.keychain:
+            return ["authenticated":false,"reason":"nas_keychain_unavailable","stage":"saved_session_restore"]
+        case NASMovieError.expired, NASMovieError.login, is NASQRError:
+            return ["authenticated":false,"reason":previousSession ? "nas_session_expired":"nas_login_required","stage":"saved_session_restore"]
+        case NASMovieError.configuration:
+            return ["authenticated":false,"reason":"nas_session_expired","stage":"saved_session_identity"]
+        default:
+            return ["authenticated":false,"reason":"nas_restore_unavailable","stage":"saved_session_restore"]
+        }
     }
     private func performHomeDisplayAuthorization(generation attempt: Int, after invalidation: Task<Void,Never>?) async -> [String:Any] {
         await invalidation?.value
@@ -1281,6 +1383,7 @@ actor NASMovieSession {
     }
     func api(_ route: String, parameters: [String:String] = [:], at target: URL? = nil, timeout: TimeInterval? = nil) async throws -> [String:Any] {
         guard let base = target ?? base, !token.isEmpty else { throw NASMovieError.expired }
+        let attempt=generation
         let key = UUID().uuidString.replacingOccurrences(of:"-",with:"")
         var params = parameters, h = headers()
         h["X-Ugreen-Security-Key"] = Insecure.MD5.hash(data:Data(token.utf8)).map { String(format:"%02x",$0) }.joined()
@@ -1298,7 +1401,7 @@ actor NASMovieSession {
             result = try json(AES.GCM.open(AES.GCM.SealedBox(combined:data),using:SymmetricKey(data:Data(key.utf8))))
         }
         let code=result["code"] as? Int ?? http.statusCode
-        if [401,403,9902].contains(code) { if target == nil {logout()}; throw NASMovieError.expired }
+        if [401,403,9902].contains(code) { if target == nil,generation == attempt {logout()}; throw NASMovieError.expired }
         guard http.statusCode == 200, code == 200 else { throw NASMovieError.login(code) }
         return result["data"] as? [String:Any] ?? [:]
     }

@@ -57,7 +57,18 @@ actor HomeDisplayFixtureGate {
 
 final class HomeDisplayFixtureProtocol: URLProtocol {
     static var mode="valid",exchangeCount=0
-    static var currentReads=0,deviceReads=0
+    static var currentReads=0,deviceReads=0,passwordLogins=0
+    static var passwordPublicKey=""
+    static var onDeferredLogin: (() -> Void)?
+    static func finishDeferredLogin() {
+        let pending=deferredLock.withLock {let pending=deferred;deferred=nil;return pending}
+        guard let pending else {fatalError("No deferred login")}
+        pending.respond(status:200,headers:[:],payload:["code":200,"data":passwordResponse],responseURL:pending.request.url!)
+    }
+    private static var passwordResponse: [String:Any] {
+        ["token":"fixture-renewed-token","public_key":Data(passwordPublicKey.utf8).base64EncodedString(),
+         "sn":"fixture-canonical-serial","nas_name":"Fixture NAS"]
+    }
     static var proof: [String:Any]=[:]
     private static let deferredLock=NSLock()
     private static var deferred: HomeDisplayFixtureProtocol?
@@ -140,11 +151,24 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
             if Self.mode == "unauthorized-payload" {payload=["authenticated":false,"expiresAt":expiry]}
         } else {
             var data:[String:Any]=[:]
-            if path.hasSuffix("/verify/sn") {data=["sn":"fixture-public-routing-hint"]}
+            if path.hasSuffix("/verify/check") {
+                precondition(request.httpMethod == "POST")
+                headers["X-Rsa-Token"]=Data(Self.passwordPublicKey.utf8).base64EncodedString()
+            } else if path.hasSuffix("/verify/login") {
+                precondition(request.httpMethod == "POST")
+                Self.passwordLogins += 1
+                if Self.mode == "restoration-delayed" {
+                    Self.deferredLock.withLock {Self.deferred=self}
+                    Self.onDeferredLogin?()
+                    return
+                }
+                data=Self.passwordResponse
+                if Self.mode == "diagnostic-expired" {Self.mode="valid"}
+            } else if path.hasSuffix("/verify/sn") {data=["sn":"fixture-public-routing-hint"]}
             else if path.hasSuffix("/current/user") {Self.currentReads += 1;data=["username":"fixture-member","uid":42]}
             else if path.hasSuffix("/machine/common") {Self.deviceReads += 1;data=["common":["serial":"fixture-canonical-serial"]]}
             else {fatalError("Unexpected fixture route")}
-            if Self.mode.hasPrefix("diagnostic-") || Self.mode == "http-401" {
+            if (Self.mode.hasPrefix("diagnostic-") || Self.mode == "http-401") && (path.hasSuffix("/current/user") || path.hasSuffix("/machine/common")) {
                 precondition(request.httpMethod == "GET" && request.timeoutInterval <= 4.01,"diagnostics use bounded existing read-only APIs")
                 if Self.mode == "diagnostic-delayed" {
                     Self.deferredLock.withLock {Self.deferredProbes.append(self)}
@@ -319,9 +343,14 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
             HomeDisplayFixtureProtocol.mode=mode
             let beforeCurrent=HomeDisplayFixtureProtocol.currentReads,beforeDevice=HomeDisplayFixtureProtocol.deviceReads,began=Date()
             let value=await session.homeDisplayAuthorize()
-            expect(value["authenticated"] as? Bool == false && value["httpStatus"] as? Int == 401,"local probe never grants website access")
-            expect(value["nasSessionVerified"] as? Bool == validSession && value["nasDeviceVerified"] as? Bool == validDevice,"local NAS evidence booleans: "+mode)
+            expect(value["authenticated"] as? Bool == false,"local probe never grants website access")
+            if mode == "diagnostic-expired" {
+                expect(value["reason"] as? String == "nas_session_expired","an expired session without saved credentials asks for login")
+            } else {
+                expect(value["httpStatus"] as? Int == 401,"website rejection remains a distinct diagnostic")
+                expect(value["nasSessionVerified"] as? Bool == validSession && value["nasDeviceVerified"] as? Bool == validDevice,"local NAS evidence booleans: "+mode)
             expect(value["nasSessionCheck"] as? String == sessionCheck && value["nasDeviceCheck"] as? String == deviceCheck,"local fixed classifications: "+mode)
+            }
             expect(HomeDisplayFixtureProtocol.currentReads == beforeCurrent+1 && HomeDisplayFixtureProtocol.deviceReads == beforeDevice+1,"exactly two GETs and no retry: "+mode)
             expect(!(await session.currentSession()).isEmpty,"diagnostic NAS rejection does not clear the held session")
             if mode == "diagnostic-deadline" {expect(Date().timeIntervalSince(began) < 6,"parallel diagnostic reads have a four-second deadline")}
@@ -343,7 +372,56 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
         expect(retired["authenticated"] as? Bool == false && retired["reason"] as? String == "nas_session_expired","retired probe cannot report current session evidence")
         let currentSession=await session.currentSession()
         expect(store.hasCredential && store.deleteCount == deleted && !currentSession.isEmpty,"late probe must not clear the new session or cookie")
-        print("PASS backend-401-only two bounded NAS GETs distinguish local session/device failures without restoring credentials or mutating a new generation")
+        print("PASS backend-401-only two bounded NAS GETs distinguish session/device failures and protect a new generation")
+    }
+    @MainActor static func restoration(_ transport: URLSession,_ pem: String) async throws {
+        HomeDisplayFixtureProtocol.passwordPublicKey=pem
+        HomeDisplayFixtureProtocol.mode="valid"
+        let address="https://fixture.cn21.ug.link"
+        let store=HomeDisplayFixtureCookieStore()
+        let session=NASMovieSession(transport:transport,homeDisplayCookies:NASHomeDisplayCookies(store:store),
+            loadSavedLogin:{.password(NASMovieCredentials(address:address,username:"fixture-member",password:"fixture-password"))})
+        let initialLogins=HomeDisplayFixtureProtocol.passwordLogins,initialExchanges=HomeDisplayFixtureProtocol.exchangeCount
+        let first=await session.homeDisplayAuthorizationTask()
+        let second=await session.homeDisplayAuthorizationTask()
+        expect(await first.value["authenticated"] as? Bool == true && store.hasCredential,"direct cold open restores saved password")
+        expect(await second.value["authenticated"] as? Bool == true,"overlapping open shares restore and website grant")
+        expect(HomeDisplayFixtureProtocol.passwordLogins == initialLogins+1 &&
+            HomeDisplayFixtureProtocol.exchangeCount == initialExchanges+1,"cold open logs in and exchanges exactly once")
+
+        HomeDisplayFixtureProtocol.mode="diagnostic-expired"
+        let expiredExchanges=HomeDisplayFixtureProtocol.exchangeCount
+        expect(await session.homeDisplayAuthorize()["authenticated"] as? Bool == true,"native rejection renews saved password automatically")
+        expect(HomeDisplayFixtureProtocol.passwordLogins == initialLogins+2 &&
+            HomeDisplayFixtureProtocol.exchangeCount == expiredExchanges+2,"expiry triggers one login and one exchange retry")
+        HomeDisplayFixtureProtocol.mode="http-401"
+        expect(await session.homeDisplayAuthorize()["nasSessionVerified"] as? Bool == true,"website-only 401 keeps the working NAS login")
+        expect(HomeDisplayFixtureProtocol.passwordLogins == initialLogins+2,"website-only 401 must not replay saved password")
+
+        await session.logoutAndInvalidateDisplay()
+        HomeDisplayFixtureProtocol.mode="valid"
+        expect(await session.homeDisplayAuthorize()["reason"] as? String == "nas_login_required","explicit logout prevents automatic restore")
+        expect(HomeDisplayFixtureProtocol.passwordLogins == initialLogins+2 && !store.hasCredential,"logout prevents new login or grant")
+
+        let delayed=NASMovieSession(transport:transport,homeDisplayCookies:NASHomeDisplayCookies(store:store),
+            loadSavedLogin:{.password(NASMovieCredentials(address:address,username:"fixture-member",password:"fixture-password"))})
+        let gate=HomeDisplayFixtureGate()
+        HomeDisplayFixtureProtocol.mode="restoration-delayed"
+        HomeDisplayFixtureProtocol.onDeferredLogin={Task {await gate.open()}}
+        let pending=await delayed.homeDisplayAuthorizationTask()
+        await gate.wait()
+        await delayed.logoutAndInvalidateDisplay()
+        HomeDisplayFixtureProtocol.finishDeferredLogin()
+        expect(await pending.value["authenticated"] as? Bool == false,"late password response cannot undo logout")
+        expect((await delayed.currentSession()).isEmpty && !store.hasCredential,"late password response installs neither session nor cookie")
+
+        HomeDisplayFixtureProtocol.mode="valid"
+        let qr=NASMovieSession(transport:transport,homeDisplayCookies:NASHomeDisplayCookies(store:store),loadSavedLogin:{
+            .qr(NASMovieSavedQR(address:address,token:"fixture-private-token",publicKey:pem,staticToken:"fixture-private-token",
+                authType:"url",username:"fixture-member",serial:"fixture-canonical-serial",name:"Fixture NAS",uid:42,ugk:false))
+        })
+        expect(await qr.homeDisplayAuthorize()["authenticated"] as? Bool == true && store.hasCredential,"cold open verifies and restores a remembered QR session")
+        print("PASS cold password/QR restoration, one refresh on real NAS expiry, website-only rejection, and logout during restoration")
     }
     @MainActor static func main() async throws {
         func cookie(_ name: String,_ domain: String) -> HTTPCookie {
@@ -361,7 +439,7 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
         print("PASS credential-only invalidation preserves context, owner cookies and other hosts")
         let configuration=URLSessionConfiguration.ephemeral;configuration.protocolClasses=[HomeDisplayFixtureProtocol.self]
         let transport=URLSession(configuration:configuration),store=HomeDisplayFixtureCookieStore()
-        let session=NASMovieSession(transport:transport,homeDisplayCookies:NASHomeDisplayCookies(store:store))
+        let session=NASMovieSession(transport:transport,homeDisplayCookies:NASHomeDisplayCookies(store:store),loadSavedLogin:{nil})
         do {_ = try await session.exchangeHomeDisplay();fatalError("unauthenticated NAS session accepted")}
         catch NASMovieError.expired {}
         expect(HomeDisplayFixtureProtocol.exchangeCount == 0,"logged out exchange must not send a request")
@@ -390,5 +468,6 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
         try await diagnostics(session,store)
         try await probeDiagnostics(session,store,pem)
         try await lifecycle(session,store,pem)
+        try await restoration(transport,pem)
     }
 }

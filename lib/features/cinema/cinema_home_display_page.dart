@@ -29,6 +29,8 @@ String cinemaHomeDisplayAuthorizationMessage(Map<String, dynamic> access) {
   if (access['reason'] == 'nas_login_required') return '请先登录 NAS';
   if (cinemaHomeDisplayNeedsNAS(access)) return '请重新登录 NAS 后打开 Home Display';
   return switch (access['reason']) {
+    'nas_keychain_unavailable' => '无法读取已保存的 NAS 登录，请解锁钥匙串后重试',
+    'nas_restore_unavailable' => '暂时无法恢复 NAS 登录，请检查连接后重试',
     'backend_unconfigured' => '网站尚未配置 NAS 展示授权',
     'nas_authentication_failed' when access['nasSessionVerified'] == true =>
       'NAS 登录正常，但网站未接受展示授权（401），请重试',
@@ -180,7 +182,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     try {
       final access = await _client
           .call('homeDisplayAuthorize')
-          .timeout(const Duration(seconds: 35));
+          .timeout(Duration(seconds: _android ? 35 : 60));
       if (!_active(generation)) return;
       if (access['authenticated'] != true) {
         _needsNAS = cinemaHomeDisplayNeedsNAS(access);
@@ -214,7 +216,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
       try {
         final access = await _client
             .call('homeDisplayAuthorize')
-            .timeout(const Duration(seconds: 35));
+            .timeout(Duration(seconds: _android ? 35 : 60));
         if (!_active(generation) || (_android && _suspended)) return;
         if (access['authenticated'] != true) {
           _needsNAS = cinemaHomeDisplayNeedsNAS(access);
