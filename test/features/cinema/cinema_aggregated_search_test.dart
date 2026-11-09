@@ -1,3 +1,4 @@
+import 'package:kazumi/features/cinema/cinema_player_page.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -163,12 +164,16 @@ void main() {
     store.dispose();
     await directory.delete(recursive: true);
   });
-  Future<void> mount(WidgetTester tester) async {
+  Future<void> mount(
+    WidgetTester tester, {
+    Widget Function(CinemaPlayerPage)? playerPageBuilder,
+  }) async {
     await tester.binding.setSurfaceSize(const Size(1280, 860));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
       MaterialApp(
         home: CinemaHomePage(
+          playerPageBuilder: playerPageBuilder,
           enableSearchDiscovery: false,
           enableWatchTogether: false,
           store: store,
@@ -296,9 +301,16 @@ void main() {
     },
   );
   testWidgets(
-    'same movie becomes one card and details switch source-specific routes',
+    'same movie becomes one card and source selection opens its playback',
     (tester) async {
-      await mount(tester);
+      CinemaPlayerPage? selected;
+      await mount(
+        tester,
+        playerPageBuilder: (page) {
+          selected = page;
+          return const Scaffold(body: Text('source playback'));
+        },
+      );
       await search(tester);
       expect(find.text('1 部作品 · 2 个片源版本，进入详情切换片源'), findsOneWidget);
       expect(card(), findsOneWidget);
@@ -334,14 +346,9 @@ void main() {
         find.byKey(const ValueKey('source-variant:source-a::a1')),
       );
       await tester.pumpAndSettle();
-      expect(find.text('备用源的详情'), findsOneWidget);
-      await tester.scrollUntilVisible(
-        find.text('备用源专属线路'),
-        200,
-        scrollable: sheetScroll,
-      );
-      expect(find.text('备用源专属线路'), findsOneWidget);
-      expect(find.text('非凡影视专属线路'), findsNothing);
+      expect(find.text('source playback'), findsOneWidget);
+      expect(selected!.source.id, sourceA.id);
+      expect(selected!.title.routes[selected!.routeIndex].name, '备用源专属线路');
       expect(
         repository.details.skip(cardProof.length),
         [modu.id, sourceA.id],

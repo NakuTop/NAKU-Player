@@ -366,7 +366,7 @@ actor NASMovieSession {
         guard ch.statusCode == 200, let encoded = ch.value(forHTTPHeaderField:"X-Rsa-Token"),
               let der = Data(base64Encoded:encoded), let key = String(data:der,encoding:.utf8) else { throw NASMovieError.crypto }
         guard generation == attempt else {throw NASMovieError.expired}
-        let (bytes,http) = try await send(origin.appendingPathComponent("ugreen/v1/verify/login"),method:"POST",body:["username":username,"password":try RSAEncryption.encrypt(password,publicKey:key),"keepalive":false,"otp":true,"is_simple":true])
+        let (bytes,http) = try await send(origin.appendingPathComponent("ugreen/v1/verify/login"),method:"POST",body:["username":username,"password":try RSAEncryption.encrypt(password,publicKey:key),"keepalive":true,"otp":true,"is_simple":true])
         let result = try json(bytes), code = result["code"] as? Int ?? http.statusCode
         guard http.statusCode == 200, code == 200, let d = result["data"] as? [String:Any] else { throw NASMovieError.login(code) }
         guard let t = d["token"] as? String, !t.isEmpty else { throw NASMovieError.login(d["enable_otp"] as? Bool == true ? 1002 : 401) }
@@ -1381,7 +1381,7 @@ actor NASMovieSession {
         guard page <= 500 else { throw NASMovieError.configuration }
         return ["video_arr":rows,"total_num":total ?? rows.count]
     }
-    func api(_ route: String, parameters: [String:String] = [:], at target: URL? = nil, timeout: TimeInterval? = nil) async throws -> [String:Any] {
+    func api(_ route: String, parameters: [String:String] = [:], at target: URL? = nil, timeout: TimeInterval? = nil, recoverSession: Bool = true) async throws -> [String:Any] {
         guard let base = target ?? base, !token.isEmpty else { throw NASMovieError.expired }
         let attempt=generation
         let key = UUID().uuidString.replacingOccurrences(of:"-",with:"")
@@ -1401,7 +1401,21 @@ actor NASMovieSession {
             result = try json(AES.GCM.open(AES.GCM.SealedBox(combined:data),using:SymmetricKey(data:Data(key.utf8))))
         }
         let code=result["code"] as? Int ?? http.statusCode
-        if [401,403,9902].contains(code) { if target == nil,generation == attempt {logout()}; throw NASMovieError.expired }
+        if [401,9902].contains(code) {
+            // Restore the same saved account once; concurrent readers join the
+            // shared restoration. Never replay a stale request into a new login.
+            if recoverSession,target == nil,generation == attempt,
+               authenticatingGeneration == nil,!namespace.isEmpty {
+                let expected=namespace
+                _ = try await restore(automatically:true,expected:expected)
+                guard namespace == expected else {throw NASMovieError.configuration}
+                return try await api(route,parameters:parameters,timeout:timeout,recoverSession:false)
+            }
+            if target == nil,generation == attempt {logout()}
+            throw NASMovieError.expired
+        }
+        // A resource permission denial does not invalidate the NAS login.
+        if code == 403 {throw NASMovieError.login(code)}
         guard http.statusCode == 200, code == 200 else { throw NASMovieError.login(code) }
         return result["data"] as? [String:Any] ?? [:]
     }

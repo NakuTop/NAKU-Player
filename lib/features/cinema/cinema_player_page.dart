@@ -1,3 +1,4 @@
+import 'cinema_movie_versions.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 import 'cinema_playback_buffer.dart';
 import 'cinema_tv_background_policy.dart';
@@ -1370,6 +1371,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       : _route!.episodes[_episodeIndex];
   bool get _hasNext =>
       !_requiresEpisodeSelection &&
+      !cinemaHasMovieVersions(_title, _routeIndex) &&
       _route != null &&
       _episodeIndex + 1 < _route!.episodes.length;
 
@@ -3024,7 +3026,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         final newlyCompleted = completed && !playback.completed;
         setState(() => playback.completed = completed);
         if (completed) unawaited(_persistProgress(playback));
-        if (newlyCompleted) {
+        if (newlyCompleted && !cinemaHasMovieVersions(_title, _routeIndex)) {
           final next = _preferences.nextEpisode(
             index: _episodeIndex,
             count: _route?.episodes.length ?? 0,

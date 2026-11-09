@@ -156,6 +156,8 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
                 headers["X-Rsa-Token"]=Data(Self.passwordPublicKey.utf8).base64EncodedString()
             } else if path.hasSuffix("/verify/login") {
                 precondition(request.httpMethod == "POST")
+                let loginBody=try! JSONSerialization.jsonObject(with:Self.body(request)) as! [String:Any]
+                precondition(loginBody["keepalive"] as? Bool == true,"saved NAS login requests persistent session")
                 Self.passwordLogins += 1
                 if Self.mode == "restoration-delayed" {
                     Self.deferredLock.withLock {Self.deferred=self}
@@ -163,7 +165,7 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
                     return
                 }
                 data=Self.passwordResponse
-                if Self.mode == "diagnostic-expired" {Self.mode="valid"}
+                if Self.mode == "diagnostic-expired" || Self.mode == "api-expired" {Self.mode="valid"}
             } else if path.hasSuffix("/verify/sn") {data=["sn":"fixture-public-routing-hint"]}
             else if path.hasSuffix("/current/user") {Self.currentReads += 1;data=["username":"fixture-member","uid":42]}
             else if path.hasSuffix("/machine/common") {Self.deviceReads += 1;data=["common":["serial":"fixture-canonical-serial"]]}
@@ -180,7 +182,9 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
                 if Self.mode == "diagnostic-device-denied" && path.hasSuffix("/machine/common") {payload=["code":403,"data":[:]];respond(status:status,headers:headers,payload:payload,responseURL:responseURL);return}
                 if Self.mode == "diagnostic-mismatch" && path.hasSuffix("/machine/common") {data=["common":["serial":"fixture-other-device"]]}
             }
-            payload=["code":200,"data":data]
+            if ["api-expired","api-denied","api-rejected-always"].contains(Self.mode) && path.hasSuffix("/current/user") {
+                payload=["code":Self.mode == "api-denied" ? 403:401,"data":[:]]
+            } else {payload=["code":200,"data":data]}
         }
         respond(status:status,headers:headers,payload:payload,responseURL:responseURL)
     }
@@ -335,7 +339,7 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
         let cases:[(String,Bool,Bool,String,String)]=[
             ("http-401",true,true,"verified","verified"),
             ("diagnostic-expired",false,false,"authentication_rejected","authentication_rejected"),
-            ("diagnostic-device-denied",true,false,"verified","authentication_rejected"),
+            ("diagnostic-device-denied",true,false,"verified","request_rejected"),
             ("diagnostic-mismatch",true,false,"verified","identity_mismatch"),
             ("diagnostic-deadline",false,false,"timeout","timeout"),
         ]
@@ -423,6 +427,29 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
         expect(await qr.homeDisplayAuthorize()["authenticated"] as? Bool == true && store.hasCredential,"cold open verifies and restores a remembered QR session")
         print("PASS cold password/QR restoration, one refresh on real NAS expiry, website-only rejection, and logout during restoration")
     }
+    @MainActor static func persistentAPI(_ transport: URLSession,_ pem: String) async throws {
+        HomeDisplayFixtureProtocol.mode="valid";HomeDisplayFixtureProtocol.passwordPublicKey=pem
+        let session=NASMovieSession(transport:transport,loadSavedLogin:{.password(NASMovieCredentials(address:"https://fixture.cn21.ug.link",username:"fixture-member",password:"fixture-password"))})
+        _ = try await session.restore()
+        let before=HomeDisplayFixtureProtocol.passwordLogins
+        HomeDisplayFixtureProtocol.mode="api-expired"
+        let user=try await session.api("v1/user/current/user")
+        expect(user["username"] as? String == "fixture-member","ordinary NAS API restores same account")
+        expect(HomeDisplayFixtureProtocol.passwordLogins == before+1,"expired API reauthenticates once")
+        HomeDisplayFixtureProtocol.mode="api-denied"
+        do {_ = try await session.api("v1/user/current/user");fatalError("permission denial accepted")}catch NASMovieError.login(let code){expect(code == 403,"permission error retained")}
+        let active=await session.currentSession()
+        expect(!(active["namespace"] as? String ?? "").isEmpty,"403 preserves active login")
+        expect(HomeDisplayFixtureProtocol.passwordLogins == before+1,"403 does not reauthenticate")
+        HomeDisplayFixtureProtocol.mode="api-rejected-always"
+        do {_ = try await session.api("v1/user/current/user");fatalError("revoked login accepted")}catch NASMovieError.expired {}
+        expect(HomeDisplayFixtureProtocol.passwordLogins == before+2,"persistent rejection has one retry only")
+        await session.logoutAndInvalidateDisplay()
+        do {_ = try await session.api("v1/user/current/user");fatalError("logout restored automatically")}catch NASMovieError.expired {}
+        expect(HomeDisplayFixtureProtocol.passwordLogins == before+2,"logout never triggers reauthentication")
+        HomeDisplayFixtureProtocol.mode="valid"
+        print("PASS persistent NAS login, same-account API recovery, bounded retry and permission isolation")
+    }
     @MainActor static func main() async throws {
         func cookie(_ name: String,_ domain: String) -> HTTPCookie {
             HTTPCookie(properties:[.name:name,.value:"fixture",.domain:domain,.path:"/",.secure:"TRUE"])!
@@ -469,5 +496,6 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
         try await probeDiagnostics(session,store,pem)
         try await lifecycle(session,store,pem)
         try await restoration(transport,pem)
+        try await persistentAPI(transport,pem)
     }
 }

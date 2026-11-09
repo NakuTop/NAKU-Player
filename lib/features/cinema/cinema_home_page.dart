@@ -1,3 +1,4 @@
+import 'cinema_movie_versions.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/services.dart';
 import 'cinema_source_priority.dart';
@@ -5573,25 +5574,37 @@ class _TitleDetailsState extends State<_TitleDetails> {
         title.routes[_road].episodes.isNotEmpty) {
       return _road;
     }
-    int quality(String name) {
-      if (RegExp(r'4k|2160|uhd|蓝光原盘', caseSensitive: false).hasMatch(name)) {
-        return 3;
-      }
-      if (RegExp(r'1080|fhd|蓝光', caseSensitive: false).hasMatch(name)) return 2;
-      if (RegExp(r'720|高清', caseSensitive: false).hasMatch(name)) return 1;
-      return 0;
-    }
+    return cinemaPreferredRoute(title);
+  }
 
-    var best = -1;
-    for (var index = 0; index < title.routes.length; index++) {
-      if (title.routes[index].episodes.isEmpty) continue;
-      if (best < 0 ||
-          quality(title.routes[index].name) >
-              quality(title.routes[best].name)) {
-        best = index;
+  int _playSelectionTicket = 0;
+
+  Future<void> _selectAndPlayVariant(CinemaTitle variant) async {
+    final ticket = ++_playSelectionTicket;
+    _selectVariant(variant);
+    final generation = _detailGeneration;
+    final source = _selectedSource;
+    try {
+      final title = await _detail;
+      if (!mounted ||
+          _disposing ||
+          generation != _detailGeneration ||
+          ticket != _playSelectionTicket) {
+        return;
       }
+      final road = _preferredRoad(title);
+      if (road < 0) return;
+      widget.onPlay(
+        title,
+        source,
+        road,
+        cinemaPreferredEpisode(title, road),
+        _variants,
+        true,
+      );
+    } catch (_) {
+      // The detail FutureBuilder displays the loading error and retry action.
     }
-    return best;
   }
 
   Widget _actions(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
@@ -5627,7 +5640,8 @@ class _TitleDetailsState extends State<_TitleDetails> {
                   title,
                   _selectedSource,
                   tvResume?.routeIndex ?? _preferredRoad(title),
-                  tvResume?.episodeIndex ?? 0,
+                  tvResume?.episodeIndex ??
+                      cinemaPreferredEpisode(title, _preferredRoad(title)),
                   _variants,
                   _variantChosen || _routeChosen,
                 )
@@ -5800,7 +5814,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
                       style: const TextStyle(fontSize: 11),
                     ),
                     selected: variant.key == _selectedTitle.key,
-                    onSelected: (_) => _selectVariant(variant),
+                    onSelected: (_) => _selectAndPlayVariant(variant),
                   ),
               ],
             ),

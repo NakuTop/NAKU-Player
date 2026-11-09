@@ -1264,7 +1264,25 @@ const cinema110SourcePack = CinemaSourcePack(
   ],
 );
 
-const bundledCinemaSourcePacks = [cinema030SourcePack, cinema110SourcePack];
+const cinemaZuidSourcePack = CinemaSourcePack(
+  id: 'cinema-sources-zuid-2026-11-09',
+  backupVersion: '3.1.8',
+  sources: [
+    CinemaSource(
+      id: 'maccms-zuid',
+      name: '最大影视',
+      kind: CinemaSourceKind.maccms,
+      url: 'https://api.zuidapi.com/api.php/provide/vod/',
+      description: '第三方电影 / 剧集 / 动漫目录',
+    ),
+  ],
+);
+
+const bundledCinemaSourcePacks = [
+  cinema030SourcePack,
+  cinema110SourcePack,
+  cinemaZuidSourcePack,
+];
 
 /// Public third-party catalogues verified on 2026-10-08. Availability and quality
 /// are claims of each provider; these are not Netflix or studio endpoints.
@@ -1292,6 +1310,7 @@ final List<CinemaSource> bundledCinemaSources = [
     description: '第三方 MacCMS 目录 · 电影样本发现时间轴异常，请按片核验',
   ),
   ...cinema030SourcePack.sources.where((s) => s.id != 'maccms-360'),
+  ...cinemaZuidSourcePack.sources,
   CinemaSource(
     id: 'kazumi-dm84',
     name: 'DM84',

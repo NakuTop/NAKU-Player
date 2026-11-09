@@ -1,3 +1,4 @@
+import 'package:kazumi/features/cinema/cinema_player_page.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -303,6 +304,7 @@ void main() {
     Size size = const Size(1440, 1100),
     CinemaAppearance? appearance,
     bool animateAtmosphere = false,
+    Widget Function(CinemaPlayerPage)? playerPageBuilder,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
@@ -374,6 +376,7 @@ void main() {
           );
         },
         home: CinemaHomePage(
+          playerPageBuilder: playerPageBuilder,
           store: store,
           repository: repository,
           ratingsRepository: ratings,
@@ -836,26 +839,29 @@ void main() {
   );
 
   testWidgets(
-    'late ratings and poster callbacks from another source cannot release the gate',
+    'choosing a source opens playback without waiting for artwork or another play click',
     (tester) async {
-      await mount(tester);
+      CinemaPlayerPage? selected;
+      await mount(
+        tester,
+        playerPageBuilder: (page) {
+          selected = page;
+          return const Scaffold(body: Text('playback fixture'));
+        },
+      );
       final alternate = find.byKey(
         const ValueKey('source-variant:ready-b::film'),
       );
       await tester.ensureVisible(alternate);
       await tester.tap(alternate);
-      await frames(tester);
-      expect(loading(tester), isTrue);
+      await tester.pumpAndSettle();
+      expect(find.text('playback fixture'), findsOneWidget);
+      expect(selected!.source.id, 'ready-b');
+      expect(selected!.manualRouteSelection, true);
       ratings.complete('ready-a');
       posters['ready-a']!.complete(frame);
       await frames(tester);
-      expect(loading(tester), isTrue);
-      ratings.complete('ready-b');
-      await frames(tester);
-      expect(loading(tester), isTrue);
-      posters['ready-b']!.complete(frame);
-      await frames(tester);
-      expect(loading(tester), isFalse);
+      expect(find.text('playback fixture'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

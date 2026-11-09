@@ -68,9 +68,51 @@ void main() {
     return encoded;
   }
 
+  test(
+    'Zuid migration deduplicates custom URLs and preserves user settings',
+    () async {
+      final custom = customSource.copyWith(
+        url: 'https://api.zuidapi.com/api.php/provide/vod',
+      );
+      await writeLegacy(legacyLibrary([custom]));
+      final store = CinemaStore(
+        file: file,
+        sourcePacks: [cinemaZuidSourcePack],
+      );
+      addTearDown(store.dispose);
+      await store.load();
+      expect(store.sources.single.id, custom.id);
+      expect(store.sources.single.enabled, false);
+      expect(store.history.single.positionSeconds, 123);
+    },
+  );
+
+  test(
+    'Zuid is added once to existing libraries and stays removed after deletion',
+    () async {
+      await writeLegacy(legacyLibrary([customSource]));
+      final store = CinemaStore(
+        file: file,
+        sourcePacks: [cinemaZuidSourcePack],
+      );
+      addTearDown(store.dispose);
+      await store.load();
+      expect(store.sources.last.id, 'maccms-zuid');
+      expect(store.sources.last.enabled, true);
+      await store.removeSource('maccms-zuid');
+      final reopened = CinemaStore(
+        file: file,
+        sourcePacks: [cinemaZuidSourcePack],
+      );
+      addTearDown(reopened.dispose);
+      await reopened.load();
+      expect(reopened.sources.single.id, customSource.id);
+    },
+  );
+
   test('1.10 presets add Feifan and Juliang and remove Modu and 360', () {
     final sources = bundledCinemaSources;
-    expect(sources.take(7).map((source) => source.id), [
+    expect(sources.take(8).map((source) => source.id), [
       'maccms-feifan',
       'maccms-juliang',
       'maccms-guangsu',
@@ -78,9 +120,10 @@ void main() {
       'maccms-wujin',
       'maccms-jisu',
       'maccms-ruyi',
+      'maccms-zuid',
     ]);
     expect(
-      sources.skip(7).every((s) => s.kind == CinemaSourceKind.kazumi),
+      sources.skip(8).every((s) => s.kind == CinemaSourceKind.kazumi),
       true,
     );
     expect(cinema030SourcePack.sources.map((source) => source.url), [
@@ -112,7 +155,10 @@ void main() {
       (raw['history'] as List).first['title']['sourceId'] = 'maccms-modu';
       (raw['sources'] as List)[1]['customNote'] = 'keep';
       final before = await writeLegacy(raw);
-      final store = CinemaStore(file: file);
+      final store = CinemaStore(
+        file: file,
+        sourcePacks: [cinema030SourcePack, cinema110SourcePack],
+      );
       addTearDown(store.dispose);
       await store.load();
       expect(await File('${file.path}.pre-1.10.0.bak').readAsString(), before);
@@ -138,7 +184,10 @@ void main() {
       expect(saved['favorites'], raw['favorites']);
       expect(saved['history'], raw['history']);
       expect((saved['sources'] as List)[1]['customNote'], 'keep');
-      final restart = CinemaStore(file: file);
+      final restart = CinemaStore(
+        file: file,
+        sourcePacks: [cinema030SourcePack, cinema110SourcePack],
+      );
       addTearDown(restart.dispose);
       await restart.load();
       expect(restart.sources.map((s) => s.id), [
@@ -147,7 +196,10 @@ void main() {
         'maccms-feifan',
       ]);
       await restart.removeSource('maccms-feifan');
-      final third = CinemaStore(file: file);
+      final third = CinemaStore(
+        file: file,
+        sourcePacks: [cinema030SourcePack, cinema110SourcePack],
+      );
       addTearDown(third.dispose);
       await third.load();
       expect(third.sources.map((s) => s.id), ['maccms-juliang', 'my-source']);
