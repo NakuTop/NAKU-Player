@@ -361,16 +361,26 @@ void main() {
   testWidgets('late source response cannot overwrite a newer selection', (
     tester,
   ) async {
-    await mount(tester);
+    CinemaPlayerPage? selected;
+    await mount(
+      tester,
+      playerPageBuilder: (page) {
+        selected = page;
+        return const Scaffold(body: Text('source playback'));
+      },
+    );
     await search(tester);
+    // Comparison starts when details open and shares its detail cache with
+    // manual selection. Delay before opening, not after that cache is warm.
+    repository.delayA = true;
     await tester.tap(card());
     await tester.pumpAndSettle();
-    repository.delayA = true;
     await tester.ensureVisible(
       find.byKey(const ValueKey('source-variant:source-a::a1')),
     );
     await tester.tap(find.byKey(const ValueKey('source-variant:source-a::a1')));
-    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(repository.pendingA, isNotNull);
     await tester.ensureVisible(
       find.byKey(const ValueKey('source-variant:maccms-feifan::m1')),
     );
@@ -378,11 +388,13 @@ void main() {
       find.byKey(const ValueKey('source-variant:maccms-feifan::m1')),
     );
     await tester.pumpAndSettle();
+    expect(selected?.source.id, modu.id);
     repository.pendingA!.complete(
       repository.resolved(sourceA, sample(sourceA)),
     );
     await tester.pumpAndSettle();
-    expect(find.text('非凡影视的详情'), findsOneWidget);
+    expect(find.text('source playback'), findsOneWidget);
+    expect(selected?.source.id, modu.id);
     expect(find.text('备用源的详情'), findsNothing);
     expect(tester.takeException(), isNull);
   });
