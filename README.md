@@ -46,16 +46,18 @@
 
 | 平台 | 当前正式版 | 下载 |
 | --- | --- | --- |
-| macOS | 3.1.10 | [macOS 安装包](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.1.10) |
-| Android 手机 | 3.1.10（115） | [Mobile APK](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.1.10-android) |
-| Android TV | 3.1.10（115） | [TV APK](https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.1.10%2B115) |
-| Windows x64 | 3.1.10（115） | [安装版 / 便携版](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.1.10-windows) |
+| macOS | 3.2.0 | [macOS 安装包](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.0) |
+| Android 手机 | 3.2.0（116） | [Mobile APK](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.0-android) |
+| Android TV | 3.2.0（116） | [TV APK](https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.0%2B116) |
+| Windows x64 | 3.2.0（116） | [安装版 / 便携版](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.0-windows) |
+
+3.2.0 保留各端现有详情布局，在原片源区域显示画质、连接速度与自动推荐；按用户片源顺序选择，同源优先高清。Android 手机版加入 Home Display、统一首页、触控播放与离线多源弹幕；手机和 TV 均提供搜索返回主页，并优化同账号投屏直达。Windows 使用 NAKU 独立更新源。PWA 0.3.8 已同步片源顺序与详情对比。
 
 Android 手机和 TV 使用独立包名与更新源，各自覆盖安装保留已有登录、收藏和历史记录；TV 可从 1.1.6 直接升级。对应源码可从各发行页的版本标签下载。
 
 ### Windows
 
-Windows x64 安装包由 `scripts/build_windows_installer.ps1` 生成，包含播放器和 C++ 运行库，默认安装到当前用户的本地 Programs 目录。Windows 3.1.10（115）支持 NAS 账号 / 扫码登录、会话恢复及影视库，凭据由 Windows DPAPI 加密保存；原生最小化、最大化 / 还原和关闭按钮始终显示。此前 Windows 版本的 NAS 登录和窗口按钮已通过用户验收；本次构建的验证记录见 [Windows 3.1.10 发行页](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.1.10-windows)。
+Windows x64 安装包由 `scripts/build_windows_installer.ps1` 生成，包含播放器和 C++ 运行库，默认安装到当前用户的本地 Programs 目录。Windows 3.2.0（116）支持 NAS 账号 / 扫码登录、会话恢复及影视库，凭据由 Windows DPAPI 加密保存；原生最小化、最大化 / 还原和关闭按钮始终显示。此前 Windows 版本的 NAS 登录和窗口按钮已通过用户验收；本次构建的验证记录见 [Windows 3.2.0 发行页](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.0-windows)。
 
 构建环境、测试命令及平台差异见 [Windows 构建说明](docs/WINDOWS_BUILD.md)。此构建未做商业代码签名；macOS Sparkle 更新与 AppKit 磨砂不适用于 Windows，当前网页影院的内嵌网页组件尚未提供 Windows 实现。
 

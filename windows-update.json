@@ -1,0 +1,21 @@
+{
+  "tag_name": "3.2.0",
+  "name": "NAKU Player Windows 3.2.0",
+  "body": "NAKU Player Windows 3.2.0（116）\n\n- 保留原有详情页、收藏、历史、NAS、下载与弹幕功能，在现有片源区域补充画质、连接速度和自动推荐。\n- 按设置的片源顺序选择，同源优先高清版本、同画质选较快线路；取消巨量资源专属预检。\n- 最大影视 TD/HD/4K 等电影版本分别识别，优先正常高清；手动选择不被后续检测覆盖，失败依次换线并保留进度。\n- Windows 更新使用 NAKU 独立正式更新源，支持 EXE 安装版与 ZIP 便携版，校验下载 SHA-256。\n- 保留 Windows 原生窗口控制、D3D11 播放和缓存控制；安装版包含必要 C++ 运行库及本地语音组件。\n\nWindows x64，安装版与便携版。未做商业代码签名。自动化验证包括共享功能回归、可执行文件版本与依赖校验、静默安装和启动检查；不替代真实设备的长时间播放测试。\n",
+  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.0-windows",
+  "published_at": "2026-11-09T13:58:23Z",
+  "assets": [
+    {
+      "name": "NAKUPlayer-3.2.0-Windows-x64-portable.zip",
+      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.0-windows/NAKUPlayer-3.2.0-Windows-x64-portable.zip",
+      "size": 190420462,
+      "digest": "sha256:01d9e28ac8d3b70f321193ce7439445ff528be3cfc5eea6100fb8df2a1b48f13"
+    },
+    {
+      "name": "NAKUPlayer-3.2.0-Windows-x64-Setup.exe",
+      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.0-windows/NAKUPlayer-3.2.0-Windows-x64-Setup.exe",
+      "size": 173010017,
+      "digest": "sha256:19bf78e987866817653b353628783d8377cccba8c8f29fb4779152af0a2f31c5"
+    }
+  ]
+}
