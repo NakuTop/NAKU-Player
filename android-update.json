@@ -1,15 +1,15 @@
 {
-  "tag_name": "3.1.2",
-  "name": "NAKU Player Android 手机版 3.1.2",
-  "body": "Android 手机版 3.1.2（47）已完成用户真机手动验收。\n\n- 自动更新 NAS 路由识别标记，修复旧缓存导致局域网切换失败；继续核验设备与账号身份，无需手动刷新标记。\n- 列表加载后显示实际连接地址与自动选路状态。\n- 保留手机清晰度、音轨、字幕及在线字幕功能。\n\n43 项定向回归测试通过，APK 构建及签名校验通过。Android 7.0+，包含 arm64-v8a、armeabi-v7a、x86_64；与旧版同包名同签名，可覆盖安装并保留配置。\n公开包不内置个人 NAS 默认地址；TV 版保持原版本。\n",
-  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.1.2-android",
-  "published_at": "2026-10-17T06:43:44Z",
+  "tag_name": "3.1.10",
+  "name": "NAKU Player Android 手机版 3.1.10",
+  "body": "NAKU Player Android 手机版 3.1.10（115）\n\n- 同步当前 3.1.10 的通用修复：中文/数字季号、年份后缀和片名修饰归一化，搜索、收藏及历史记录补齐多个来源。\n- 弹幕来源支持多选、聚合与流畅滚动；区分爱一帆地区限制和接口错误，其他来源继续加载。\n- 默认源加入最大影视，优先同线路高清版本；保留 NAS 会话恢复与跨端数据同步优化。\n- 同步动漫与影视下载管理、整季选择、跨源分组等修复，保留手机触控播放、选集、字幕和清晰度操作。\n\nAndroid 7.0+；包含 arm64-v8a、armeabi-v7a、x86_64。包名 com.nakutop.nakuplayer，沿用已有签名，可直接覆盖安装保留数据，不需要卸载。公开包不包含个人 NAS 地址。\n\n319 项定向自动测试通过（1 项环境限定跳过）；APK 构建、包名、版本、签名与完整性另行校验。真实手机播放及厂商系统兼容性请安装后确认。\n",
+  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.1.10-android",
+  "published_at": "2026-11-09T11:40:26.590136Z",
   "assets": [
     {
-      "name": "NAKUPlayer-3.1.2-Android-Mobile.apk",
-      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.1.2-android/NAKUPlayer-3.1.2-Android-Mobile.apk",
-      "size": 79243604,
-      "digest": "sha256:0a9569416466c0955f53d6b6bbf2b0b0eb053023141333083c7730388f7785dd"
+      "name": "NAKUPlayer-3.1.10-Android-Mobile.apk",
+      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.1.10-android/NAKUPlayer-3.1.10-Android-Mobile.apk",
+      "size": 91874485,
+      "digest": "sha256:a6efeb51a754be33b4d85167385076d878ec8941b600671c8a90491d010d6754"
     }
   ]
 }
