@@ -314,3 +314,23 @@ network tests cover all ten real archive entries and E03 aggregate/download.
 Modified production Dart analysis passed. Windows Release 2.8.4+59 and Inno
 2.8.4.59 compilation succeeded. Prior unrelated wider-suite failures remain
 separately documented and are not counted as passing.
+
+## Unified 3.1.10 (115) release
+
+Uses the current shared cinema implementation: canonical title/season aggregation,
+library and history source expansion, multiple selectable danmaku providers,
+source quality ordering, download management and NAS synchronization fixes.
+Windows retains its native caption/fullscreen handling and DPAPI credential store.
+The installer reads version/build directly from pubspec.yaml and preserves its
+existing AppId and per-user installation directory for upgrade compatibility.
+
+The Windows release workflow builds the installer and portable x64 archive,
+verifies executable version and bundled runtime, silently installs the package
+and checks process startup. Native regression checks run in a separate workflow.
+The media-kit native build hook requires a tar implementation with liblzma/7z
+support; the workflow provides MSYS2 libarchive in an isolated tools directory.
+On a local Windows build, place an LZMA-enabled bsdtar (named tar.exe) on PATH
+before Flutter testing/building. No build-time archive tool is needed to run the app.
+
+Actual GPU/video playback and device-specific audio remain device acceptance.
+Windows updates use a full installer or portable archive, not macOS Sparkle deltas.
