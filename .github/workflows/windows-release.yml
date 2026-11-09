@@ -47,7 +47,7 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
       - name: Shared playback and library regressions
-        run: flutter test --no-pub test/features/cinema/windows_playback_policy_test.dart test/features/cinema/cinema_aggregated_search_test.dart test/features/cinema/cinema_library_identity_test.dart test/features/cinema/cinema_multi_source_danmaku_test.dart test/features/cinema/cinema_movie_versions_test.dart
+        run: flutter test --no-pub test/features/cinema/windows_playback_policy_test.dart test/features/cinema/cinema_aggregated_search_test.dart test/features/cinema/cinema_library_identity_test.dart test/features/cinema/cinema_multi_source_danmaku_test.dart test/features/cinema/cinema_movie_versions_test.dart test/features/cinema/cinema_offline_danmaku_test.dart
       - name: Build installer with bundled runtime
         shell: pwsh
         run: ./scripts/build_windows_installer.ps1

@@ -31,7 +31,7 @@ class CinemaCastReplayGuard {
 
 /// The LAN advert contains only a random ID. Its encryption key can be obtained
 /// only through the logged-in account's private NAS directory, not from NSD.
-class CinemaLanCast extends ChangeNotifier {
+class CinemaLanCast extends ChangeNotifier with WidgetsBindingObserver {
   static final instance = CinemaLanCast();
   static const _channel = MethodChannel('naku/lan'),
       _secure = MethodChannel('naku/secure');
@@ -43,7 +43,12 @@ class CinemaLanCast extends ChangeNotifier {
   Timer? _timer;
   String _namespace = '', _secret = '', _id = '', status = '登录 NAS 后可接收手机发送的影片';
   DateTime _started = DateTime(2000);
-  bool _refreshing = false;
+  bool _refreshing = false,
+      _discovering = false,
+      _discoveryStarted = false,
+      _observing = false;
+  String _discoveryNamespace = '';
+  final _tickets = CinemaCastTicketCache();
   int _generation = 0;
   Future<void> Function(CinemaTitle, CinemaSource, int, int, int)? onPlay;
   String _randomHex() => List.generate(
@@ -52,6 +57,10 @@ class CinemaLanCast extends ChangeNotifier {
   ).join();
   void start() {
     if (!Platform.isAndroid) return;
+    if (!_observing) {
+      WidgetsBinding.instance.addObserver(this);
+      _observing = true;
+    }
     _channel.setMethodCallHandler((call) async {
       if (call.method == 'found') {
         final row = Map<String, dynamic>.from(call.arguments as Map),
@@ -59,10 +68,20 @@ class CinemaLanCast extends ChangeNotifier {
         if (RegExp(r'^[a-f0-9]{32}$').hasMatch(id) &&
             CinemaAndroidNAS.privateIPv4('${row['host']}')) {
           televisions[id] = row;
+          if (_discoveryNamespace.isNotEmpty) {
+            unawaited(
+              _ticket(
+                _discoveryNamespace,
+                id,
+              ).then<void>((_) {}).catchError((Object _) {}),
+            );
+          }
         }
       } else if (call.method == 'lost') {
         televisions.remove('${call.arguments}');
+        _tickets.remove('${call.arguments}');
       } else if (call.method == 'error') {
+        _discoveryStarted = false;
         status = '${call.arguments}';
       }
       notifyListeners();
@@ -73,8 +92,42 @@ class CinemaLanCast extends ChangeNotifier {
         (_) => unawaited(_refresh()),
       );
       unawaited(_refresh());
+    } else {
+      _timer ??= Timer.periodic(
+        const Duration(seconds: 10),
+        (_) => _warmDiscovery(),
+      );
+      _warmDiscovery();
     }
   }
+
+  void _warmDiscovery() {
+    if (WidgetsBinding.instance.lifecycleState == null ||
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+      unawaited(discover().catchError((Object _) {}));
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (NakuDevice.isTV) return;
+    if (state == AppLifecycleState.resumed) {
+      _warmDiscovery();
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _discoveryStarted = false;
+      televisions.clear();
+      unawaited(
+        _channel.invokeMethod<void>('stopDiscovery').catchError((Object _) {}),
+      );
+    }
+  }
+
+  Future<String> _ticket(String namespace, String id) => _tickets.get(
+    namespace,
+    id,
+    () => _nas.call('castSecret', {'namespace': namespace, 'id': id}),
+  );
 
   Future<void> _refresh() async {
     if (_refreshing) return;
@@ -193,13 +246,30 @@ class CinemaLanCast extends ChangeNotifier {
   }
 
   Future<void> discover() async {
-    final current = await _nas.call('currentSession');
-    if (current['namespace'] == null) {
-      throw const FormatException('请先在手机和电视登录同一个 NAS 账号。');
+    if (_discovering) return;
+    _discovering = true;
+    try {
+      final current = await _nas.call('currentSession');
+      final ns = current['namespace'];
+      if (ns is! String || ns.isEmpty) {
+        _tickets.clear();
+        _discoveryNamespace = '';
+        televisions.clear();
+        throw const FormatException('请先在手机和电视登录同一个 NAS 账号。');
+      }
+      if (ns != _discoveryNamespace) {
+        _tickets.clear();
+        _discoveryNamespace = ns;
+        _discoveryStarted = false;
+        televisions.clear();
+      }
+      if (_discoveryStarted) return;
+      await _channel.invokeMethod<void>('discover');
+      _discoveryStarted = true;
+    } finally {
+      _discovering = false;
+      notifyListeners();
     }
-    televisions.clear();
-    notifyListeners();
-    await _channel.invokeMethod<void>('discover');
   }
 
   Future<void> send(
@@ -213,12 +283,13 @@ class CinemaLanCast extends ChangeNotifier {
     final current = await _nas.call('currentSession'),
         ns = current['namespace'];
     if (ns == null) throw const FormatException('请先登录 NAS。');
-    final proof = await _nas.call('castSecret', {
-      'namespace': ns,
-      'id': target['id'],
-    });
+    final secret = await _ticket(ns as String, '${target['id']}');
+    if ((await _nas.call('currentSession'))['namespace'] != ns) {
+      _tickets.clear();
+      throw const FormatException('NAS 账号已切换，请重新选择电视。');
+    }
     final payload = await _secure.invokeMethod<String>('seal', {
-      'key': proof['secret'],
+      'key': secret,
       'text': jsonEncode({
         'namespace': ns,
         'nonce': _randomHex(),
@@ -249,6 +320,7 @@ class CinemaLanCast extends ChangeNotifier {
       final response = await req.close().timeout(const Duration(seconds: 15));
       await response.drain<void>();
       if (response.statusCode != 200) {
+        _tickets.remove('${target['id']}');
         throw const FormatException('电视未接受播放请求，请检查两端的 NAS 账号。');
       }
     } finally {
@@ -258,6 +330,11 @@ class CinemaLanCast extends ChangeNotifier {
 
   Future<void> stop() async {
     _generation++;
+    if (_observing) WidgetsBinding.instance.removeObserver(this);
+    _observing = false;
+    _discoveryStarted = false;
+    _tickets.clear();
+    televisions.clear();
     _timer?.cancel();
     _timer = null;
     onPlay = null;
@@ -287,62 +364,135 @@ Future<void> showCinemaCast(
     return;
   }
   if (!context.mounted) return;
+  var sending = false;
   await showDialog<void>(
     context: context,
-    builder: (context) => AnimatedBuilder(
-      animation: cast,
-      builder: (context, _) => AlertDialog(
-        title: const Text('发送到电视'),
-        content: SizedBox(
-          width: 360,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('电视需打开 NAKU，并登录同一个 NAS 账号。'),
-              const SizedBox(height: 16),
-              if (cast.televisions.isEmpty) const Text('正在发现局域网电视…'),
-              for (final target in cast.televisions.values)
-                ListTile(
-                  leading: const Icon(Icons.tv),
-                  title: const Text('NAKU 电视'),
-                  subtitle: Text('${target['host']}'),
-                  onTap: () async {
-                    try {
-                      await cast.send(
-                        target,
-                        title,
-                        source,
-                        road,
-                        episode,
-                        position,
-                      );
-                      if (context.mounted) {
-                        Navigator.pop(context);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('已发送，电视将开始播放。')),
-                        );
-                      }
-                    } catch (_) {
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('发送失败：请确认两端登录同一 NAS 账号，且电视接收服务已就绪。'),
-                          ),
-                        );
-                      }
-                    }
-                  },
-                ),
-            ],
+    builder: (context) => StatefulBuilder(
+      builder: (context, update) => AnimatedBuilder(
+        animation: cast,
+        builder: (context, _) => AlertDialog(
+          title: const Text('发送到电视'),
+          content: SizedBox(
+            width: 360,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('电视需打开 NAKU，并登录同一个 NAS 账号。'),
+                const SizedBox(height: 16),
+                if (cast.televisions.isEmpty) const Text('正在发现局域网电视…'),
+                for (final target in cast.televisions.values)
+                  ListTile(
+                    leading: sending
+                        ? const SizedBox.square(
+                            dimension: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.tv),
+                    title: const Text('NAKU 电视'),
+                    subtitle: Text('${target['host']}'),
+                    onTap: sending
+                        ? null
+                        : () async {
+                            update(() => sending = true);
+                            try {
+                              await cast.send(
+                                target,
+                                title,
+                                source,
+                                road,
+                                episode,
+                                position,
+                              );
+                              if (context.mounted) {
+                                Navigator.pop(context);
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('已发送，电视将开始播放。')),
+                                );
+                              }
+                            } catch (_) {
+                              if (context.mounted) {
+                                update(() => sending = false);
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      '发送失败：请确认两端登录同一 NAS 账号，且电视接收服务已就绪。',
+                                    ),
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                  ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('关闭'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('关闭'),
-          ),
-        ],
       ),
     ),
   );
+}
+
+/// Short-lived, account-scoped memory tickets prefetch NAS authorization while
+/// devices are discovered. No password, token or ticket is written to disk.
+class CinemaCastTicketCache {
+  CinemaCastTicketCache({DateTime Function()? now}) : now = now ?? DateTime.now;
+  final DateTime Function() now;
+  final _values = <String, ({String secret, DateTime expires})>{};
+  final _pending = <String, Future<String>>{};
+  int _generation = 0;
+  void clear() {
+    _generation++;
+    _values.clear();
+    _pending.clear();
+  }
+
+  void remove(String id) {
+    _values.removeWhere((key, _) => key.endsWith('|$id'));
+  }
+
+  Future<String> get(
+    String namespace,
+    String id,
+    Future<Map<String, dynamic>> Function() load,
+  ) async {
+    if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(namespace) ||
+        !RegExp(r'^[a-f0-9]{32}$').hasMatch(id)) {
+      throw const FormatException('无效的投屏设备');
+    }
+    final key = '$namespace|$id', cached = _values[key];
+    if (cached != null && now().isBefore(cached.expires)) return cached.secret;
+    if (_pending[key] case final future?) return future;
+    final generation = _generation;
+    final future = () async {
+      final proof = await load();
+      final secret = proof['secret'], expiry = proof['expires'];
+      if (proof['namespace'] != namespace ||
+          secret is! String ||
+          !RegExp(r'^[a-f0-9]{32}$').hasMatch(secret) ||
+          expiry is! int ||
+          expiry <= now().millisecondsSinceEpoch ||
+          generation != _generation) {
+        throw const FormatException('电视授权已失效');
+      }
+      final deadline = DateTime.fromMillisecondsSinceEpoch(expiry);
+      final limit = now().add(const Duration(minutes: 5));
+      _values[key] = (
+        secret: secret,
+        expires: deadline.isBefore(limit) ? deadline : limit,
+      );
+      return secret;
+    }();
+    _pending[key] = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_pending[key], future)) _pending.remove(key);
+    }
+  }
 }

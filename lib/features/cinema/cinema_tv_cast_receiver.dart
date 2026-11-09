@@ -20,19 +20,19 @@ typedef CinemaTVCastPlayback =
       int positionSeconds,
     );
 
-/// Confirmation gate after CinemaLanCast's authenticated decryption and replay
+/// Playback dispatch after CinemaLanCast's authenticated decryption and replay
 /// guard. This does not replace or weaken that transport-level validation.
 class CinemaTVCastReceiver {
   CinemaTVCastReceiver({
     required this.client,
-    required this.confirm,
+    this.confirm,
     required this.play,
     this.wakeScreensaver,
     bool Function()? isActive,
   }) : isActive = isActive ?? (() => true);
 
   final CinemaNASClient client;
-  final CinemaTVCastConfirmation confirm;
+  final CinemaTVCastConfirmation? confirm;
   final CinemaTVCastPlayback play;
   final Future<void> Function()? wakeScreensaver;
   final bool Function() isActive;
@@ -110,13 +110,14 @@ class CinemaTVCastReceiver {
       _validateReferences(title, source, receipt);
       await wakeScreensaver?.call();
       if (!_active() ||
-          !await confirm(
-            title,
-            source,
-            routeIndex,
-            episodeIndex,
-            positionSeconds,
-          )) {
+          (confirm != null &&
+              !await confirm!(
+                title,
+                source,
+                routeIndex,
+                episodeIndex,
+                positionSeconds,
+              ))) {
         return;
       }
       final current = _namespace(await client.call('currentSession'));

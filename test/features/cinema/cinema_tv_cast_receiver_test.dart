@@ -45,6 +45,29 @@ class _NAS extends CinemaNASClient {
 
 void main() {
   test(
+    'authenticated direct dispatch wakes and starts without a remote confirmation',
+    () async {
+      final client = _NAS();
+      final events = <String>[];
+      final receiver = CinemaTVCastReceiver(
+        client: client,
+        wakeScreensaver: () async {
+          events.add('wake');
+        },
+        play: (_, _, _, _, position) {
+          events.add('play:$position');
+        },
+      );
+      await receiver.receive(_title(), _source, 0, 0, 42);
+      expect(events, ['wake', 'play:42']);
+      expect(client.reads, 2);
+      client.account = null;
+      await receiver.receive(_title(), _source, 0, 0, 42);
+      expect(events.length, 2);
+    },
+  );
+
+  test(
     'valid acceptance wakes then confirms and rechecks account before play',
     () async {
       final client = _NAS(), order = <String>[];

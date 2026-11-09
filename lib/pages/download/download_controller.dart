@@ -3,6 +3,9 @@ import 'package:kazumi/utils/async_serial_queue.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:kazumi/features/cinema/cinema_offline_danmaku.dart';
+import 'package:kazumi/features/cinema/cinema_logvar_client.dart';
+import 'package:kazumi/features/cinema/cinema_multi_source_danmaku.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'package:kazumi/features/cinema/cinema_media_source.dart';
@@ -57,6 +60,7 @@ abstract class _DownloadController with Store {
   final DownloadSleepGuard _sleepGuard;
   final VideoSourceResolverPool _resolverPool;
   final _batchWrites = AsyncSerialQueue();
+  final _offlineDanmaku = CinemaOfflineDanmakuQueue();
 
   @observable
   ObservableList<DownloadRecord> records = ObservableList<DownloadRecord>();
@@ -189,6 +193,7 @@ abstract class _DownloadController with Store {
       return;
     }
     _repository.updateEpisode(recordKey, episodeNumber, episode);
+    _captureCinemaDanmaku(record, episode);
 
     final key = '${recordKey}_$episodeNumber';
 
@@ -811,6 +816,47 @@ abstract class _DownloadController with Store {
     }
   }
 
+  void _captureCinemaDanmaku(DownloadRecord record, DownloadEpisode episode) {
+    if (!record.isCinema ||
+        episode.downloadDirectory.isEmpty ||
+        !{
+          DownloadStatus.downloading,
+          DownloadStatus.completed,
+        }.contains(episode.status)) {
+      return;
+    }
+    final key = '${record.key}_${episode.episodeNumber}';
+    final directory = episode.downloadDirectory;
+    final url = episode.episodePageUrl;
+    _offlineDanmaku.schedule(key, (cancel) async {
+      final metadata = jsonDecode(record.mediaMetadata) as Map;
+      final title = CinemaTitle.fromJson(
+        Map<String, dynamic>.from(metadata['title'] as Map),
+      );
+      await CinemaOfflineDanmaku.capture(
+        episodeDirectory: directory,
+        identity: '${title.key}|$url',
+        query: CinemaLogvarQuery.parse(
+          title.title,
+          category: title.category,
+          episodeName: episode.episodeName,
+          fallbackEpisode: episode.episodeNumber,
+          year: title.year,
+        ),
+        client: CinemaMultiSourceDanmakuClient(),
+        cancelToken: cancel,
+        isCurrent: () {
+          final current = _repository
+              .getRecord(record.key)
+              ?.episodes[episode.episodeNumber];
+          return current != null &&
+              current.episodePageUrl == url &&
+              current.downloadDirectory == directory;
+        },
+      );
+    });
+  }
+
   void _processResolveQueue() {
     if (_resolveQueue.isEmpty) return;
 
@@ -1366,6 +1412,7 @@ abstract class _DownloadController with Store {
     );
     _downloadManager.cancel(recordKey, episodeNumber);
     _cancelResolve(recordKey, episodeNumber);
+    await _offlineDanmaku.cancel('${recordKey}_$episodeNumber');
     await _downloadManager.deleteEpisodeFiles(
       bangumiId,
       pluginName,
@@ -1382,6 +1429,7 @@ abstract class _DownloadController with Store {
     final record = _repository.getRecord(recordKey);
     if (record != null) {
       for (final ep in record.episodes.keys) {
+        await _offlineDanmaku.cancel('${recordKey}_$ep');
         _downloadManager.cancel(recordKey, ep);
         _speeds.remove('${recordKey}_$ep');
       }
@@ -1411,6 +1459,7 @@ abstract class _DownloadController with Store {
       pluginName,
       episodeNumber,
     );
+    await _offlineDanmaku.cancel('${recordKey}_$episodeNumber');
     await _downloadManager.deleteEpisodeFiles(
       bangumiId,
       pluginName,

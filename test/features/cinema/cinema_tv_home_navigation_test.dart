@@ -513,6 +513,43 @@ void main() {
       await clean(tester);
     },
   );
+  testWidgets(
+    'TV search returns home in one click and does not restore the old query',
+    (tester) async {
+      await mount(tester);
+      await tester.tap(find.byKey(const ValueKey('tv-nav-search')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('tv-search-field')),
+        '电影测试',
+      );
+      await tester.testTextInput.receiveAction(TextInputAction.search);
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('返回主页'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('tv-exit-search')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const PageStorageKey('tv-home-content')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('cinema-destination-anime')),
+        findsNothing,
+      );
+      final previous = repository.searches.length;
+      await tester.tap(find.byKey(const ValueKey('tv-nav-search')));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const ValueKey('tv-search-field')))
+            .controller!
+            .text,
+        isEmpty,
+      );
+      expect(repository.searches.length, previous);
+      await clean(tester);
+    },
+  );
   testWidgets('TV starts with poster rails and keeps the quiet detail layout', (
     tester,
   ) async {

@@ -8,6 +8,7 @@ class CinemaMobilePlaybackBar extends StatelessWidget {
     required this.fullscreen,
     required this.position,
     required this.duration,
+    this.resolution = '',
     this.onBackward,
     this.onPlay,
     this.onForward,
@@ -16,7 +17,7 @@ class CinemaMobilePlaybackBar extends StatelessWidget {
     this.onFullscreen,
   });
   final bool playing, fullscreen;
-  final String position, duration;
+  final String position, duration, resolution;
   final VoidCallback? onBackward,
       onPlay,
       onForward,
@@ -44,6 +45,13 @@ class CinemaMobilePlaybackBar extends StatelessWidget {
             position,
             style: const TextStyle(color: Colors.white70, fontSize: 11),
           ),
+          const Spacer(),
+          if (resolution.isNotEmpty)
+            Text(
+              resolution,
+              key: const ValueKey('mobile-video-resolution'),
+              style: const TextStyle(color: Colors.white70, fontSize: 11),
+            ),
           const Spacer(),
           Text(
             duration,

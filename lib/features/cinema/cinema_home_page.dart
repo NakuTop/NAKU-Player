@@ -1,3 +1,4 @@
+import 'cinema_mobile_scaffold.dart';
 import 'cinema_movie_versions.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/services.dart';
@@ -177,9 +178,11 @@ class CinemaHomePage extends StatefulWidget {
     this.navigationPreferences,
     this.windowControls,
     this.playerPageBuilder,
+    this.mobileLayout,
     this.initialStartup = const CinemaStartupTarget(),
   });
   final CinemaStartupTarget initialStartup;
+  final bool? mobileLayout;
 
   /// Allows embedding the player or inspecting navigation without an engine.
   final Widget Function(CinemaPlayerPage)? playerPageBuilder;
@@ -204,6 +207,8 @@ class CinemaHomePage extends StatefulWidget {
 
 class _CinemaHomePageState extends State<CinemaHomePage>
     with KazumiDialogOwner {
+  bool get _usesMobileLayout =>
+      !NakuDevice.isTV && (widget.mobileLayout ?? Platform.isAndroid);
   CinemaAnimeLibrary? _animeLibrary;
   final _moyuSession = CinemaMoyuSession();
   final _health = CinemaSourceHealth.instance;
@@ -359,29 +364,6 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                       AppLifecycleState.resumed),
           wakeScreensaver: () async =>
               CinemaTVApplication.maybeOf(context)?.dismissScreensaver(),
-          confirm: (title, source, road, episode, position) async {
-            if (!mounted) return false;
-            return await showDialog<bool>(
-                  context: context,
-                  useRootNavigator: false,
-                  builder: (dialogContext) => AlertDialog(
-                    title: Text('手机发送了「${title.title}」'),
-                    content: const Text('是否在这台电视上播放？确认前保留当前观看内容。'),
-                    actions: [
-                      TextButton(
-                        autofocus: true,
-                        onPressed: () => Navigator.pop(dialogContext, false),
-                        child: const Text('暂不播放'),
-                      ),
-                      FilledButton(
-                        onPressed: () => Navigator.pop(dialogContext, true),
-                        child: const Text('播放'),
-                      ),
-                    ],
-                  ),
-                ) ??
-                false;
-          },
           play: (title, source, road, episode, position) {
             if (!mounted) return;
             final homeRoute = ModalRoute.of(context);
@@ -487,6 +469,10 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     if (_section == _Section.anime &&
         widget.initialStartup.animeTab == CinemaAnimeStartupTab.collect) {
       _section = _Section.favorites;
+    }
+    if ((NakuDevice.isTV || Platform.isAndroid || _usesMobileLayout) &&
+        _section == _Section.anime) {
+      _section = _Section.movies;
     }
     _animeOpened = _section == _Section.anime;
     if (widget.initialStartup.section == CinemaStartupSection.douban) {
@@ -1008,7 +994,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   // Explicit anime startup/deep links keep a selected destination while that
   // page is open, without changing the device's saved navigation preference.
   bool get _showAnimeDestination =>
-      !(Platform.isAndroid || NakuDevice.isTV) &&
+      !NakuDevice.isTV &&
+      !Platform.isAndroid &&
+      !_usesMobileLayout &&
       (_navigationPreferences.showAnime || _section == _Section.anime);
 
   Future<void> _initialize() async {
@@ -1174,7 +1162,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   bool _ordinaryCategory(String name) => cinemaOrdinaryCategory(name);
 
   bool _unifiedSearchSection(_Section section) =>
-      ((Platform.isMacOS && !NakuDevice.isTV) ||
+      (((Platform.isMacOS || _usesMobileLayout) && !NakuDevice.isTV) ||
           (NakuDevice.isTV && _tvDestination == _TVDestination.search)) &&
       (section == _Section.movies || section == _Section.series);
 
@@ -2211,6 +2199,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           final wide =
               NakuDevice.isTV || MediaQuery.sizeOf(context).width >= 860;
           if (NakuDevice.isTV) return _tvScaffold();
+          if (_usesMobileLayout) return _mobileScaffold();
           if (wide && Platform.isMacOS && !NakuDevice.isTV) {
             return _desktopCinemaScaffold();
           }
@@ -2399,6 +2388,123 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     );
   }
 
+  bool _mobileDrawerOpen = false;
+
+  Widget _mobileScaffold() {
+    final sections = _Section.values
+        .where((section) => section != _Section.anime || _showAnimeDestination)
+        .toList();
+    const icons = [
+      Icons.movie_outlined,
+      Icons.tv_rounded,
+      Icons.animation_outlined,
+      Icons.bookmark_border_rounded,
+      Icons.history_rounded,
+      Icons.person_outline_rounded,
+    ];
+    const labels = ['电影', '剧集', '动漫', '收藏', '历史', '我的'];
+    return PopScope<void>(
+      canPop:
+          _mobileDrawerOpen || (!_desktopSearchActive && !_showSourceManager),
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (_showSourceManager) {
+          setState(() => _showSourceManager = false);
+        } else if (_desktopSearchActive) {
+          unawaited(_exitSearch());
+        }
+      },
+      child: CinemaMobileScaffold(
+        onDrawerChanged: (open) => setState(() => _mobileDrawerOpen = open),
+        heading: _showSourceManager
+            ? '片源管理'
+            : _section == _Section.settings
+            ? '我的'
+            : _desktopSearchActive
+            ? '搜索结果'
+            : _heading,
+        selected: _section.name,
+        destinations: [
+          for (final section in sections)
+            CinemaMobileDestination(
+              section.name,
+              labels[section.index],
+              icons[section.index],
+            ),
+        ],
+        onSelect: (id) => unawaited(_selectSection(_Section.values.byName(id))),
+        drawer: _navigation(closeDrawer: true),
+        onBack: _showSourceManager
+            ? () => setState(() => _showSourceManager = false)
+            : null,
+        onHomeDisplay: _openHomeDisplay,
+        onDownloads: () => context.pushNamed(DownloadPage.routePath),
+        onUpdates: () => Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => const NakuUpdatePage(android: true),
+          ),
+        ),
+        search: _isCatalog || _section == _Section.anime
+            ? TextField(
+                key: const ValueKey('mobile-search-field'),
+                controller: _search,
+                textInputAction: TextInputAction.search,
+                onSubmitted: (_) => unawaited(_submitDesktopSearch()),
+                decoration: InputDecoration(
+                  hintText: _section == _Section.anime ? '搜索动漫' : '搜索电影、剧集或演员',
+                  filled: true,
+                  fillColor: const Color(0xFF1B1B1D),
+                  prefixIcon: _desktopSearchActive
+                      ? IconButton(
+                          tooltip: '返回主页',
+                          onPressed: () => unawaited(_exitSearch()),
+                          icon: const Icon(Icons.arrow_back_rounded),
+                        )
+                      : const Icon(Icons.search_rounded),
+                  suffixIcon: IconButton(
+                    tooltip: '搜索',
+                    onPressed: () => unawaited(_submitDesktopSearch()),
+                    icon: const Icon(Icons.arrow_forward_rounded),
+                  ),
+                ),
+              )
+            : null,
+        body: IndexedStack(
+          index: _section == _Section.anime ? 1 : 0,
+          children: [
+            TickerMode(
+              enabled: _section != _Section.anime,
+              child: CinemaScrollNotifications(
+                activity: _scrollActivity,
+                child: _section == _Section.anime
+                    ? const SizedBox.shrink()
+                    : _content(false),
+              ),
+            ),
+            if (_animeOpened)
+              TickerMode(
+                enabled: _section == _Section.anime,
+                child:
+                    widget.animePageBuilder?.call(
+                      context,
+                      _section == _Section.anime,
+                    ) ??
+                    CinemaAnimePage(
+                      searchQuery: _animeSearchQuery,
+                      searchRevision: _animeSearchRevision,
+                      onReturnBrowse: _exitSearch,
+                      initialTab: widget.initialStartup.animeTab.index,
+                      active: _section == _Section.anime,
+                    ),
+              )
+            else
+              const SizedBox.shrink(),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _restoreTVSession() async {
     try {
       await _store.load();
@@ -2458,6 +2564,19 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     } else if (_catalog.searching) {
       await _browse();
     }
+  }
+
+  Future<void> _tvReturnHome() async {
+    _tvSearchFocus.unfocus();
+    _tvQuery.clear();
+    setState(() {
+      _tvSubmittedQuery = '';
+      _tvSearchFilter = 'all';
+    });
+    await _exitSearch();
+    if (!mounted) return;
+    await _tvSelect(_TVDestination.home);
+    _tvHomeFocus.requestFocus();
   }
 
   Future<void> _tvRunSearch() async {
@@ -2855,7 +2974,14 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             style: const TextStyle(fontSize: 20),
             decoration: InputDecoration(
               hintText: '搜索电影、剧集与 NAS',
-              prefixIcon: const Icon(Icons.search),
+              prefixIcon: _tvSubmittedQuery.isNotEmpty
+                  ? IconButton(
+                      key: const ValueKey('tv-exit-search'),
+                      tooltip: '返回主页',
+                      onPressed: _tvReturnHome,
+                      icon: const Icon(Icons.arrow_back_rounded),
+                    )
+                  : const Icon(Icons.search),
             ),
           ),
         ),
@@ -3588,8 +3714,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               key: ValueKey('cinema-destination-${section.name}'),
               autofocus: NakuDevice.isTV && _section == section,
               selected: _section == section,
-              selectedTileColor: CinemaTheme.copper.withValues(alpha: .16),
-              selectedColor: CinemaTheme.copper,
+              selectedTileColor: CinemaTheme.accent.withValues(alpha: .12),
+              selectedColor: CinemaTheme.accent,
               textColor: CinemaTheme.muted,
               iconColor: CinemaTheme.muted,
               shape: RoundedRectangleBorder(
@@ -3639,7 +3765,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             },
           ),
         ),
-        if (Theme.of(context).platform == TargetPlatform.macOS)
+        if (Theme.of(context).platform == TargetPlatform.macOS ||
+            _usesMobileLayout)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
             child: ListTile(
@@ -3780,6 +3907,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                     : CinemaTheme.copper.withValues(alpha: .18),
                 labelStyle: compact
                     ? TextStyle(
+                        fontFamily: CinemaTheme.of(
+                          context,
+                        ).textTheme.bodyMedium?.fontFamily,
                         color: _currentCatalogSort == sort
                             ? CinemaTheme.text
                             : CinemaTheme.muted,
@@ -4023,7 +4153,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (searching)
+                if (searching && !_usesMobileLayout)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 16),
                     child: TextButton.icon(
@@ -4044,7 +4174,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         ),
                       ),
                       const Spacer(),
-                      if (immersive) _catalogStatusMenu(snapshot!),
+                      if (immersive || _usesMobileLayout)
+                        _catalogStatusMenu(snapshot!),
                       Text(
                         '${searchGroups.length} 部作品',
                         style: const TextStyle(
@@ -4061,7 +4192,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                       ),
                     ],
                   ),
-                  if (!immersive) ...[
+                  if (!immersive && !_usesMobileLayout) ...[
                     Text(
                       snapshot!.message,
                       style: const TextStyle(
@@ -4151,7 +4282,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                       ),
                     ],
                   ),
-                if (_searching)
+                if (_searching && !_usesMobileLayout)
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
@@ -4218,7 +4349,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                     ),
                   ),
                 CinemaFilterBar(
-                  compact: immersive,
+                  compact: immersive || _usesMobileLayout,
                   value: _catalog.filters,
                   items: aggregated ? representatives : _items,
                   onChanged: _changeCatalogueFilters,
@@ -4228,7 +4359,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                       ? '聚合目录'
                       : '已加载片源目录',
                 ),
-                if (_showsCatalogSort) _catalogSortControls(compact: immersive),
+                if (_showsCatalogSort)
+                  _catalogSortControls(compact: immersive || _usesMobileLayout),
                 if (_searching) _discoveryResults(),
                 if (_section == _Section.anime && !_searching)
                   Padding(

@@ -17,6 +17,7 @@ import 'package:kazumi/request/core/dio_factory.dart';
 import 'package:kazumi/request/core/network_config.dart';
 import 'cinema_logvar_client.dart';
 import 'cinema_multi_source_danmaku.dart';
+import 'cinema_offline_danmaku.dart';
 import 'package:kazumi/services/platform/logvar_credential_store.dart';
 import 'package:kazumi/services/platform/naku_device.dart';
 import 'cinema_tv_auxiliary.dart';
@@ -188,10 +189,12 @@ class CinemaDanmakuController extends ChangeNotifier {
     this.store,
     String mediaIdentity, {
     this.autoQuery,
+    this.offlineDirectory,
     this.readLogvarConfiguration,
     this.logvarClientFactory,
     this.directClientFactory,
-  }) : _key = sha256.convert(utf8.encode(mediaIdentity)).toString() {
+  }) : _mediaIdentity = mediaIdentity,
+       _key = sha256.convert(utf8.encode(mediaIdentity)).toString() {
     enabled = store.extras['cinemaDanmakuEnabled'] is bool
         ? store.extras['cinemaDanmakuEnabled'] == true
         : store.extras['danmakuAutoMatch'] != false;
@@ -226,6 +229,8 @@ class CinemaDanmakuController extends ChangeNotifier {
   }
   final Player player;
   final CinemaStore store;
+  final String? offlineDirectory;
+  final String _mediaIdentity;
   final CinemaLogvarQuery? autoQuery;
   final Future<LogvarConfiguration?> Function()? readLogvarConfiguration;
   final CinemaLogvarClient Function(LogvarConfiguration)? logvarClientFactory;
@@ -485,7 +490,44 @@ class CinemaDanmakuController extends ChangeNotifier {
   Future<File> _file() async => File(
     '${(await store.subtitleCacheDirectory()).parent.path}/danmaku-v1/$_key.json',
   );
+  Future<void> _loadOffline() async {
+    final snapshot = await CinemaOfflineDanmaku.open(
+      offlineDirectory!,
+      _mediaIdentity,
+    );
+    if (_closed) return;
+    _stopTimeline();
+    _sourceStates.clear();
+    if (snapshot == null) {
+      source = '离线弹幕';
+      matchMessage = '此下载尚未保存弹幕';
+      notifyListeners();
+      return;
+    }
+    _timeline = snapshot.timeline(_selectedSources);
+    _windowed = true;
+    _multiSourceData = true;
+    _windowStart = _windowEnd = 0;
+    for (final item in snapshot.sources.entries) {
+      final status = item.value is Map ? item.value['status'] : null;
+      _sourceStates[item.key] =
+          CinemaDanmakuSourceStatus.values
+              .where((value) => value.name == status)
+              .firstOrNull ??
+          CinemaDanmakuSourceStatus.empty;
+    }
+    source = '离线聚合弹幕';
+    await _ensureWindow(
+      player.state.position.inMilliseconds / 1000 - offset,
+      force: true,
+    );
+  }
+
   Future<void> _restore() async {
+    if (offlineDirectory != null) {
+      await _loadOffline();
+      return;
+    }
     try {
       final file = await _file();
       if (!await file.exists() || await file.length() > maxDanmakuImportBytes) {
@@ -638,6 +680,7 @@ class CinemaDanmakuController extends ChangeNotifier {
   }
 
   Future<void> _save() {
+    if (offlineDirectory != null) return Future.value();
     final text = jsonEncode({
       'source': source,
       'enabled': enabled,
@@ -694,6 +737,10 @@ class CinemaDanmakuController extends ChangeNotifier {
 
   Future<void> loadAutomatic({bool force = false}) async {
     await ready;
+    if (offlineDirectory != null) {
+      if (!_closed && enabled) await _loadOffline();
+      return;
+    }
     final query = matchQuery;
     if (_closed ||
         matching ||

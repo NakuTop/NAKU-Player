@@ -35,16 +35,18 @@ class NakuDiscovery(context: Context, messenger: BinaryMessenger) {
                     }
                     "discover" -> {
                         stopDiscovery()
+                        val attempt = generation
                         val listener=object:NsdManager.DiscoveryListener {
                             override fun onDiscoveryStarted(type:String) {}
-                            override fun onServiceFound(info:NsdServiceInfo) { handler.post { if(info.serviceName.startsWith("Naku-")){pending.add(info);resolveNext()} } }
-                            override fun onServiceLost(info:NsdServiceInfo) { handler.post {channel.invokeMethod("lost",info.serviceName.removePrefix("Naku-"))} }
+                            override fun onServiceFound(info:NsdServiceInfo) { handler.post { if(attempt == generation && info.serviceName.startsWith("Naku-") && pending.none { it.serviceName == info.serviceName }){pending.add(info);resolveNext()} } }
+                            override fun onServiceLost(info:NsdServiceInfo) { handler.post {if(attempt == generation){pending.removeAll { it.serviceName == info.serviceName };channel.invokeMethod("lost",info.serviceName.removePrefix("Naku-"))}} }
                             override fun onDiscoveryStopped(type:String) {}
-                            override fun onStartDiscoveryFailed(type:String,code:Int) { handler.post {channel.invokeMethod("error","无法发现电视：$code")} }
+                            override fun onStartDiscoveryFailed(type:String,code:Int) { handler.post {if(attempt == generation)channel.invokeMethod("error","无法发现电视：$code")} }
                             override fun onStopDiscoveryFailed(type:String,code:Int) {}
                         }
                         discovery=listener;manager.discoverServices("_nakuplay._tcp.",NsdManager.PROTOCOL_DNS_SD,listener);result.success(null)
                     }
+                    "stopDiscovery" -> {stopDiscovery();result.success(null)}
                     "stop" -> {stopDiscovery();registration?.let {manager.unregisterService(it)};registration=null;result.success(null)}
                     else -> result.notImplemented()
                 }

@@ -85,6 +85,8 @@ import 'cinema_repository.dart';
 import 'cinema_store.dart';
 import 'cinema_player_preferences.dart';
 import 'cinema_video_gestures.dart';
+import 'cinema_mobile_gestures.dart';
+import 'cinema_mobile_video_controls.dart';
 import 'cinema_player_entrance.dart';
 import 'cinema_player_poster_light.dart';
 import 'cinema_tv_player_controls.dart';
@@ -308,10 +310,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   static const _line = CinemaTheme.border;
   static const _text = CinemaTheme.text;
   static const _muted = CinemaTheme.muted;
+  bool get _usesMobileControls =>
+      widget.mobileControls ??
+      (!NakuDevice.isTV && (Platform.isAndroid || Platform.isIOS));
   bool get _refinedPalette =>
-      Theme.of(context).platform == TargetPlatform.macOS && !NakuDevice.isTV;
+      CinemaTheme.usesRefinedControls(Theme.of(context).platform);
   Color get _copper => CinemaTheme.of(context).colorScheme.primary;
 
+  final _mobileControlsToggle = ValueNotifier<int>(0);
   final _resolver = WebViewVideoSourceService();
   final _health = CinemaSourceHealth.instance;
   late final _cache = widget.mediaCache ?? CinemaMediaCache.instance;
@@ -1794,6 +1800,22 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           }
         },
       );
+      candidate.mobileHold = CinemaMobileHoldRate(
+        isPlaying: () =>
+            identical(_playback, candidate) &&
+            !_loading &&
+            !_closing &&
+            candidate.player.state.playing,
+        readRate: () => candidate.player.state.rate,
+        rate: _preferences.longPressRate < 2 ? 2 : _preferences.longPressRate,
+        setRate: (rate) async {
+          if (identical(_playback, candidate)) {
+            await _setRate(rate, temporary: true);
+          } else {
+            await candidate.player.setRate(rate);
+          }
+        },
+      );
       final subtitlePlaybackRevision = candidate.manualPlaybackRevision;
       candidate.nasSession = pendingNAS;
       if (widget.createPlayer == null) {
@@ -1801,6 +1823,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           candidate.player,
           widget.store,
           '${selectedTitle.key}|${episode.url}',
+          offlineDirectory: localFile == null
+              ? null
+              : File(localFile).parent.path,
           autoQuery: CinemaLogvarQuery.parse(
             selectedTitle.title,
             category: selectedTitle.category,
@@ -2658,6 +2683,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       '弹幕': () => unawaited(_showDanmaku()),
       '播放倍速': _showSpeedOptions,
       '线路 / 选集': _showEpisodes,
+      if (Platform.isAndroid && !NakuDevice.isTV && widget.offlinePaths == null)
+        '发送到电视': () => unawaited(
+          showCinemaCast(
+            context,
+            title: _title,
+            source: _source,
+            road: _routeIndex,
+            episode: _episodeIndex,
+            position: _playback?.position.inSeconds ?? 0,
+          ),
+        ),
       if (_hasNext) '下一集': () => _changeEpisode(1),
       if (_episodeIndex > 0) '上一集': () => _changeEpisode(-1),
       '画中画': () => unawaited(_togglePip()),
@@ -2983,6 +3019,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _syncTVActivity();
       }),
       playback.player.stream.playing.listen((playing) {
+        if (!playing) unawaited(playback.mobileHold?.release());
         if (!current()) return;
         playback.watchdog.reset();
         _syncPauseCache(playback);
@@ -3911,6 +3948,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Future<void> _setRate(double rate, {bool temporary = false}) async {
     final playback = _playback;
     if (playback == null) return;
+    if (!temporary) await playback.mobileHold?.release();
     try {
       _cancelTVBackground('播放速度已变化', reset: true);
       await playback.player.setRate(rate);
@@ -4172,6 +4210,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) {
+      unawaited(_playback?.mobileHold?.release());
       _stopEntranceSound();
       _cancelTVBackground('应用已离开前台', reset: true);
     }
@@ -4231,6 +4270,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   @override
   void dispose() {
+    _mobileControlsToggle.dispose();
     _cache.removeListener(_pauseCachePreferencesChanged);
     if (Platform.isMacOS) {
       MacOSPlaybackPower.instance.removeListener(_pauseCachePreferencesChanged);
@@ -4305,8 +4345,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         ? _allowPlayerPop
         : NakuDevice.isTV
         ? _allowPlayerPop
-        : true,
+        : !(_usesMobileControls && _fullscreen),
     onPopInvokedWithResult: (didPop, _) {
+      if (!didPop && _usesMobileControls && _fullscreen) {
+        unawaited(_toggleFullscreen());
+        return;
+      }
       if (!didPop && _usesMacCinemaLayout && !_allowPlayerPop) {
         unawaited(_leave());
         return;
@@ -4921,14 +4965,52 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     );
   }
 
+  Widget _videoGestures(
+    _CinemaPlayback playback,
+    bool mobile, {
+    required Widget child,
+  }) {
+    void toggle() {
+      if (!_loading && !_closing) unawaited(_togglePlayback());
+    }
+
+    if (mobile && !_androidPip) {
+      return CinemaMobileGestures(
+        key: ValueKey(playback),
+        controlsInsets: EdgeInsets.only(
+          top: 44 + (_fullscreen ? MediaQuery.paddingOf(context).top : 0),
+          bottom: 90 + (_fullscreen ? MediaQuery.paddingOf(context).bottom : 0),
+        ),
+        onTap: () => _mobileControlsToggle.value++,
+        onTogglePlayback: toggle,
+        onSeek: _seekBy,
+        onHoldStart: () => playback.mobileHold?.start() ?? false,
+        onHoldEnd: () => unawaited(playback.mobileHold?.release()),
+        holdLabel:
+            '${_preferences.longPressRate < 2 ? 2 : _preferences.longPressRate}×',
+        child: child,
+      );
+    }
+    return CinemaVideoGestures(
+      controlsInsets: EdgeInsets.only(
+        top: _pip ? 0 : 52,
+        bottom: _pip ? 48 : 108,
+      ),
+      onTogglePlayback: toggle,
+      onToggleFullscreen: () => unawaited(_toggleFullscreen()),
+      onWindowDrag: _usesMacCinemaLayout && !_fullscreen
+          ? () => unawaited(windowManager.startDragging())
+          : null,
+      child: child,
+    );
+  }
+
   Widget _videoSurface() => LayoutBuilder(
     key: _videoSurfaceKey,
     builder: (context, constraints) {
       final wide = constraints.maxWidth >= 850;
       final nativeCinema = (_usesMacCinemaLayout || NakuDevice.isTV) && !_pip;
-      final mobile =
-          widget.mobileControls ??
-          (!NakuDevice.isTV && (Platform.isAndroid || Platform.isIOS));
+      final mobile = _usesMobileControls;
       final playback = _playback;
       final entranceGeneration = _generation;
       if (nativeCinema && playback != null) _observeNativeFirstFrame(playback);
@@ -4986,7 +5068,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             : [
                 IconButton(
                   tooltip: '返回',
-                  onPressed: _leave,
+                  onPressed: mobile && _fullscreen ? _toggleFullscreen : _leave,
                   icon: const Icon(Icons.arrow_back_rounded),
                 ),
                 Expanded(
@@ -4997,6 +5079,18 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                     style: const TextStyle(fontSize: 14, color: Colors.white),
                   ),
                 ),
+                if (mobile) ...[
+                  IconButton(
+                    tooltip: '线路与选集',
+                    onPressed: _showEpisodes,
+                    icon: const Icon(Icons.video_library_outlined, size: 21),
+                  ),
+                  IconButton(
+                    tooltip: '弹幕',
+                    onPressed: _showDanmaku,
+                    icon: const Icon(Icons.comment_outlined, size: 21),
+                  ),
+                ],
                 if (mobile)
                   IconButton(
                     tooltip: '播放工具',
@@ -5027,6 +5121,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                         fullscreen: _fullscreen,
                         position: _time(position.data ?? Duration.zero),
                         duration: _time(playback?.duration ?? Duration.zero),
+                        resolution:
+                            (playback?.width ?? 0) > 0 &&
+                                (playback?.height ?? 0) > 0
+                            ? '${playback!.width} × ${playback.height}'
+                            : '',
                         onBackward: playback == null
                             ? null
                             : () => _seekBy(-_preferences.buttonSkipSeconds),
@@ -5442,21 +5541,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   fit: StackFit.expand,
                   children: [
                     if (playback != null)
-                      CinemaVideoGestures(
-                        controlsInsets: EdgeInsets.only(
-                          top: _pip ? 0 : 52,
-                          bottom: _pip ? 48 : 108,
-                        ),
-                        onTogglePlayback: () {
-                          if (!_loading && !_closing) {
-                            unawaited(_togglePlayback());
-                          }
-                        },
-                        onToggleFullscreen: () =>
-                            unawaited(_toggleFullscreen()),
-                        onWindowDrag: _usesMacCinemaLayout && !_fullscreen
-                            ? () => unawaited(windowManager.startDragging())
-                            : null,
+                      _videoGestures(
+                        playback,
+                        mobile,
                         child: MaterialDesktopVideoControlsTheme(
                           normal: controlsTheme,
                           fullscreen: controlsTheme,
@@ -5492,6 +5579,20 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                             .frameAspectRatio,
                                         controls: NakuDevice.isTV || _androidPip
                                             ? NoVideoControls
+                                            : mobile
+                                            ? (_) => SafeArea(
+                                                child: CinemaMobileVideoControls(
+                                                  player: playback.player,
+                                                  toggle: _mobileControlsToggle,
+                                                  topBar: controlsTheme
+                                                      .topButtonBar,
+                                                  bottomBar: controlsTheme
+                                                      .bottomButtonBar,
+                                                  onSeek: _seekTo,
+                                                  hideAfter: _preferences
+                                                      .controlsHoverDuration,
+                                                ),
+                                              )
                                             : MaterialDesktopVideoControls,
                                         subtitleViewConfiguration:
                                             CinemaSubtitleAppearance.from(
@@ -5834,6 +5935,24 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       child: Text(_rate == 1 ? '倍速' : '$_rate×'),
     ),
   );
+
+  void _seekTo(Duration position) {
+    final playback = _playback;
+    if (playback == null || !playback.ready) return;
+    playback.watchdog.reset();
+    _cancelTVBackground('用户正在定位播放进度', reset: true);
+    playback.danmaku?.prepareForSeek();
+    unawaited(
+      playback.player.seek(
+        Duration(
+          milliseconds: position.inMilliseconds.clamp(
+            0,
+            playback.duration.inMilliseconds,
+          ),
+        ),
+      ),
+    );
+  }
 
   void _seekBy(int seconds) {
     final playback = _playback;
@@ -6327,6 +6446,7 @@ class _CinemaPlayback {
   late final liveSubtitles = CinemaLiveSubtitles(player);
   late final bufferMonitor = CinemaBufferMonitor(player);
   CinemaKeyboardTransport? keyboardTransport;
+  CinemaMobileHoldRate? mobileHold;
   CinemaSeasonSubtitleController? subtitles;
   CinemaSubtitleAutoSync? subtitleAutoSync;
   CinemaDanmakuController? danmaku;
@@ -6404,6 +6524,7 @@ class _CinemaPlayback {
         // Release below still closes a terminal MediaCodec error.
       }
     }
+    await mobileHold?.close();
     await keyboardTransport?.close();
     try {
       await subtitles?.flush();

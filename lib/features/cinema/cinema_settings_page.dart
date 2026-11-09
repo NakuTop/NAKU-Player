@@ -45,11 +45,12 @@ class CinemaSettingsPage extends StatelessWidget {
       final width = (constraints.maxWidth - inset * 2).clamp(0.0, 1080.0);
       final twoColumns = width >= 900;
       final columnWidth = twoColumns ? (width - 20) / 2 : width;
-      final refined =
+      final desktopRefined =
           (platform ?? Theme.of(context).platform) == TargetPlatform.macOS &&
           constraints.maxWidth >= 800;
       final android =
           (platform ?? defaultTargetPlatform) == TargetPlatform.android;
+      final refined = desktopRefined || android;
       void openRoute(String route) {
         final callback = onOpenRoute;
         if (callback != null) {
@@ -59,7 +60,7 @@ class CinemaSettingsPage extends StatelessWidget {
         }
       }
 
-      if (refined) {
+      if (desktopRefined) {
         return _desktopSettings(
           context,
           width: width.toDouble(),
@@ -483,7 +484,7 @@ class CinemaSettingsPage extends StatelessWidget {
         icon,
         color: compact || Theme.of(context).platform == TargetPlatform.macOS
             ? CinemaTheme.muted
-            : CinemaTheme.copper,
+            : CinemaTheme.accent,
         size: compact ? 19 : 23,
       ),
       title: Text(

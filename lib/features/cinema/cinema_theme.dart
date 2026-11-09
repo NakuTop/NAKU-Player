@@ -18,19 +18,23 @@ abstract final class CinemaTheme {
   static Color backgroundFor(CinemaAppearance appearance) =>
       const Color(0xFF09090B).withValues(
         alpha:
-            NakuDevice.isTV || defaultTargetPlatform == TargetPlatform.windows
+            NakuDevice.isTV ||
+                defaultTargetPlatform == TargetPlatform.windows ||
+                defaultTargetPlatform == TargetPlatform.android
             ? 1
             : appearance.effectiveBackgroundOpacity,
       );
   static Color surfaceFor(CinemaAppearance appearance) =>
       const Color(0xFF1B1B1D).withValues(
-        alpha: NakuDevice.isTV
+        alpha:
+            NakuDevice.isTV || defaultTargetPlatform == TargetPlatform.android
             ? 1
             : _panelAlpha(appearance.effectiveBackgroundOpacity, .38, .56),
       );
   static Color raisedFor(CinemaAppearance appearance) =>
       const Color(0xFF242426).withValues(
-        alpha: NakuDevice.isTV
+        alpha:
+            NakuDevice.isTV || defaultTargetPlatform == TargetPlatform.android
             ? 1
             : _panelAlpha(appearance.effectiveBackgroundOpacity, .30, .68),
       );
@@ -42,8 +46,10 @@ abstract final class CinemaTheme {
   static const controlTint = Color(0xFFE3E7ED);
   static const selectionFill = Color(0x1FFFFFFF);
   static const controlInk = Color(0xFF17191E);
-  static bool get refinedControls =>
-      defaultTargetPlatform == TargetPlatform.macOS && !NakuDevice.isTV;
+  static bool usesRefinedControls(TargetPlatform platform) =>
+      !NakuDevice.isTV &&
+      (platform == TargetPlatform.macOS || platform == TargetPlatform.android);
+  static bool get refinedControls => usesRefinedControls(defaultTargetPlatform);
   static Color get accent => refinedControls ? controlTint : copper;
   static const text = Color(0xFFF5F5F7);
   static const muted = Color(0xFFB3B0B5);
@@ -73,9 +79,7 @@ abstract final class CinemaTheme {
   /// local Theme. Capture a complete cinema theme before pushing that route.
   static ThemeData panelDataFor(BuildContext context) {
     final inherited = Theme.of(context);
-    return inherited.platform == TargetPlatform.macOS && !NakuDevice.isTV
-        ? of(context)
-        : inherited;
+    return usesRefinedControls(inherited.platform) ? of(context) : inherited;
   }
 
   static ThemeData dataFor(
@@ -85,7 +89,7 @@ abstract final class CinemaTheme {
     final opacity = appearance.effectiveBackgroundOpacity;
     final fontFamily = _fontFamily;
     platform ??= defaultTargetPlatform;
-    final refined = platform == TargetPlatform.macOS && !NakuDevice.isTV;
+    final refined = usesRefinedControls(platform);
     final accent = refined ? controlTint : copper;
     if (_cached != null &&
         _cachedOpacity == opacity &&
@@ -205,7 +209,7 @@ abstract final class CinemaTheme {
         elevation: NakuDevice.isTV ? 0 : 8,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
-      tabBarTheme: platform == TargetPlatform.macOS
+      tabBarTheme: refined
           ? TabBarThemeData(
               labelColor: text,
               unselectedLabelColor: muted,
@@ -223,7 +227,7 @@ abstract final class CinemaTheme {
               unselectedLabelStyle: const TextStyle(fontSize: 13),
             )
           : null,
-      segmentedButtonTheme: platform == TargetPlatform.macOS
+      segmentedButtonTheme: refined
           ? SegmentedButtonThemeData(
               style: ButtonStyle(
                 side: const WidgetStatePropertyAll(BorderSide.none),
