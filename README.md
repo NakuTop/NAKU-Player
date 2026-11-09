@@ -55,7 +55,7 @@ Android 手机和 TV 使用独立包名与更新源，各自覆盖安装保留�
 
 ### Windows
 
-Windows x64 安装包由 `scripts/build_windows_installer.ps1` 生成，包含播放器和 C++ 运行库，默认安装到当前用户的本地 Programs 目录。Windows 3.1.10（115）支持 NAS 账号 / 扫码登录、会话恢复及影视库，凭据由 Windows DPAPI 加密保存；原生最小化、最大化 / 还原和关闭按钮始终显示。此前 Windows 版本的 NAS 登录和窗口按钮已通过用户验收；本次构建的验证记录见 Windows 构建说明。
+Windows x64 安装包由 `scripts/build_windows_installer.ps1` 生成，包含播放器和 C++ 运行库，默认安装到当前用户的本地 Programs 目录。Windows 3.1.10（115）支持 NAS 账号 / 扫码登录、会话恢复及影视库，凭据由 Windows DPAPI 加密保存；原生最小化、最大化 / 还原和关闭按钮始终显示。此前 Windows 版本的 NAS 登录和窗口按钮已通过用户验收；本次构建的验证记录见 [Windows 3.1.10 发行页](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.1.10-windows)。
 
 构建环境、测试命令及平台差异见 [Windows 构建说明](docs/WINDOWS_BUILD.md)。此构建未做商业代码签名；macOS Sparkle 更新与 AppKit 磨砂不适用于 Windows，当前网页影院的内嵌网页组件尚未提供 Windows 实现。
 
