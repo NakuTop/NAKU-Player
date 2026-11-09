@@ -16,3 +16,13 @@ subprojects {
 tasks.register("clean", Delete) {
     delete rootProject.buildDir
 }
+
+// integration_test declares runner 1.2+. Pin the already validated artifact so
+// release packaging does not query dynamic-version metadata on Flutter mirrors.
+subprojects { subproject ->
+    if (subproject.name == 'integration_test') {
+        subproject.configurations.configureEach {
+            resolutionStrategy.force 'androidx.test:runner:1.3.0'
+        }
+    }
+}

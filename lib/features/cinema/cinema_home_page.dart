@@ -388,6 +388,10 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         routeIndex: road,
                         episodeIndex: episode,
                         initialPositionSeconds: position,
+                        // The phone has already selected this route. Open it
+                        // immediately; probing first would delay LAN handoff.
+                        autoSelectBestRoute: false,
+                        manualRouteSelection: true,
                       ),
                     ),
                   ),
