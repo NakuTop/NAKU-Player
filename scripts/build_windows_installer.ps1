@@ -7,6 +7,10 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
 Push-Location $root
 try {
+  $versionMatch = [regex]::Match((Get-Content 'pubspec.yaml' -Raw), '(?m)^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$')
+  if (!$versionMatch.Success) { throw 'pubspec.yaml must declare version x.y.z+build' }
+  $appVersion = $versionMatch.Groups[1].Value
+  $appBuild = $versionMatch.Groups[2].Value
   & $Flutter pub get
   if ($LASTEXITCODE) { throw 'Flutter dependency resolution failed' }
   & $Flutter build windows --release --no-pub
@@ -21,7 +25,7 @@ try {
   Copy-Item (Join-Path $crt '*.dll') 'build/windows/x64/runner/Release' -Force
   New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
   $absoluteOutput = (Resolve-Path $OutputDirectory).Path
-  & $ISCC "/DOutputDir=$absoluteOutput" 'windows/installer.iss'
+  & $ISCC "/DOutputDir=$absoluteOutput" "/DAppVersion=$appVersion" "/DAppBuild=$appBuild" 'windows/installer.iss'
   if ($LASTEXITCODE) { throw 'Installer compilation failed' }
   Get-ChildItem $absoluteOutput -Filter '*.exe' | Get-FileHash -Algorithm SHA256
 } finally {

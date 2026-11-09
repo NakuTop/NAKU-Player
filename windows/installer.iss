@@ -1,12 +1,18 @@
 #ifndef OutputDir
   #define OutputDir "..\..\..\outputs"
 #endif
-#define AppVersion "2.8.4.59"
+#ifndef AppVersion
+  #error AppVersion must be supplied by build_windows_installer.ps1
+#endif
+#ifndef AppBuild
+  #error AppBuild must be supplied by build_windows_installer.ps1
+#endif
 
 [Setup]
 AppId={{2670CB6A-08AD-4B01-8A9E-AE241ED4B38A}
 AppName=NAKU Player
 AppVersion={#AppVersion}
+VersionInfoVersion={#AppVersion}.{#AppBuild}
 AppPublisher=NakuTop
 AppPublisherURL=https://github.com/NakuTop/NAKU-Player
 AppSupportURL=https://github.com/NakuTop/NAKU-Player/issues

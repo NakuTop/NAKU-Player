@@ -1,0 +1,47 @@
+name: Windows release build
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/macos-3.1.0]
+    paths:
+      - '.github/workflows/windows-release.yml'
+      - 'scripts/build_windows_installer.ps1'
+      - 'scripts/prepare_windows_asr.ps1'
+      - 'windows/**'
+      - 'pubspec.*'
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.6'
+          cache: true
+      - name: Resolve dependencies
+        run: flutter pub get
+      - name: Shared playback and library regressions
+        run: flutter test --no-pub test/features/cinema/windows_playback_policy_test.dart test/features/cinema/cinema_aggregated_search_test.dart test/features/cinema/cinema_library_identity_test.dart test/features/cinema/cinema_multi_source_danmaku_test.dart test/features/cinema/cinema_movie_versions_test.dart
+      - name: Build installer with bundled runtime
+        shell: pwsh
+        run: ./scripts/build_windows_installer.ps1
+      - name: Verify executable version and package portable app
+        shell: pwsh
+        run: |
+          $version = [regex]::Match((Get-Content pubspec.yaml -Raw), '(?m)^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$')
+          $exe = Get-Item build/windows/x64/runner/Release/NAKUPlayer.exe
+          $expected = "$($version.Groups[1].Value).$($version.Groups[2].Value)"
+          if ($exe.VersionInfo.FileVersion -ne $expected) { throw "Executable version mismatch: $($exe.VersionInfo.FileVersion) / $expected" }
+          $required = @('flutter_windows.dll','data/icudtl.dat','ai-runtime/whisper-server.exe','ai-runtime/ggml-base.bin')
+          foreach ($name in $required) { if (!(Test-Path "build/windows/x64/runner/Release/$name")) { throw "Missing runtime $name" } }
+          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath "dist/windows/NAKUPlayer-$($version.Groups[1].Value)-Windows-x64-portable.zip"
+          Get-ChildItem dist/windows -File | ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Set-Content -Encoding utf8 dist/windows/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NAKUPlayer-Windows-x64
+          path: dist/windows/
+          if-no-files-found: error
+          retention-days: 14
