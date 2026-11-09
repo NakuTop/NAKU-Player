@@ -57,7 +57,8 @@ jobs:
           $version = [regex]::Match((Get-Content pubspec.yaml -Raw), '(?m)^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$')
           $exe = Get-Item build/windows/x64/runner/Release/NAKUPlayer.exe
           $expected = "$($version.Groups[1].Value).$($version.Groups[2].Value)"
-          if ($exe.VersionInfo.FileVersion -ne $expected) { throw "Executable version mismatch: $($exe.VersionInfo.FileVersion) / $expected" }
+          $actual = '{0}.{1}.{2}.{3}' -f $exe.VersionInfo.FileMajorPart,$exe.VersionInfo.FileMinorPart,$exe.VersionInfo.FileBuildPart,$exe.VersionInfo.FilePrivatePart
+          if ($actual -ne $expected) { throw "Executable version mismatch: $actual / $expected" }
           $required = @('flutter_windows.dll','data/icudtl.dat','ai-runtime/whisper-server.exe','ai-runtime/ggml-base.bin')
           foreach ($name in $required) { if (!(Test-Path "build/windows/x64/runner/Release/$name")) { throw "Missing runtime $name" } }
           Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath "dist/windows/NAKUPlayer-$($version.Groups[1].Value)-Windows-x64-portable.zip"
