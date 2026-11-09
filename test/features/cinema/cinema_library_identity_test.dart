@@ -489,7 +489,7 @@ void main() {
           .where(
             (f) =>
                 f.path.contains('.pre-work-dedup-v1.') &&
-                f.path != oldBackup.path,
+                !FileSystemEntity.identicalSync(f.path, oldBackup.path),
           )
           .toList();
       expect(backups, hasLength(1));

@@ -8,6 +8,8 @@ on:
       - 'scripts/build_windows_installer.ps1'
       - 'scripts/prepare_windows_asr.ps1'
       - 'windows/**'
+      - 'lib/**'
+      - 'test/features/cinema/**'
       - 'pubspec.*'
 permissions:
   contents: read
@@ -63,6 +65,10 @@ jobs:
       - name: Smoke test silent install and application startup
         shell: pwsh
         run: |
+          foreach ($name in @('AudioEndpointBuilder','Audiosrv')) {
+            Set-Service -Name $name -StartupType Manual
+            Start-Service -Name $name
+          }
           $setup = Get-ChildItem dist/windows/*-Setup.exe | Select-Object -First 1
           $installDir = Join-Path $env:RUNNER_TEMP 'naku-install-smoke'
           $install = Start-Process -FilePath $setup.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$installDir") -Wait -PassThru
