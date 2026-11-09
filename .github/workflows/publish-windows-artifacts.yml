@@ -1,4 +1,4 @@
-name: Publish verified Windows 3.1.10 artifacts
+name: Publish verified Windows 3.2.0 artifacts
 on:
   workflow_dispatch:
   push:
@@ -17,19 +17,20 @@ jobs:
     steps:
       - name: Verify completed build and draft target
         run: |
-          gh api repos/NakuTop/NAKU-Player/actions/runs/42611980671 > run.json
-          gh release view v3.1.10-windows --json isDraft,targetCommitish > release.json
+          gh run watch 42628602203 --exit-status --interval 15
+          gh api repos/NakuTop/NAKU-Player/actions/runs/42628602203 > run.json
+          gh release view v3.2.0-windows --json isDraft,targetCommitish > release.json
           python3 - <<'PY'
           import json
           run=json.load(open('run.json')); release=json.load(open('release.json'))
-          sha='a97ceef2b5b61e91608bec9ea39031cbb646777c'
+          sha='e610071a77df6260fb95d044c41fa6e8be908612'
           assert run['conclusion']=='success' and run['head_sha']==sha
           assert release['isDraft'] and release['targetCommitish']==sha
           PY
       - uses: actions/download-artifact@v4
         with:
           name: NAKUPlayer-Windows-x64
-          run-id: 42611980671
+          run-id: 42628602203
           github-token: ${{ github.token }}
           repository: NakuTop/NAKU-Player
           path: release
@@ -37,8 +38,8 @@ jobs:
         working-directory: release
         run: |
           tr -d '\r' < SHA256SUMS | sha256sum --check
-          gh release upload v3.1.10-windows NAKUPlayer-3.1.10-Windows-x64-Setup.exe NAKUPlayer-3.1.10-Windows-x64-portable.zip --clobber
-          gh release view v3.1.10-windows --json assets > uploaded.json
+          gh release upload v3.2.0-windows NAKUPlayer-3.2.0-Windows-x64-Setup.exe NAKUPlayer-3.2.0-Windows-x64-portable.zip SHA256SUMS --clobber
+          gh release view v3.2.0-windows --json assets > uploaded.json
           python3 - <<'PY'
           import json
           assets={a['name']:a for a in json.load(open('uploaded.json'))['assets']}
@@ -46,4 +47,4 @@ jobs:
             sha,name=row.split(); a=assets[name]
             assert a['state']=='uploaded' and a['digest']=='sha256:'+sha, name
           PY
-          gh release edit v3.1.10-windows --draft=false --latest=false
+          gh release edit v3.2.0-windows --draft=false --latest=false
