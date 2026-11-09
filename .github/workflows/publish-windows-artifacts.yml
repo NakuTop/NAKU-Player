@@ -1,0 +1,49 @@
+name: Publish verified Windows 3.1.10 artifacts
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/macos-3.1.0]
+    paths: ['.github/workflows/publish-windows-artifacts.yml']
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: NakuTop/NAKU-Player
+    steps:
+      - name: Verify completed build and draft target
+        run: |
+          gh api repos/NakuTop/NAKU-Player/actions/runs/42611980671 > run.json
+          gh release view v3.1.10-windows --json isDraft,targetCommitish > release.json
+          python3 - <<'PY'
+          import json
+          run=json.load(open('run.json')); release=json.load(open('release.json'))
+          sha='a97ceef2b5b61e91608bec9ea39031cbb646777c'
+          assert run['conclusion']=='success' and run['head_sha']==sha
+          assert release['isDraft'] and release['targetCommitish']==sha
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: NAKUPlayer-Windows-x64
+          run-id: 42611980671
+          github-token: ${{ github.token }}
+          repository: NakuTop/NAKU-Player
+          path: release
+      - name: Verify and upload exact compiled packages
+        working-directory: release
+        run: |
+          tr -d '\r' < SHA256SUMS | sha256sum --check
+          gh release upload v3.1.10-windows NAKUPlayer-3.1.10-Windows-x64-Setup.exe NAKUPlayer-3.1.10-Windows-x64-portable.zip --clobber
+          gh release view v3.1.10-windows --json assets > uploaded.json
+          python3 - <<'PY'
+          import json
+          assets={a['name']:a for a in json.load(open('uploaded.json'))['assets']}
+          for row in open('SHA256SUMS',encoding='utf-8-sig'):
+            sha,name=row.split(); a=assets[name]
+            assert a['state']=='uploaded' and a['digest']=='sha256:'+sha, name
+          PY
+          gh release edit v3.1.10-windows --draft=false --latest=false
