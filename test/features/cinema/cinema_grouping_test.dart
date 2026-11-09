@@ -20,7 +20,7 @@ CinemaTitle _title(
 
 void main() {
   test(
-    'explicit source placement comes first without changing ordinary quality order',
+    'user source order outranks a later source quality label',
     () {
       final ordinary = _title('jl', source: 'juliang');
       final high = _title('4k', source: 'other', name: '星际穿越4K');
@@ -31,8 +31,7 @@ void main() {
       expect(
         orderCinemaVariants(
           [high, ordinary],
-          ['other', 'juliang'],
-          firstSourceId: 'juliang',
+          ['juliang', 'other'],
         ),
         [ordinary, high],
       );

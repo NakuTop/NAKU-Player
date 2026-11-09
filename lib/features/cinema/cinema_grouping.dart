@@ -1,3 +1,4 @@
+import 'cinema_movie_versions.dart';
 import 'cinema_models.dart';
 import 'cinema_media_identity.dart';
 import 'cinema_seasons.dart';
@@ -265,41 +266,30 @@ int? _year(String text, _Kind kind) {
   return last == null || last >= first ? first : null;
 }
 
-/// Prefer labelled 4K editions, then stable source priority. Playback still
-/// probes the actual stream; a catalogue label is not a resolution guarantee.
-/// Provider route and episode order are never changed.
+/// User source order comes first; editions within that source use quality labels.
 List<CinemaTitle> orderCinemaVariants(
   Iterable<CinemaTitle> values,
-  Iterable<String> ids, {
-  String? firstSourceId,
-}) {
+  Iterable<String> ids,
+) {
   final priority = <String, int>{};
   for (final id in ids) {
     priority.putIfAbsent(id, () => priority.length);
   }
   final entries = values.toList().indexed.toList()
     ..sort((a, b) {
-      if (firstSourceId != null) {
-        final first = (b.$2.sourceId == firstSourceId ? 1 : 0).compareTo(
-          a.$2.sourceId == firstSourceId ? 1 : 0,
-        );
-        if (first != 0) return first;
-      }
+      final source = (priority[a.$2.sourceId] ?? priority.length).compareTo(
+        priority[b.$2.sourceId] ?? priority.length,
+      );
+      if (source != 0) return source;
       final quality = cinemaVariantQuality(
         b.$2,
       ).compareTo(cinemaVariantQuality(a.$2));
-      if (quality != 0) return quality;
-      final compared = (priority[a.$2.sourceId] ?? priority.length).compareTo(
-        priority[b.$2.sourceId] ?? priority.length,
-      );
-      return compared == 0 ? a.$1.compareTo(b.$1) : compared;
+      return quality == 0 ? a.$1.compareTo(b.$1) : quality;
     });
   return entries.map((e) => e.$2).toList();
 }
 
 int cinemaVariantQuality(CinemaTitle title) =>
     title.sourceId == 'douban-discovery'
-    ? -1
-    : cinemaIs4KLabel('${title.title} ${title.remarks} ${title.category}')
-    ? 1
-    : 0;
+    ? -100
+    : cinemaVersionQuality('${title.title} ${title.remarks} ${title.category}');

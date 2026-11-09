@@ -1,155 +1,73 @@
-import 'dart:async';
-import 'package:dio/dio.dart';
-import 'package:kazumi/services/video_source/video_source_format.dart';
-import 'cinema_grouping.dart';
-import 'cinema_models.dart';
 import 'cinema_media_transport.dart';
 import 'cinema_playback_candidates.dart';
 import 'cinema_route_probe.dart';
 
-bool cinemaPrefersSource(CinemaSource source) =>
-    source.kind == CinemaSourceKind.maccms &&
-    (source.id == 'maccms-juliang' ||
-        Uri.tryParse(source.url)?.host.toLowerCase() == 'api.juliang.live');
-
-/// Default catalogue placement only; this does not rank measured media reads.
-String? cinemaJuliangSourceId(Iterable<CinemaSource> sources) => sources
-    .where((source) => source.enabled && cinemaPrefersSource(source))
-    .firstOrNull
-    ?.id;
-
-/// These are the provider's two real playback endpoints, not two API hosts.
-bool cinemaPreferredEndpoint(CinemaPlaybackCandidate candidate) =>
-    cinemaPrefersSource(candidate.source) &&
-    const {
-      'jlm3u8',
-      'jlplayer',
-    }.contains(candidate.route.name.trim().toLowerCase());
-
-List<CinemaPlaybackCandidate> cinemaPreferredEndpoints(
-  Iterable<CinemaPlaybackCandidate> candidates,
+int _quality(
+  CinemaPlaybackCandidate candidate,
+  CinemaMediaProbeResult? result,
 ) {
-  final choices = candidates.where(cinemaPreferredEndpoint).toList();
-  if (choices.isEmpty) return const [];
-  // Ordinary/4K variants stay separate source records. Choose the strongest
-  // catalogue variant before comparing its two endpoints, not another source.
-  var title = choices.first.title;
-  for (final candidate in choices.skip(1)) {
-    if (cinemaVariantQuality(candidate.title) > cinemaVariantQuality(title)) {
-      title = candidate.title;
-    }
-  }
-  final seen = <String>{};
-  return choices
-      .where(
-        (c) =>
-            c.title.key == title.key &&
-            seen.add(c.route.name.trim().toLowerCase()),
-      )
-      .take(2)
-      .toList();
+  if (cinemaCandidateQuality(candidate) < 0)
+    return cinemaCandidateQuality(candidate);
+  if ((result?.height ?? 0) > 0) return result!.height!;
+  return switch (cinemaCandidateQuality(candidate)) {
+    5 => 4320,
+    4 => 2160,
+    3 => 1080,
+    2 => 720,
+    1 => 480,
+    final value => value,
+  };
+}
+
+/// Source order, then resolution, then speed. Labels are only a fallback when
+/// the actual video dimensions are not yet available.
+CinemaPlaybackCandidate? cinemaRecommendedCandidate(
+  Iterable<CinemaPlaybackCandidate> candidates, {
+  required Iterable<String> sourceOrder,
+  Map<String, CinemaMediaProbeResult> results = const {},
+  bool Function(CinemaMediaProbeResult)? supported,
+}) {
+  final priority = {
+    for (final entry in sourceOrder.toList().indexed) entry.$2: entry.$1,
+  };
+  final available =
+      candidates
+          .where((c) {
+            final result = results[c.key];
+            return result == null ||
+                result.ok && (supported?.call(result) ?? true);
+          })
+          .toList()
+          .indexed
+          .toList()
+        ..sort((a, b) {
+          final source = (priority[a.$2.source.id] ?? priority.length)
+              .compareTo(priority[b.$2.source.id] ?? priority.length);
+          if (source != 0) return source;
+          final ar = results[a.$2.key], br = results[b.$2.key];
+          final quality = _quality(b.$2, br).compareTo(_quality(a.$2, ar));
+          if (quality != 0) return quality;
+          final speed = (br?.mbps ?? 0).compareTo(ar?.mbps ?? 0);
+          if (speed != 0) return speed;
+          final latency = (ar?.firstByteMs ?? 1000000).compareTo(
+            br?.firstByteMs ?? 1000000,
+          );
+          return latency != 0 ? latency : a.$1.compareTo(b.$1);
+        });
+  return available.firstOrNull?.$2;
 }
 
 CinemaRouteMeasurement? cinemaBestSourcePriorityRoute(
   Iterable<CinemaRouteMeasurement> measurements, {
+  required Iterable<String> sourceOrder,
   bool Function(CinemaMediaProbeResult)? supported,
-  CinemaRouteMeasurement? Function(Iterable<CinemaRouteMeasurement>)? fallback,
 }) {
-  final usable = measurements
-      .where((m) => m.usable && (supported?.call(m.result) ?? true))
-      .toList();
-  final preferred = usable.where((m) => cinemaPreferredEndpoint(m.candidate));
-  if (preferred.isNotEmpty) return cinemaBestMeasuredRoute(preferred);
-  return (fallback ?? cinemaBestMeasuredRoute)(usable);
-}
-
-typedef CinemaPreferredMedia = ({
-  String url,
-  VideoSourceFormat format,
-  Map<String, String> headers,
-});
-
-class CinemaPreferredProbeResult {
-  const CinemaPreferredProbeResult(this.measurements, this.resolved);
-  final List<CinemaRouteMeasurement> measurements;
-  final Map<String, CinemaPreferredMedia> resolved;
-}
-
-/// Foreground startup check. Only the two confirmed preferred endpoints may
-/// navigate a resolver here; ordinary background probes remain direct-only.
-class CinemaPreferredRouteProbe {
-  const CinemaPreferredRouteProbe(this.probe);
-  final CinemaMediaProbe probe;
-
-  Future<CinemaPreferredProbeResult> run(
-    Iterable<CinemaPlaybackCandidate> candidates, {
-    required Future<CinemaPreferredMedia> Function(CinemaPlaybackCandidate)
-    resolve,
-    CancelToken? cancel,
-    Duration budget = const Duration(seconds: 10),
-  }) async {
-    final choices = cinemaPreferredEndpoints(candidates);
-    final owned = CancelToken();
-    if (cancel?.isCancelled == true) owned.cancel();
-    if (cancel != null) {
-      unawaited(cancel.whenCancel.then((_) => owned.cancel()));
-    }
-    final deadline = Timer(budget, () => owned.cancel('首选端检查超时'));
-    final resolved = <String, CinemaPreferredMedia>{};
-    final results = <String, CinemaRouteMeasurement>{};
-    Future<void> check(CinemaPlaybackCandidate candidate) async {
-      if (owned.isCancelled) return;
-      CinemaMediaProbeResult result;
-      try {
-        final media = await Future.any<CinemaPreferredMedia?>([
-          resolve(candidate).timeout(const Duration(seconds: 6)),
-          owned.whenCancel.then((_) => null),
-        ]);
-        if (media == null || owned.isCancelled) return;
-        resolved[candidate.key] = media;
-        final measured = await Future.any<CinemaMediaProbeResult?>([
-          probe.measure(
-            media.url,
-            media.headers,
-            hls:
-                media.format == VideoSourceFormat.hls ||
-                Uri.tryParse(media.url)?.path.toLowerCase().endsWith('.m3u8') ==
-                    true,
-            cancel: owned,
-            timeout: const Duration(seconds: 6),
-          ),
-          owned.whenCancel.then((_) => null),
-        ]);
-        if (measured == null || owned.isCancelled) return;
-        result = measured;
-      } catch (_) {
-        if (owned.isCancelled) return;
-        result = const CinemaMediaProbeResult(
-          ok: false,
-          elapsedMs: 0,
-          reason: '首选端未能加载',
-        );
-      }
-      results[candidate.key] = CinemaRouteMeasurement(candidate, result);
-    }
-
-    try {
-      await Future.wait(choices.map(check));
-      return CinemaPreferredProbeResult([
-        for (final candidate in choices)
-          results[candidate.key] ??
-              CinemaRouteMeasurement(
-                candidate,
-                const CinemaMediaProbeResult(
-                  ok: false,
-                  elapsedMs: 0,
-                  reason: '首选端检查超时',
-                ),
-              ),
-      ], resolved);
-    } finally {
-      deadline.cancel();
-      owned.cancel();
-    }
-  }
+  final usable = measurements.where((m) => m.usable).toList();
+  final best = cinemaRecommendedCandidate(
+    usable.map((m) => m.candidate),
+    sourceOrder: sourceOrder,
+    results: {for (final m in usable) m.candidate.key: m.result},
+    supported: supported,
+  );
+  return usable.where((m) => m.candidate.key == best?.key).firstOrNull;
 }

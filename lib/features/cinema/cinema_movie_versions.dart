@@ -7,6 +7,7 @@ int cinemaVersionQuality(String label) {
   ).hasMatch(text)) {
     return -10;
   }
+  if (RegExp(r'4320|8K').hasMatch(text)) return 5;
   if (RegExp(r'2160|4K|UHD|蓝光原盘').hasMatch(text)) return 4;
   if (RegExp(r'1080|FHD|蓝光|BLURAY').hasMatch(text)) return 3;
   if (RegExp(r'720|HD|BD|高清').hasMatch(text)) return 2;

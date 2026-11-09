@@ -477,6 +477,10 @@ void main() {
         ],
       },
     );
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('com.predidit.kazumi/intent'),
+      (call) async => call.method == 'isFullscreen' ? false : null,
+    );
     backends.clear();
     visibilityCalls.clear();
     nativeWindowState = {
@@ -500,6 +504,10 @@ void main() {
     );
   });
   tearDown(() async {
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('com.predidit.kazumi/intent'),
+      null,
+    );
     windowControls.dispose();
     messenger.setMockMethodCallHandler(visibilityChannel, null);
     messenger.setMockMethodCallHandler(channel, null);
@@ -1111,37 +1119,41 @@ void main() {
       ),
     ],
   );
-  testWidgets(
-    'preferred startup compares both Juliang endpoints before opening any player',
-    (tester) async {
-      final probe = _Probe();
-      addTearDown(() => probe.transport.dio.close(force: true));
-      await mount(
-        tester,
-        {},
-        autoBest: true,
-        probe: probe,
-        selectedSource: juliangSource,
-        selectedTitle: juliangTitle,
-        initialPosition: 77,
-      );
-      await waitForProbe(tester, probe);
-      expect(backends, isEmpty);
-      expect(probe.requests.keys.toSet(), {
-        'https://fixture.invalid/juliang.mp4',
-        'https://fixture.invalid/juliang-backup.mp4',
-      });
-      probe.complete();
-      await tester.pumpAndSettle();
-      expect(backends, hasLength(1));
-      expect(
-        backends.single.opened!.uri,
-        'https://fixture.invalid/juliang-backup.mp4',
-      );
-      expect(backends.single.opened!.start, const Duration(seconds: 77));
-      await unmount(tester);
-    },
-  );
+  for (final platform in [
+    TargetPlatform.android,
+    TargetPlatform.windows,
+    TargetPlatform.macOS,
+  ]) {
+    testWidgets(
+      '$platform opens user-first source without foreground speed tests',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = platform;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        final probe = _Probe();
+        addTearDown(() => probe.transport.dio.close(force: true));
+        await mount(
+          tester,
+          {},
+          autoBest: true,
+          probe: probe,
+          selectedSource: juliangSource,
+          selectedTitle: juliangTitle,
+          initialPosition: 77,
+        );
+        await waitForProbe(tester, probe);
+        expect(backends, isNotEmpty);
+        expect(
+          backends.first.opened!.uri,
+          'https://fixture.invalid/juliang.mp4',
+        );
+        expect(backends.first.opened!.start, const Duration(seconds: 77));
+        probe.complete();
+        await tester.pumpAndSettle();
+        await unmount(tester);
+        debugDefaultTargetPlatformOverride = null;
+      },
+    );
+  }
   for (final rejectFirstEndpoint in [false, true]) {
     testWidgets(
       'Mac unified startup keeps one entrance through opening and fallback ($rejectFirstEndpoint)',
@@ -1221,7 +1233,11 @@ void main() {
       );
       final first = entrance.debugGeneration;
       await tester.tap(find.byTooltip('下一集').hitTestable());
-      for (var i = 0; i < 25 && backends.length < 2; i++) {
+      for (
+        var i = 0;
+        i < 25 && (backends.length < 2 || backends.last.opened == null);
+        i++
+      ) {
         await tester.pump(const Duration(milliseconds: 20));
       }
       await tester.pump();
@@ -1241,39 +1257,35 @@ void main() {
     },
   );
 
+  testWidgets('manual episode choice ignores late background probes', (
+    tester,
+  ) async {
+    final probe = _Probe();
+    addTearDown(() => probe.transport.dio.close(force: true));
+    await mount(
+      tester,
+      {},
+      autoBest: true,
+      probe: probe,
+      selectedSource: juliangSource,
+      selectedTitle: juliangTitle,
+    );
+    await waitForProbe(tester, probe);
+    final episode = find.widgetWithText(OutlinedButton, '第2集');
+    await tester.ensureVisible(episode);
+    await tester.tap(episode);
+    await tester.pump();
+    probe.complete();
+    await tester.pumpAndSettle();
+    expect(backends.last.opened!.uri, 'https://fixture.invalid/juliang-2.mp4');
+    expect(
+      backends.where((b) => b.opened?.uri.contains('backup') ?? false),
+      isEmpty,
+    );
+    await unmount(tester);
+  });
   testWidgets(
-    'manual episode choice cancels preferred startup and ignores late probes',
-    (tester) async {
-      final probe = _Probe();
-      addTearDown(() => probe.transport.dio.close(force: true));
-      await mount(
-        tester,
-        {},
-        autoBest: true,
-        probe: probe,
-        selectedSource: juliangSource,
-        selectedTitle: juliangTitle,
-      );
-      await waitForProbe(tester, probe);
-      final episode = find.widgetWithText(OutlinedButton, '第2集');
-      await tester.ensureVisible(episode);
-      await tester.tap(episode);
-      await tester.pump();
-      probe.complete();
-      await tester.pumpAndSettle();
-      expect(
-        backends.last.opened!.uri,
-        'https://fixture.invalid/juliang-2.mp4',
-      );
-      expect(
-        backends.where((b) => b.opened?.uri.contains('backup') ?? false),
-        isEmpty,
-      );
-      await unmount(tester);
-    },
-  );
-  testWidgets(
-    'actual preferred open failure tries its other endpoint before another source',
+    'a failed source tries its other route before the next ordered source',
     (tester) async {
       final probe = _Probe();
       addTearDown(() => probe.transport.dio.close(force: true));
@@ -1291,7 +1303,7 @@ void main() {
             config,
             rejectOpen: (media) {
               attempted.add(media.uri);
-              return media.uri.contains('juliang-backup');
+              return media.uri.endsWith('/juliang.mp4');
             },
           );
           backends.add(backend);
@@ -1301,55 +1313,11 @@ void main() {
       await waitForProbe(tester, probe);
       probe.complete();
       await tester.pumpAndSettle();
-      expect(attempted, [
-        'https://fixture.invalid/juliang-backup.mp4',
+      expect(attempted.take(2), [
         'https://fixture.invalid/juliang.mp4',
+        'https://fixture.invalid/juliang-backup.mp4',
       ]);
       expect(backends.last.opened!.start, const Duration(seconds: 77));
-      await unmount(tester);
-    },
-  );
-  testWidgets(
-    'only two unavailable preferred endpoints permit another source to open',
-    (tester) async {
-      final probe = _Probe();
-      addTearDown(() => probe.transport.dio.close(force: true));
-      final fallback = CinemaTitle(
-        id: _title.id,
-        sourceId: _title.sourceId,
-        title: '同一作品',
-        year: '2025',
-        category: '电视剧',
-        routes: _title.routes,
-      );
-      await mount(
-        tester,
-        {},
-        autoBest: true,
-        probe: probe,
-        selectedSource: juliangSource,
-        selectedTitle: juliangTitle,
-        variants: [fallback],
-        initialPosition: 77,
-      );
-      await waitForProbe(tester, probe);
-      expect(backends, isEmpty);
-      for (final pending in probe.requests.values) {
-        pending.complete(
-          const CinemaMediaProbeResult(
-            ok: false,
-            elapsedMs: 20,
-            reason: 'unavailable',
-          ),
-        );
-      }
-      for (var i = 0; i < 30 && backends.isEmpty; i++) {
-        await tester.pump(const Duration(milliseconds: 20));
-      }
-      expect(backends, isNotEmpty);
-      expect(backends.first.opened!.uri, 'https://fixture.invalid/1.mp4');
-      expect(backends.first.opened!.start, const Duration(seconds: 77));
-      probe.complete();
       await unmount(tester);
     },
   );
@@ -1425,7 +1393,7 @@ void main() {
     },
   );
   testWidgets(
-    'Mac unified puts Juliang first but benchmarks every source and allows a faster fallback to win',
+    'Mac uses saved source order and a faster later source cannot take over',
     (tester) async {
       await enableMacSources(tester);
       final probe = _Probe();
@@ -1440,50 +1408,16 @@ void main() {
         initialPosition: 83,
       );
       await waitForProbe(tester, probe);
-      expect(backends.first.opened!.uri, 'https://fixture.invalid/juliang.mp4');
-      expect(backends.first.opened!.start, const Duration(seconds: 83));
-      // One shared worker can advance to another provider while the other
-      // Juliang request is still pending, even after a usable Juliang result.
-      probe.requests['https://fixture.invalid/juliang.mp4']!.complete(
-        const CinemaMediaProbeResult(
-          ok: true,
-          elapsedMs: 100,
-          firstByteMs: 20,
-          mbps: 8,
-        ),
-      );
-      for (
-        var i = 0;
-        i < 25 && !probe.calls.contains('https://fixture.invalid/1.mp4');
-        i++
-      ) {
-        await tester.pump(const Duration(milliseconds: 20));
-      }
-      expect(probe.calls, contains('https://fixture.invalid/1.mp4'));
-      expect(
-        probe
-            .requests['https://fixture.invalid/juliang-backup.mp4']!
-            .isCompleted,
-        false,
-      );
+      expect(backends.first.opened!.uri, 'https://fixture.invalid/1.mp4');
       await finishUnifiedProbe(tester, probe);
-      expect(
-        probe.calls.toSet(),
-        containsAll([
-          'https://fixture.invalid/juliang.mp4',
-          'https://fixture.invalid/juliang-backup.mp4',
-          'https://fixture.invalid/1.mp4',
-          'https://fixture.invalid/backup.mp4',
-        ]),
-      );
-      expect(backends.last.opened!.uri, 'https://fixture.invalid/backup.mp4');
+      expect(backends.last.opened!.uri, isNot(contains('juliang')));
       expect(backends.last.opened!.start, const Duration(seconds: 83));
       await unmount(tester);
       debugDefaultTargetPlatformOverride = null;
     },
   );
   testWidgets(
-    'Mac unified failed probes never veto an already playable Juliang stream',
+    'Mac failed probes never veto the already playable user-first stream',
     (tester) async {
       await enableMacSources(tester);
       final probe = _Probe();
@@ -1500,10 +1434,7 @@ void main() {
       await waitForProbe(tester, probe);
       await finishUnifiedProbe(tester, probe, allFail: true);
       expect(backends, hasLength(1));
-      expect(
-        backends.single.opened!.uri,
-        'https://fixture.invalid/juliang.mp4',
-      );
+      expect(backends.single.opened!.uri, 'https://fixture.invalid/1.mp4');
       expect(backends.single.state.playing, true);
       await unmount(tester);
       debugDefaultTargetPlatformOverride = null;
@@ -1585,13 +1516,14 @@ void main() {
           await tester.ensureVisible(find.byTooltip('下一集'));
           await tester.tap(find.byTooltip('下一集'));
         }
-        for (var i = 0; i < 25 && backends.length < 2; i++) {
+        for (
+          var i = 0;
+          i < 25 && (backends.length < 2 || backends.last.opened == null);
+          i++
+        ) {
           await tester.pump(const Duration(milliseconds: 20));
         }
-        expect(
-          backends.last.opened!.uri,
-          'https://fixture.invalid/juliang-2.mp4',
-        );
+        expect(backends.last.opened!.uri, 'https://fixture.invalid/2.mp4');
         for (final pending in old) {
           if (!pending.isCompleted) {
             pending.complete(
@@ -1637,7 +1569,6 @@ void main() {
       await tester.pumpAndSettle();
       expect(attempts, [
         'https://fixture.invalid/juliang.mp4',
-        'https://fixture.invalid/juliang-backup.mp4',
         'https://fixture.invalid/1.mp4',
       ]);
       expect(backends.last.opened!.start, const Duration(seconds: 73));

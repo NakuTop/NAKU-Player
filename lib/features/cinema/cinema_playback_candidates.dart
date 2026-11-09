@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'cinema_grouping.dart';
 import 'cinema_models.dart';
+import 'cinema_movie_versions.dart';
 import 'cinema_repository.dart';
 
 /// A concrete source, route and episode. Indexes only identify a selection
@@ -82,7 +83,9 @@ String _episodeName(String value) {
 }
 
 bool _movie(CinemaTitle title) =>
-    !RegExp('动漫|动画|剧|解说|影评|纪录|记录片').hasMatch(title.category) &&
+    !RegExp(
+      '动漫|动画|连续剧|电视剧|国产剧|欧美剧|香港剧|韩国剧|日本剧|台湾剧|泰国剧|海外剧|解说|影评|纪录|记录片',
+    ).hasMatch(title.category) &&
     RegExp(
       '电影|动作片|喜剧片|爱情片|科幻片|恐怖片|剧情片|战争片|悬疑片|犯罪片|奇幻片|冒险片|惊悚片',
     ).hasMatch(title.category);
@@ -118,7 +121,6 @@ class CinemaPlaybackCatalogue {
     required Iterable<CinemaTitle> variants,
     required Iterable<CinemaSource> sources,
     required this.repository,
-    this.firstSourceId,
     this.detailTimeout = const Duration(seconds: 18),
   }) : _anchor = title,
        _sources = {
@@ -135,10 +137,9 @@ class CinemaPlaybackCatalogue {
             .variants
             .where((item) => _sources.containsKey(item.sourceId)),
         _sources.keys,
-        firstSourceId: firstSourceId,
       ),
     );
-    _loaded[title.key] = title;
+    if (title.routes.isNotEmpty) _loaded[title.key] = title;
     for (final item in this.variants) {
       if (item.routes.isNotEmpty) _loaded[item.key] = item;
     }
@@ -147,7 +148,6 @@ class CinemaPlaybackCatalogue {
   final CinemaTitle _anchor;
   final Map<String, CinemaSource> _sources;
   final CinemaRepository repository;
-  final String? firstSourceId;
   final Duration detailTimeout;
   late List<CinemaTitle> variants;
   void addVariants(Iterable<CinemaTitle> values) {
@@ -159,7 +159,6 @@ class CinemaPlaybackCatalogue {
           ...values,
         ]).first.variants.where((v) => _sources.containsKey(v.sourceId)),
         _sources.keys,
-        firstSourceId: firstSourceId,
       ),
     );
     for (final item in variants) {
@@ -211,27 +210,102 @@ class CinemaPlaybackCatalogue {
     });
   }
 
-  Iterable<CinemaPlaybackCandidate> matching(
-    CinemaPlaybackCandidate current,
-  ) sync* {
+  Iterable<String> get sourceOrder => _sources.keys;
+
+  /// Load every known edition of a source before advancing to the next source.
+  /// Resolving catalogue details is separate from measuring video bandwidth.
+  Future<CinemaPlaybackCandidate?> firstMatching(
+    CinemaPlaybackCandidate current, {
+    bool Function(CinemaPlaybackCandidate)? accept,
+    bool Function()? isCurrent,
+  }) async {
+    for (final source in sourceOrder) {
+      if (isCurrent?.call() == false) return null;
+      final pending = unread.where((v) => v.sourceId == source).toList();
+      for (var i = 0; i < pending.length; i += 3) {
+        await Future.wait(
+          pending.skip(i).take(3).map((v) async {
+            try {
+              await load(v);
+            } catch (_) {}
+          }),
+        );
+        if (isCurrent?.call() == false) return null;
+      }
+      final candidate = matching(current)
+          .where((c) => c.source.id == source && (accept?.call(c) ?? true))
+          .firstOrNull;
+      if (candidate != null) return candidate;
+    }
+    return null;
+  }
+
+  List<CinemaPlaybackCandidate> matching(CinemaPlaybackCandidate current) {
+    final result = <CinemaPlaybackCandidate>[];
     for (final variant in variants) {
       final title = loaded(variant);
       if (title == null) continue;
       for (var route = 0; route < title.routes.length; route++) {
-        final episode = cinemaMatchPlaybackEpisode(
+        final editions =
+            cinemaSamePlaybackWork(current.title, title) &&
+            _movie(current.title) &&
+            _movie(title) &&
+            cinemaHasMovieVersions(current.title, current.routeIndex) &&
+            cinemaHasMovieVersions(title, route);
+        final matched = cinemaMatchPlaybackEpisode(
           current: current,
           target: title,
           routeIndex: route,
         );
-        if (episode != null) {
-          yield CinemaPlaybackCandidate(
-            title: title,
-            source: sourceFor(title),
-            routeIndex: route,
-            episodeIndex: episode,
+        final episodes = editions
+            ? List.generate(
+                title.routes[route].episodes.length,
+                (index) => index,
+              )
+            : [?matched];
+        for (final episode in episodes) {
+          result.add(
+            CinemaPlaybackCandidate(
+              title: title,
+              source: sourceFor(title),
+              routeIndex: route,
+              episodeIndex: episode,
+            ),
           );
         }
       }
     }
+    return orderCinemaCandidates(result, sourceOrder);
   }
+}
+
+int cinemaCandidateQuality(CinemaPlaybackCandidate candidate) {
+  final episode = cinemaVersionQuality(candidate.episode.name);
+  if (cinemaHasMovieVersions(candidate.title, candidate.routeIndex) &&
+      episode != 0) {
+    return episode;
+  }
+  final route = cinemaVersionQuality(candidate.route.name);
+  return route != 0 ? route : cinemaVariantQuality(candidate.title);
+}
+
+List<CinemaPlaybackCandidate> orderCinemaCandidates(
+  Iterable<CinemaPlaybackCandidate> candidates,
+  Iterable<String> sourceOrder,
+) {
+  final priority = {
+    for (final entry in sourceOrder.toList().indexed) entry.$2: entry.$1,
+  };
+  final sorted = candidates.toList().indexed.toList()
+    ..sort((a, b) {
+      final source = (priority[a.$2.source.id] ?? priority.length).compareTo(
+        priority[b.$2.source.id] ?? priority.length,
+      );
+      if (source != 0) return source;
+      final quality = cinemaCandidateQuality(
+        b.$2,
+      ).compareTo(cinemaCandidateQuality(a.$2));
+      return quality != 0 ? quality : a.$1.compareTo(b.$1);
+    });
+  return sorted.map((entry) => entry.$2).toList();
 }

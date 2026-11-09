@@ -1,8 +1,8 @@
+import 'cinema_detail_comparison.dart';
+import 'cinema_playback_candidates.dart';
 import 'cinema_mobile_scaffold.dart';
 import 'cinema_movie_versions.dart';
-import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/services.dart';
-import 'cinema_source_priority.dart';
 import 'cinema_tv_nas_card.dart';
 import 'cinema_moyu_host.dart';
 import 'cinema_swipe_navigation.dart';
@@ -5400,15 +5400,59 @@ class _TitleDetails extends StatefulWidget {
 }
 
 class _TitleDetailsState extends State<_TitleDetails> {
+  late final _comparison = CinemaDetailComparison(
+    title: widget.title,
+    source: widget.source,
+    variants: widget.variants,
+    sources: widget.store.enabledSources,
+    repository: widget.repository,
+    initialRoute: widget.resume?.routeIndex ?? 0,
+    initialEpisode: widget.resume?.episodeIndex ?? 0,
+  );
+  CinemaPlaybackCandidate? _recommended;
+  void _comparisonChanged() {
+    if (!mounted || _disposing) return;
+    if (widget.source.id == cinemaNASSource.id) return;
+    final best = _comparison.recommended;
+    if (!_variantChosen && !_routeChosen) {
+      _recommended = best;
+    }
+    setState(() {});
+  }
+
+  int _preferredEpisode(CinemaTitle title, int route) =>
+      !_routeChosen &&
+          _recommended?.title.key == title.key &&
+          _recommended?.routeIndex == route
+      ? _recommended!.episodeIndex
+      : cinemaPreferredEpisode(title, route);
+  void _playCompared(
+    CinemaTitle title,
+    CinemaSource source,
+    int route,
+    int episode,
+    List<CinemaTitle> variants,
+    bool manual,
+  ) {
+    _comparison.pause();
+    source =
+        widget.store.sources.where((s) => s.id == title.sourceId).firstOrNull ??
+        source;
+    widget.onPlay(
+      title,
+      source,
+      route,
+      episode,
+      variants,
+      manual || _recommended != null,
+    );
+  }
+
   late CinemaTitle _selectedTitle = widget.title;
   late CinemaSource _selectedSource = widget.source;
   late Future<CinemaTitle> _detail = widget.resolvedDetail
       ? Future.value(_selectedTitle)
-      : widget.repository.detail(_selectedSource, _selectedTitle);
-  String? get _firstSourceId =>
-      defaultTargetPlatform == TargetPlatform.macOS && !NakuDevice.isTV
-      ? cinemaJuliangSourceId(widget.store.enabledSources)
-      : null;
+      : _comparison.load(_selectedTitle);
   int _road = 0;
   int _informationTab = 0;
   CinemaTitle? _resolvedInput, _resolvedTitle;
@@ -5435,11 +5479,12 @@ class _TitleDetailsState extends State<_TitleDetails> {
   @override
   void initState() {
     super.initState();
+    _comparison.addListener(_comparisonChanged);
+    if (widget.source.id != cinemaNASSource.id) unawaited(_comparison.start());
     _artworkRatings.changes.addListener(_onArtworkIdentityChanged);
     _variants = orderCinemaVariants(
       _variants,
       widget.store.enabledSources.map((source) => source.id),
-      firstSourceId: _firstSourceId,
     );
     if (widget.resolvedDetail) {
       _discovering = false;
@@ -5466,23 +5511,17 @@ class _TitleDetailsState extends State<_TitleDetails> {
             final priority = widget.store.enabledSources
                 .map((s) => s.id)
                 .toList();
-            setState(
-              () => _variants = orderCinemaVariants(
-                variants,
-                priority,
-                firstSourceId: _firstSourceId,
-              ),
-            );
+            setState(() => _variants = orderCinemaVariants(variants, priority));
+            _comparison.addVariants(variants);
             if (!_variantChosen &&
                 widget.resume == null &&
                 _variants.isNotEmpty) {
               final preferred = _variants.first;
               if (preferred.key != _selectedTitle.key &&
-                  orderCinemaVariants(
-                        [preferred, _selectedTitle],
-                        priority,
-                        firstSourceId: _firstSourceId,
-                      ).first.key ==
+                  orderCinemaVariants([
+                        preferred,
+                        _selectedTitle,
+                      ], priority).first.key ==
                       preferred.key) {
                 _selectVariant(preferred, automatic: true);
               }
@@ -5662,6 +5701,8 @@ class _TitleDetailsState extends State<_TitleDetails> {
   @override
   void dispose() {
     _disposing = true;
+    _comparison.removeListener(_comparisonChanged);
+    _comparison.dispose();
     _artworkRatings.changes.removeListener(_onArtworkIdentityChanged);
     _ratingTicket++;
     _posterTicket++;
@@ -5698,7 +5739,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
       _routeChosen = false;
       _detail = automatic && variant.routes.isNotEmpty
           ? Future.value(variant)
-          : widget.repository.detail(source, variant);
+          : _comparison.load(variant);
     });
   }
 
@@ -5709,6 +5750,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
         _road < title.routes.length &&
         title.routes[_road].episodes.isNotEmpty) {
       return _road;
+    }
+    if (!_routeChosen && _recommended?.title.key == title.key) {
+      return _recommended!.routeIndex;
     }
     return cinemaPreferredRoute(title);
   }
@@ -5730,11 +5774,11 @@ class _TitleDetailsState extends State<_TitleDetails> {
       }
       final road = _preferredRoad(title);
       if (road < 0) return;
-      widget.onPlay(
+      _playCompared(
         title,
         source,
         road,
-        cinemaPreferredEpisode(title, road),
+        _preferredEpisode(title, road),
         _variants,
         true,
       );
@@ -5744,6 +5788,12 @@ class _TitleDetailsState extends State<_TitleDetails> {
   }
 
   Widget _actions(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
+    final source = !_variantChosen && !_routeChosen && _recommended != null
+        ? _recommended!.source
+        : _selectedSource;
+    if (!_variantChosen && !_routeChosen && _recommended != null) {
+      title = _recommended!.title;
+    }
     final playable = snapshot.hasData && _preferredRoad(title) >= 0;
     final saved = widget.resume ?? widget.store.historyFor(title);
     final tvResume = NakuDevice.isTV && saved != null && playable
@@ -5772,12 +5822,12 @@ class _TitleDetailsState extends State<_TitleDetails> {
                 : null,
           ),
           onPressed: playable
-              ? () => widget.onPlay(
+              ? () => _playCompared(
                   title,
-                  _selectedSource,
+                  source,
                   tvResume?.routeIndex ?? _preferredRoad(title),
                   tvResume?.episodeIndex ??
-                      cinemaPreferredEpisode(title, _preferredRoad(title)),
+                      _preferredEpisode(title, _preferredRoad(title)),
                   _variants,
                   _variantChosen || _routeChosen,
                 )
@@ -5791,7 +5841,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
             onPressed: () => showCinemaDownloadSheet(
               context,
               title: title,
-              source: _selectedSource,
+              source: source,
               routeIndex: route,
             ),
             icon: const Icon(Icons.download_rounded, size: 21),
@@ -5832,7 +5882,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
             onPressed: () => showCinemaCast(
               context,
               title: title,
-              source: _selectedSource,
+              source: source,
               road: route,
             ),
             icon: const Icon(Icons.cast, size: 20),
@@ -5852,9 +5902,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
                 );
                 return;
               }
-              widget.onPlay(
+              _playCompared(
                 title,
-                _selectedSource,
+                source,
                 selection.routeIndex,
                 selection.episodeIndex,
                 _variants,
@@ -5868,23 +5918,102 @@ class _TitleDetailsState extends State<_TitleDetails> {
     );
   }
 
+  Widget _variantLabel(CinemaTitle variant) {
+    final choice = _comparison.forVariant(variant);
+    final measured = choice == null ? null : _comparison.results[choice.key];
+    final name =
+        widget.store.sources
+            .where((s) => s.id == variant.sourceId)
+            .firstOrNull
+            ?.name ??
+        '已移除片源';
+    final quality = (measured?.height ?? 0) > 0
+        ? '${measured!.width} × ${measured.height}'
+        : choice == null
+        ? variant.remarks
+        : switch (cinemaCandidateQuality(choice)) {
+            5 => '8K · 标注',
+            4 => '4K · 标注',
+            3 => '1080P · 标注',
+            2 => 'HD · 标注',
+            1 => 'SD · 标注',
+            -10 => '抢先版',
+            _ => '画质待检测',
+          };
+    final speed = measured?.ok == true && measured?.mbps != null
+        ? '${measured!.mbps!.toStringAsFixed(1)} Mbps${measured.firstByteMs == null ? '' : ' · ${measured.firstByteMs} ms'}'
+        : measured?.ok == false
+        ? '暂未连接'
+        : choice != null && _comparison.pending.contains(choice.key)
+        ? '检测中…'
+        : _comparison.catalogue.errors.containsKey(variant.key)
+        ? '线路暂未读取'
+        : _comparison.running
+        ? '等待检测'
+        : '播放后可检测';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '$name${_recommended?.title.key == variant.key && !_variantChosen ? ' · 自动推荐' : ''}',
+          style: TextStyle(fontSize: NakuDevice.isTV ? 16 : 12),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          [if (quality.isNotEmpty) quality, speed].join(' · '),
+          style: TextStyle(
+            fontSize: NakuDevice.isTV ? 13 : 11,
+            color: CinemaTheme.muted,
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _sourceControls(
     CinemaTitle title,
     AsyncSnapshot<CinemaTitle> snapshot,
   ) {
+    if (!_variantChosen && !_routeChosen && _recommended != null) {
+      title = _recommended!.title;
+    }
+    final selectedSource =
+        widget.store.sources
+            .where((source) => source.id == title.sourceId)
+            .firstOrNull ??
+        _selectedSource;
     if (NakuDevice.isTV) {
       final road = _preferredRoad(title);
-      if (road < 0 ||
-          road >= title.routes.length ||
-          title.routes[road].episodes.length < 2) {
-        return const SizedBox.shrink();
-      }
-      return TextButton.icon(
-        key: const ValueKey('tv-detail-episodes'),
-        style: TextButton.styleFrom(textStyle: const TextStyle(fontSize: 18)),
-        onPressed: () => _tvSelectEpisode(title, road),
-        icon: const Icon(Icons.video_library_outlined),
-        label: Text('选集 · ${title.routes[road].episodes.length} 集'),
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (road >= 0 &&
+              road < title.routes.length &&
+              title.routes[road].episodes.length > 1)
+            TextButton.icon(
+              key: const ValueKey('tv-detail-episodes'),
+              style: TextButton.styleFrom(
+                textStyle: const TextStyle(fontSize: 18),
+              ),
+              onPressed: () => _tvSelectEpisode(title, road),
+              icon: const Icon(Icons.video_library_outlined),
+              label: Text('选集 · ${title.routes[road].episodes.length} 集'),
+            ),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final variant in _variants)
+                ChoiceChip(
+                  key: ValueKey('source-variant:${variant.key}'),
+                  label: _variantLabel(variant),
+                  selected: variant.key == title.key,
+                  onSelected: (_) => _selectAndPlayVariant(variant),
+                ),
+            ],
+          ),
+        ],
       );
     }
     final road = title.routes.isEmpty
@@ -5902,14 +6031,22 @@ class _TitleDetailsState extends State<_TitleDetails> {
             children: [
               Expanded(
                 child: Text(
-                  _selectedSource.name,
+                  selectedSource.name,
                   style: const TextStyle(
                     color: CinemaTheme.muted,
                     fontSize: 12,
                   ),
                 ),
               ),
-              if (_discovering)
+              IconButton(
+                tooltip: '重新检测画质与速度',
+                visualDensity: VisualDensity.compact,
+                onPressed: _comparison.running
+                    ? null
+                    : () => unawaited(_comparison.start(refresh: true)),
+                icon: const Icon(Icons.speed_rounded, size: 18),
+              ),
+              if (_discovering || _comparison.running)
                 const SizedBox(
                   width: 12,
                   height: 12,
@@ -5917,7 +6054,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
                 ),
             ],
           ),
-          if (_variants.length > 1) ...[
+          if (_variants.isNotEmpty) ...[
             const SizedBox(height: 12),
             Wrap(
               spacing: 6,
@@ -5933,23 +6070,8 @@ class _TitleDetailsState extends State<_TitleDetails> {
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    label: Text(
-                      [
-                        widget.store.sources
-                                .where((s) => s.id == variant.sourceId)
-                                .firstOrNull
-                                ?.name ??
-                            '已移除片源',
-                        if (_variants
-                                .where((v) => v.sourceId == variant.sourceId)
-                                .length >
-                            1)
-                          variant.title,
-                        if (variant.remarks.isNotEmpty) variant.remarks,
-                      ].join(' · '),
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                    selected: variant.key == _selectedTitle.key,
+                    label: _variantLabel(variant),
+                    selected: variant.key == title.key,
                     onSelected: (_) => _selectAndPlayVariant(variant),
                   ),
               ],
@@ -6026,9 +6148,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
                     style: TextButton.styleFrom(
                       foregroundColor: CinemaTheme.text,
                     ),
-                    onPressed: () => widget.onPlay(
+                    onPressed: () => _playCompared(
                       title,
-                      _selectedSource,
+                      selectedSource,
                       road,
                       e,
                       _variants,
@@ -6318,7 +6440,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
       ),
     );
     if (selected != null && mounted) {
-      widget.onPlay(
+      _playCompared(
         title,
         _selectedSource,
         road,
