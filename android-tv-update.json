@@ -1,16 +1,16 @@
 [
   {
-    "tag_name": "android-tv-v3.1.10+115",
+    "tag_name": "android-tv-v3.2.0+116",
     "draft": false,
     "prerelease": false,
-    "body": "NAKU TV 3.1.10（115）\n\n- 同步当前 3.1.10 的通用修复：中文/数字季号、年份后缀和片名修饰归一化，搜索、收藏及历史记录补齐多个来源。\n- 弹幕来源支持多选、聚合与流畅滚动；区分爱一帆地区限制和接口错误，其他来源继续加载。\n- 默认源加入最大影视，优先同线路高清版本；保留 NAS 会话恢复与跨端数据同步优化。\n- 保留 TV 专用遥控器焦点、紧凑控制条、选集/字幕/弹幕侧栏，以及原生 Media3 / SurfaceView 播放与 TV Home Display。\n\n本次将 TV 版本从 1.1.6（8）统一到 3.1.10（115），包名 com.nakutop.nakuplayer.tv 和发布证书不变，支持覆盖升级保留登录和应用数据。在“我的 → 软件更新”检查，或下载 APK 手动覆盖安装。Android 7.0+；包含 arm64-v8a、armeabi-v7a、x86_64；提供 v1/v2 签名。\n\n319 项定向自动测试通过（1 项环境限定跳过），TV 原生事件、签名、星空与太阳位置检查通过。真机遥控、HDR/杜比、硬件解码和长时间播放仍需设备实测。\n",
+    "body": "NAKU TV 3.2.0（116）\n\n- 接收同一 NAS 账号手机发来的影片时，完成原有身份与重放验证后立即唤醒界面、进入播放页，无需再用遥控器确认。\n- 搜索框新增一键“返回主页”，退出搜索并清空旧查询；继续取消独立动漫分类入口。\n- 保留 TV 遥控器焦点、原生 Media3 播放、清晰度 / 选集 / 字幕 / 多源弹幕、NAS 同步及 Home Display。\n- 包含 3.1.10 的聚合搜索、收藏历史、最大影视高清优先和爱一帆弹幕修复。\n\n建议手机和电视均升级 3.2.0。手机前台会提前发现电视与预取短时投屏授权；实际出画速度仍取决于片源及局域网。\n\nAndroid 7.0+；包含 arm64-v8a、armeabi-v7a、x86_64，沿用 com.nakutop.nakuplayer.tv 包名和原有签名，支持覆盖升级。真机遥控、硬件解码、Home Display 与双设备投屏延迟仍需设备实测。\n\n# NAKU 3.2.0\n\n- 全端统一片源顺序优先，同源优先高清，失败依次换线；取消巨量资源专属测速。\n- 原有详情页片源区增加分辨率、Mbps、响应时间和自动推荐，保留原布局与操作。\n",
     "assets": [
       {
-        "name": "NAKU-TV-3.1.10-Android-universal.apk",
+        "name": "NAKU-TV-3.2.0-Android-universal.apk",
         "state": "uploaded",
-        "size": 91873943,
-        "digest": "sha256:db4feccd08befbb07e06b844f86429e91cc0971c4d8a631467ea205ba3da97e0",
-        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.1.10%2B115/NAKU-TV-3.1.10-Android-universal.apk"
+        "size": 91965243,
+        "digest": "sha256:91a851d73386e5e7b6406870827638051365998b2ef9f0d58c4bc8ec5445f4ee",
+        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.0%2B116/NAKU-TV-3.2.0-Android-universal.apk"
       }
     ]
   }
