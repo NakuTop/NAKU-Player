@@ -328,9 +328,10 @@ The Windows release workflow builds the installer and portable x64 archive,
 verifies executable version and bundled runtime, silently installs the package
 and checks process startup. Native regression checks run in a separate workflow.
 The media-kit native build hook requires a tar implementation with liblzma/7z
-support; the workflow provides MSYS2 libarchive in an isolated tools directory.
-On a local Windows build, place an LZMA-enabled bsdtar (named tar.exe) on PATH
-before Flutter testing/building. No build-time archive tool is needed to run the app.
+support; the workflow provides MSYS2 libarchive next to the CI Dart executable, because Windows searches
+the executable directory and System32 before PATH for native process calls.
+On a local Windows build, ensure the tar resolved by Dart has LZMA support;
+`scripts/check_windows_archive_tool.dart` checks this before Flutter testing/building. No build-time archive tool is needed to run the app.
 
 Actual GPU/video playback and device-specific audio remain device acceptance.
 Windows updates use a full installer or portable archive, not macOS Sparkle deltas.

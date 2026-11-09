@@ -32,14 +32,16 @@ jobs:
           MSYS2_LOCATION: ${{ steps.archive-tools.outputs.msys2-location }}
         run: |
           $source = Join-Path $env:MSYS2_LOCATION 'mingw64/bin'
-          $tools = Join-Path $env:RUNNER_TEMP 'naku-archive-tools'
+          # Windows CreateProcess searches the Dart executable directory before PATH.
+          $tools = Join-Path $env:FLUTTER_ROOT 'bin/cache/dart-sdk/bin'
           New-Item -ItemType Directory -Path $tools -Force | Out-Null
           Copy-Item "$source/bsdtar.exe" "$tools/tar.exe"
           Copy-Item "$source/*.dll" $tools
           $version = & "$tools/tar.exe" --version
           if ($version -notmatch 'liblzma') { throw "tar is missing LZMA support: $version" }
           Write-Output $version
-          $tools | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$tools/dart.exe" scripts/check_windows_archive_tool.dart
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Resolve dependencies
         run: flutter pub get
       - name: Shared playback and library regressions
