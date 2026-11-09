@@ -1941,6 +1941,19 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.byTooltip('退出画中画'), findsNothing);
+      expect(
+        find.byType(CinemaRatingsPanel),
+        findsNothing,
+        reason: 'Fullscreen hides the details panel independently of PiP.',
+      );
+      messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+          const MethodCall('onEvent', {'eventName': 'leave-full-screen'}),
+        ),
+        (_) {},
+      );
+      await tester.pumpAndSettle();
       expect(find.byType(CinemaRatingsPanel), findsOneWidget);
       expect(backends.length, 1);
       expect(backends.single.state.playing, isTrue);
