@@ -1838,6 +1838,116 @@ void main() {
     },
   );
 
+  testWidgets(
+    'fullscreen waits for an in-flight PiP entry and restores level first',
+    (tester) async {
+      final sizing = Completer<void>();
+      var top = false, full = false, blocked = false;
+      final calls = <String>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call.method);
+        if (call.method == 'isFullScreen') return full;
+        if (call.method == 'isAlwaysOnTop') return top;
+        if (call.method == 'getBounds')
+          return {'x': 80.0, 'y': 50.0, 'width': 1200.0, 'height': 900.0};
+        if (call.method == 'setAlwaysOnTop')
+          top = (call.arguments as Map)['isAlwaysOnTop'] as bool;
+        if (call.method == 'setBounds' && top && !blocked) {
+          blocked = true;
+          await sizing.future;
+        }
+        if (call.method == 'setFullScreen') {
+          expect(
+            top,
+            isFalse,
+            reason:
+                'AppKit must not receive fullscreen on a floating PiP window',
+          );
+          full = (call.arguments as Map)['isFullScreen'] as bool;
+          messenger.handlePlatformMessage(
+            channel.name,
+            const StandardMethodCodec().encodeMethodCall(
+              MethodCall('onEvent', {
+                'eventName': full ? 'enter-full-screen' : 'leave-full-screen',
+              }),
+            ),
+            (_) {},
+          );
+        }
+        return null;
+      });
+      await mount(tester, {'autoPlay': true}, renderToolbar: true);
+      await tester.tap(find.byTooltip('画中画'));
+      await tester.pump();
+      expect(blocked, isTrue);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+      await tester.pump();
+      expect(calls, isNot(contains('setFullScreen')));
+      sizing.complete();
+      await tester.pumpAndSettle();
+      expect(full, isTrue);
+      expect(top, isFalse);
+      expect(backends.single.state.playing, isTrue);
+      await unmount(tester);
+    },
+  );
+
+  testWidgets('failed PiP geometry rolls back the floating window level', (
+    tester,
+  ) async {
+    var top = false, fail = true;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'isFullScreen') return false;
+      if (call.method == 'isAlwaysOnTop') return top;
+      if (call.method == 'getBounds')
+        return {'x': 80.0, 'y': 50.0, 'width': 1200.0, 'height': 900.0};
+      if (call.method == 'setAlwaysOnTop')
+        top = (call.arguments as Map)['isAlwaysOnTop'] as bool;
+      if (call.method == 'setBounds' && top && fail) {
+        fail = false;
+        throw PlatformException(code: 'fixture-size-failure');
+      }
+      return null;
+    });
+    await mount(tester, {'autoPlay': true}, renderToolbar: true);
+    await tester.tap(find.byTooltip('画中画'));
+    await tester.pumpAndSettle();
+    expect(fail, isFalse);
+    expect(top, isFalse);
+    expect(find.byTooltip('画中画'), findsWidgets);
+    await unmount(tester);
+  });
+
+  testWidgets(
+    'native fullscreen entry clears PiP controls without reloading playback',
+    (tester) async {
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'isFullScreen' || call.method == 'isAlwaysOnTop')
+          return false;
+        if (call.method == 'getBounds')
+          return {'x': 80.0, 'y': 50.0, 'width': 1200.0, 'height': 900.0};
+        return null;
+      });
+      await mount(tester, {'autoPlay': true}, renderToolbar: true);
+      await tester.tap(find.byTooltip('画中画'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('退出画中画'), findsWidgets);
+      messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(
+          const MethodCall('onEvent', {'eventName': 'enter-full-screen'}),
+        ),
+        (_) {},
+      );
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('退出画中画'), findsNothing);
+      expect(find.byType(CinemaRatingsPanel), findsOneWidget);
+      expect(backends.length, 1);
+      expect(backends.single.state.playing, isTrue);
+      await unmount(tester);
+    },
+  );
+
   testWidgets('in-player PiP preserves playback and restores details', (
     tester,
   ) async {

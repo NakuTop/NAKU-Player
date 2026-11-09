@@ -15,6 +15,12 @@ import 'package:kazumi/request/core/network_config.dart';
 import 'cinema_logvar_client.dart';
 import 'cinema_overseas_danmaku_parser.dart';
 
+final class CinemaDanmakuRegionRestricted implements Exception {
+  const CinemaDanmakuRegionRestricted();
+  @override
+  String toString() => '弹幕来源限制了当前访问地区';
+}
+
 String aiyifanAppSignature(String query, String timestamp, String key) =>
     md5.convert(utf8.encode('$query$timestamp$key')).toString();
 
@@ -140,7 +146,7 @@ class CinemaOverseasDanmakuClient implements CinemaDanmakuMatcher {
             if (body != null) 'Content-Type': 'application/json;charset=utf-8',
             ...?headers,
           },
-          validateStatus: (s) => s == 200 || allow404 && s == 404,
+          validateStatus: (s) => s == 200 || s == 403 || allow404 && s == 404,
         ),
       );
       final bytes = BytesBuilder(copy: false);
@@ -154,6 +160,24 @@ class CinemaOverseasDanmakuClient implements CinemaDanmakuMatcher {
       _check(token);
       if (response.statusCode == 404) return const [];
       final raw = bytes.takeBytes();
+      if (response.statusCode == 403) {
+        final text = utf8.decode(raw, allowMalformed: true);
+        Object? detail;
+        try {
+          detail = jsonDecode(text);
+        } catch (_) {}
+        if (detail is Map &&
+                (detail['error_code'] == 1009 ||
+                    detail['error_name'] == 'country_banned') ||
+            RegExp(
+              r'^\s*error code:\s*1009\s*$',
+              caseSensitive: false,
+            ).hasMatch(text)) {
+          throw const CinemaDanmakuRegionRestricted();
+        }
+        throw const FormatException('平台弹幕请求被拒绝（403）');
+      }
+
       // Large JSON, UTF-8 and gzip work must not monopolize Flutter's UI isolate.
       final result =
           raw.length >= 32 * 1024 ||
@@ -394,9 +418,9 @@ class CinemaOverseasDanmakuClient implements CinemaDanmakuMatcher {
           ),
         );
         if (data['ret'] == 200) return data;
-      } catch (_) {
+      } catch (error) {
         _check(token);
-        if (attempt == 1) rethrow;
+        if (error is CinemaDanmakuRegionRestricted || attempt == 1) rethrow;
       }
     }
     throw const FormatException('爱一帆平台请求暂不可用');

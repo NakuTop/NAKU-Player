@@ -811,10 +811,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
     final transition = Completer<void>();
     _fullscreenTransition = transition;
-    await DesktopFullscreen.setFullScreen(next);
     // AppKit returns from toggleFullScreen before its window animation ends.
     // Wait for the actual transition before PiP reads or changes window bounds.
     try {
+      await DesktopFullscreen.setFullScreen(next);
       await transition.future.timeout(const Duration(seconds: 5));
     } on TimeoutException {
       if (await DesktopFullscreen.isFullScreen() != next) rethrow;
@@ -830,8 +830,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     if (_fullscreenChanging) return;
     _fullscreenChanging = true;
     try {
+      // A PiP request can still be changing native level/bounds before _pip
+      // becomes true. Never send AppKit a fullscreen request in that interval.
+      await _pipTransition?.future;
+      if (!mounted || _closing) return;
       if (_pip) await _togglePip();
-      await _setFullscreen(!_fullscreen);
+      final full = Platform.isAndroid || Platform.isIOS
+          ? _fullscreen
+          : await DesktopFullscreen.isFullScreen();
+      await _setFullscreen(!full);
     } finally {
       _fullscreenChanging = false;
     }
@@ -840,8 +847,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   void _fullscreenChanged(bool value) {
     final transition = _fullscreenTransition;
     if (transition != null && !transition.isCompleted) transition.complete();
-    if (mounted && !_closing && _fullscreen != value) {
-      setState(() => _fullscreen = value);
+    if (mounted && !_closing && (_fullscreen != value || (value && _pip))) {
+      setState(() {
+        _fullscreen = value;
+        // The native green button can leave PiP without a Flutter button tap.
+        if (value) _pip = false;
+      });
     }
   }
 
@@ -1271,10 +1282,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       if (mounted) setState(() => _androidPip = entered);
       return;
     }
-    if (_pipChanging) return;
+    if (_pipChanging || (_fullscreenChanging && !_pip)) return;
     _pipChanging = true;
     final transition = Completer<void>();
     _pipTransition = transition;
+    var changedWindow = false;
     try {
       if (!_pip) {
         if (await DesktopFullscreen.isFullScreen()) {
@@ -1282,6 +1294,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         }
         _windowBounds = await windowManager.getBounds();
         _windowWasOnTop = await windowManager.isAlwaysOnTop();
+        changedWindow = true;
         await windowManager.setMinimumSize(const Size(320, 180));
         await PipUtils.enterDesktopPIPWindow(
           width: _playback?.width ?? 16,
@@ -1297,6 +1310,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         if (mounted) setState(() => _pip = false);
       }
     } catch (_) {
+      if (changedWindow) {
+        // A failed size/aspect request must not strand a normal-looking player
+        // at the floating level with _pip still false.
+        await _restoreWindow();
+        if (mounted) setState(() => _pip = false);
+      }
       if (mounted) {
         KazumiDialog.showToast(context: context, message: '暂时无法切换画中画');
       }

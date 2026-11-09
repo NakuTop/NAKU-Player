@@ -24,7 +24,13 @@ Set<String> cinemaDanmakuSourcesFrom(Object? value) => value is List
           .toSet()
     : cinemaSelectableDanmakuSources.keys.toSet();
 
-enum CinemaDanmakuSourceStatus { loading, loaded, empty, unavailable }
+enum CinemaDanmakuSourceStatus {
+  loading,
+  loaded,
+  empty,
+  unavailable,
+  regionRestricted,
+}
 
 class CinemaDanmakuSourceResult {
   const CinemaDanmakuSourceResult(this.id, this.status, [this.selection]);
@@ -172,7 +178,7 @@ class CinemaMultiSourceDanmakuClient
             client.close();
             _clients.remove(client);
           }
-        } catch (_) {
+        } catch (error) {
           child.cancel('平台弹幕查询结束');
           client.close();
           _clients.remove(client);
@@ -180,7 +186,9 @@ class CinemaMultiSourceDanmakuClient
           onSource(
             CinemaDanmakuSourceResult(
               id,
-              CinemaDanmakuSourceStatus.unavailable,
+              error is CinemaDanmakuRegionRestricted
+                  ? CinemaDanmakuSourceStatus.regionRestricted
+                  : CinemaDanmakuSourceStatus.unavailable,
             ),
           );
         } finally {

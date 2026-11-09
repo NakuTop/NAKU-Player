@@ -187,3 +187,55 @@ final class NakuDesktopWindowController: NSObject {
 
   func acceptsHotkey(_ id: UInt32) -> Bool { hotKey != nil && activeHotkeyId == id }
 }
+
+
+/// PiP reuses the main window. AppKit otherwise interprets a floating window's
+/// green button as Zoom, and refuses fullscreen while it retains PiP geometry.
+class NakuFullscreenWindow: NSWindow {
+  private var beforeFloating: NSRect?
+
+  func enableNativeFullscreen() {
+    collectionBehavior.insert(.fullScreenPrimary)
+  }
+
+  override var level: NSWindow.Level {
+    willSet {
+      if level == .normal && newValue == .floating {
+        beforeFloating = frame
+      } else if newValue == .normal && level == .floating {
+        beforeFloating = nil
+      }
+    }
+  }
+
+  /// Shared by the green button, Window menu and window_manager's request.
+  func prepareForNativeFullscreen() {
+    guard !styleMask.contains(.fullScreen), level == .floating else { return }
+    let previous = beforeFloating
+    level = .normal
+    aspectRatio = .zero
+    contentAspectRatio = .zero
+    if let previous = previous {
+      // Restore normal geometry before AppKit snapshots its fullscreen return
+      // frame. Keep the window reachable if the saved display was unplugged.
+      let area = NSScreen.screens.max {
+        let a = $0.visibleFrame.intersection(previous)
+        let b = $1.visibleFrame.intersection(previous)
+        return (a.isNull ? 0 : a.width * a.height) < (b.isNull ? 0 : b.width * b.height)
+      }?.visibleFrame
+      var restored = previous
+      if let area = area {
+        restored.size.width = min(restored.width, area.width)
+        restored.size.height = min(restored.height, area.height)
+        restored.origin.x = max(area.minX, min(restored.minX, area.maxX - restored.width))
+        restored.origin.y = max(area.minY, min(restored.minY, area.maxY - restored.height))
+      }
+      setFrame(restored, display: true)
+    }
+  }
+
+  override func toggleFullScreen(_ sender: Any?) {
+    prepareForNativeFullscreen()
+    super.toggleFullScreen(sender)
+  }
+}

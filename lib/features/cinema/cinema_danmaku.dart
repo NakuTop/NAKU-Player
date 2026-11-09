@@ -865,7 +865,9 @@ class CinemaDanmakuController extends ChangeNotifier {
           )
           ? '当前时段暂无弹幕，将随播放进度自动获取'
           : _sourceStates.values.any(
-              (state) => state == CinemaDanmakuSourceStatus.unavailable,
+              (state) =>
+                  state == CinemaDanmakuSourceStatus.unavailable ||
+                  state == CinemaDanmakuSourceStatus.regionRestricted,
             )
           ? '部分来源暂不可用，可重试所选来源'
           : '所选来源暂无可确认的本集弹幕';
@@ -1311,6 +1313,8 @@ Future<void> showCinemaDanmakuSourcesDialog(
                                 : '已匹配',
                           CinemaDanmakuSourceStatus.empty => '本集暂无匹配',
                           CinemaDanmakuSourceStatus.unavailable => '暂不可用',
+                          CinemaDanmakuSourceStatus.regionRestricted =>
+                            '地区访问受限',
                           _ => '可与其他来源同时显示',
                         }),
                         value: draft.contains(source.key),

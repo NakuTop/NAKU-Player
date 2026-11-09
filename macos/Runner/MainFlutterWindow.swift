@@ -428,7 +428,7 @@ private final class NakuCinemaStartupSound {
   }
 }
 
-class MainFlutterWindow: NSWindow {
+class MainFlutterWindow: NakuFullscreenWindow {
   // Keep the engine owner explicit; the window's root controller is the glass
   // container, while all plugin registrars still belong to this Flutter child.
   private(set) var flutterViewController: FlutterViewController?
@@ -450,6 +450,7 @@ class MainFlutterWindow: NSWindow {
   }
 
   override func awakeFromNib() {
+    enableNativeFullscreen()
     let flutterViewController = FlutterViewController()
     // Match native titlebar/sheets to the cinema surface, not the light desktop.
     self.appearance = NSAppearance(named: .darkAqua)

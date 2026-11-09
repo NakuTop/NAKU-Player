@@ -196,6 +196,41 @@ class _Matcher implements CinemaDanmakuMatcher {
 }
 
 void main() {
+  for (final body in [
+    'error code: 1009\n',
+    '{"error_code":1009,"error_name":"country_banned"}',
+  ]) {
+    test('explicit region response is preserved: $body', () async {
+      final adapter = _Adapter(
+        (o) => o.uri.path.endsWith('/config')
+            ? _aiFixture(o)
+            : ResponseBody.fromString(body, 403),
+      );
+      final dio = Dio()..httpClientAdapter = adapter;
+      final client = CinemaOverseasDanmakuClient(dio: dio);
+      addTearDown(client.close);
+      await expectLater(
+        client.matchAiyifan(query),
+        throwsA(isA<CinemaDanmakuRegionRestricted>()),
+      );
+      expect(adapter.calls.length, 2);
+    });
+  }
+  test('ordinary 403 does not become a regional restriction', () async {
+    final adapter = _Adapter(
+      (_) => ResponseBody.fromString('error code: 1020', 403),
+    );
+    final client = CinemaOverseasDanmakuClient(
+      dio: Dio()..httpClientAdapter = adapter,
+    );
+    addTearDown(client.close);
+    await expectLater(
+      client.matchAiyifan(query),
+      throwsA(isA<FormatException>()),
+    );
+    expect(adapter.calls.length, 1);
+  });
+
   test(
     'first successful platform cancels the losing pending network request',
     () async {

@@ -1,3 +1,4 @@
+import 'package:kazumi/features/cinema/cinema_overseas_danmaku.dart';
 import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/painting.dart';
@@ -68,6 +69,27 @@ class _Timeline implements CinemaDanmakuTimeline {
 }
 
 void main() {
+  test(
+    'regional rejection remains distinct and does not cancel another selected source',
+    () async {
+      final client = CinemaMultiSourceDanmakuClient(
+        sourceFactory: (id) => _Matcher((_) async {
+          if (id == 'aiyifan') throw const CinemaDanmakuRegionRestricted();
+          return selection(id, [comment(1, '保留人人弹幕')]);
+        }),
+      );
+      addTearDown(client.close);
+      final states = <String, CinemaDanmakuSourceStatus>{};
+      await client.matchSources(
+        query,
+        sources: {'aiyifan', 'renren'},
+        onSource: (result) => states[result.id] = result.status,
+      );
+      expect(states['aiyifan'], CinemaDanmakuSourceStatus.regionRestricted);
+      expect(states['renren'], CinemaDanmakuSourceStatus.loaded);
+    },
+  );
+
   test(
     'selected overseas sources both finish; a fast source does not cancel the slower source',
     () async {
