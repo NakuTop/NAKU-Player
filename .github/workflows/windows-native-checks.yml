@@ -22,5 +22,13 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build build/windows-native-tests --config Release
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Enable Windows audio service for loopback regression
+        shell: pwsh
+        run: |
+          foreach ($name in @('AudioEndpointBuilder','Audiosrv')) {
+            Set-Service -Name $name -StartupType Manual
+            Start-Service -Name $name
+            Get-Service -Name $name
+          }
       - name: Check encrypted credentials, fullscreen and audio policies
         run: ctest --test-dir build/windows-native-tests -C Release --output-on-failure

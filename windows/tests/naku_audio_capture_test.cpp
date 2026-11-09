@@ -14,7 +14,11 @@ int main(int argc, char** argv) {
       bool active = false;
       for (int i = 0; i < 100; ++i) {
         const auto chunk = capture.Pull();
-        if (FAILED(chunk.error)) throw std::runtime_error("Process audio activation failed");
+        if (FAILED(chunk.error)) {
+          std::cerr << "Audio activation HRESULT: 0x" << std::hex
+                    << static_cast<unsigned long>(chunk.error) << std::dec << "\n";
+          throw std::runtime_error("Process audio activation failed");
+        }
         if (chunk.active) { active = true; break; }
         Sleep(50);
       }
