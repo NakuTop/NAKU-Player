@@ -44,6 +44,15 @@
 
 ## 安装
 
+| 平台 | 当前正式版 | 下载 |
+| --- | --- | --- |
+| macOS | 3.1.10 | [macOS 安装包](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.1.10) |
+| Android 手机 | 3.1.10（115） | [Mobile APK](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.1.10-android) |
+| Android TV | 3.1.10（115） | [TV APK](https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.1.10%2B115) |
+| Windows x64 | 3.1.10（115） | [安装版 / 便携版](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.1.10-windows) |
+
+Android 手机和 TV 使用独立包名与更新源，各自覆盖安装保留已有登录、收藏和历史记录；TV 可从 1.1.6 直接升级。对应源码可从各发行页的版本标签下载。
+
 ### Windows
 
 Windows x64 安装包由 `scripts/build_windows_installer.ps1` 生成，包含播放器和 C++ 运行库，默认安装到当前用户的本地 Programs 目录。Windows 3.1.10（115）支持 NAS 账号 / 扫码登录、会话恢复及影视库，凭据由 Windows DPAPI 加密保存；原生最小化、最大化 / 还原和关闭按钮始终显示。此前 Windows 版本的 NAS 登录和窗口按钮已通过用户验收；本次构建的验证记录见 Windows 构建说明。
