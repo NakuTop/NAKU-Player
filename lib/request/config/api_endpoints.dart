@@ -32,6 +32,9 @@ class ApiEndpoints {
   static const String androidApp =
       'https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/android-update.json';
 
+  static const String windowsApp =
+      'https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/windows-update.json';
+
   /// Bangumi 镜像测试后端
   static const String bangumiMirrorDomain = 'https://api.kazumi.fyi';
 
