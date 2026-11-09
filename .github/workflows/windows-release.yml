@@ -39,6 +39,24 @@ jobs:
           foreach ($name in $required) { if (!(Test-Path "build/windows/x64/runner/Release/$name")) { throw "Missing runtime $name" } }
           Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath "dist/windows/NAKUPlayer-$($version.Groups[1].Value)-Windows-x64-portable.zip"
           Get-ChildItem dist/windows -File | ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Set-Content -Encoding utf8 dist/windows/SHA256SUMS
+      - name: Smoke test silent install and application startup
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist/windows/*-Setup.exe | Select-Object -First 1
+          $installDir = Join-Path $env:RUNNER_TEMP 'naku-install-smoke'
+          $install = Start-Process -FilePath $setup.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$installDir") -Wait -PassThru
+          if ($install.ExitCode -notin @(0,3010)) { throw "Installer failed: $($install.ExitCode)" }
+          $app = Join-Path $installDir 'NAKUPlayer.exe'
+          if (!(Test-Path $app)) { throw 'Installed executable missing' }
+          $process = Start-Process -FilePath $app -WorkingDirectory $installDir -PassThru
+          try {
+            Start-Sleep -Seconds 15
+            $process.Refresh()
+            if ($process.HasExited) { throw "Application exited during startup: $($process.ExitCode)" }
+            Write-Output "Installed application survived startup, PID $($process.Id)"
+          } finally {
+            if (!$process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: NAKUPlayer-Windows-x64
