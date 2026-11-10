@@ -46,7 +46,7 @@
 
 | 平台 | 当前正式版 | 下载 |
 | --- | --- | --- |
-| macOS | 3.2.0 | [macOS 安装包](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.0) |
+| macOS | 3.2.1 | [macOS 安装包](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.1) |
 | Android 手机 | 3.2.0（116） | [Mobile APK](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.0-android) |
 | Android TV | 3.2.0（116） | [TV APK](https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.0%2B116) |
 | Windows x64 | 3.2.0（116） | [安装版 / 便携版](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.0-windows) |
