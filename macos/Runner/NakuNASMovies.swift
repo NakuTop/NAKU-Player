@@ -173,8 +173,24 @@ enum NASHomeDisplayCookiePolicy {
     }
 }
 
+struct NASHomeDisplaySavedGrant: Codable {
+    let namespace: String, credential: String
+    let expiresAt: Double
+    func authorization(generation: Int) -> NASHomeDisplayAuthorization? {
+        guard expiresAt.isFinite,expiresAt > Date().timeIntervalSince1970*1000,expiresAt <= Date().timeIntervalSince1970*1000+30*86400_000,credential.count <= 1024,
+              credential.range(of:"^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$",options:.regularExpression) != nil else { return nil }
+        let url=URL(string:"https://between-us-home.pages.dev/")!
+        func cookie(_ name: String,_ value: String,_ seconds: Int) -> HTTPCookie? {
+            HTTPCookie.cookies(withResponseHeaderFields:["Set-Cookie":"\(name)=\(value); Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=\(seconds)"],for:url).first
+        }
+        guard let credentialCookie=cookie("__Host-naku-display",credential,Int((expiresAt-Date().timeIntervalSince1970*1000)/1000)),
+              let contextCookie=cookie("__Host-naku-display-context","1",400*86400) else { return nil }
+        return NASHomeDisplayAuthorization(cookie:credentialCookie,contextCookie:contextCookie,expiresAt:expiresAt,generation:generation,persistent:true)
+    }
+}
 struct NASHomeDisplayAuthorization {
     let cookie: HTTPCookie, contextCookie: HTTPCookie, expiresAt: Double, generation: Int
+    var persistent = false
 }
 private enum NASHomeDisplayError: Error {
     case unconfigured, proof, cookieInstall, sessionChanged
@@ -236,10 +252,21 @@ actor NASMovieSession {
     private let credentialStore = NASMovieCredentialStore()
     private let clientID = UUID().uuidString + "PC-darwin"
     private let session: URLSession
+    private let loadDisplayGrant: () throws -> NASHomeDisplaySavedGrant?
+    private let saveDisplayGrant: (NASHomeDisplaySavedGrant) throws -> Void
+    private let clearDisplayGrant: () throws -> Void
+    private var displayGrant: NASHomeDisplaySavedGrant?
     private let loadSavedLogin: () throws -> NASMovieSavedLogin?
     init(transport: URLSession? = nil, homeDisplayCookies: NASHomeDisplayCookies? = nil,
-         loadSavedLogin: (() throws -> NASMovieSavedLogin?)? = nil) {
+         loadSavedLogin: (() throws -> NASMovieSavedLogin?)? = nil,
+         loadDisplayGrant: (() throws -> NASHomeDisplaySavedGrant?)? = nil,
+         saveDisplayGrant: ((NASHomeDisplaySavedGrant) throws -> Void)? = nil,
+         clearDisplayGrant: (() throws -> Void)? = nil) {
         session=transport ?? Self.makeSession();self.homeDisplayCookies=homeDisplayCookies
+        let displayStore=NASMovieCredentialStore(service:"com.nakutop.naku.nas-home-display")
+        self.loadDisplayGrant=loadDisplayGrant ?? {transport == nil ? try displayStore.loadValue(NASHomeDisplaySavedGrant.self):nil}
+        self.saveDisplayGrant=saveDisplayGrant ?? {if transport == nil {try displayStore.saveValue($0)}}
+        self.clearDisplayGrant=clearDisplayGrant ?? {if transport == nil {try displayStore.forget()}}
         self.loadSavedLogin=loadSavedLogin ?? {
             if let saved=try NASMovieCredentialStore().load() {return .password(saved)}
             if let saved=try NASMovieCredentialStore(service:"com.nakutop.naku.nas-movies.qr-session").loadValue(NASMovieSavedQR.self) {return .qr(saved)}
@@ -278,6 +305,7 @@ actor NASMovieSession {
     // synchronous generation capture by calling logout() directly.
     @discardableResult func logoutAndInvalidateDisplay() async -> Int {
         automaticRestoreSuspended=true
+        displayGrant=nil;try? clearDisplayGrant()
         let invalidation=logout(),attempt=generation
         await invalidation.value
         return attempt
@@ -745,7 +773,7 @@ actor NASMovieSession {
         proof["query"]=combined.base64EncodedString()
         return proof
     }
-    func exchangeHomeDisplay() async throws -> NASHomeDisplayAuthorization {
+    func exchangeHomeDisplay(credential: String? = nil) async throws -> NASHomeDisplayAuthorization {
         guard !token.isEmpty,!namespace.isEmpty else {throw NASMovieError.expired}
         let attempt=generation
         let endpoint=URL(string:"https://between-us-home.pages.dev/api/auth/nas/exchange")!
@@ -753,7 +781,11 @@ actor NASMovieSession {
         request.setValue("application/json",forHTTPHeaderField:"Content-Type")
         request.setValue("https://between-us-home.pages.dev",forHTTPHeaderField:"Origin")
         do {
-            request.httpBody=try JSONSerialization.data(withJSONObject:["version":1,"clientId":clientID,"currentUser":try homeDisplayProof(),"machine":try homeDisplayProof(parameters:["basic":"1"])])
+            if let credential {
+                request.httpBody=try JSONSerialization.data(withJSONObject:["version":2,"credential":credential])
+            } else {
+                request.httpBody=try JSONSerialization.data(withJSONObject:["version":2,"clientId":clientID,"currentUser":try homeDisplayProof(),"machine":try homeDisplayProof(parameters:["basic":"1"])])
+            }
         } catch {throw NASHomeDisplayError.proof}
         let bytes:Data,response:URLResponse
         do {(bytes,response)=try await session.data(for:request)}
@@ -767,6 +799,9 @@ actor NASMovieSession {
         guard http.statusCode == 200 else {throw NASHomeDisplayError.http(http.statusCode)}
         guard generation == attempt,!token.isEmpty else {throw NASHomeDisplayError.sessionChanged}
         guard http.url == endpoint,bytes.count <= 4096 else {throw NASHomeDisplayError.invalidResponse("response_origin_or_size")}
+        guard let payload=(try? JSONSerialization.jsonObject(with:bytes)) as? [String:Any] else {throw NASHomeDisplayError.invalidResponse("response_payload_body")}
+        let persistent=payload["persistent"] as? Bool == true
+        let maximum:Double=persistent ? 30*86400+1:301
         guard let header=http.value(forHTTPHeaderField:"Set-Cookie"),header.count <= 2048,
               header.range(of:";\\s*domain\\s*=",options:[.regularExpression,.caseInsensitive]) == nil,
               header.range(of:";\\s*samesite=strict(?:;|$)",options:[.regularExpression,.caseInsensitive]) != nil else {throw NASHomeDisplayError.invalidResponse("response_cookie_header")}
@@ -789,14 +824,13 @@ actor NASMovieSession {
               cookie.domain == endpoint.host,cookie.path == "/",cookie.isSecure,cookie.isHTTPOnly,cookie.value.count <= 1024,
               contextCookie.domain == endpoint.host,contextCookie.path == "/",contextCookie.isSecure,contextCookie.isHTTPOnly else {throw NASHomeDisplayError.invalidResponse("response_cookie_scope")}
         guard contextCookie.value == "1" else {throw NASHomeDisplayError.invalidResponse("response_cookie_marker")}
-        guard contextCookie.isSessionOnly else {throw NASHomeDisplayError.invalidResponse("response_cookie_persistence")}
-        guard let expiry=cookie.expiresDate,expiry > Date(),expiry.timeIntervalSinceNow <= 301 else {throw NASHomeDisplayError.invalidResponse("response_cookie_expiry")}
-        guard let payload=(try? JSONSerialization.jsonObject(with:bytes)) as? [String:Any] else {throw NASHomeDisplayError.invalidResponse("response_payload_body")}
+        guard persistent ? (contextCookie.expiresDate != nil):contextCookie.isSessionOnly else {throw NASHomeDisplayError.invalidResponse("response_cookie_persistence")}
+        guard let expiry=cookie.expiresDate,expiry > Date(),expiry.timeIntervalSinceNow <= maximum else {throw NASHomeDisplayError.invalidResponse("response_cookie_expiry")}
         guard payload["authenticated"] as? Bool == true else {throw NASHomeDisplayError.invalidResponse("response_payload_authorized")}
         guard
               let expiresAt=payload["expiresAt"] as? Double,expiresAt > Date().timeIntervalSince1970*1000,
-              expiresAt <= Date().timeIntervalSince1970*1000+301_000 else {throw NASHomeDisplayError.invalidResponse("response_payload_expiry")}
-        return NASHomeDisplayAuthorization(cookie:cookie,contextCookie:contextCookie,expiresAt:expiresAt,generation:attempt)
+              expiresAt <= Date().timeIntervalSince1970*1000+maximum*1000 else {throw NASHomeDisplayError.invalidResponse("response_payload_expiry")}
+        return NASHomeDisplayAuthorization(cookie:cookie,contextCookie:contextCookie,expiresAt:expiresAt,generation:attempt,persistent:persistent)
     }
     // A same-generation renewal is single-flight. In particular, an older
     // failure cannot run invalidation after a newer renewal has succeeded.
@@ -812,7 +846,11 @@ actor NASMovieSession {
         homeDisplayAuthorization=(generation,id,task)
         return task
     }
-    func homeDisplayAuthorize() async -> [String:Any] {
+    func homeDisplayAuthorize(force: Bool = false) async -> [String:Any] {
+        if force {
+            if let active=homeDisplayAuthorization { _ = await active.task.value }
+            displayGrant=nil;try? clearDisplayGrant()
+        }
         let result=await homeDisplayAuthorizationTask().value
         if result["authenticated"] as? Bool != true {
             // Only fixed classifications and status numbers reach the log.
@@ -936,12 +974,34 @@ actor NASMovieSession {
         let cookies:NASHomeDisplayCookies
         if let supplied=homeDisplayCookies {cookies=supplied} else {cookies=await NASHomeDisplayCookies.shared}
         do {
-            let authorized=try await exchangeHomeDisplay()
+            let saved=displayGrant ?? (try? loadDisplayGrant())
+            let cached=saved?.namespace == namespace ? saved?.authorization(generation:attempt):nil
+            let authorized:NASHomeDisplayAuthorization
+            if let cached,cached.expiresAt > Date().timeIntervalSince1970*1000+86400_000 {
+                authorized=cached
+            } else {
+                do { authorized=try await exchangeHomeDisplay(credential:cached?.cookie.value) }
+                catch {
+                    if case NASHomeDisplayError.http(let status)=error, [401,403].contains(status),cached != nil {
+                        displayGrant=nil;try? clearDisplayGrant()
+                        authorized=try await exchangeHomeDisplay()
+                    } else if let cached,case NASHomeDisplayError.transport=error {
+                        authorized=cached
+                    } else if let cached,case NASHomeDisplayError.http(let status)=error,status >= 500 || status == 429 {
+                        authorized=cached
+                    } else {throw error}
+                }
+            }
             guard generation == authorized.generation,!token.isEmpty else {return ["authenticated":false,"reason":"nas_session_expired"]}
             let installed=await cookies.install([authorized.contextCookie,authorized.cookie],generation:authorized.generation)
             guard generation == authorized.generation,!token.isEmpty else {return ["authenticated":false,"reason":"nas_session_expired"]}
             guard installed else {throw NASHomeDisplayError.cookieInstall}
-            return ["authenticated":true,"expiresAt":authorized.expiresAt]
+            if authorized.persistent {
+                let saved=NASHomeDisplaySavedGrant(namespace:namespace,credential:authorized.cookie.value,expiresAt:authorized.expiresAt)
+                if displayGrant?.credential != saved.credential || displayGrant?.namespace != saved.namespace || displayGrant?.expiresAt != saved.expiresAt {try? saveDisplayGrant(saved)}
+                displayGrant=saved
+            }
+            return ["authenticated":true,"expiresAt":authorized.expiresAt,"persistent":authorized.persistent]
         } catch {
             await cookies.invalidateCredential(generation:attempt)
             if token.isEmpty {return ["authenticated":false,"reason":"nas_login_required"]}
@@ -1485,7 +1545,7 @@ final class NakuNASMovies {
                 case "ensure": value=try await session.ensure(expected:args["namespace"] as? String ?? "")
                 case "autoConnect": value=try await session.autoConnect(expected:args["namespace"] as? String ?? "",force:args["force"] as? Bool ?? false)
                 case "pairingIdentity": value=try await session.pairingIdentity(code:args["code"] as? String ?? "")
-                case "homeDisplayAuthorize": value=await session.homeDisplayAuthorize()
+                case "homeDisplayAuthorize": value=await session.homeDisplayAuthorize(force:args["force"] as? Bool == true)
                 case "syncPull": value=try await session.syncPull(expected:args["namespace"] as? String ?? "",knownRevision:args["revision"] as? String,knownSnapshots:args["snapshots"] as? [String])
                 case "syncPush": value=try await session.syncPush(expected:args["namespace"] as? String ?? "",device:args["device"] as? String ?? "",sequence:args["sequence"] as? Int ?? 0,document:args["document"] as? String ?? "")
                 case "restoreAt": value=try await session.restoreAt(address:args["address"] as? String ?? "",expected:args["namespace"] as? String ?? "",remember:args["remember"] as? Bool ?? true)

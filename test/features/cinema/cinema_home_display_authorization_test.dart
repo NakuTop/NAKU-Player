@@ -51,6 +51,157 @@ class _Cookies implements CinemaHomeDisplayCookieStore {
 }
 
 void main() {
+  CinemaHomeDisplayExchangeResponse persistentResponse(
+    DateTime at,
+  ) => CinemaHomeDisplayExchangeResponse(
+    status: 200,
+    bytes: utf8.encode(
+      jsonEncode({
+        'authenticated': true,
+        'persistent': true,
+        'expiresAt': at.add(const Duration(days: 30)).millisecondsSinceEpoch,
+      }),
+    ),
+    setCookies: [
+      '__Host-naku-display=fixture.signature; Path=/; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict',
+      '__Host-naku-display-context=1; Path=/; Max-Age=34560000; Secure; HttpOnly; SameSite=Strict',
+    ],
+    url: cinemaHomeDisplayExchangeEndpoint,
+  );
+  test(
+    'persistent grant survives restart and the old five-minute boundary without exchange',
+    () async {
+      var at = _now, requests = 0, saves = 0;
+      Map<String, dynamic>? saved;
+      CinemaHomeDisplayAuthorizer create() => CinemaHomeDisplayAuthorizer(
+        proof: (_) async => {'query': 'fixture'},
+        exchange: (_) async {
+          requests++;
+          return persistentResponse(at);
+        },
+        hasSession: () => true,
+        revision: () => 1,
+        cookies: _Cookies(),
+        now: () => at,
+        loadGrant: () async => saved,
+        saveGrant: (v) async {
+          saved = v;
+          saves++;
+        },
+      );
+      final first = create();
+      expect((await first.authorize(_clientId))['persistent'], true);
+      at = at.add(const Duration(minutes: 10));
+      expect((await first.authorize(_clientId))['authenticated'], true);
+      expect(requests, 1);
+      expect(saves, 1);
+      final restarted = create();
+      expect((await restarted.authorize(_clientId))['authenticated'], true);
+      expect(requests, 1);
+    },
+  );
+  test(
+    'near-expiry renewal uses only the persistent credential and survives temporary network failure',
+    () async {
+      final initial = CinemaHomeDisplayGrant.parse(
+        persistentResponse(_now),
+        now: _now,
+      );
+      final at = _now.add(const Duration(days: 29, hours: 12));
+      var attempts = 0;
+      final authorizer = CinemaHomeDisplayAuthorizer(
+        proof: (_) async =>
+            throw StateError('NAS must not be contacted for renewal'),
+        exchange: (body) async {
+          attempts++;
+          expect(body, {'version': 2, 'credential': 'fixture.signature'});
+          throw TimeoutException('offline');
+        },
+        hasSession: () => true,
+        revision: () => 1,
+        cookies: _Cookies(),
+        now: () => at,
+        loadGrant: () async => initial.toStored(),
+      );
+      expect((await authorizer.authorize(_clientId))['authenticated'], true);
+      expect(attempts, 1);
+    },
+  );
+  test('logout prevents restoring a persisted display grant', () async {
+    final initial = CinemaHomeDisplayGrant.parse(
+          persistentResponse(_now),
+          now: _now,
+        ),
+        cookies = _Cookies();
+    var loggedIn = true, revision = 1, reads = 0;
+    final authorizer = CinemaHomeDisplayAuthorizer(
+      proof: (_) async => {},
+      exchange: (_) async => throw StateError('unexpected exchange'),
+      hasSession: () => loggedIn,
+      revision: () => revision,
+      cookies: cookies,
+      now: () => _now,
+      loadGrant: () async {
+        reads++;
+        return initial.toStored();
+      },
+    );
+    expect((await authorizer.authorize(_clientId))['authenticated'], true);
+    loggedIn = false;
+    revision++;
+    await authorizer.invalidate();
+    expect((await authorizer.authorize(_clientId))['authenticated'], false);
+    expect(reads, 1);
+    expect(cookies.grant, isNull);
+  });
+  test(
+    'a revoked persistent grant cannot fall back after a failed fresh exchange',
+    () async {
+      final initial = CinemaHomeDisplayGrant.parse(
+        persistentResponse(_now),
+        now: _now,
+      );
+      final at = _now.add(const Duration(days: 29, hours: 12));
+      var requests = 0, forgotten = false;
+      final authorizer = CinemaHomeDisplayAuthorizer(
+        proof: (_) async => {'query': 'fixture'},
+        exchange: (_) async => _response(status: ++requests == 1 ? 401 : 503),
+        hasSession: () => true,
+        revision: () => 1,
+        cookies: _Cookies(),
+        now: () => at,
+        loadGrant: () async => initial.toStored(),
+        forgetGrant: () async {
+          forgotten = true;
+        },
+      );
+      expect((await authorizer.authorize(_clientId))['authenticated'], false);
+      expect(forgotten, true);
+      expect(requests, 2);
+    },
+  );
+  test('persistent storage refuses expired and malformed credentials', () {
+    expect(
+      CinemaHomeDisplayGrant.fromStored({
+        'persistent': true,
+        'credential': 'bad; owner=1',
+        'expiresAt': _now.add(const Duration(days: 1)).millisecondsSinceEpoch,
+      }, _now),
+      isNull,
+    );
+    final saved = CinemaHomeDisplayGrant.parse(
+      persistentResponse(_now),
+      now: _now,
+    ).toStored();
+    expect(
+      CinemaHomeDisplayGrant.fromStored(
+        saved,
+        _now.add(const Duration(days: 31)),
+      ),
+      isNull,
+    );
+  });
+
   test(
     'uses the existing desktop wire ID shape without a platform auth claim',
     () {
@@ -172,7 +323,7 @@ void main() {
             'currentUser',
             'machine',
           });
-          expect(body['version'], 1);
+          expect(body['version'], 2);
           return _response();
         },
         hasSession: () => true,
@@ -185,7 +336,7 @@ void main() {
         {},
         {'basic': '1'},
       ]);
-      expect(result.keys.toSet(), {'authenticated', 'expiresAt'});
+      expect(result.keys.toSet(), {'authenticated', 'expiresAt', 'persistent'});
       expect(result['authenticated'], true);
       expect(jsonEncode(result), isNot(contains('fixture-credential')));
       expect(jsonEncode(result), isNot(contains('encrypted-fixture')));

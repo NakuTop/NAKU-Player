@@ -128,6 +128,10 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
                 let fields=Self.mode.contains("reverse") ? [context,credential]:[credential,context]
                 headers["Set-Cookie"]=fields.joined(separator:Self.mode.contains("no-space") ? ",":", ")
             }
+            if Self.mode == "persistent" {
+                payload=["authenticated":true,"persistent":true,"expiresAt":Date().timeIntervalSince1970*1000+30*86400_000-1000]
+                headers["Set-Cookie"]="__Host-naku-display=fixture.signature; Path=/; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict, __Host-naku-display-context=1; Path=/; Max-Age=34560000; Secure; HttpOnly; SameSite=Strict"
+            }
             if Self.mode == "redirect" {status=307;headers["Location"]="https://evil.test/stolen"}
             if Self.mode == "wrong-origin" {responseURL=URL(string:"https://evil.test/api/auth/nas/exchange")!}
             if Self.mode == "no-httponly" {headers["Set-Cookie"]=headers["Set-Cookie"]!.replacingOccurrences(of:"; HttpOnly",with:"")}
@@ -450,6 +454,37 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
         HomeDisplayFixtureProtocol.mode="valid"
         print("PASS persistent NAS login, same-account API recovery, bounded retry and permission isolation")
     }
+    @MainActor static func persistentDisplay(_ transport: URLSession,_ pem: String) async throws {
+        var saved:NASHomeDisplaySavedGrant?
+        let store=HomeDisplayFixtureCookieStore()
+        func makeSession() -> NASMovieSession {
+            NASMovieSession(transport:transport,homeDisplayCookies:NASHomeDisplayCookies(store:store),loadSavedLogin:{nil},
+                loadDisplayGrant:{saved},saveDisplayGrant:{saved=$0},clearDisplayGrant:{saved=nil})
+        }
+        let first=makeSession();HomeDisplayFixtureProtocol.mode="persistent"
+        try await adopt(first,pem)
+        expect(await first.homeDisplayAuthorize()["persistent"] as? Bool == true,"persistent grant accepted")
+        expect(saved != nil,"persistent grant stored outside Flutter")
+        let before=HomeDisplayFixtureProtocol.exchangeCount
+        HomeDisplayFixtureProtocol.mode="http-503"
+        expect(await first.homeDisplayAuthorize()["authenticated"] as? Bool == true,"valid saved grant survives backend outage")
+        expect(HomeDisplayFixtureProtocol.exchangeCount == before,"valid grant requires no network exchange")
+        let restarted=makeSession();HomeDisplayFixtureProtocol.mode="valid";try await adopt(restarted,pem)
+        HomeDisplayFixtureProtocol.mode="http-503"
+        expect(await restarted.homeDisplayAuthorize()["authenticated"] as? Bool == true,"same NAS account restores persistent grant after restart")
+        expect(HomeDisplayFixtureProtocol.exchangeCount == before,"restart reuses account-bound grant")
+        expect(await restarted.homeDisplayAuthorize(force:true)["authenticated"] as? Bool != true,"explicit retry revalidates rather than reusing a rejected grant")
+        expect(saved == nil,"forced revalidation discards the rejected persistent grant")
+        HomeDisplayFixtureProtocol.mode="persistent"
+        expect(await restarted.homeDisplayAuthorize()["authenticated"] as? Bool == true,"fresh persistent grant is restored")
+        await restarted.logoutAndInvalidateDisplay()
+        expect(saved == nil && !store.hasCredential,"explicit logout clears persistent and WebKit credentials")
+        let wrong=NASHomeDisplaySavedGrant(namespace:"other-account",credential:"fixture.signature",expiresAt:Date().timeIntervalSince1970*1000+86400_000*10)
+        saved=wrong;let other=makeSession();HomeDisplayFixtureProtocol.mode="valid";try await adopt(other,pem)
+        HomeDisplayFixtureProtocol.mode="http-503"
+        expect(await other.homeDisplayAuthorize()["authenticated"] as? Bool != true,"another account cannot reuse saved grant")
+        print("PASS persistent display survives backend outage and same-account restart; logout and account isolation remain enforced")
+    }
     @MainActor static func main() async throws {
         func cookie(_ name: String,_ domain: String) -> HTTPCookie {
             HTTPCookie(properties:[.name:name,.value:"fixture",.domain:domain,.path:"/",.secure:"TRUE"])!
@@ -497,5 +532,6 @@ final class HomeDisplayFixtureProtocol: URLProtocol {
         try await lifecycle(session,store,pem)
         try await restoration(transport,pem)
         try await persistentAPI(transport,pem)
+        try await persistentDisplay(transport,pem)
     }
 }

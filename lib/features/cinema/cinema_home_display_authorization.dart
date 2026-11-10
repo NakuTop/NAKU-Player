@@ -55,9 +55,54 @@ class CinemaHomeDisplayGrant {
     required this.credential,
     required this.context,
     required this.expiresAt,
+    this.persistent = false,
   });
   final io.Cookie credential, context;
   final int expiresAt;
+  final bool persistent;
+
+  Map<String, dynamic> toStored() => {
+    'credential': credential.value,
+    'expiresAt': expiresAt,
+    'persistent': persistent,
+  };
+  static CinemaHomeDisplayGrant? fromStored(
+    Map<String, dynamic>? value,
+    DateTime now,
+  ) {
+    if (value == null ||
+        value['persistent'] != true ||
+        value['credential'] is! String ||
+        value['expiresAt'] is! int) {
+      return null;
+    }
+    final expiry = value['expiresAt'] as int;
+    final token = value['credential'] as String;
+    if (expiry <= now.millisecondsSinceEpoch ||
+        expiry > now.add(const Duration(days: 30)).millisecondsSinceEpoch ||
+        !RegExp(r'^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$').hasMatch(token) ||
+        token.length > 1024) {
+      return null;
+    }
+    return parse(
+      CinemaHomeDisplayExchangeResponse(
+        status: 200,
+        bytes: utf8.encode(
+          jsonEncode({
+            'authenticated': true,
+            'persistent': true,
+            'expiresAt': expiry,
+          }),
+        ),
+        setCookies: [
+          '$_credentialName=$token; Path=/; Secure; HttpOnly; SameSite=Strict; Expires=${io.HttpDate.format(DateTime.fromMillisecondsSinceEpoch(expiry, isUtc: true))}',
+          '$_contextName=1; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=34560000',
+        ],
+        url: cinemaHomeDisplayExchangeEndpoint,
+      ),
+      now: now,
+    );
+  }
 
   /// Mirrors the native macOS protocol: two exact host-only, Secure, HttpOnly,
   /// SameSite=Strict cookies, a short credential, and a session-only context
@@ -100,6 +145,19 @@ class CinemaHomeDisplayGrant {
         response.bytes.length > 4096) {
       invalid('response_origin_or_size');
     }
+    final dynamic payload;
+    try {
+      payload = jsonDecode(utf8.decode(response.bytes));
+    } catch (_) {
+      invalid('response_payload_body');
+    }
+    if (payload is! Map || payload['authenticated'] != true) {
+      invalid('response_payload_authorized');
+    }
+    final persistent = payload['persistent'] == true;
+    final maximum = persistent
+        ? const Duration(days: 30, seconds: 1)
+        : const Duration(seconds: 301);
     final raw = response.setCookies.join(',');
     if (raw.isEmpty || raw.length > 2048) invalid('response_cookie_header');
     // A comma in Expires is not followed by a cookie name and '='. Split other
@@ -141,7 +199,7 @@ class CinemaHomeDisplayGrant {
     final credential = parsed[_credentialName], context = parsed[_contextName];
     if (credential == null || context == null) invalid('response_cookie_parse');
     if (context.value != '1') invalid('response_cookie_marker');
-    if (context.maxAge != null || context.expires != null) {
+    if (!persistent && (context.maxAge != null || context.expires != null)) {
       invalid('response_cookie_persistence');
     }
     final expires = credential.maxAge == null
@@ -149,29 +207,21 @@ class CinemaHomeDisplayGrant {
         : now.add(Duration(seconds: credential.maxAge!));
     if (expires == null ||
         !expires.isAfter(now) ||
-        expires.difference(now) > const Duration(seconds: 301)) {
+        expires.difference(now) > maximum) {
       invalid('response_cookie_expiry');
-    }
-    final dynamic payload;
-    try {
-      payload = jsonDecode(utf8.decode(response.bytes));
-    } catch (_) {
-      invalid('response_payload_body');
-    }
-    if (payload is! Map || payload['authenticated'] != true) {
-      invalid('response_payload_authorized');
     }
     final expiry = payload['expiresAt'];
     if (expiry is! num ||
         !expiry.isFinite ||
         expiry <= now.millisecondsSinceEpoch ||
-        expiry > now.add(const Duration(seconds: 301)).millisecondsSinceEpoch) {
+        expiry > now.add(maximum).millisecondsSinceEpoch) {
       invalid('response_payload_expiry');
     }
     return CinemaHomeDisplayGrant(
       credential: credential,
       context: context,
       expiresAt: expiry.toInt(),
+      persistent: persistent,
     );
   }
 }
@@ -247,6 +297,9 @@ class CinemaHomeDisplayAuthorizer {
     required this.hasSession,
     required this.revision,
     required this.cookies,
+    this.loadGrant,
+    this.saveGrant,
+    this.forgetGrant,
     DateTime Function()? now,
   }) : now = now ?? DateTime.now;
   final CinemaHomeDisplayProof proof;
@@ -254,6 +307,10 @@ class CinemaHomeDisplayAuthorizer {
   final bool Function() hasSession;
   final int Function() revision;
   final CinemaHomeDisplayCookieStore cookies;
+  final Future<Map<String, dynamic>?> Function()? loadGrant;
+  final Future<void> Function(Map<String, dynamic>)? saveGrant;
+  final Future<void> Function()? forgetGrant;
+  CinemaHomeDisplayGrant? _cached;
   final DateTime Function() now;
   Future<void> _cookieTail = Future.value();
   Future<Map<String, dynamic>>? _flight;
@@ -271,7 +328,10 @@ class CinemaHomeDisplayAuthorizer {
     return done.future;
   }
 
-  Future<void> invalidate() => _mutate(cookies.invalidateCredential);
+  Future<void> invalidate() {
+    _cached = null;
+    return _mutate(cookies.invalidateCredential);
+  }
 
   Future<Map<String, dynamic>> authorize(String clientId) {
     if (!RegExp(r'^[a-fA-F0-9-]{36}PC-darwin$').hasMatch(clientId)) {
@@ -298,6 +358,25 @@ class CinemaHomeDisplayAuthorizer {
     return work;
   }
 
+  Future<CinemaHomeDisplayExchangeResponse> _requestGrant(
+    String clientId,
+    CinemaHomeDisplayGrant? cached,
+  ) async {
+    if (cached != null) {
+      return exchange({'version': 2, 'credential': cached.credential.value});
+    }
+    final proofs = await Future.wait([
+      proof({}),
+      proof({'basic': '1'}),
+    ]);
+    return exchange({
+      'version': 2,
+      'clientId': clientId,
+      'currentUser': proofs[0],
+      'machine': proofs[1],
+    });
+  }
+
   bool _current(int attempt) => hasSession() && revision() == attempt;
 
   Future<Map<String, dynamic>> _perform(String clientId, int attempt) async {
@@ -305,17 +384,13 @@ class CinemaHomeDisplayAuthorizer {
       return const {'authenticated': false, 'reason': 'nas_login_required'};
     }
     try {
-      final List<Map<String, String>> proofs;
-      try {
-        proofs = await Future.wait([
-          proof({}),
-          proof({'basic': '1'}),
-        ]);
-      } catch (_) {
-        throw const CinemaHomeDisplayAuthFailure(
-          'nas_proof_unavailable',
-          'proof_prepare',
-        );
+      var cached = _cached;
+      if (cached == null && loadGrant != null) {
+        try {
+          cached = CinemaHomeDisplayGrant.fromStored(await loadGrant!(), now());
+        } catch (_) {
+          /* A malformed saved grant is never used. */
+        }
       }
       if (!_current(attempt)) {
         throw const CinemaHomeDisplayAuthFailure(
@@ -323,19 +398,52 @@ class CinemaHomeDisplayAuthorizer {
           'session_generation',
         );
       }
-      final response = await exchange({
-        'version': 1,
-        'clientId': clientId,
-        'currentUser': proofs[0],
-        'machine': proofs[1],
-      });
-      if (!_current(attempt)) {
-        throw const CinemaHomeDisplayAuthFailure(
-          'nas_session_expired',
-          'session_generation',
-        );
+      if (cached != null && cached.expiresAt <= now().millisecondsSinceEpoch) {
+        cached = null;
       }
-      final grant = CinemaHomeDisplayGrant.parse(response, now: now());
+      CinemaHomeDisplayGrant grant;
+      if (cached != null &&
+          cached.expiresAt >
+              now().add(const Duration(days: 1)).millisecondsSinceEpoch) {
+        if (identical(cached, _cached)) {
+          return {
+            'authenticated': true,
+            'expiresAt': cached.expiresAt,
+            'persistent': true,
+          };
+        }
+        grant = cached;
+      } else {
+        try {
+          final response = await _requestGrant(clientId, cached);
+          if (!_current(attempt)) {
+            throw const CinemaHomeDisplayAuthFailure(
+              'nas_session_expired',
+              'session_generation',
+            );
+          }
+          grant = CinemaHomeDisplayGrant.parse(response, now: now());
+        } catch (error) {
+          if (!_current(attempt)) rethrow;
+          if (cached != null &&
+              error is CinemaHomeDisplayAuthFailure &&
+              {401, 403}.contains(error.status)) {
+            _cached = null;
+            await forgetGrant?.call();
+            grant = CinemaHomeDisplayGrant.parse(
+              await _requestGrant(clientId, null),
+              now: now(),
+            );
+          } else if (cached != null &&
+              (error is! CinemaHomeDisplayAuthFailure ||
+                  error.status == 429 ||
+                  (error.status ?? 0) >= 500)) {
+            grant = cached;
+          } else {
+            rethrow;
+          }
+        }
+      }
       final installed = await _mutate(
         () async => _current(attempt) && await cookies.install(grant),
       );
@@ -351,7 +459,27 @@ class CinemaHomeDisplayAuthorizer {
           'cookie_install',
         );
       }
-      return {'authenticated': true, 'expiresAt': grant.expiresAt};
+      if (grant.persistent) {
+        final changed =
+            _cached?.credential.value != grant.credential.value ||
+            _cached?.expiresAt != grant.expiresAt;
+        _cached = grant;
+        if (changed && saveGrant != null) {
+          try {
+            await saveGrant!(grant.toStored());
+          } catch (_) {
+            /* Keep the valid in-memory session if secure storage is unavailable. */
+          }
+        }
+      }
+      if (!_current(attempt)) {
+        return const {'authenticated': false, 'reason': 'nas_session_expired'};
+      }
+      return {
+        'authenticated': true,
+        'expiresAt': grant.expiresAt,
+        'persistent': grant.persistent,
+      };
     } catch (error) {
       if (_current(attempt)) {
         try {

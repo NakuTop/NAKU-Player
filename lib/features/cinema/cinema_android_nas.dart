@@ -40,6 +40,28 @@ class CinemaAndroidNAS {
     hasSession: () => _token.isNotEmpty && _namespace.isNotEmpty,
     revision: () => _homeDisplayGeneration,
     cookies: _homeDisplayCookies,
+    loadGrant: () async {
+      final saved = _map((await _saved())['homeDisplay']);
+      return saved['namespace'] == _namespace ? _map(saved['grant']) : null;
+    },
+    forgetGrant: () async {
+      final saved = await _saved();
+      if (saved.remove('homeDisplay') != null) {
+        await _secure.invokeMethod<void>('write', {'value': jsonEncode(saved)});
+      }
+    },
+    saveGrant: (grant) async {
+      final generation = _homeDisplayGeneration, account = _namespace;
+      final saved = await _saved();
+      if (saved.isEmpty ||
+          generation != _homeDisplayGeneration ||
+          account.isEmpty ||
+          account != _namespace) {
+        return;
+      }
+      saved['homeDisplay'] = {'namespace': account, 'grant': grant};
+      await _secure.invokeMethod<void>('write', {'value': jsonEncode(saved)});
+    },
   );
   late final _homeDisplayCookies = CinemaHomeDisplaySnapshotSession(
     webCookies: NakuDevice.isTV ? null : CinemaHomeDisplayPlatformCookies(),
@@ -693,7 +715,7 @@ class CinemaAndroidNAS {
     if (_token.isEmpty || _namespace.isEmpty) {
       return {'ok': false, 'reason': 'nas_login_required'};
     }
-    if (!_homeDisplayCookies.ready) {
+    {
       final access = await _authorizeHomeDisplay();
       if (access['authenticated'] != true) {
         return {'ok': false, 'reason': access['reason']};
@@ -704,6 +726,13 @@ class CinemaAndroidNAS {
         : _homeDisplayCookies.snapshot());
     if (generation != _homeDisplayGeneration || _token.isEmpty) {
       return {'ok': false, 'reason': 'nas_session_expired'};
+    }
+    if (!_homeDisplayCookies.ready) {
+      await _homeDisplayAuthorization.invalidate();
+      final saved = await _saved();
+      if (saved.remove('homeDisplay') != null) {
+        await _secure.invokeMethod<void>('write', {'value': jsonEncode(saved)});
+      }
     }
     return data;
   }
@@ -1271,6 +1300,15 @@ class CinemaAndroidNAS {
     }
     switch (method) {
       case 'homeDisplayAuthorize':
+        if (a['force'] == true) {
+          await _homeDisplayAuthorization.invalidate();
+          final saved = await _saved();
+          if (saved.remove('homeDisplay') != null) {
+            await _secure.invokeMethod<void>('write', {
+              'value': jsonEncode(saved),
+            });
+          }
+        }
         return _authorizeHomeDisplay();
       case 'homeDisplaySnapshot':
         return _homeDisplaySnapshot();
@@ -1296,6 +1334,12 @@ class CinemaAndroidNAS {
         return _namespace.isNotEmpty ? _current() : await _restore();
       case 'logout':
         await _logout();
+        final saved = await _saved();
+        if (saved.remove('homeDisplay') != null) {
+          await _secure.invokeMethod<void>('write', {
+            'value': jsonEncode(saved),
+          });
+        }
         return null;
       case 'forget':
         await _logout();

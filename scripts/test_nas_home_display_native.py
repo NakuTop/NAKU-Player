@@ -12,8 +12,8 @@ def main():
     root = Path(__file__).resolve().parents[1]
     source = (root / "macos/Runner/NakuNASMovies.swift").read_text()
     core = source.replace("import FlutterMacOS", "")
-    assert 'case "homeDisplayAuthorize": value=await session.homeDisplayAuthorize()' in source
-    assert 'return ["authenticated":true,"expiresAt":authorized.expiresAt]' in source
+    assert 'case "homeDisplayAuthorize": value=await session.homeDisplayAuthorize(force:args["force"] as? Bool == true)' in source
+    assert 'return ["authenticated":true,"expiresAt":authorized.expiresAt,"persistent":authorized.persistent]' in source
     assert source.count("invalidateCredential(generation:attempt)") == 2
     assert "NASHomeDisplayCookies.shared.clear(" not in source
     invalidation = source.split("func invalidateCredential(generation attempt: Int) async {", 1)[1].split("\n}\n", 1)[0]

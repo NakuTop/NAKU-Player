@@ -160,7 +160,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     });
   }
 
-  Future<void> _open() async {
+  Future<void> _open({bool force = false}) async {
     if (_authorizing || _closing) return;
     final generation = ++_generation;
     _cancelLoadingTimers();
@@ -181,7 +181,7 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
     });
     try {
       final access = await _client
-          .call('homeDisplayAuthorize')
+          .call('homeDisplayAuthorize', {'force': force})
           .timeout(Duration(seconds: _android ? 35 : 60));
       if (!_active(generation)) return;
       if (access['authenticated'] != true) {
@@ -211,7 +211,18 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
   void _scheduleRenewal(Map<String, dynamic> access, int generation) {
     _renewTimer?.cancel();
     // Revalidate with the NAS before the short, read-only web session expires.
-    _renewTimer = Timer(const Duration(minutes: 4), () async {
+    final persistent = access['persistent'] == true;
+    final expiry = access['expiresAt'];
+    final remaining = expiry is num
+        ? expiry.toInt() - DateTime.now().millisecondsSinceEpoch
+        : 0;
+    final delay = persistent
+        ? Duration(
+            milliseconds: (remaining - const Duration(days: 1).inMilliseconds)
+                .clamp(60000, const Duration(hours: 12).inMilliseconds),
+          )
+        : const Duration(minutes: 4);
+    _renewTimer = Timer(delay, () async {
       if (!_active(generation) || _hidden || (_android && _suspended)) return;
       try {
         final access = await _client
@@ -929,7 +940,9 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
                               )
                             else
                               TextButton(
-                                onPressed: _authorizing ? null : _open,
+                                onPressed: _authorizing
+                                    ? null
+                                    : () => _open(force: true),
                                 child: const Text('重试'),
                               ),
                           ],
@@ -953,7 +966,9 @@ class _CinemaHomeDisplayPageState extends State<CinemaHomeDisplayPage>
                           _displayControl(
                             tooltip: '刷新',
                             icon: Icons.refresh_rounded,
-                            onPressed: _authorizing ? null : _open,
+                            onPressed: _authorizing
+                                ? null
+                                : () => _open(force: true),
                           ),
                           const SizedBox(width: 4),
                           _displayControl(

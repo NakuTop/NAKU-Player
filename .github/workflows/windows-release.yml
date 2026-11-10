@@ -47,7 +47,7 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
       - name: Shared playback and library regressions
-        run: flutter test --no-pub test/windows_update_asset_test.dart test/features/cinema/windows_playback_policy_test.dart test/features/cinema/cinema_aggregated_search_test.dart test/features/cinema/cinema_library_identity_test.dart test/features/cinema/cinema_multi_source_danmaku_test.dart test/features/cinema/cinema_movie_versions_test.dart test/features/cinema/cinema_offline_danmaku_test.dart test/features/cinema/cinema_source_priority_test.dart test/features/cinema/cinema_playback_candidates_test.dart test/features/cinema/cinema_detail_comparison_test.dart
+        run: flutter test --no-pub test/windows_update_asset_test.dart test/features/cinema/windows_playback_policy_test.dart test/features/cinema/cinema_aggregated_search_test.dart test/features/cinema/cinema_library_identity_test.dart test/features/cinema/cinema_multi_source_danmaku_test.dart test/features/cinema/cinema_movie_versions_test.dart test/features/cinema/cinema_offline_danmaku_test.dart test/features/cinema/cinema_source_priority_test.dart test/features/cinema/cinema_playback_candidates_test.dart test/features/cinema/cinema_detail_comparison_test.dart test/features/cinema/cinema_home_display_authorization_test.dart test/features/cinema/cinema_home_display_snapshot_test.dart test/features/cinema/cinema_android_nas_test.dart
       - name: Build installer with bundled runtime
         shell: pwsh
         run: ./scripts/build_windows_installer.ps1
