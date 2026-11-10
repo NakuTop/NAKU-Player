@@ -46,6 +46,9 @@ final class AutoRouteProtocol: URLProtocol {
         // No authorization material may be sent during endpoint discovery.
         precondition(request.value(forHTTPHeaderField:"X-Ugreen-Token") == nil)
         precondition(request.url!.query == nil)
+        if request.url!.host == "192.168.1.98" {
+            client!.urlProtocol(self,didFailWithError:URLError(.timedOut));return
+        }
         let hint=request.url!.host == "192.168.1.99" ? "different-device":"fixture-device"
         let bytes=try! JSONSerialization.data(withJSONObject:["code":200,"data":["sn":hint]])
         client!.urlProtocol(self,didReceive:HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:nil)!,cacheStoragePolicy:.notAllowed)
@@ -78,6 +81,13 @@ final class AutoRouteProtocol: URLProtocol {
         let restored=await NASMovieSession.restorationRoute(address:savedLAN,username:"fixture-user",cache:routeCache,transport:routeTransport)
         expect(restored == oldAddress,"startup refreshes expired hint and falls back from wrong LAN before login")
         print("PASS startup cache binding, rotating hint, remote recovery and account isolation")
+        let warmRemote=await NASMovieSession.selectAutoRoute(lan:[savedLAN],remote:[oldAddress],hint:"expired-hint",transport:routeTransport)
+        expect(warmRemote == oldAddress,"running app leaves LAN and recovers remote after public routing hint rotates")
+        let outside=await NASMovieSession.selectAutoRoute(lan:["http://192.168.1.98:9999"],remote:[oldAddress],hint:"expired-hint",transport:routeTransport)
+        expect(outside == oldAddress,"unreachable LAN and rotated hint recover without restart or re-login")
+        let backHome=await NASMovieSession.selectAutoRoute(lan:["http://192.168.1.10:9999"],remote:[oldAddress],hint:"expired-hint",transport:routeTransport)
+        expect(backHome == "http://192.168.1.10:9999","returning home still prefers verified LAN after hint refresh")
+        print("PASS live LAN departure, timeout, rotated hint and return-home routing")
         var reads=0
         let refreshed=try await NASMovieSession.refreshedRouteHint(cached:"expired-device-hint") {
             reads += 1

@@ -416,7 +416,7 @@ actor NASMovieSession {
             return target.absoluteString
         } catch {return nil}
     }
-    static func selectAutoRoute(lan: [String], remote: [String], hint: String, transport: URLSession) async -> String? {
+    private static func selectAutoRouteWithHint(lan: [String], remote: [String], hint: String, transport: URLSession) async -> String? {
         guard !hint.isEmpty else {return nil}
         // Local candidates come only from the authenticated NAS. Probe without
         // sending tokens/passwords; never follow redirects or ignore TLS errors.
@@ -456,6 +456,27 @@ actor NASMovieSession {
         }
         return await selectAutoRoute(lan:cache["lan"] as? [String] ?? [],remote:remotes,hint:hint,transport:transport)
     }
+    static func selectAutoRoute(lan: [String], remote: [String], hint: String, transport: URLSession) async -> String? {
+        if let selected=await selectAutoRouteWithHint(lan:lan,remote:remote,hint:hint,transport:transport) {return selected}
+        // A live app can leave LAN after the public routing hint rotates. Cold
+        // restore and live switching must both refresh it from a known TLS relay.
+        // Discovery carries no credentials; callers still verify canonical NAS
+        // and account identity before committing a route or restoring a login.
+        for address in Array(Set(remote)).sorted().prefix(12) {
+            guard !Task.isCancelled,let target=try? origin(address),let host=target.host,
+                  target.scheme == "https",host.hasSuffix(".ug.link") else {continue}
+            var request=URLRequest(url:target.appendingPathComponent("ugreen/v1/verify/sn"));request.timeoutInterval=3
+            if let (bytes,response)=try? await transport.data(for:request),
+               let http=response as? HTTPURLResponse,http.statusCode == 200,http.url?.host?.lowercased() == host.lowercased(),bytes.count < 65536,
+               let object=try? JSONSerialization.jsonObject(with:bytes) as? [String:Any],object["code"] as? Int == 200,
+               let data=object["data"] as? [String:Any],let live=data["sn"] as? String,!live.isEmpty,live != hint,
+               let selected=await selectAutoRouteWithHint(lan:lan,remote:remote,hint:live,transport:transport) {
+                return selected
+            }
+        }
+        return nil
+    }
+
     func restore(automatically: Bool = false, expected: String? = nil) async throws -> [String:Any] {
         if automatically && automaticRestoreSuspended {throw NASMovieError.expired}
         if let active=restoration {
@@ -526,7 +547,7 @@ actor NASMovieSession {
         let cache=UserDefaults.standard.dictionary(forKey:"NakuNASAutoRouteV1") ?? [:]
         let cachedHint=cache["namespace"] as? String == expected ? cache["hint"] as? String:nil
         autoRouteStatus="正在自动检测局域网连接"
-        let hint=try await Self.refreshedRouteHint(cached:cachedHint) {try await self.publicDeviceHint(original)}
+        let hint=try await Self.refreshedRouteHint(cached:cachedHint) {try await self.publicDeviceHint(original,timeout:Self.isPrivateIPv4(original.host ?? "") ? 1.2:3)}
         guard generation == attempt,namespace == expected else {throw NASMovieError.expired}
         let metadata=try savedLogin(),savedAddress=metadata["address"] as? String ?? "",username=metadata["username"] as? String ?? ""
         let remote=[remoteAddress,savedAddress,original.absoluteString].filter {
@@ -581,15 +602,15 @@ actor NASMovieSession {
         guard generation == attempt else {throw NASMovieError.expired}
         try credentialStore.forget();try qrStore.forget()
     }
-    private func publicDeviceInfo(_ target: URL) async throws -> [String:Any] {
-        let (data,http)=try await send(target.appendingPathComponent("ugreen/v1/verify/sn"))
+    private func publicDeviceInfo(_ target: URL, timeout: TimeInterval? = nil) async throws -> [String:Any] {
+        let (data,http)=try await send(target.appendingPathComponent("ugreen/v1/verify/sn"),timeout:timeout)
         let r=try json(data)
         guard http.statusCode == 200,r["code"] as? Int == 200,
               let d=r["data"] as? [String:Any],let hint=d["sn"] as? String,!hint.isEmpty else {throw NASMovieError.response}
         return d
     }
-    private func publicDeviceHint(_ target: URL) async throws -> String {
-        let info=try await publicDeviceInfo(target)
+    private func publicDeviceHint(_ target: URL, timeout: TimeInterval? = nil) async throws -> String {
+        let info=try await publicDeviceInfo(target,timeout:timeout)
         return info["sn"] as! String
     }
     func createQR(address: String) async throws -> [String:Any] {
