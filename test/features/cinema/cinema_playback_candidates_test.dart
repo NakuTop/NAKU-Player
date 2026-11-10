@@ -46,14 +46,50 @@ CinemaPlaybackCandidate candidate(CinemaTitle t, {int episode = 0}) =>
 
 class Repo extends CinemaRepository {
   int calls = 0;
+  CinemaTitle? result;
   @override
   Future<CinemaTitle> detail(CinemaSource s, CinemaTitle t) async {
     calls++;
+    if (result != null) return result!;
     throw const CinemaSourceException('offline');
   }
 }
 
 void main() {
+  test('refresh replaces a saved route and rejects a different work', () async {
+    final repo = Repo();
+    final title = work('a');
+    final catalogue = CinemaPlaybackCatalogue(
+      title: title,
+      source: a,
+      variants: [],
+      sources: [a, b],
+      repository: repo,
+    );
+    repo.result = title.copyWith(
+      routes: [
+        const CinemaRoute(
+          name: 'HLS',
+          episodes: [
+            CinemaEpisode(name: '第02集', url: 'https://a.example/fresh.m3u8'),
+          ],
+        ),
+      ],
+    );
+    final fresh = await catalogue.refresh(title);
+    expect(repo.calls, 1);
+    expect(catalogue.loaded(title), same(fresh));
+    expect(
+      catalogue.matching(candidate(title, episode: 1)).single.episode.url,
+      'https://a.example/fresh.m3u8',
+    );
+    repo.result = work('b');
+    await expectLater(
+      catalogue.refresh(title),
+      throwsA(isA<CinemaSourceException>()),
+    );
+    expect(catalogue.loaded(title), isNull);
+  });
   test('same episode matches reordered provider numbers rather than index', () {
     expect(
       cinemaMatchPlaybackEpisode(

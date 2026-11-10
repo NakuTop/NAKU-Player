@@ -177,6 +177,9 @@ private func connectTCP(_ host: String, _ port: UInt16) throws -> Int32 {
     } catch { Darwin.close(fd); throw error }
 }
 private final class RTSPConnection {
+    // Control replies can lag while HomePod wakes or services other clients.
+    // pyatv also separates its 25 s control deadline from realtime RTP pacing.
+    private static let responseTimeout: TimeInterval = 25
     private enum ReadError: Error { case idleTimeout }
     enum ResponseSequence { case matched, stale }
     private var fd: Int32
@@ -228,8 +231,73 @@ private final class RTSPConnection {
         event.eventLoop(whileRunning: { true }, onFailure: { _ in failures += 1 })
         guard failures == 1, event.fd == -1 else { throw NakuAirPlayError.invalid("Self-test: event EOF did not terminate once") }
     }
+    static func selfTestSlowControl(key: SymmetricKey) throws {
+        func pair() throws -> (RTSPConnection, Int32) {
+            var sockets = [Int32](repeating: -1, count: 2)
+            guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else { throw socketError("Fixture socket pair") }
+            var noPipe: Int32 = 1
+            _ = setsockopt(sockets[1], SOL_SOCKET, SO_NOSIGPIPE, &noPipe, socklen_t(MemoryLayout<Int32>.size))
+            return (RTSPConnection(fixtureDescriptor: sockets[0]), sockets[1])
+        }
+        let (control, peer) = try pair()
+        defer { control.close(); Darwin.close(peer) }
+        control.enable(out: key, input: key)
+        let finished = DispatchGroup()
+        finished.enter()
+        DispatchQueue.global().async {
+            defer { finished.leave() }
+            let framer = HAPFramer(outKey: key, inKey: key)
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            for sequence in 1...2 {
+                guard Darwin.recv(peer, &buffer, buffer.count, 0) > 0 else { return }
+                // Cross the old four-second poll timeout, then fragment a HAP
+                // frame. The next request proves nonce/sequence continuity.
+                if sequence == 1 { Thread.sleep(forTimeInterval: 4.2) }
+                guard let wire = try? framer.encode(Data("RTSP/1.0 200 OK\r\nCSeq: \(sequence)\r\nContent-Length: 0\r\n\r\n".utf8)) else { return }
+                wire.withUnsafeBytes { bytes in
+                    _ = Darwin.send(peer, bytes.baseAddress, 3, 0)
+                    Thread.sleep(forTimeInterval: 0.02)
+                    _ = Darwin.send(peer, bytes.baseAddress!.advanced(by: 3), bytes.count-3, 0)
+                }
+            }
+        }
+        _ = try control.request("POST", "/feedback")
+        _ = try control.request("POST", "/feedback")
+        guard finished.wait(timeout: .now()+1) == .success, control.framer?.inCounter == 2,
+              control.framer?.outCounter == 2 else { throw NakuAirPlayError.invalid("Self-test: delayed response replayed or lost encryption state") }
+        let (silent, silentPeer) = try pair()
+        defer { silent.close(); Darwin.close(silentPeer) }
+        do {
+            _ = try silent.request("POST", "/feedback", timeout: 0.08)
+            throw NakuAirPlayError.invalid("Self-test: silent receiver did not time out")
+        } catch { guard silent.fd == -1 else { throw error } }
+        let (cancelled, cancelledPeer) = try pair()
+        defer { cancelled.close(); Darwin.close(cancelledPeer) }
+        let waiting = DispatchGroup(); waiting.enter()
+        DispatchQueue.global().async {
+            defer { waiting.leave() }
+            _ = try? cancelled.request("POST", "/feedback")
+        }
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        guard Darwin.recv(cancelledPeer, &buffer, buffer.count, 0) > 0 else { throw socketError("Fixture receive") }
+        let started = ProcessInfo.processInfo.systemUptime
+        cancelled.close(teardownURI: "fixture")
+        guard waiting.wait(timeout: .now()+1) == .success,
+              ProcessInfo.processInfo.systemUptime-started < 1 else { throw NakuAirPlayError.invalid("Self-test: stop waited for control timeout") }
+        print("PASS: delayed encrypted feedback beyond 4 s, fragmented reply, next CSeq/nonces, bounded silent timeout, immediate stop during pending control")
+    }
     func enable(out: SymmetricKey, input: SymmetricKey) { lock.withLock { framer = HAPFramer(outKey: out, inKey: input) } }
-    func close() {
+    func close(teardownURI: String? = nil) {
+        if let teardownURI, lock.try() {
+            // Best effort only when no exchange owns the channel. Never queue
+            // TEARDOWN behind a slow feedback response or wait for its reply.
+            if fd >= 0 {
+                cseq += 1
+                let sessionHeader = session.map { "Session: \($0)\r\n" } ?? ""
+                try? send(Data("TEARDOWN \(teardownURI) RTSP/1.0\r\nCSeq: \(cseq)\r\n\(sessionHeader)Content-Length: 0\r\n\r\n".utf8))
+            }
+            invalidateLocked(); lock.unlock(); return
+        }
         // Wake a blocked receive before waiting for the operation lock. The actual
         // close stays serialized so a reused descriptor cannot be read or written.
         shutdownLock.withLock { if fd >= 0 { _ = shutdown(fd, SHUT_RDWR) } }
@@ -261,7 +329,13 @@ private final class RTSPConnection {
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             let ready = poll(&descriptor, 1, Int32(max(1, ceil(min(remaining, 4)*1000))))
             if ready < 0 && errno == EINTR { continue }
-            if ready == 0 { throw ReadError.idleTimeout }
+            if ready == 0 {
+                // Poll slices are cancellation points, not the whole request's
+                // deadline. Keep receiving the SAME response without replaying
+                // an encrypted request or advancing its HAP nonce.
+                if let deadline, ProcessInfo.processInfo.systemUptime < deadline { continue }
+                throw ReadError.idleTimeout
+            }
             guard ready > 0 else { throw socketError("RTSP poll") }
             var buffer = [UInt8](repeating: 0, count: 16384)
             let n = Darwin.recv(fd, &buffer, buffer.count, 0)
@@ -309,7 +383,7 @@ private final class RTSPConnection {
         if let server = request.headers["server"] { h += "Server: \(server)\r\n" }
         return (Data((h+"\r\n").utf8), String(parts[0]), protocolToken, sequence)
     }
-    func request(_ method: String, _ path: String, body: Data = Data(), headers: [String: String] = [:], http: Bool = false) throws -> WireMessage {
+    func request(_ method: String, _ path: String, body: Data = Data(), headers: [String: String] = [:], http: Bool = false, timeout: TimeInterval = RTSPConnection.responseTimeout) throws -> WireMessage {
         try lock.withLock {
             guard fd >= 0 else { throw NakuAirPlayError.network("Connection is closed") }
             cseq += 1
@@ -324,7 +398,7 @@ private final class RTSPConnection {
                 try send(Data(head.utf8) + body)
                 var staleCount = 0
                 while true {
-                    let reply = try receive(until: started+4)
+                    let reply = try receive(until: started+timeout)
                     if try Self.responseSequence(reply, expected: cseq, requiresSequence: !http) == .stale {
                         staleCount += 1
                         diagnostic?("\(channel) stale response cseq=\(reply.headers["cseq"] ?? "missing") expected=\(cseq)")
@@ -461,6 +535,7 @@ public final class NakuAirPlaySender {
                 if let eventConn {
                     // The event channel's key direction is opposite the control channel.
                     eventConn.enable(out: derive(proof.sharedKey, "Events-Salt", "Events-Read-Encryption-Key"), input: derive(proof.sharedKey, "Events-Salt", "Events-Write-Encryption-Key")); events = eventConn
+                    startEventWorker(eventConn)
                 }
             }
             audioKey = derive(proof.sharedKey, "Events-Salt", "Events-Write-Encryption-Key")
@@ -475,7 +550,10 @@ public final class NakuAirPlaySender {
             _ = try conn.request("RECORD", uri, headers: ["Range": "npt=0-", "RTP-Info": "seq=\(seq);rtptime=\(rtp)"])
             phase = "initial FLUSH"
             _ = try conn.request("FLUSH", uri, headers: ["Range": "npt=0-", "RTP-Info": "seq=\(seq);rtptime=\(rtp)"])
-            state.withLock { running = true }
+            try state.withLock {
+                guard networkActive else { throw NakuAirPlayError.network(errorText ?? "HomePod event connection closed during setup") }
+                running = true
+            }
             startWorkers()
         } catch {
             let contextual = NakuAirPlayError.network("HomePod connect [\(phase)]: \(error.localizedDescription)")
@@ -522,9 +600,10 @@ public final class NakuAirPlaySender {
     public func close() {
         lifecycle.lock(); defer { lifecycle.unlock() }
         state.withLock { running = false; networkActive = false; pcmSource.reset() }
-        events?.close()
+        // Wake pending control/event receives before joining their workers.
+        // Closing must never wait for the longer reply deadline.
+        connection?.close(teardownURI: uri); events?.close()
         _ = workerGroup.wait(timeout: .now()+5)
-        if let conn = connection { _ = try? conn.request("TEARDOWN", uri) }
         cleanup()
     }
     deinit { close() }
@@ -561,6 +640,13 @@ public final class NakuAirPlaySender {
             var requests: UInt64 = 0, replies: UInt64 = 0, failures: UInt64 = 0
             var nextDiagnostic = ProcessInfo.processInfo.systemUptime+10
             while let self, self.state.withLock({ self.networkActive }) {
+                // Wake for actual timing packets rather than polling 500 times
+                // per second while the speaker is idle. RTP has its own clock.
+                var descriptor = pollfd(fd: self.timingFD, events: Int16(POLLIN), revents: 0)
+                let ready = poll(&descriptor, 1, 250)
+                if ready < 0 && errno == EINTR { continue }
+                guard self.state.withLock({ self.networkActive }) else { break }
+                guard ready >= 0 else { self.fail(socketError("NTP poll")); break }
                 for _ in 0..<16 {
                     var buffer = [UInt8](repeating: 0, count: 2048), peer = sockaddr_in(), length = socklen_t(MemoryLayout<sockaddr_in>.size)
                     let n = withUnsafeMutablePointer(to: &peer) { p in p.withMemoryRebound(to: sockaddr.self, capacity: 1) { recvfrom(self.timingFD, &buffer, buffer.count, 0, $0, &length) } }
@@ -577,7 +663,6 @@ public final class NakuAirPlaySender {
                     self.onDiagnostic?("ntp requests=\(requests) replies=\(replies) failures=\(failures)")
                     nextDiagnostic = now+10
                 }
-                Thread.sleep(forTimeInterval: 0.002)
             }
         }
     }
@@ -585,13 +670,6 @@ public final class NakuAirPlaySender {
         workerGroup.enter()
         DispatchQueue(label: "naku.airplay.audio", qos: .userInteractive).async { [weak self] in
             defer { self?.workerGroup.leave() }; self?.audioLoop()
-        }
-        if let events {
-            workerGroup.enter()
-            DispatchQueue(label: "naku.airplay.events", qos: .utility).async { [weak self] in
-                defer { self?.workerGroup.leave() }
-                events.eventLoop(whileRunning: { self?.isConnected ?? false }, onFailure: { self?.fail($0) })
-            }
         }
         workerGroup.enter()
         DispatchQueue(label: "naku.airplay.feedback", qos: .utility).async { [weak self] in
@@ -604,6 +682,13 @@ public final class NakuAirPlaySender {
                     _ = try connection.request("POST", "/feedback")
                 } catch { if self.isConnected { self.fail(error) }; return }
             }
+        }
+    }
+    private func startEventWorker(_ events: RTSPConnection) {
+        workerGroup.enter()
+        DispatchQueue(label: "naku.airplay.events", qos: .utility).async { [weak self] in
+            defer { self?.workerGroup.leave() }
+            events.eventLoop(whileRunning: { self?.state.withLock { self?.networkActive ?? false } ?? false }, onFailure: { self?.fail($0) })
         }
     }
     private func fail(_ error: Error) {
@@ -720,6 +805,7 @@ public final class NakuAirPlaySender {
         try require(try RTSPConnection.responseSequence(response(nil, protocolToken: "HTTP/1.1"), expected: 7, requiresSequence: false) == .matched, "HTTP pairing may omit CSeq")
         try require(protocolRejects { _ = try RTSPConnection.responseSequence(response(nil, protocolToken: "HTTP/1.1"), expected: 7, requiresSequence: true) }, "HTTP-formatted RTSP response still requires CSeq")
         try RTSPConnection.selfTestClosedTransport(key: key)
+        try RTSPConnection.selfTestSlowControl(key: key)
         let infoBytes = try PropertyListSerialization.data(fromPropertyList: ["initialVolume": -15.0], format: .binary, options: 0)
         let info = try PropertyListSerialization.propertyList(from: infoBytes, options: [], format: nil) as! [String: Any]
         try require(Self.normalizedReceiverVolume(info["initialVolume"]) == 0.5, "initial receiver volume -15 dBFS maps to one half")

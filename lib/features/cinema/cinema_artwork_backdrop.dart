@@ -58,6 +58,7 @@ class CinemaArtworkBackdrop extends StatefulWidget {
   const CinemaArtworkBackdrop({
     super.key,
     required this.image,
+    this.fallbackImage,
     this.alignment = Alignment.center,
     this.fit = BoxFit.contain,
     this.featherSides = false,
@@ -66,6 +67,7 @@ class CinemaArtworkBackdrop extends StatefulWidget {
   });
 
   final ImageProvider image;
+  final ImageProvider? fallbackImage;
   final Alignment alignment;
   final BoxFit fit;
   final bool featherSides;
@@ -82,6 +84,8 @@ class _CinemaArtworkBackdropState extends State<CinemaArtworkBackdrop> {
   ImageInfo? _sharp, _ambient;
   ImageConfiguration? _configuration;
   bool _attaching = false;
+  bool _usingFallback = false;
+  int _generation = 0;
 
   @override
   void didChangeDependencies() {
@@ -89,17 +93,22 @@ class _CinemaArtworkBackdropState extends State<CinemaArtworkBackdrop> {
     final configuration = createLocalImageConfiguration(context);
     if (_configuration != configuration) {
       _configuration = configuration;
-      _resolve();
+      _resolve(fallback: _usingFallback && widget.fallbackImage != null);
     }
   }
 
   @override
   void didUpdateWidget(CinemaArtworkBackdrop oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.image != widget.image) _resolve();
+    if (oldWidget.image != widget.image ||
+        oldWidget.fallbackImage != widget.fallbackImage) {
+      _resolve();
+    }
   }
 
-  void _resolve() {
+  void _resolve({bool fallback = false}) {
+    final generation = ++_generation;
+    _usingFallback = fallback;
     _detach();
     _sharp?.dispose();
     _ambient?.dispose();
@@ -115,7 +124,7 @@ class _CinemaArtworkBackdropState extends State<CinemaArtworkBackdrop> {
         }
       }
 
-      if (!mounted) {
+      if (!mounted || generation != _generation) {
         info.dispose();
       } else if (_attaching) {
         replace();
@@ -125,15 +134,25 @@ class _CinemaArtworkBackdropState extends State<CinemaArtworkBackdrop> {
     }
 
     final configuration = _configuration ?? ImageConfiguration.empty;
-    _sharpStream = widget.image.resolve(configuration);
+    final image = fallback ? widget.fallbackImage! : widget.image;
+    _sharpStream = image.resolve(configuration);
     _ambientStream = ResizeImage.resizeIfNeeded(
       384,
       null,
-      widget.image,
+      image,
     ).resolve(configuration);
     _sharpListener = ImageStreamListener(
       (info, _) => frame(info, ambient: false),
-      onError: (Object error, StackTrace? trace) {},
+      onError: (Object error, StackTrace? trace) {
+        if (fallback || widget.fallbackImage == null) return;
+        // Image errors may arrive synchronously from a cached completer.
+        // Defer the replacement and reject stale callbacks after a page swipe.
+        Future.microtask(() {
+          if (mounted && generation == _generation) {
+            setState(() => _resolve(fallback: true));
+          }
+        });
+      },
     );
     _ambientListener = ImageStreamListener(
       (info, _) => frame(info, ambient: true),
@@ -171,7 +190,7 @@ class _CinemaArtworkBackdropState extends State<CinemaArtworkBackdrop> {
             sharp: _sharp?.image,
             ambient: _ambient?.image,
             alignment: widget.alignment,
-            fit: widget.fit,
+            fit: _usingFallback ? BoxFit.contain : widget.fit,
             insets: widget.contentInsets,
             featherSides: widget.featherSides,
             shadeLeading: widget.shadeLeading,

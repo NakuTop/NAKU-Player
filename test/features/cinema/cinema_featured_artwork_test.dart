@@ -72,7 +72,7 @@ void main() {
         window.artworkFor(_titles[0]).url,
         'https://original.invalid/0.jpg',
       );
-      expect(window.artworkFor(_titles[2]).url, isEmpty);
+      expect(window.artworkFor(_titles[2]).url, _titles[2].poster);
       window.dispose();
     },
   );
@@ -90,7 +90,7 @@ void main() {
       repository.requests[1].complete();
       await _settle();
       expect(repository.requests.map((r) => r.title.id), ['0', '1', '3', '4']);
-      expect(window.artworkFor(_titles[0]).url, isEmpty);
+      expect(window.artworkFor(_titles[0]).url, _titles[0].poster);
       window.dispose();
       repository.requests[2].complete();
       repository.requests[3].complete();
@@ -132,7 +132,7 @@ void main() {
       expect(repository.requests.last.identity, identity);
       repository.requests.last.complete();
       await _settle();
-      expect(window.artworkFor(_titles[0]).url, isEmpty);
+      expect(window.artworkFor(_titles[0]).url, _titles[0].poster);
       expect(
         window.artworkFor(_titles[0], identity: identity).highResolution,
         isTrue,
@@ -142,7 +142,7 @@ void main() {
   );
 
   test(
-    'unverified and portrait artwork never fall back to the catalogue poster',
+    'unverified and portrait candidates retain the known catalogue poster',
     () async {
       for (final artwork in [
         const CinemaDetailArtwork(url: 'https://images.invalid/unknown.jpg'),
@@ -156,10 +156,10 @@ void main() {
         final repository = _Repository();
         final window = CinemaFeaturedArtworkWindow(repository: repository);
         window.update(_titles.take(1).toList(), 0);
-        expect(window.artworkFor(_titles[0]).url, isEmpty);
+        expect(window.artworkFor(_titles[0]).url, _titles[0].poster);
         repository.requests.single.complete(artwork);
         await _settle();
-        expect(window.artworkFor(_titles[0]).url, isEmpty);
+        expect(window.artworkFor(_titles[0]).url, _titles[0].poster);
         window.dispose();
       }
     },
@@ -215,7 +215,7 @@ void main() {
       );
       window.update([changed], 0);
       expect(repository.requests, hasLength(2));
-      expect(window.artworkFor(changed).url, isEmpty);
+      expect(window.artworkFor(changed).url, changed.poster);
       repository.requests.last.complete();
       await _settle();
       expect(window.artworkFor(changed).usableLandscape, isTrue);

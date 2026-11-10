@@ -341,7 +341,7 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
                     width: decodeWidth,
                     policy: ResizeImagePolicy.fit,
                   ),
-              fit: BoxFit.cover,
+              fit: artwork.usableLandscape ? BoxFit.cover : BoxFit.contain,
               alignment: const Alignment(.3, 0),
               errorBuilder: (_, _, _) =>
                   const ColoredBox(color: Color(0xFF111113)),
@@ -624,7 +624,23 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
                   policy: ResizeImagePolicy.fit,
                 ),
             alignment: const Alignment(.4, 0),
-            fit: BoxFit.cover,
+            fit: artwork.usableLandscape ? BoxFit.cover : BoxFit.contain,
+            fallbackImage:
+                artwork.url != title.poster && title.poster.isNotEmpty
+                ? widget.artworkImageProvider?.call(
+                        CinemaDetailArtwork(url: title.poster),
+                        960,
+                      ) ??
+                      ResizeImage(
+                        CachedNetworkImageProvider(
+                          title.poster,
+                          cacheManager:
+                              ProxyAwareImageCacheManager.cinemaInstance,
+                        ),
+                        width: 960,
+                        policy: ResizeImagePolicy.fit,
+                      )
+                : null,
             contentInsets: EdgeInsets.fromLTRB(0, widget.topInset + 12, 0, 40),
           ),
         // Keep contrast local to the title/action area. A page-wide shadow

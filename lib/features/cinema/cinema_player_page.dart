@@ -246,6 +246,7 @@ class CinemaPlayerPage extends StatefulWidget {
     this.mobileControls,
     this.offlinePaths,
     this.initialPositionSeconds,
+    this.resumeHistory,
     this.mediaProbe,
     this.mediaCache,
     this.autoSelectBestRoute,
@@ -268,6 +269,7 @@ class CinemaPlayerPage extends StatefulWidget {
   final int routeIndex;
   final int episodeIndex;
   final int? initialPositionSeconds;
+  final CinemaHistory? resumeHistory;
   @visibleForTesting
   final CinemaMediaProbe? mediaProbe;
   @visibleForTesting
@@ -459,6 +461,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   CinemaPlaybackCandidate? _failoverAnchor;
   _CinemaPlayback? _playback;
   final _recovery = CinemaPlaybackRecovery();
+  bool _historyRefreshed = false;
   Timer? _recoveryTimer;
   Timer? _historyTimer;
   Timer? _loadTimer;
@@ -3179,6 +3182,45 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _playbackNotice = null;
       _phase = '当前线路未能继续，正在查找同集的其他线路';
     });
+    // A saved URL may rotate. Refresh this exact history source once, map the
+    // episode by URL/name (never stale indexes), then retain normal failover.
+    final history = widget.resumeHistory;
+    final savedSelection = history == null
+        ? null
+        : cinemaResumeSelection(_title, history);
+    if (!_historyRefreshed &&
+        history != null &&
+        savedSelection?.routeIndex == _routeIndex &&
+        savedSelection?.episodeIndex == _episodeIndex &&
+        _source.kind != CinemaSourceKind.direct) {
+      _historyRefreshed = true;
+      final previous = _selection;
+      setState(() => _phase = '正在更新历史记录的播放地址');
+      try {
+        final fresh = await _catalogue.refresh(history.title);
+        if (!_isCurrent(generation)) return;
+        final selection = cinemaResumeSelection(fresh, history);
+        if (selection != null &&
+            fresh
+                    .routes[selection.routeIndex]
+                    .episodes[selection.episodeIndex]
+                    .url !=
+                previous?.episode.url) {
+          await _playEpisode(
+            selection.routeIndex,
+            selection.episodeIndex,
+            title: fresh,
+            source: _source,
+            resumeAt: position,
+            automatic: true,
+          );
+          return;
+        }
+      } catch (_) {
+        /* Continue the bounded alternate-source scan. */
+      }
+      if (!_isCurrent(generation)) return;
+    }
     while (_isCurrent(generation) && anchor != null && !_attempts.exhausted) {
       final next = await _catalogue.firstMatching(
         anchor,
@@ -3471,8 +3513,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         now = order.indexOf(current.source.id);
     if (before >= 0 && now >= 0 && before != now) return before < now;
     if (cinemaCandidateQuality(best.candidate) < 0 &&
-        cinemaCandidateQuality(current) >= 0)
+        cinemaCandidateQuality(current) >= 0) {
       return false;
+    }
     final measured = _probeResults[current.key];
     final height = measured?.height ?? 0, nextHeight = best.result.height ?? 0;
     if (height > 0 && nextHeight > 0) {

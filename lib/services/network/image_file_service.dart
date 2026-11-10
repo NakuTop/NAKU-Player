@@ -6,6 +6,7 @@ import 'package:kazumi/services/network/bangumi_ech_image_service.dart';
 import 'package:kazumi/services/network/bangumi_image_url_rewriter.dart';
 import 'package:kazumi/services/network/image_acceleration.dart';
 import 'package:kazumi/services/network/image_file_response.dart';
+import 'package:kazumi/features/cinema/douban/douban_image_headers.dart';
 
 class ImageFileService extends FileService {
   ImageFileService({
@@ -19,18 +20,28 @@ class ImageFileService extends FileService {
   final ImageAcceleration Function() _acceleration;
   final http.Client Function() _clientFactory;
   final BangumiEchImageService _echService;
-  final _clients = <http.Client>{};
+  final _clients = <http.Client, int>{};
+  http.Client? _client;
   bool _closed = false;
 
-  void resetNetworkClients() => _echService.reset();
+  void resetNetworkClients() {
+    _echService.reset();
+    final previous = _client;
+    _client = null;
+    if (previous != null && _clients[previous] == 0) {
+      _clients.remove(previous);
+      previous.close();
+    }
+  }
 
   void close() {
     _closed = true;
     _echService.close();
-    for (final client in _clients) {
+    for (final client in _clients.keys.toList()) {
       client.close();
     }
     _clients.clear();
+    _client = null;
   }
 
   @override
@@ -62,12 +73,21 @@ class ImageFileService extends FileService {
       uri = BangumiImageUrlRewriter.rewrite(uri);
     }
 
-    final client = _clientFactory();
-    _clients.add(client);
+    // Reuse TCP/TLS sessions and successful fallback routes across the grid.
+    // A settings reset retires the old client once its current bodies finish.
+    final client = _client ??= _clientFactory();
+    _clients[client] = (_clients[client] ?? 0) + 1;
     final http.StreamedResponse response;
     try {
       final request = http.Request('GET', uri);
       if (headers != null) request.headers.addAll(headers);
+      // Aggregation can retain a Douban poster on a different source's title.
+      // CDN requirements belong to the image host, not the catalogue source ID.
+      if (uri.host.toLowerCase().endsWith('.doubanio.com')) {
+        for (final entry in doubanImageHeaders.entries) {
+          request.headers.putIfAbsent(entry.key, () => entry.value);
+        }
+      }
       response = await client.send(request);
     } catch (_) {
       _release(client);
@@ -81,6 +101,12 @@ class ImageFileService extends FileService {
   }
 
   void _release(http.Client client) {
-    if (_clients.remove(client)) client.close();
+    final active = _clients[client];
+    if (active == null) return;
+    _clients[client] = active - 1;
+    if (active == 1 && client != _client) {
+      _clients.remove(client);
+      client.close();
+    }
   }
 }

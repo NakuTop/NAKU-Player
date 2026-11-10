@@ -523,7 +523,7 @@ void main() {
 
   for (final height in [860.0, 480.0]) {
     testWidgets(
-      'portrait stays out of the hero until real wide metadata arrives at height $height',
+      'poster fills an unavailable hero without cropping until wide artwork arrives at height $height',
       (tester) async {
         final bytes = (await tester.runAsync(
           () => markedImage(const Size(320, 180)),
@@ -561,8 +561,15 @@ void main() {
           },
         );
         await tester.pumpAndSettle();
-        expect(find.byType(CinemaArtworkBackdrop), findsNothing);
-        expect(painted, isEmpty);
+        expect(find.byType(CinemaArtworkBackdrop), findsOneWidget);
+        expect(painted, contains('https://images.invalid/portrait-card.jpg'));
+        expect(painted, isNot(contains('memory://portrait-fixture')));
+        expect(
+          tester
+              .widget<CinemaArtworkBackdrop>(find.byType(CinemaArtworkBackdrop))
+              .fit,
+          BoxFit.contain,
+        );
         final reserved = tester.getSize(find.byType(CinemaFeaturedWall));
         expect(reserved.height, lessThan(1000));
         repository.result = const CinemaDetailArtwork(
@@ -579,7 +586,13 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.byType(CinemaArtworkBackdrop), findsOneWidget);
         expect(painted, isNotEmpty);
-        expect(painted.every((url) => url == 'memory://wide-fixture'), isTrue);
+        expect(painted, contains('memory://wide-fixture'));
+        expect(
+          tester
+              .widget<CinemaArtworkBackdrop>(find.byType(CinemaArtworkBackdrop))
+              .fit,
+          BoxFit.cover,
+        );
         expect(tester.getSize(find.byType(CinemaFeaturedWall)), reserved);
         await tester.pumpWidget(const SizedBox());
         expect(tester.takeException(), isNull);

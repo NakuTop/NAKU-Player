@@ -222,6 +222,31 @@ class _Repository extends CinemaRepository {
   }) async => const CinemaPage(items: []);
 }
 
+class _RotatedHistoryRepository extends _Repository {
+  int calls = 0;
+  @override
+  Future<CinemaTitle> detail(CinemaSource source, CinemaTitle title) async {
+    calls++;
+    return title.copyWith(
+      routes: [
+        const CinemaRoute(
+          name: 'mp4',
+          episodes: [
+            CinemaEpisode(
+              name: '第2集',
+              url: 'https://fixture.invalid/new-2.mp4',
+            ),
+            CinemaEpisode(
+              name: '第1集',
+              url: 'https://fixture.invalid/new-1.mp4',
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
 class _EpisodeSubtitleClient extends CinemaOnlineSubtitles {
   _EpisodeSubtitleClient() : super(dio: Dio(), useFallbackCatalog: false);
   final requests = <Map<String, dynamic>>[];
@@ -534,6 +559,7 @@ void main() {
     CinemaMediaProbe? probe,
     CinemaMediaCache? cache,
     int? initialPosition,
+    CinemaHistory? resumeHistory,
     CinemaTitle? selectedTitle,
     CinemaSource? selectedSource,
     List<CinemaTitle> variants = const [],
@@ -576,6 +602,7 @@ void main() {
       mediaProbe: probe,
       mediaCache: cache,
       initialPositionSeconds: initialPosition,
+      resumeHistory: resumeHistory,
       offlinePaths: offlinePaths,
       source: selectedSource ?? _source,
       store: store,
@@ -1676,6 +1703,42 @@ void main() {
     await unmount(tester);
   });
 
+  testWidgets(
+    'expired history refreshes once and resumes the same reordered episode',
+    (tester) async {
+      await tester.runAsync(
+        () => store.recordProgress(
+          title: _title,
+          routeIndex: 0,
+          episodeIndex: 0,
+          positionSeconds: 90,
+          durationSeconds: 1200,
+        ),
+      );
+      final repository = _RotatedHistoryRepository();
+      await mount(
+        tester,
+        {'playerDisableAnimations': true},
+        resumeHistory: store.historyFor(_title),
+        initialPosition: 90,
+        repository: repository,
+        playerFactory: (config) {
+          final backend = _Backend(
+            config,
+            rejectOpen: (media) => media.uri.endsWith('/1.mp4'),
+          );
+          backends.add(backend);
+          return _Player(backend);
+        },
+      );
+      await tester.pumpAndSettle();
+      expect(repository.calls, 1);
+      expect(backends.last.opened?.uri, 'https://fixture.invalid/new-1.mp4');
+      expect(backends.last.opened?.start, const Duration(seconds: 90));
+      await unmount(tester);
+    },
+  );
+
   for (final autoPlay in [true, false]) {
     testWidgets(
       'cold-launch history resume keeps first Play and Space usable (autoPlay=$autoPlay)',
@@ -1779,10 +1842,12 @@ void main() {
         calls.add(call.method);
         if (call.method == 'isFullScreen') return full;
         if (call.method == 'isAlwaysOnTop') return top;
-        if (call.method == 'getBounds')
+        if (call.method == 'getBounds') {
           return {'x': 80.0, 'y': 50.0, 'width': 1200.0, 'height': 900.0};
-        if (call.method == 'setAlwaysOnTop')
+        }
+        if (call.method == 'setAlwaysOnTop') {
           top = (call.arguments as Map)['isAlwaysOnTop'] as bool;
+        }
         if (call.method == 'setBounds' && top && !blocked) {
           blocked = true;
           await sizing.future;
@@ -1830,10 +1895,12 @@ void main() {
     messenger.setMockMethodCallHandler(channel, (call) async {
       if (call.method == 'isFullScreen') return false;
       if (call.method == 'isAlwaysOnTop') return top;
-      if (call.method == 'getBounds')
+      if (call.method == 'getBounds') {
         return {'x': 80.0, 'y': 50.0, 'width': 1200.0, 'height': 900.0};
-      if (call.method == 'setAlwaysOnTop')
+      }
+      if (call.method == 'setAlwaysOnTop') {
         top = (call.arguments as Map)['isAlwaysOnTop'] as bool;
+      }
       if (call.method == 'setBounds' && top && fail) {
         fail = false;
         throw PlatformException(code: 'fixture-size-failure');
@@ -1853,10 +1920,12 @@ void main() {
     'native fullscreen entry clears PiP controls without reloading playback',
     (tester) async {
       messenger.setMockMethodCallHandler(channel, (call) async {
-        if (call.method == 'isFullScreen' || call.method == 'isAlwaysOnTop')
+        if (call.method == 'isFullScreen' || call.method == 'isAlwaysOnTop') {
           return false;
-        if (call.method == 'getBounds')
+        }
+        if (call.method == 'getBounds') {
           return {'x': 80.0, 'y': 50.0, 'width': 1200.0, 'height': 900.0};
+        }
         return null;
       });
       await mount(tester, {'autoPlay': true}, renderToolbar: true);

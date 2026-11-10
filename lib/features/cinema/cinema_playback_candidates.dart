@@ -210,6 +210,11 @@ class CinemaPlaybackCatalogue {
     });
   }
 
+  Future<CinemaTitle> refresh(CinemaTitle title) {
+    _loaded.remove(title.key);
+    return load(title, retry: true);
+  }
+
   Iterable<String> get sourceOrder => _sources.keys;
 
   /// Load every known edition of a source before advancing to the next source.

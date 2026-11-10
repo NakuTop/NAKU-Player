@@ -860,6 +860,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     bool manualRouteSelection = false,
     Map<String, String>? offlinePaths,
     int? initialPositionSeconds,
+    CinemaHistory? resumeHistory,
   }) {
     unawaited(
       Navigator.of(context)
@@ -877,6 +878,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                     offlinePaths: offlinePaths,
                     manualRouteSelection: manualRouteSelection,
                     initialPositionSeconds: initialPositionSeconds,
+                    resumeHistory: resumeHistory,
                     watchTogether: widget.enableWatchTogether
                         ? _together
                         : null,
@@ -2006,6 +2008,27 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     }
     if (resume != null) {
       // A history click resumes saved media, not the details page's first item.
+      // Its saved catalogue already contains the exact episode. Do not hold
+      // navigation behind a fresh API call; expired URLs refresh in the player.
+      final savedSelection = cinemaResumeSelection(title, resume);
+      if (savedSelection != null) {
+        _playTitle(
+          title,
+          source,
+          savedSelection.routeIndex,
+          savedSelection.episodeIndex,
+          variants,
+          keepBrowseRoute: keepBrowseRoute,
+          resumeHistory: resume,
+          initialPositionSeconds: cinemaResumePosition(
+            title,
+            resume,
+            savedSelection.routeIndex,
+            savedSelection.episodeIndex,
+          ),
+        );
+        return;
+      }
       try {
         final detail = await _repository.detail(source, title);
         if (!mounted) return;

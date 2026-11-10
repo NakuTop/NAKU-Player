@@ -70,6 +70,63 @@ void main() {
     return png!.buffer.asUint8List();
   }
 
+  testWidgets(
+    'failed high resolution image paints the contained poster fallback',
+    (tester) async {
+      tester.view.physicalSize = const Size(600, 400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final bytes = (await tester.runAsync(
+        () => compositionFixture(const Size(180, 320)),
+      ))!;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RepaintBoundary(
+            key: const ValueKey('fallback-raster'),
+            child: ColoredBox(
+              color: Colors.black,
+              child: CinemaArtworkBackdrop(
+                image: MemoryImage(Uint8List.fromList([1, 2, 3])),
+                fallbackImage: MemoryImage(bytes),
+                fit: BoxFit.cover,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await tester.pump();
+      final image = (await tester.runAsync(
+        () => tester
+            .renderObject<RenderRepaintBoundary>(
+              find.byKey(const ValueKey('fallback-raster')),
+            )
+            .toImage(pixelRatio: 1),
+      ))!;
+      final data = (await tester.runAsync(
+        () => image.toByteData(format: ui.ImageByteFormat.rawRgba),
+      ))!;
+      final rect = cinemaArtworkCompositionRect(
+        source: const Size(180, 320),
+        viewport: const Size(600, 400),
+      );
+      final offset =
+          (rect.center.dy.floor() * image.width + rect.center.dx.floor()) * 4;
+      expect(data.getUint8(offset), closeTo(240, 3));
+      expect(data.getUint8(offset + 1), closeTo(227, 3));
+      image.dispose();
+      await tester.pumpWidget(const SizedBox());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   for (final (orientation, source) in [
     ('landscape', const Size(320, 180)),
     ('portrait', const Size(180, 320)),

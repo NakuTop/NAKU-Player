@@ -7,14 +7,19 @@ import 'resilient_read_adapter.dart';
 import 'macos_system_proxy.dart';
 
 class ResilientImageClient extends http.BaseClient {
-  ResilientImageClient()
-    : _adapter = ResilientReadAdapter(
-        primaryFactory: () => IOHttpClientAdapter(
-          createHttpClient: () =>
-              HttpClient()..findProxy = MacOSSystemProxy.findProxy,
-        ),
-      );
-  final ResilientReadAdapter _adapter;
+  ResilientImageClient({
+    HttpClientAdapter? adapter,
+    this.bodyIdleTimeout = const Duration(seconds: 12),
+  }) : _adapter =
+           adapter ??
+           ResilientReadAdapter(
+             primaryFactory: () => IOHttpClientAdapter(
+               createHttpClient: () =>
+                   HttpClient()..findProxy = MacOSSystemProxy.findProxy,
+             ),
+           );
+  final HttpClientAdapter _adapter;
+  final Duration bodyIdleTimeout;
   final _requests = <CancelToken>{};
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
@@ -42,8 +47,10 @@ class ResilientImageClient extends http.BaseClient {
       );
       Stream<List<int>> body() async* {
         try {
-          yield* response.stream;
+          yield* response.stream.timeout(bodyIdleTimeout);
         } finally {
+          if (!done.isCompleted) done.complete();
+          cancel.cancel('图片传输已结束');
           _requests.remove(cancel);
         }
       }

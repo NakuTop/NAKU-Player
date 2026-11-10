@@ -31,7 +31,7 @@ class CinemaFeaturedArtworkWindow extends ChangeNotifier {
     RatingIdentity identity = const RatingIdentity(),
   }) =>
       _cache[CinemaDetailArtworkRepository.identityKey(title, identity)]?.$2 ??
-      const CinemaDetailArtwork(url: '');
+      CinemaDetailArtwork(url: title.poster);
 
   void update(
     List<CinemaTitle> titles,
@@ -100,10 +100,10 @@ class CinemaFeaturedArtworkWindow extends ChangeNotifier {
         artwork = const CinemaDetailArtwork(url: '');
       }
       if (!current()) return;
-      // Keep a portrait or an uninspected fallback out even when an injected
-      // repository supplies one. Edge extension must not masquerade as a still.
+      // Prefer a verified landscape. Until one is available, retain the known
+      // catalogue poster; the wall contains it without stretching/cropping.
       if (!artwork.usableLandscape) {
-        artwork = const CinemaDetailArtwork(url: '');
+        artwork = CinemaDetailArtwork(url: title.poster);
       }
       _cache.remove(key);
       _cache[key] = (

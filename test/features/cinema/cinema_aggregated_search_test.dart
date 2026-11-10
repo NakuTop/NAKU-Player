@@ -196,6 +196,49 @@ void main() {
   Finder card() => find.byKey(const ValueKey('title-card:maccms-feifan::m1'));
 
   testWidgets(
+    'history enters the player immediately without waiting for detail refresh',
+    (tester) async {
+      final saved = repository.resolved(sourceA, sample(sourceA));
+      await tester.runAsync(
+        () => store.recordProgress(
+          title: saved,
+          routeIndex: 0,
+          episodeIndex: 0,
+          positionSeconds: 127,
+          durationSeconds: 3600,
+        ),
+      );
+      CinemaPlayerPage? selected;
+      await mount(
+        tester,
+        playerPageBuilder: (page) {
+          selected = page;
+          return const Scaffold(body: Text('history playback'));
+        },
+      );
+      expect(
+        CinemaSettingsHostBinding.instance.openLibrary(history: true),
+        isTrue,
+      );
+      await tester.pumpAndSettle();
+      repository.delayA = true;
+      final before = repository.details.length;
+      await tester.tap(find.text('星际穿越').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('history playback'), findsOneWidget);
+      expect(repository.details.length, before);
+      expect(selected?.initialPositionSeconds, 127);
+      expect(selected?.resumeHistory?.title.key, saved.key);
+      expect(
+        selected?.title.routes.first.episodes.first.url,
+        saved.routes.first.episodes.first.url,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'native details keep ratings left and tab changes reuse source loading',
     (tester) async {
       await mount(tester);

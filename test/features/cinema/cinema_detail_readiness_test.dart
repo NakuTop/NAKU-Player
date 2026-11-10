@@ -519,6 +519,23 @@ void main() {
       ratings.complete('ready-a');
       posters['ready-a']!.complete(frame);
       await tester.pumpAndSettle();
+      // GPU palette readback finishes outside the fake clock. Compare the same
+      // decoded poster state against both window colors, not neutral vs sampled.
+      final atmosphere = find.byType(CinemaPosterAtmosphere);
+      for (var attempt = 0; attempt < 20; attempt++) {
+        if (tester.widget<CinemaPosterAtmosphere>(atmosphere).palette?.length ==
+            3) {
+          break;
+        }
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pumpAndSettle();
+      }
+      expect(
+        tester.widget<CinemaPosterAtmosphere>(atmosphere).palette,
+        hasLength(3),
+      );
       expect(loading(tester), isFalse);
       final bounds = tester.getRect(
         find.byKey(const ValueKey('cinema-detail-frost')),
@@ -576,14 +593,22 @@ void main() {
       for (var channel = 0; channel < 6; channel++) {
         expect((warm[channel] - cool[channel]).abs(), lessThanOrEqualTo(10));
       }
-      expect(
-        warm
-            .take(6)
-            .every(
-              (channel) => channel >= 20 && channel <= (reduced ? 45 : 64),
-            ),
-        isTrue,
-      );
+      // The deliberate poster glow is present in both accessibility modes.
+      // Check legibility of the actual secondary text, not a neutral gray value.
+      for (final pixels in [warm, cool]) {
+        for (var offset = 0; offset < 6; offset += 3) {
+          final background = Color.fromARGB(
+            255,
+            pixels[offset],
+            pixels[offset + 1],
+            pixels[offset + 2],
+          );
+          final contrast =
+              (CinemaTheme.muted.computeLuminance() + .05) /
+              (background.computeLuminance() + .05);
+          expect(contrast, greaterThanOrEqualTo(4.5));
+        }
+      }
       expect(warm.skip(6).any((channel) => channel > 70), isTrue);
       expect(tester.takeException(), isNull);
     });
