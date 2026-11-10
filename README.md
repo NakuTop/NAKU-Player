@@ -47,9 +47,11 @@
 | 平台 | 当前正式版 | 下载 |
 | --- | --- | --- |
 | macOS | 3.2.2 | [macOS 安装包](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.2) |
-| Android 手机 | 3.2.0（116） | [Mobile APK](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.0-android) |
-| Android TV | 3.2.0（116） | [TV APK](https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.0%2B116) |
-| Windows x64 | 3.2.0（116） | [安装版 / 便携版](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.0-windows) |
+| Android 手机 | 3.2.2（118） | [Mobile APK](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.2-android) |
+| Android TV | 3.2.2（118） | [TV APK](https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.2%2B118) |
+| Windows x64 | 3.2.2（118） | [安装版 / 便携版](https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.2-windows) |
+
+3.2.2 将 Home Display 授权绑定当前 NAS 登录账号并持久保存，自动续期，短暂断网不再清除有效授权；退出或切换 NAS 账号时隔离旧授权。macOS 支持从 3.2.0 / 3.2.1 直接差分升级，PWA 0.3.9 已同步。
 
 3.2.0 保留各端现有详情布局，在原片源区域显示画质、连接速度与自动推荐；按用户片源顺序选择，同源优先高清。Android 手机版加入 Home Display、统一首页、触控播放与离线多源弹幕；手机和 TV 均提供搜索返回主页，并优化同账号投屏直达。Windows 使用 NAKU 独立更新源。PWA 0.3.8 已同步片源顺序与详情对比。
 

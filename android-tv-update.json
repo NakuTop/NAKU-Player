@@ -1,16 +1,16 @@
 [
   {
-    "tag_name": "android-tv-v3.2.0+116",
+    "tag_name": "android-tv-v3.2.2+118",
     "draft": false,
     "prerelease": false,
-    "body": "NAKU TV 3.2.0（116）\n\n- 接收同一 NAS 账号手机发来的影片时，完成原有身份与重放验证后立即唤醒界面、进入播放页，无需再用遥控器确认。\n- 搜索框新增一键“返回主页”，退出搜索并清空旧查询；继续取消独立动漫分类入口。\n- 保留 TV 遥控器焦点、原生 Media3 播放、清晰度 / 选集 / 字幕 / 多源弹幕、NAS 同步及 Home Display。\n- 包含 3.1.10 的聚合搜索、收藏历史、最大影视高清优先和爱一帆弹幕修复。\n\n建议手机和电视均升级 3.2.0。手机前台会提前发现电视与预取短时投屏授权；实际出画速度仍取决于片源及局域网。\n\nAndroid 7.0+；包含 arm64-v8a、armeabi-v7a、x86_64，沿用 com.nakutop.nakuplayer.tv 包名和原有签名，支持覆盖升级。真机遥控、硬件解码、Home Display 与双设备投屏延迟仍需设备实测。\n\n# NAKU 3.2.0\n\n- 全端统一片源顺序优先，同源优先高清，失败依次换线；取消巨量资源专属测速。\n- 原有详情页片源区增加分辨率、Mbps、响应时间和自动推荐，保留原布局与操作。\n",
+    "body": "Home Display 持久授权更新\n\n- 展示授权跟随当前 NAS 登录账号保存，应用重启后自动恢复。\n- 有效授权遇到短暂断网不清除；自动续期不再每四分钟重新访问 NAS。\n- 退出 NAS、忘记账号与切换账号时隔离旧授权，保留原有展示权限范围。\n- macOS 同时包含 3.2.1 的离开局域网后远程连接恢复修复。\n\n手机、电视及 Windows 的真实设备运行仍需实际使用确认。\n",
     "assets": [
       {
-        "name": "NAKU-TV-3.2.0-Android-universal.apk",
+        "name": "NAKU-TV-3.2.2-Android-universal.apk",
         "state": "uploaded",
-        "size": 91965243,
-        "digest": "sha256:91a851d73386e5e7b6406870827638051365998b2ef9f0d58c4bc8ec5445f4ee",
-        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.0%2B116/NAKU-TV-3.2.0-Android-universal.apk"
+        "size": 91967300,
+        "digest": "sha256:12e3dca94001cb5fb96d7b36826261a3a2765b83d85a5b91afe42e81b12a013f",
+        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.2%2B118/NAKU-TV-3.2.2-Android-universal.apk"
       }
     ]
   }

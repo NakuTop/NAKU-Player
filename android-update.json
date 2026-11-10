@@ -1,15 +1,15 @@
 {
-  "tag_name": "3.2.0",
-  "name": "NAKU Player Android 手机版 3.2.0",
-  "body": "NAKU Player Android 手机版 3.2.0（116）\n\n- 首页采用统一的深色界面与底部导航，加入 Home Display、下载内容和检查更新入口。\n- 移除独立动漫分类入口；电影、剧集搜索后可一键返回主页。\n- 保留 NAS 持久登录与同步、原有下载管理、字幕、画中画、投屏及本地播放。\n- 手机播放器双击左 / 右侧后退 / 前进 10 秒，双击中间播放 / 暂停，长按临时加速；松手、离开前台或切换播放后恢复原速。\n- 横屏全屏保留线路、选集、弹幕与播放工具，显示实际视频分辨率；系统返回先退出全屏。\n- 新下载的影视保存各弹幕来源的下载时快照，离线播放支持来源多选、完整时间线与回退，删除下载同时清理弹幕。\n- 前台提前发现电视并预取短时投屏授权，避免重复发现和授权等待；全屏播放工具也可发送到电视。\n- 同步现有聚合搜索、收藏 / 历史多源补齐、最高画质优先及爱一帆等弹幕源修复。\n\n建议电视端同步更新至 3.2.0：同账号投屏验证通过后直接进入播放页，无需再次确认。影片出画时间仍取决于片源与网络。\n\nAndroid 7.0+；包含 arm64-v8a、armeabi-v7a、x86_64。包名及原发布签名不变，可直接覆盖安装保留数据，无需卸载。真实手机 / 电视双设备投屏延迟、播放及 Home Display 效果需设备实测。\n\n# NAKU 3.2.0\n\n- 全端统一片源顺序优先，同源优先高清，失败依次换线；取消巨量资源专属测速。\n- 原有详情页片源区增加分辨率、Mbps、响应时间和自动推荐，保留原布局与操作。\n",
-  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.0-android",
-  "published_at": "2026-11-09T13:37:55.725990+00:00",
+  "tag_name": "3.2.2",
+  "name": "NAKU Player Android 手机版 3.2.2",
+  "body": "Home Display 持久授权更新\n\n- 展示授权跟随当前 NAS 登录账号保存，应用重启后自动恢复。\n- 有效授权遇到短暂断网不清除；自动续期不再每四分钟重新访问 NAS。\n- 退出 NAS、忘记账号与切换账号时隔离旧授权，保留原有展示权限范围。\n- macOS 同时包含 3.2.1 的离开局域网后远程连接恢复修复。\n\n手机、电视及 Windows 的真实设备运行仍需实际使用确认。\n",
+  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.2-android",
+  "published_at": "2026-11-10T16:24:09.515288+00:00",
   "assets": [
     {
-      "name": "NAKUPlayer-3.2.0-Android-Mobile.apk",
-      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.0-android/NAKUPlayer-3.2.0-Android-Mobile.apk",
-      "size": 91965408,
-      "digest": "sha256:8367d66a1ed669f30756a4ee80d78020bbb73acbec2df53ae9b0c3a44654bb3c"
+      "name": "NAKUPlayer-3.2.2-Android-Mobile.apk",
+      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.2-android/NAKUPlayer-3.2.2-Android-Mobile.apk",
+      "size": 91967129,
+      "digest": "sha256:0ee30f14e3e74583f7c495ac5d703c881ef4be41c616541183fb673d245924a1"
     }
   ]
 }
