@@ -27,7 +27,7 @@ bool cinemaHasMovieVersions(CinemaTitle title, int route) {
   return episodes.isNotEmpty &&
       episodes.every(
         (episode) => RegExp(
-          r'^(?:(?:TC|TS|TD|CAM|HDCAM|HD|BD|SD|DVD|FHD|UHD|4K|720P?|1080P?|2160P?)(?:中字|国语|英语|中英双字|高清|版)?|正片|高清|蓝光|超清|抢先版|枪版)$',
+          r'^(?:(?:TC|TS|TD|CAM|HDCAM|HD|BD|SD|DVD|FHD|UHD|4K|720P?|1080P?|2160P?)(?:中字|国语|英语|中英双字|高清|版)?|播放|正片|高清|蓝光|超清|抢先版|枪版)$',
           caseSensitive: false,
         ).hasMatch(episode.name.trim()),
       );

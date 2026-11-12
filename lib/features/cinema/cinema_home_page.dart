@@ -1,3 +1,4 @@
+import 'cinema_source_glow.dart';
 import 'cinema_detail_comparison.dart';
 import 'cinema_media_transport.dart';
 import 'cinema_playback_candidates.dart';
@@ -5443,7 +5444,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
   void _comparisonChanged() {
     if (!mounted || _disposing) return;
     if (widget.source.id == cinemaNASSource.id) return;
-    final best = _comparison.recommended;
+    final best = _comparison.fastest ?? _comparison.recommended;
     if (!_variantChosen && !_routeChosen) {
       _recommended = best;
     }
@@ -5957,56 +5958,74 @@ class _TitleDetailsState extends State<_TitleDetails> {
             .firstOrNull
             ?.name ??
         '已移除片源';
-    final quality = (measured?.height ?? 0) > 0
-        ? '${measured!.width} × ${measured.height}'
-        : choice == null
-        ? variant.remarks
-        : switch (cinemaCandidateQuality(choice)) {
-            5 => '8K · 标注',
-            4 => '4K · 标注',
-            3 => '1080P · 标注',
-            2 => 'HD · 标注',
-            1 => 'SD · 标注',
-            -10 => '抢先版',
-            _ => _comparison.running ? '画质待检测' : '分辨率暂未读出',
-          };
+    // Source chips compare measured facts; editorial source labels stay in details.
+    final width = measured?.width ?? 0, height = measured?.height ?? 0;
+    final quality = width > 0 && height > 0
+        ? (width >= 7000 || height >= 4000
+              ? '8K'
+              : width >= 3500 || height >= 2000
+              ? '4K'
+              : width >= 1800 || height >= 1000
+              ? '1080p'
+              : width >= 1200 || height >= 700
+              ? '720p'
+              : '${height}p')
+        : '';
     final speed = measured?.ok == true && measured?.mbps != null
-        ? '${measured!.mbps!.toStringAsFixed(1)} Mbps${measured.firstByteMs == null ? '' : ' · ${measured.firstByteMs} ms'}'
-        : measured?.ok == false
-        ? '暂未连接'
-        : choice != null && _comparison.pending.contains(choice.key)
-        ? '检测中…'
-        : _comparison.catalogue.errors.containsKey(variant.key)
-        ? '线路暂未读取'
-        : _comparison.running
-        ? '等待检测'
-        : measured?.ok == true
-        ? '已连接'
-        : choice != null &&
-              !cinemaUsesDirectMedia(
-                choice.source,
-                choice.route,
-                choice.episode,
-              )
-        ? '网页解析线路'
-        : '可重新检测';
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          '$name${_recommended?.title.key == variant.key && !_variantChosen ? ' · 自动推荐' : ''}',
-          style: TextStyle(fontSize: NakuDevice.isTV ? 16 : 12),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          [if (quality.isNotEmpty) quality, speed].join(' · '),
-          style: TextStyle(
-            fontSize: NakuDevice.isTV ? 13 : 11,
-            color: CinemaTheme.muted,
+        ? '${measured!.mbps!.toStringAsFixed(1)} Mbps'
+        : '';
+    final summary = [
+      if (quality.isNotEmpty) quality,
+      if (speed.isNotEmpty) speed,
+    ].join(' · ');
+    final status = _comparison.running && measured == null
+        ? '检测中'
+        : measured?.ok == false ||
+              _comparison.catalogue.errors.containsKey(variant.key)
+        ? '未连通'
+        : '—';
+    final detail = [
+      if (width > 0 && height > 0) '$width × $height',
+      if (measured?.firstByteMs != null) '响应 ${measured!.firstByteMs} ms',
+      if (measured?.ok == false) measured!.reason,
+      if (_comparison.catalogue.errors.containsKey(variant.key))
+        _comparison.catalogue.errors[variant.key]!,
+    ].where((value) => value.isNotEmpty).join(' · ');
+    final recommended =
+        _recommended?.title.key == variant.key && !_variantChosen;
+    return Tooltip(
+      message: detail,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(name, style: TextStyle(fontSize: NakuDevice.isTV ? 16 : 12)),
+              if (recommended) ...[
+                const SizedBox(width: 6),
+                const Tooltip(
+                  message: '推荐',
+                  child: Icon(
+                    Icons.check_rounded,
+                    size: 12,
+                    color: CinemaTheme.muted,
+                  ),
+                ),
+              ],
+            ],
           ),
-        ),
-      ],
+          const SizedBox(height: 4),
+          Text(
+            summary.isEmpty ? status : summary,
+            style: TextStyle(
+              fontSize: NakuDevice.isTV ? 13 : 11,
+              color: CinemaTheme.muted,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -6014,6 +6033,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
     CinemaTitle title,
     AsyncSnapshot<CinemaTitle> snapshot,
   ) {
+    final fastestKey = _comparison.fastest?.title.key;
     if (!_variantChosen && !_routeChosen && _recommended != null) {
       title = _recommended!.title;
     }
@@ -6100,18 +6120,28 @@ class _TitleDetailsState extends State<_TitleDetails> {
               runSpacing: 6,
               children: [
                 for (final variant in _variants)
-                  ChoiceChip(
-                    key: ValueKey('source-variant:${variant.key}'),
-                    showCheckmark: false,
-                    side: BorderSide.none,
-                    backgroundColor: Colors.transparent,
-                    selectedColor: Colors.white.withValues(alpha: .08),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
+                  CinemaSourceGlow(
+                    key: ValueKey('source-glow:${variant.key}'),
+                    active: fastestKey == variant.key,
+                    dimmed: fastestKey != null && fastestKey != variant.key,
+                    color:
+                        _posterPalette.firstOrNull ?? const Color(0xFFB5C9D0),
+                    reduceMotion:
+                        CinemaAppearanceScope.of(context).reduceMotion ||
+                        MediaQuery.disableAnimationsOf(context),
+                    child: ChoiceChip(
+                      key: ValueKey('source-variant:${variant.key}'),
+                      showCheckmark: false,
+                      side: BorderSide.none,
+                      backgroundColor: Colors.transparent,
+                      selectedColor: Colors.white.withValues(alpha: .08),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      label: _variantLabel(variant),
+                      selected: variant.key == title.key,
+                      onSelected: (_) => _selectAndPlayVariant(variant),
                     ),
-                    label: _variantLabel(variant),
-                    selected: variant.key == title.key,
-                    onSelected: (_) => _selectAndPlayVariant(variant),
                   ),
               ],
             ),
@@ -6170,6 +6200,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
                     label: Text(title.routes[r].name),
                     selected: road == r,
                     onSelected: (_) => setState(() {
+                      _selectedTitle = title;
+                      _selectedSource = selectedSource;
+                      _detail = Future.value(title);
                       _variantChosen = true;
                       _routeChosen = true;
                       _road = r;

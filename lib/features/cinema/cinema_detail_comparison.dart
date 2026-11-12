@@ -51,13 +51,43 @@ class CinemaDetailComparison extends ChangeNotifier {
     sourceOrder: catalogue.sourceOrder,
     results: results,
   );
-  CinemaPlaybackCandidate? forVariant(CinemaTitle title) =>
-      cinemaRecommendedCandidate(
-        candidates.where((c) => c.title.key == title.key),
-        sourceOrder: catalogue.sourceOrder,
-        results: results,
-      ) ??
-      candidates.where((c) => c.title.key == title.key).firstOrNull;
+  CinemaPlaybackCandidate? forVariant(CinemaTitle title) {
+    final options = candidates.where((c) => c.title.key == title.key).toList();
+    final measured = options.where((c) => results.containsKey(c.key)).toList();
+    // A higher-labelled web route must not hide a measured media sibling.
+    // This chooses the chip's evidence, not the user's playback selection.
+    return cinemaRecommendedCandidate(
+          measured,
+          sourceOrder: catalogue.sourceOrder,
+          results: results,
+        ) ??
+        measured.where((c) => results[c.key]?.height != null).firstOrNull ??
+        measured.firstOrNull ??
+        cinemaRecommendedCandidate(
+          options,
+          sourceOrder: catalogue.sourceOrder,
+          results: results,
+        );
+  }
+
+  CinemaPlaybackCandidate? get fastest {
+    CinemaPlaybackCandidate? best;
+    var speed = 0.0;
+    for (final variant in catalogue.variants) {
+      final candidate = forVariant(variant);
+      final result = candidate == null ? null : results[candidate.key];
+      final measuredSpeed = result?.mbps;
+      if (result?.ok == true &&
+          measuredSpeed != null &&
+          measuredSpeed.isFinite &&
+          measuredSpeed > speed) {
+        best = candidate;
+        speed = measuredSpeed;
+      }
+    }
+    return best;
+  }
+
   Future<CinemaTitle> load(CinemaTitle title, {bool retry = false}) =>
       catalogue.load(title, retry: retry);
 
@@ -84,10 +114,6 @@ class CinemaDetailComparison extends ChangeNotifier {
     running = true;
     final token = _token = CancelToken();
     bool current() => !_disposed && !_paused && !token.isCancelled;
-    final deadline = Timer(
-      const Duration(seconds: 12),
-      () => token.cancel('详情检测时限已到'),
-    );
     final tasks = <Future<void>>{};
     final requested = <String>{};
     final queued = <CinemaRouteProbeTarget>[];
@@ -142,7 +168,7 @@ class CinemaDetailComparison extends ChangeNotifier {
           loading++;
           launch(() async {
             try {
-              await catalogue.load(title);
+              await catalogue.load(title, retry: refresh);
             } catch (_) {
               // A slow or failed catalogue must not hold up the other sources.
             } finally {
@@ -153,11 +179,10 @@ class CinemaDetailComparison extends ChangeNotifier {
         _anchor ??= _initialCandidate();
         final additions = CinemaRouteProbeBatch.plan(
           fairCandidates().where((c) => !_checked.contains(c.key)),
-          limit: 24,
+          limit: candidates.length,
         );
         for (final next in additions) {
           final existing = targets[next.identity];
-          if (existing == null && targets.length >= 24) continue;
           final target = existing ?? next;
           if (existing == null) {
             targets[next.identity] = next;
@@ -183,8 +208,8 @@ class CinemaDetailComparison extends ChangeNotifier {
               await CinemaRouteProbeBatch(_probe).run(
                 [target],
                 cancel: token,
-                budget: const Duration(seconds: 5),
-                probeTimeout: const Duration(milliseconds: 4500),
+                budget: const Duration(seconds: 10),
+                probeTimeout: const Duration(seconds: 9),
                 onResult: (_, result) {
                   if (!current()) return;
                   completed[target.identity] = result;
@@ -195,6 +220,18 @@ class CinemaDetailComparison extends ChangeNotifier {
                   notifyListeners();
                 },
               );
+              if (current() && !completed.containsKey(target.identity)) {
+                const result = CinemaMediaProbeResult(
+                  ok: false,
+                  elapsedMs: 10000,
+                  reason: '连接超时',
+                );
+                completed[target.identity] = result;
+                for (final c in target.candidates) {
+                  results[c.key] = result;
+                  pending.remove(c.key);
+                }
+              }
             } finally {
               measuring--;
             }
@@ -205,12 +242,11 @@ class CinemaDetailComparison extends ChangeNotifier {
         await Future.any([_wake!.future, token.whenCancel.then((_) {})]);
       }
     } finally {
-      deadline.cancel();
       token.cancel();
       running = false;
       if (identical(_token, token)) _token = null;
       _wake = null;
-      // A deadline is not evidence that an untested route is unusable.
+      // Only navigation cancellation leaves routes unchecked.
       _checked.removeAll(pending);
       if (!_disposed) {
         pending.clear();

@@ -118,7 +118,9 @@ class _Repository extends CinemaRepository {
 }
 
 class _DetailProbe extends CinemaMediaProbe {
-  _DetailProbe() : super(transport: CinemaMediaTransport(dio: Dio()));
+  final bool fasterSecond;
+  _DetailProbe({this.fasterSecond = false})
+    : super(transport: CinemaMediaTransport(dio: Dio()));
   @override
   Future<CinemaMediaProbeResult> measure(
     String url,
@@ -130,7 +132,7 @@ class _DetailProbe extends CinemaMediaProbe {
     ok: true,
     elapsedMs: 180,
     firstByteMs: 80,
-    mbps: 28,
+    mbps: fasterSecond && url.contains('ready-b') ? 56 : 28,
     width: url.contains('ready-b') ? 3840 : 1920,
     height: url.contains('ready-b') ? 2160 : 1080,
     qualityEvidence: CinemaQualityEvidence.videoHeader,
@@ -903,10 +905,7 @@ void main() {
       ratings.complete('ready-a');
       posters['ready-a']!.complete(frame);
       await tester.pumpAndSettle();
-      for (final pair in [
-        ('ready-a', '1920 × 1080'),
-        ('ready-b', '3840 × 2160'),
-      ]) {
+      for (final pair in [('ready-a', '1080p'), ('ready-b', '4K')]) {
         final chip = find.byKey(ValueKey('source-variant:${pair.$1}::film'));
         await tester.ensureVisible(chip);
         expect(
@@ -923,6 +922,48 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+  for (final mode in ['automatic', 'source', 'route']) {
+    testWidgets(
+      'primary play follows glowing fastest source unless manually selected: $mode',
+      (tester) async {
+        final probe = _DetailProbe(fasterSecond: true);
+        addTearDown(() => probe.transport.dio.close(force: true));
+        CinemaPlayerPage? selected;
+        await mount(
+          tester,
+          detailProbe: probe,
+          playerPageBuilder: (page) {
+            selected = page;
+            return const Scaffold(body: Text('playback fixture'));
+          },
+        );
+        ratings.complete('ready-a');
+        posters['ready-a']!.complete(frame);
+        await tester.pumpAndSettle();
+        if (mode == 'route') {
+          final route = find.widgetWithText(ChoiceChip, '正片线路');
+          await tester.ensureVisible(route);
+          await tester.tap(route);
+          await frames(tester);
+          ratings.complete('ready-b');
+          posters['ready-b']!.complete(frame);
+          await tester.pumpAndSettle();
+        }
+        final button = find.byKey(
+          mode == 'source'
+              ? const ValueKey('source-variant:ready-a::film')
+              : const ValueKey('cinema-detail-primary-play'),
+        );
+        await tester.ensureVisible(button);
+        await tester.tap(button);
+        await tester.pumpAndSettle();
+        expect(selected!.source.id, mode == 'source' ? 'ready-a' : 'ready-b');
+        expect(selected!.manualRouteSelection, true);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets(
     'choosing a source opens playback without waiting for artwork or another play click',
     (tester) async {

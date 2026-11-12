@@ -28,8 +28,8 @@ bool cinemaSamePlaybackWork(CinemaTitle first, CinemaTitle second) =>
     first.key == second.key || groupCinemaTitles([first, second]).length == 1;
 
 /// Conservative episode matching, independent of provider ordering. Multiple
-/// matches are ambiguous. Full-film label aliases only apply to single-episode
-/// movie routes, never to a series' sole available episode.
+/// matches are ambiguous. Explicit full-film editions can match across movie
+/// routes; numbered series episodes and film parts retain exact matching.
 int? cinemaMatchPlaybackEpisode({
   required CinemaPlaybackCandidate current,
   required CinemaTitle target,
@@ -64,11 +64,9 @@ int? cinemaMatchPlaybackEpisode({
   }
   if (_movie(current.title) &&
       _movie(target) &&
-      current.route.episodes.length == 1 &&
-      episodes.length == 1 &&
-      _fullFilm(current.episode.name) &&
-      _fullFilm(episodes.single.name)) {
-    return 0;
+      cinemaHasMovieVersions(current.title, current.routeIndex) &&
+      cinemaHasMovieVersions(target, routeIndex)) {
+    return cinemaPreferredEpisode(target, routeIndex);
   }
   return null;
 }
@@ -89,11 +87,6 @@ bool _movie(CinemaTitle title) =>
     RegExp(
       '电影|动作片|喜剧片|爱情片|科幻片|恐怖片|剧情片|战争片|悬疑片|犯罪片|奇幻片|冒险片|惊悚片',
     ).hasMatch(title.category);
-
-bool _fullFilm(String name) => RegExp(
-  r'^(?:正片|高清|蓝光|超清|hd|bd|hd中字|hd国语|hd英语|hd中英双字|720p|1080p|2160p|4k)$',
-  caseSensitive: false,
-).hasMatch(name.trim());
 
 /// One episode selection has a finite attempt budget, even if every route
 /// times out. Manual retry/episode selection creates a new ledger.

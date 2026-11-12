@@ -89,6 +89,133 @@ class Probe extends CinemaMediaProbe {
 
 void main() {
   test(
+    'fastest highlight follows successful speed without changing source priority',
+    () async {
+      final probe = Probe();
+      final comparison = CinemaDetailComparison(
+        title: movie(first),
+        source: first,
+        variants: [movie(second)],
+        sources: [first, second],
+        repository: Repository(),
+        probe: probe,
+      );
+      addTearDown(comparison.dispose);
+      addTearDown(() => probe.transport.dio.close(force: true));
+      expect(comparison.fastest, isNull);
+      await comparison.start();
+      expect(comparison.fastest?.source.id, second.id);
+      expect(comparison.recommended?.source.id, first.id);
+      for (final candidate in comparison.candidates.where(
+        (c) => c.source.id == second.id,
+      )) {
+        comparison.results[candidate.key] = const CinemaMediaProbeResult(
+          ok: false,
+          elapsedMs: 1,
+          mbps: 2000,
+        );
+      }
+      expect(comparison.fastest?.source.id, first.id);
+    },
+  );
+  test(
+    'unmeasured web sibling never hides completed source evidence',
+    () async {
+      final probe = Probe();
+      final title = movie(first).copyWith(
+        routes: const [
+          CinemaRoute(
+            name: '8K网页',
+            episodes: [
+              CinemaEpisode(
+                name: '正片',
+                url: 'https://first.example/watch.html',
+              ),
+            ],
+          ),
+          CinemaRoute(
+            name: 'm3u8',
+            episodes: [
+              CinemaEpisode(name: '正片', url: 'https://first.example/HD.m3u8'),
+            ],
+          ),
+        ],
+      );
+      final comparison = CinemaDetailComparison(
+        title: title,
+        source: first,
+        variants: [],
+        sources: [first],
+        repository: Repository(),
+        probe: probe,
+      );
+      addTearDown(comparison.dispose);
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await comparison.start();
+      expect(probe.calls, hasLength(1));
+      final displayed = comparison.forVariant(title)!;
+      expect(displayed.routeIndex, 1);
+      expect(comparison.results[displayed.key]!.height, 1080);
+      comparison.results[displayed.key] = const CinemaMediaProbeResult(
+        ok: false,
+        elapsedMs: 100,
+        reason: '连接失败',
+      );
+      expect(comparison.forVariant(title)!.key, displayed.key);
+    },
+  );
+  test('every source is measured even beyond twenty-four routes', () async {
+    final sources = List.generate(
+      10,
+      (i) => CinemaSource(
+        id: 'source-$i',
+        name: '源$i',
+        kind: CinemaSourceKind.maccms,
+        url: 'https://source-$i.example',
+      ),
+    );
+    final probe = Probe();
+    final comparison = CinemaDetailComparison(
+      title: movie(sources.first),
+      source: sources.first,
+      variants: sources.map(movie),
+      sources: sources,
+      repository: Repository(),
+      probe: probe,
+    );
+    addTearDown(comparison.dispose);
+    addTearDown(() => probe.transport.dio.close(force: true));
+    await comparison.start();
+    expect(probe.calls.toSet(), hasLength(30));
+    expect(comparison.results, hasLength(30));
+    expect(comparison.pending, isEmpty);
+  });
+  test(
+    'a source arriving after twelve seconds still gets measured automatically',
+    () async {
+      final probe = Probe(),
+          repo = Repository()..firstPending = Completer<CinemaTitle>();
+      final comparison = CinemaDetailComparison(
+        title: movie(second),
+        source: second,
+        variants: [movie(first, card: true)],
+        sources: [first, second],
+        repository: repo,
+        probe: probe,
+      );
+      addTearDown(comparison.dispose);
+      addTearDown(() => probe.transport.dio.close(force: true));
+      final task = comparison.start();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(comparison.results, hasLength(3));
+      await Future<void>.delayed(const Duration(seconds: 12));
+      repo.firstPending!.complete(movie(first));
+      await task;
+      expect(comparison.results, hasLength(6));
+      expect(comparison.running, isFalse);
+    },
+  );
+  test(
     'lazy higher-priority source and its full-film versions precede loaded later source',
     () async {
       final repo = Repository(), anchor = movie(second);

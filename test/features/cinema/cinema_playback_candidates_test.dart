@@ -18,6 +18,7 @@ const b = CinemaSource(
 CinemaTitle work(
   String source, {
   String year = '2022',
+  String category = '欧美剧',
   String name = '流人第一季',
   List<String> episodes = const ['第01集', '第02集'],
 }) => CinemaTitle(
@@ -25,7 +26,7 @@ CinemaTitle work(
   sourceId: source,
   title: name,
   year: year,
-  category: '欧美剧',
+  category: category,
   routes: [
     CinemaRoute(
       name: 'HLS',
@@ -56,6 +57,75 @@ class Repo extends CinemaRepository {
 }
 
 void main() {
+  test('full-film provider labels include 播放, 正片 and TC/HD editions', () {
+    final anchor = work(
+      'a',
+      name: '生化危机：爆发夜',
+      episodes: ['播放'],
+      category: '恐怖片',
+    );
+    for (final labels in [
+      <String>['正片'],
+      <String>['TC', 'HD'],
+    ]) {
+      final other = work(
+        'b',
+        name: '生化危机：爆发夜',
+        episodes: labels,
+        category: '恐怖片',
+      );
+      final catalogue = CinemaPlaybackCatalogue(
+        title: anchor,
+        source: a,
+        variants: [other],
+        sources: [a, b],
+        repository: Repo(),
+      );
+      expect(
+        catalogue
+            .matching(candidate(anchor))
+            .where((c) => c.source.id == 'b')
+            .length,
+        labels.length,
+      );
+      expect(
+        cinemaMatchPlaybackEpisode(
+          current: candidate(anchor),
+          target: other,
+          routeIndex: 0,
+        ),
+        labels.length - 1,
+      );
+    }
+    for (final labels in [
+      <String>['上集', '下集'],
+      <String>['预告'],
+      <String>['第01集'],
+    ]) {
+      final other = work(
+        'b',
+        name: anchor.title,
+        episodes: labels,
+        category: '恐怖片',
+      );
+      expect(
+        cinemaMatchPlaybackEpisode(
+          current: candidate(anchor),
+          target: other,
+          routeIndex: 0,
+        ),
+        isNull,
+      );
+    }
+    expect(
+      cinemaMatchPlaybackEpisode(
+        current: candidate(work('a', episodes: ['播放'])),
+        target: work('b', episodes: ['正片']),
+        routeIndex: 0,
+      ),
+      isNull,
+    );
+  });
   test('refresh replaces a saved route and rejects a different work', () async {
     final repo = Repo();
     final title = work('a');
