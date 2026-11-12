@@ -51,6 +51,71 @@ Uint8List metadataTs() {
   return bytes;
 }
 
+Uint8List hevcTs({
+  int layers = 0,
+  int width = 3840,
+  int height = 2160,
+  int bottom = 0,
+}) {
+  // Controlled SPS prefix: 4:2:0, explicit sub-layer PTLs and conformance crop.
+  var bits = '';
+  void put(int value, int count) =>
+      bits += value.toRadixString(2).padLeft(count, '0');
+  void ue(int value) {
+    final code = (value + 1).toRadixString(2);
+    bits += '${'0' * (code.length - 1)}$code';
+  }
+
+  put(0, 4);
+  put(layers, 3);
+  put(1, 1);
+  put(2, 8);
+  put(0, 32);
+  put(0, 32);
+  put(0, 16);
+  put(120, 8);
+  for (var i = 0; i < layers; i++) {
+    put(1, 1);
+    put(1, 1);
+  }
+  if (layers > 0) put(0, (8 - layers) * 2);
+  for (var i = 0; i < layers; i++) {
+    put(1, 8);
+    put(0, 32);
+    put(0, 32);
+    put(0, 16);
+    put(90, 8);
+  }
+  ue(0);
+  ue(1);
+  ue(width);
+  ue(height);
+  put(bottom > 0 ? 1 : 0, 1);
+  if (bottom > 0) {
+    ue(0);
+    ue(0);
+    ue(0);
+    ue(bottom);
+  }
+  put(1, 1);
+  bits = bits.padRight((bits.length + 7) ~/ 8 * 8, '0');
+  final nal = <int>[0x42, 1];
+  var zeros = 0;
+  for (var i = 0; i < bits.length; i += 8) {
+    final byte = int.parse(bits.substring(i, i + 8), radix: 2);
+    if (zeros >= 2 && byte <= 3) {
+      nal.add(3);
+      zeros = 0;
+    }
+    nal.add(byte);
+    zeros = byte == 0 ? zeros + 1 : 0;
+  }
+  final ts = metadataTs();
+  ts.fillRange(4, 188, 255);
+  ts.setAll(4, [0, 0, 1, 0xe0, 0, 0, 0x80, 0, 0, 0, 0, 0, 1, ...nal]);
+  return ts;
+}
+
 void main() {
   test('MP4 dimensions and codec come from the visual sample entry', () {
     for (final entry in {
@@ -86,6 +151,23 @@ void main() {
     expect(value?.height, 720);
     expect(value?.codec, 'H.264');
   });
+  test(
+    'HEVC TS reads sub-layer profiles and cropped dimensions before decoding',
+    () {
+      expect(cinemaVideoMetadata(hevcTs())?.height, 2160);
+      final value = cinemaVideoMetadata(
+        hevcTs(layers: 2, width: 1920, height: 1088, bottom: 4),
+      );
+      expect((value?.width, value?.height, value?.codec), (1920, 1080, 'HEVC'));
+      expect(cinemaVideoMetadata(hevcTs(width: 20000)), isNull);
+      expect(
+        cinemaVideoMetadata(
+          Uint8List.fromList([...Uint8List(512), ...metadataTs()]),
+        )?.height,
+        720,
+      );
+    },
+  );
   test(
     'malformed, oversized and arbitrary data stays unknown without guessing',
     () {

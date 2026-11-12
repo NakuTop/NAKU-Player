@@ -43,9 +43,13 @@ CinemaTitle movie(CinemaSource source, {bool card = false}) => CinemaTitle(
 
 class Repository extends CinemaRepository {
   final calls = <String>[];
+  Completer<CinemaTitle>? firstPending;
   @override
   Future<CinemaTitle> detail(CinemaSource source, CinemaTitle title) async {
     calls.add(source.id);
+    if (source.id == first.id && firstPending != null) {
+      return firstPending!.future;
+    }
     return movie(source);
   }
 }
@@ -69,8 +73,16 @@ class Probe extends CinemaMediaProbe {
       elapsedMs: 30,
       firstByteMs: 20,
       mbps: url.contains('juliang') ? 999 : 12,
-      width: url.contains('TD') ? 7680 : url.contains('4K') ? 3840 : 1920,
-      height: url.contains('TD') ? 4320 : url.contains('4K') ? 2160 : 1080,
+      width: url.contains('TD')
+          ? 7680
+          : url.contains('4K')
+          ? 3840
+          : 1920,
+      height: url.contains('TD')
+          ? 4320
+          : url.contains('4K')
+          ? 2160
+          : 1080,
     );
   }
 }
@@ -104,6 +116,65 @@ void main() {
       );
       expect(next!.episode.name, 'HD');
       expect(next.source.id, first.id);
+    },
+  );
+  test(
+    'ready sources publish dimensions before a slow catalogue returns',
+    () async {
+      final probe = Probe(),
+          repo = Repository()..firstPending = Completer<CinemaTitle>();
+      final comparison = CinemaDetailComparison(
+        title: movie(second),
+        source: second,
+        variants: [movie(first, card: true)],
+        sources: [first, second],
+        repository: repo,
+        probe: probe,
+      );
+      addTearDown(comparison.dispose);
+      addTearDown(() => probe.transport.dio.close(force: true));
+      final ready = Completer<void>();
+      comparison.addListener(() {
+        if (comparison.results.isNotEmpty && !ready.isCompleted) {
+          ready.complete();
+        }
+      });
+      final task = comparison.start();
+      await ready.future.timeout(const Duration(seconds: 1));
+      expect(repo.firstPending!.isCompleted, isFalse);
+      expect(comparison.results.values.first.height, 2160);
+      expect(comparison.recommended!.source.id, second.id);
+      repo.firstPending!.complete(movie(first));
+      await task;
+      expect(comparison.recommended!.source.id, first.id);
+      expect(comparison.results, hasLength(6));
+    },
+  );
+  test(
+    'three bounded probes give both sources a turn before extra editions',
+    () async {
+      final probe = Probe()..blocker = Completer<CinemaMediaProbeResult>();
+      final comparison = CinemaDetailComparison(
+        title: movie(first),
+        source: first,
+        variants: [movie(second)],
+        sources: [first, second],
+        repository: Repository(),
+        probe: probe,
+      );
+      final task = comparison.start();
+      await Future<void>.delayed(Duration.zero);
+      expect(probe.calls, hasLength(3));
+      expect(probe.calls.take(2), [
+        'https://${first.id}.example/4K.m3u8',
+        'https://${second.id}.example/4K.m3u8',
+      ]);
+      comparison.dispose();
+      await task.timeout(const Duration(seconds: 1));
+      probe.blocker!.complete(
+        const CinemaMediaProbeResult(ok: true, elapsedMs: 1),
+      );
+      probe.transport.dio.close(force: true);
     },
   );
   test(
@@ -174,7 +245,9 @@ void main() {
       await comparison.start();
       expect(comparison.recommended!.source.id, second.id);
       comparison.addVariants([movie(first)]);
-      while (comparison.running) await Future<void>.delayed(Duration.zero);
+      while (comparison.running) {
+        await Future<void>.delayed(Duration.zero);
+      }
       expect(comparison.recommended!.source.id, first.id);
       expect(probe.calls.toSet(), hasLength(6));
       expect(probe.calls, hasLength(6));

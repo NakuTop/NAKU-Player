@@ -28,7 +28,7 @@ class CinemaDetailComparison extends ChangeNotifier {
          sources: sources,
          repository: repository,
        ),
-       _probe = probe ?? CinemaMediaProbe(),
+       _probe = probe ?? CinemaMediaProbe.detail(),
        _ownsProbe = probe == null,
        _initialTitle = title;
 
@@ -42,6 +42,7 @@ class CinemaDetailComparison extends ChangeNotifier {
   final _checked = <String>{};
   CinemaPlaybackCandidate? _anchor;
   CancelToken? _token;
+  Completer<void>? _wake;
   bool _disposed = false, running = false, _again = false, _paused = false;
   List<CinemaPlaybackCandidate> get candidates =>
       _anchor == null ? const [] : catalogue.matching(_anchor!);
@@ -77,62 +78,140 @@ class CinemaDetailComparison extends ChangeNotifier {
     if (_paused) return;
     if (running) {
       _again = true;
+      if (_wake?.isCompleted == false) _wake!.complete();
       return;
     }
     running = true;
     final token = _token = CancelToken();
     bool current() => !_disposed && !_paused && !token.isCancelled;
-    try {
-      do {
-        _again = false;
-        final variants = catalogue.variants.toList();
-        for (var i = 0; i < variants.length && current(); i += 3) {
-          await Future.wait(
-            variants.skip(i).take(3).map((title) async {
-              try {
-                await catalogue.load(title);
-              } catch (_) {}
-            }),
-          );
-          if (!current()) return;
-          _anchor ??= _initialCandidate();
-          notifyListeners();
+    final deadline = Timer(
+      const Duration(seconds: 12),
+      () => token.cancel('详情检测时限已到'),
+    );
+    final tasks = <Future<void>>{};
+    final requested = <String>{};
+    final queued = <CinemaRouteProbeTarget>[];
+    final targets = <String, CinemaRouteProbeTarget>{};
+    final completed = <String, CinemaMediaProbeResult>{};
+    var loading = 0, measuring = 0;
+    void wake() {
+      if (_wake?.isCompleted == false) _wake!.complete();
+    }
+
+    void launch(Future<void> Function() operation) {
+      late Future<void> task;
+      task = Future<void>.sync(operation).whenComplete(() {
+        tasks.remove(task);
+        wake();
+      });
+      tasks.add(task);
+    }
+
+    // One preferred edition from each source gets a turn before extra versions
+    // of the same source. Recommendation still follows the user's source order.
+    Iterable<CinemaPlaybackCandidate> fairCandidates() sync* {
+      final groups = <String, List<CinemaPlaybackCandidate>>{};
+      for (final candidate in candidates) {
+        groups.putIfAbsent(candidate.title.key, () => []).add(candidate);
+      }
+      for (final group in groups.values) {
+        group.sort(
+          (a, b) =>
+              cinemaCandidateQuality(b).compareTo(cinemaCandidateQuality(a)),
+        );
+      }
+      for (var round = 0; groups.values.any((g) => g.length > round); round++) {
+        for (final group in groups.values) {
+          if (round < group.length) yield group[round];
         }
-        if (!current()) return;
-        final targets = CinemaRouteProbeBatch.plan(
-          candidates.where((c) => !_checked.contains(c.key)),
+      }
+    }
+
+    try {
+      while (current()) {
+        _wake = Completer<void>();
+        _again = false;
+        for (final title in catalogue.variants) {
+          if (requested.contains(title.key)) continue;
+          if (catalogue.loaded(title) != null) {
+            requested.add(title.key);
+            continue;
+          }
+          if (loading >= 3) continue;
+          requested.add(title.key);
+          loading++;
+          launch(() async {
+            try {
+              await catalogue.load(title);
+            } catch (_) {
+              // A slow or failed catalogue must not hold up the other sources.
+            } finally {
+              loading--;
+            }
+          });
+        }
+        _anchor ??= _initialCandidate();
+        final additions = CinemaRouteProbeBatch.plan(
+          fairCandidates().where((c) => !_checked.contains(c.key)),
           limit: 24,
         );
-        for (final target in targets) {
-          for (final c in target.candidates) {
-            pending.add(c.key);
+        for (final next in additions) {
+          final existing = targets[next.identity];
+          if (existing == null && targets.length >= 24) continue;
+          final target = existing ?? next;
+          if (existing == null) {
+            targets[next.identity] = next;
+            queued.add(next);
+          } else {
+            existing.candidates.addAll(next.candidates);
+          }
+          for (final c in next.candidates) {
             _checked.add(c.key);
+            final result = completed[target.identity];
+            if (result != null) {
+              results[c.key] = result;
+            } else {
+              pending.add(c.key);
+            }
           }
         }
-        notifyListeners();
-        await CinemaRouteProbeBatch(_probe).run(
-          targets,
-          cancel: token,
-          budget: const Duration(seconds: 45),
-          onResult: (target, result) {
-            if (!current()) return;
-            for (final c in target.candidates) {
-              results[c.key] = result;
-              pending.remove(c.key);
+        while (measuring < 3 && queued.isNotEmpty && current()) {
+          final target = queued.removeAt(0);
+          measuring++;
+          launch(() async {
+            try {
+              await CinemaRouteProbeBatch(_probe).run(
+                [target],
+                cancel: token,
+                budget: const Duration(seconds: 5),
+                probeTimeout: const Duration(milliseconds: 4500),
+                onResult: (_, result) {
+                  if (!current()) return;
+                  completed[target.identity] = result;
+                  for (final c in target.candidates) {
+                    results[c.key] = result;
+                    pending.remove(c.key);
+                  }
+                  notifyListeners();
+                },
+              );
+            } finally {
+              measuring--;
             }
-            notifyListeners();
-          },
-        );
-        if (!current()) return;
-        // A batch deadline is not evidence that an untested route is unusable.
-        for (final key in pending) {
-          _checked.remove(key);
+          });
         }
-        pending.clear();
-      } while (_again && current());
+        notifyListeners();
+        if (tasks.isEmpty && !_again) break;
+        await Future.any([_wake!.future, token.whenCancel.then((_) {})]);
+      }
     } finally {
+      deadline.cancel();
+      token.cancel();
       running = false;
       if (identical(_token, token)) _token = null;
+      _wake = null;
+      // A deadline is not evidence that an untested route is unusable.
+      _checked.removeAll(pending);
       if (!_disposed) {
         pending.clear();
         notifyListeners();

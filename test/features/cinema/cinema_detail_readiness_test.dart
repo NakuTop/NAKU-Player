@@ -17,6 +17,7 @@ import 'package:kazumi/features/cinema/cinema_home_page.dart';
 import 'package:kazumi/features/cinema/cinema_appearance.dart';
 import 'package:kazumi/features/cinema/cinema_detail_artwork.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
+import 'package:kazumi/features/cinema/cinema_media_transport.dart';
 import 'package:kazumi/features/cinema/cinema_neon_decode.dart';
 import 'package:kazumi/features/cinema/cinema_poster_atmosphere.dart';
 import 'package:kazumi/features/cinema/cinema_ratings.dart';
@@ -114,6 +115,26 @@ class _Repository extends CinemaRepository {
           ),
         ],
       );
+}
+
+class _DetailProbe extends CinemaMediaProbe {
+  _DetailProbe() : super(transport: CinemaMediaTransport(dio: Dio()));
+  @override
+  Future<CinemaMediaProbeResult> measure(
+    String url,
+    Map<String, String> headers, {
+    CancelToken? cancel,
+    Duration timeout = const Duration(seconds: 8),
+    bool hls = false,
+  }) async => CinemaMediaProbeResult(
+    ok: true,
+    elapsedMs: 180,
+    firstByteMs: 80,
+    mbps: 28,
+    width: url.contains('ready-b') ? 3840 : 1920,
+    height: url.contains('ready-b') ? 2160 : 1080,
+    qualityEvidence: CinemaQualityEvidence.videoHeader,
+  );
 }
 
 class _Ratings extends CinemaRatingsRepository {
@@ -305,6 +326,7 @@ void main() {
     CinemaAppearance? appearance,
     bool animateAtmosphere = false,
     Widget Function(CinemaPlayerPage)? playerPageBuilder,
+    CinemaMediaProbe? detailProbe,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
@@ -377,6 +399,7 @@ void main() {
         },
         home: CinemaHomePage(
           playerPageBuilder: playerPageBuilder,
+          detailMediaProbe: detailProbe,
           store: store,
           repository: repository,
           ratingsRepository: ratings,
@@ -863,6 +886,43 @@ void main() {
     },
   );
 
+  testWidgets(
+    'detail source chips show both measured resolutions without opening playback',
+    (tester) async {
+      final probe = _DetailProbe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      var players = 0;
+      await mount(
+        tester,
+        detailProbe: probe,
+        playerPageBuilder: (_) {
+          players++;
+          return const SizedBox();
+        },
+      );
+      ratings.complete('ready-a');
+      posters['ready-a']!.complete(frame);
+      await tester.pumpAndSettle();
+      for (final pair in [
+        ('ready-a', '1920 × 1080'),
+        ('ready-b', '3840 × 2160'),
+      ]) {
+        final chip = find.byKey(ValueKey('source-variant:${pair.$1}::film'));
+        await tester.ensureVisible(chip);
+        expect(
+          find.descendant(of: chip, matching: find.textContaining(pair.$2)),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(of: chip, matching: find.textContaining('28.0 Mbps')),
+          findsOneWidget,
+        );
+      }
+      expect(players, 0);
+      expect(find.textContaining('播放后可检测'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
   testWidgets(
     'choosing a source opens playback without waiting for artwork or another play click',
     (tester) async {

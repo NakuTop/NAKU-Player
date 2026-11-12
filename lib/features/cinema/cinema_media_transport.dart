@@ -1,7 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:isolate';
 import 'package:crypto/crypto.dart';
+import 'package:pointycastle/block/aes.dart';
+import 'package:pointycastle/block/modes/cbc.dart';
+import 'package:pointycastle/api.dart' show KeyParameter, ParametersWithIV;
+import 'cinema_hls_probe_sample.dart';
 import 'cinema_video_metadata.dart';
 import 'cinema_playback_buffer.dart';
 import 'cinema_media_routing.dart';
@@ -192,11 +197,30 @@ class CinemaMediaProbeResult {
 
 /// Reads actual media bytes, not the catalogue API. Samples are capped at 2 MiB
 /// and a wall-clock deadline. Throughput includes time to first byte.
+class CinemaMediaProbeCache {
+  final entries = <String, ({DateTime at, CinemaMediaProbeResult result})>{};
+  void clear() => entries.clear();
+}
+
 class CinemaMediaProbe {
-  CinemaMediaProbe({CinemaMediaTransport? transport})
-    : transport = transport ?? CinemaMediaTransport();
+  CinemaMediaProbe({
+    CinemaMediaTransport? transport,
+    this.quick = false,
+    CinemaMediaProbeCache? cache,
+  }) : transport = transport ?? CinemaMediaTransport(),
+       _results = cache ?? CinemaMediaProbeCache();
+  factory CinemaMediaProbe.detail({CinemaMediaTransport? transport}) =>
+      CinemaMediaProbe(
+        transport: transport,
+        quick: true,
+        cache: _detailResults,
+      );
+  static final _detailResults = CinemaMediaProbeCache();
   final CinemaMediaTransport transport;
-  final _cache = <String, ({DateTime at, CinemaMediaProbeResult result})>{};
+  final bool quick;
+  final CinemaMediaProbeCache _results;
+  Map<String, ({DateTime at, CinemaMediaProbeResult result})> get _cache =>
+      _results.entries;
   String _key(String url, Map<String, String> headers, bool hls) {
     final names = headers.keys.toList()..sort();
     return sha256
@@ -206,6 +230,7 @@ class CinemaMediaProbe {
               url,
               transport.router?.networkRevision.toString(),
               hls,
+              quick,
               {for (final name in names) name: headers[name]},
             ]),
           ),
@@ -263,8 +288,7 @@ class CinemaMediaProbe {
     final deadline = Timer(timeout, () => token.cancel('测速超时'));
     int? width, height, bitrate;
     var evidence = CinemaQualityEvidence.unknown;
-    var encrypted = false;
-    String? initialization;
+    CinemaHlsProbeResource? sampleResource, initialization;
     var codec = '';
     try {
       var target = Uri.parse(url);
@@ -290,59 +314,107 @@ class CinemaMediaProbe {
           }
           final variants = cinemaHlsVariants(manifest, target);
           if (variants.isNotEmpty) {
-            final variant = variants.reduce(
-              (a, b) => a.bitrate > b.bitrate ? a : b,
-            );
+            final variant = variants.reduce((a, b) {
+              final pixelsA = (a.width ?? 0) * (a.height ?? 0);
+              final pixelsB = (b.width ?? 0) * (b.height ?? 0);
+              return pixelsA != pixelsB
+                  ? (pixelsA > pixelsB ? a : b)
+                  : a.bitrate >= b.bitrate
+                  ? a
+                  : b;
+            });
             target = variant.uri;
             width = variant.width;
             height = variant.height;
             bitrate = variant.bitrate;
+            codec = variant.codec;
             if (width != null && height != null) {
               evidence = CinemaQualityEvidence.manifest;
             }
           } else {
-            final segment = manifest
-                .split('\n')
-                .map((s) => s.trim())
-                .where((s) => s.isNotEmpty && !s.startsWith('#'))
-                .firstOrNull;
-            if (segment == null) throw const FormatException('媒体清单没有片段');
-            encrypted = RegExp(
-              r'#EXT-X-KEY:[^\r\n]*METHOD=(?!NONE)[A-Z0-9-]+',
-            ).hasMatch(manifest);
-            final init = RegExp(
-              r'#EXT-X-MAP:[^\r\n]*URI="([^"]+)"',
-            ).firstMatch(manifest);
-            if (init != null) {
-              initialization = target.resolve(init[1]!).toString();
-            }
-            target = target.resolve(segment);
+            final sample = cinemaHlsProbeSample(manifest, target);
+            sampleResource = sample.media;
+            initialization = sample.initialization;
+            target = sample.media.uri;
             break;
           }
         }
       }
       CinemaVideoMetadata? metadata;
+      final keys = <Uri, Uint8List?>{};
+      Future<CinemaVideoMetadata?> inspect(
+        Uint8List bytes,
+        CinemaHlsProbeEncryption? encryption,
+      ) async {
+        Uint8List? key;
+        if (encryption != null) {
+          if (encryption.key == null || encryption.iv == null) return null;
+          if (!keys.containsKey(encryption.key)) {
+            try {
+              final value = await transport.bytes(
+                encryption.key!,
+                headers,
+                cancel: token,
+                limit: 16,
+                metadata: true,
+              );
+              keys[encryption.key!] = value.length == 16 ? value : null;
+            } catch (_) {
+              if (token.isCancelled) rethrow;
+              keys[encryption.key!] = null;
+            }
+          }
+          key = keys[encryption.key];
+          if (key == null) return null;
+        }
+        // Parse/decrypt only the bounded sample, off the UI isolate. No player,
+        // audio decoder or persistent copy of the key is created.
+        final iv = encryption?.iv;
+        return _inspectVideoHeader(bytes, key: key, iv: iv);
+      }
+
       var initializationBytes = 0;
-      if (!encrypted && initialization != null) {
+      if (initialization != null) {
         final bytes = await transport.bytes(
-          Uri.parse(initialization),
+          initialization.uri,
           headers,
           cancel: token,
-          range: 'bytes=0-65535',
-          limit: 65536,
-          partial: true,
+          range: initialization.range(65536),
+          limit: initialization.sampleLength(65536),
+          partial: initialization.start == 0,
         );
         initializationBytes = bytes.length;
-        metadata = cinemaVideoMetadata(bytes);
+        metadata = await inspect(bytes, initialization.encryption);
+        if (metadata != null) {
+          width = metadata.width;
+          height = metadata.height;
+          codec = metadata.codec;
+          evidence = CinemaQualityEvidence.videoHeader;
+        }
       }
-      final sampleLimit = 1572864 - initializationBytes;
+      final sampleLimit =
+          sampleResource?.sampleLength(
+            quick ? 262144 : 1572864 - initializationBytes,
+          ) ??
+          (quick ? 262144 : 1572864 - initializationBytes);
       final sampleWatch = Stopwatch()..start();
       final response = await transport.stream(
         target,
         headers,
         cancel: token,
-        range: 'bytes=0-${sampleLimit - 1}',
+        range:
+            sampleResource?.range(sampleLimit) ?? 'bytes=0-${sampleLimit - 1}',
       );
+      if (sampleResource != null &&
+          sampleResource.start > 0 &&
+          (response.statusCode != 206 ||
+              response.headers
+                      .value('content-range')
+                      ?.startsWith('bytes ${sampleResource.start}-') !=
+                  true)) {
+        await response.data!.stream.listen((_) {}).cancel();
+        throw const FormatException('片源不支持分段范围请求');
+      }
       final type = response.headers.value('content-type')?.toLowerCase() ?? '';
       if (type.contains('text/html') || type.contains('application/json')) {
         await response.data!.stream.listen((_) {}).cancel();
@@ -360,17 +432,21 @@ class CinemaMediaProbe {
       }
       sampleWatch.stop();
       if (count < 1024) throw const FormatException('视频数据不足');
-      if (!encrypted) metadata ??= cinemaVideoMetadata(sample.takeBytes());
+      metadata ??= await inspect(
+        sample.takeBytes(),
+        sampleResource?.encryption,
+      );
       // A fast-start MP4 needs no extra request. A moov-at-end MP4 may use
       // one bounded suffix range; never download the full film to inspect it.
       final contentRange = response.headers.value('content-range') ?? '';
       final total = int.tryParse(contentRange.split('/').last) ?? 0;
-      if (!encrypted &&
+      if (sampleResource == null &&
           metadata == null &&
           total > sampleLimit &&
           response.statusCode == 206) {
         try {
-          final remaining = 2097152 - initializationBytes - count;
+          final remaining =
+              (quick ? 524288 : 2097152) - initializationBytes - count;
           final start = (total - remaining).clamp(sampleLimit, total - 1);
           final tail = await transport.stream(
             target,
@@ -389,7 +465,8 @@ class CinemaMediaProbe {
               suffix.add(Uint8List.sublistView(chunk, 0, allowed));
               if (suffix.length >= remaining) break;
             }
-            metadata = cinemaVideoMetadata(suffix.takeBytes(), mp4Tail: true);
+            final tailBytes = suffix.takeBytes();
+            metadata = await _inspectVideoHeader(tailBytes, mp4Tail: true);
           } else {
             await tail.data!.stream.listen((_) {}).cancel();
           }
@@ -403,6 +480,7 @@ class CinemaMediaProbe {
         codec = metadata.codec;
         evidence = CinemaQualityEvidence.videoHeader;
       }
+      if (token.isCancelled) throw const FormatException('检测已取消');
       return CinemaMediaProbeResult(
         ok: true,
         elapsedMs: timer.elapsedMilliseconds,
@@ -426,6 +504,11 @@ class CinemaMediaProbe {
                   [401, 403].contains(error.response?.statusCode)
             ? '片源拒绝访问，请检查鉴权或请求头'
             : '视频连接失败',
+        width: width,
+        height: height,
+        bitrate: bitrate,
+        codec: codec,
+        qualityEvidence: evidence,
       );
     } finally {
       deadline.cancel();
@@ -433,6 +516,24 @@ class CinemaMediaProbe {
     }
   }
 }
+
+Future<CinemaVideoMetadata?> _inspectVideoHeader(
+  Uint8List bytes, {
+  Uint8List? key,
+  Uint8List? iv,
+  bool mp4Tail = false,
+}) => Isolate.run(() {
+  var plain = bytes;
+  if (key != null) {
+    final cipher = CBCBlockCipher(AESEngine())
+      ..init(false, ParametersWithIV(KeyParameter(key), iv!));
+    plain = Uint8List(bytes.length - bytes.length % 16);
+    for (var at = 0; at < plain.length; at += 16) {
+      cipher.processBlock(bytes, at, plain, at);
+    }
+  }
+  return cinemaVideoMetadata(plain, mp4Tail: mp4Tail);
+});
 
 class CinemaHlsVariant {
   const CinemaHlsVariant(

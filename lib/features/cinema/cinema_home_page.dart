@@ -1,4 +1,5 @@
 import 'cinema_detail_comparison.dart';
+import 'cinema_media_transport.dart';
 import 'cinema_playback_candidates.dart';
 import 'cinema_mobile_scaffold.dart';
 import 'cinema_movie_versions.dart';
@@ -178,6 +179,7 @@ class CinemaHomePage extends StatefulWidget {
     this.navigationPreferences,
     this.windowControls,
     this.playerPageBuilder,
+    this.detailMediaProbe,
     this.mobileLayout,
     this.initialStartup = const CinemaStartupTarget(),
   });
@@ -186,6 +188,7 @@ class CinemaHomePage extends StatefulWidget {
 
   /// Allows embedding the player or inspecting navigation without an engine.
   final Widget Function(CinemaPlayerPage)? playerPageBuilder;
+  final CinemaMediaProbe? detailMediaProbe;
   final CinemaStore? store;
   final CinemaRepository? repository;
   final CinemaRatingsRepository? ratingsRepository;
@@ -2057,6 +2060,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       }
     }
     Widget buildDetails(BuildContext context) => _TitleDetails(
+      mediaProbe: widget.detailMediaProbe,
       title: title,
       source: source,
       variants: variants
@@ -5396,7 +5400,9 @@ class _TitleDetails extends StatefulWidget {
     this.resume,
     this.resolvedDetail = false,
     this.tvPoster,
+    this.mediaProbe,
   });
+  final CinemaMediaProbe? mediaProbe;
   final Widget? tvPoster;
   final CinemaTitle title;
   final CinemaSource source;
@@ -5429,6 +5435,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
     variants: widget.variants,
     sources: widget.store.enabledSources,
     repository: widget.repository,
+    probe: widget.mediaProbe,
     initialRoute: widget.resume?.routeIndex ?? 0,
     initialEpisode: widget.resume?.episodeIndex ?? 0,
   );
@@ -5961,7 +5968,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
             2 => 'HD · 标注',
             1 => 'SD · 标注',
             -10 => '抢先版',
-            _ => '画质待检测',
+            _ => _comparison.running ? '画质待检测' : '分辨率暂未读出',
           };
     final speed = measured?.ok == true && measured?.mbps != null
         ? '${measured!.mbps!.toStringAsFixed(1)} Mbps${measured.firstByteMs == null ? '' : ' · ${measured.firstByteMs} ms'}'
@@ -5973,7 +5980,16 @@ class _TitleDetailsState extends State<_TitleDetails> {
         ? '线路暂未读取'
         : _comparison.running
         ? '等待检测'
-        : '播放后可检测';
+        : measured?.ok == true
+        ? '已连接'
+        : choice != null &&
+              !cinemaUsesDirectMedia(
+                choice.source,
+                choice.route,
+                choice.episode,
+              )
+        ? '网页解析线路'
+        : '可重新检测';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,

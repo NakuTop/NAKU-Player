@@ -111,7 +111,11 @@ bool _validSize(int width, int height) =>
 
 CinemaVideoMetadata? _transportStream(Uint8List bytes) {
   var sync = -1;
-  for (var offset = 0; offset < 188 && offset + 376 < bytes.length; offset++) {
+  for (
+    var offset = 0;
+    offset < 65536 && offset + 376 < bytes.length;
+    offset++
+  ) {
     if (bytes[offset] == 0x47 &&
         bytes[offset + 188] == 0x47 &&
         bytes[offset + 376] == 0x47) {
@@ -158,11 +162,21 @@ CinemaVideoMetadata? _transportStream(Uint8List bytes) {
           : elementary[offset + 2] == 0 && elementary[offset + 3] == 1
           ? 4
           : 0;
-      if (prefix == 0 || elementary[offset + prefix] & 0x1f != 7) continue;
-      final result = _h264(
-        Uint8List.sublistView(elementary, offset + prefix + 1),
-      );
-      if (result != null) return result;
+      if (prefix == 0) continue;
+      final header = offset + prefix;
+      try {
+        CinemaVideoMetadata? result;
+        if (elementary[header] & 0x1f == 7) {
+          result = _h264(Uint8List.sublistView(elementary, header + 1));
+        } else if ((elementary[header] >> 1) & 0x3f == 33 &&
+            elementary[header] & 0x80 == 0 &&
+            elementary[header + 1] & 7 != 0) {
+          result = _hevc(Uint8List.sublistView(elementary, header + 2));
+        }
+        if (result != null) return result;
+      } on FormatException {
+        // A malformed NAL must not hide another valid video parameter set.
+      }
     }
   }
   return null;
@@ -197,7 +211,7 @@ class _Bits {
   }
 }
 
-CinemaVideoMetadata? _h264(Uint8List bytes) {
+List<int> _rbsp(Uint8List bytes) {
   final rbsp = <int>[];
   for (var index = 0; index < bytes.length && rbsp.length < 4096; index++) {
     if (index >= 2 &&
@@ -208,7 +222,50 @@ CinemaVideoMetadata? _h264(Uint8List bytes) {
     }
     rbsp.add(bytes[index]);
   }
-  final bits = _Bits(rbsp);
+  return rbsp;
+}
+
+CinemaVideoMetadata? _hevc(Uint8List bytes) {
+  final bits = _Bits(_rbsp(bytes));
+  void skip(int count) {
+    while (count > 0) {
+      final part = count > 32 ? 32 : count;
+      bits.read(part);
+      count -= part;
+    }
+  }
+
+  bits.read(4);
+  final layers = bits.read(3);
+  if (layers > 6) return null;
+  bits.read(1);
+  skip(96); // general profile_tier_level plus level_idc.
+  final flags = [for (var i = 0; i < layers; i++) (bits.read(1), bits.read(1))];
+  if (layers > 0) skip((8 - layers) * 2);
+  for (final flag in flags) {
+    if (flag.$1 == 1) skip(88);
+    if (flag.$2 == 1) skip(8);
+  }
+  if (bits.ue() > 15) return null;
+  var chroma = bits.ue();
+  if (chroma > 3) return null;
+  if (chroma == 3 && bits.read(1) == 1) chroma = 0;
+  var width = bits.ue(), height = bits.ue();
+  if (bits.read(1) == 1) {
+    final left = bits.ue(),
+        right = bits.ue(),
+        top = bits.ue(),
+        bottom = bits.ue();
+    width -= (left + right) * (chroma == 1 || chroma == 2 ? 2 : 1);
+    height -= (top + bottom) * (chroma == 1 ? 2 : 1);
+  }
+  return _validSize(width, height)
+      ? CinemaVideoMetadata(width, height, 'HEVC')
+      : null;
+}
+
+CinemaVideoMetadata? _h264(Uint8List bytes) {
+  final bits = _Bits(_rbsp(bytes));
   final profile = bits.read(8);
   bits.read(16);
   bits.ue(); // Sequence parameter set ID.

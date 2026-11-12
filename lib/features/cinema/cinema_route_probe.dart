@@ -54,6 +54,14 @@ class CinemaRouteProbeTarget {
   final Map<String, String> headers;
   final bool hls;
   final List<CinemaPlaybackCandidate> candidates = [];
+  String get identity {
+    final keys = headers.keys.toList()..sort();
+    return jsonEncode([
+      url,
+      {for (final key in keys) key: headers[key]},
+      hls,
+    ]);
+  }
 }
 
 class CinemaRouteProbeBatch {
@@ -112,6 +120,7 @@ class CinemaRouteProbeBatch {
     List<CinemaRouteProbeTarget> targets, {
     CancelToken? cancel,
     Duration budget = const Duration(seconds: 10),
+    Duration probeTimeout = const Duration(seconds: 6),
     void Function(CinemaRouteProbeTarget target, CinemaMediaProbeResult result)?
     onResult,
   }) async {
@@ -134,7 +143,7 @@ class CinemaRouteProbeBatch {
               target.headers,
               hls: target.hls,
               cancel: owned,
-              timeout: const Duration(seconds: 6),
+              timeout: probeTimeout,
             ),
             owned.whenCancel.then((_) => null),
           ]);
