@@ -1,18 +1,18 @@
 {
-  "tag_name": "3.2.5",
-  "name": "NAKU Android 手机版 3.2.5",
-  "body": "加快 NAS 收藏和历史同步，前台每 8 秒检查更新。未变化时跳过快照下载，仅并行读取新增快照。",
-  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.5-android",
-  "published_at": "2026-11-14T08:44:38.231126+00:00",
+  "tag_name": "3.2.6",
+  "name": "NAKU Android 手机版 3.2.6",
+  "body": "主动搜索支持跨分类结果和片名异译，首页按原分类浏览。",
+  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.6-android",
+  "published_at": "2026-11-14T14:31:10.602309+00:00",
   "draft": false,
   "prerelease": false,
   "assets": [
     {
-      "name": "NAKUPlayer-3.2.5-Android-Mobile.apk",
+      "name": "NAKUPlayer-3.2.6-Android-Mobile.apk",
       "state": "uploaded",
-      "size": 92088059,
-      "digest": "sha256:cf6302a969996752a53a482ade0e967444d48537f869bd1f0e3d8518014fc8f7",
-      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/untagged-8179ec2f044f0d2920a8/NAKUPlayer-3.2.5-Android-Mobile.apk"
+      "size": 92074068,
+      "digest": "sha256:49adee637fde4195975311d0c395d1a9f970631f6d03551df1d613dca5dbe3d2",
+      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/untagged-14f2bb3358acd94bb1d3/NAKUPlayer-3.2.6-Android-Mobile.apk"
     }
   ]
 }

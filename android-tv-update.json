@@ -1,19 +1,19 @@
 [
   {
-    "tag_name": "android-tv-v3.2.5+125",
-    "name": "NAKU Android TV 3.2.5",
-    "body": "加快 NAS 收藏和历史同步，前台每 8 秒检查更新。未变化时跳过快照下载，仅并行读取新增快照。",
-    "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.5%2B125",
-    "published_at": "2026-11-14T08:47:21.413923+00:00",
+    "tag_name": "android-tv-v3.2.6+126",
+    "name": "NAKU Android TV 3.2.6",
+    "body": "主动搜索支持跨分类结果和片名异译，首页按原分类浏览。",
+    "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.6%2B126",
+    "published_at": "2026-11-14T14:32:06.708463+00:00",
     "draft": false,
     "prerelease": false,
     "assets": [
       {
-        "name": "NAKU-TV-3.2.5-Android-universal.apk",
+        "name": "NAKU-TV-3.2.6-Android-universal.apk",
         "state": "uploaded",
-        "size": 92087742,
-        "digest": "sha256:4ecc36442b70cfa4c16bdaf996e746294dce636e655271ef666e0984ad22d0de",
-        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/untagged-d280bf68abe6fcb0b566/NAKU-TV-3.2.5-Android-universal.apk"
+        "size": 92074189,
+        "digest": "sha256:430a1ebe4d98c60068adadf5c6634f9802357af0b0640462caf64e2718e7a78c",
+        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/untagged-a571a54a22d0ebbe583b/NAKU-TV-3.2.6-Android-universal.apk"
       }
     ]
   }
