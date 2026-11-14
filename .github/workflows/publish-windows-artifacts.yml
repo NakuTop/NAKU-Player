@@ -1,4 +1,4 @@
-name: Publish verified Windows 3.2.2 artifacts
+name: Publish verified Windows 3.2.5 artifacts
 on:
   workflow_dispatch:
   push:
@@ -17,20 +17,20 @@ jobs:
     steps:
       - name: Verify completed build and draft target
         run: |
-          gh run watch 42852868038 --exit-status --interval 15
-          gh api repos/NakuTop/NAKU-Player/actions/runs/42852868038 > run.json
-          gh release view v3.2.2-windows --json isDraft,targetCommitish > release.json
+          gh run watch 43576443111 --exit-status --interval 15
+          gh api repos/NakuTop/NAKU-Player/actions/runs/43576443111 > run.json
+          gh release view v3.2.5-windows --json isDraft,targetCommitish > release.json
           python3 - <<'PY'
           import json
           run=json.load(open('run.json')); release=json.load(open('release.json'))
-          sha='22569ee1a9c59b86d09a7309a7fb05ca4308d80e'
+          sha='fbd1d76b7dd1764bf6bea1376f946d16bb86bc5d'
           assert run['conclusion']=='success' and run['head_sha']==sha
           assert release['isDraft'] and release['targetCommitish']==sha
           PY
       - uses: actions/download-artifact@v4
         with:
           name: NAKUPlayer-Windows-x64
-          run-id: 42852868038
+          run-id: 43576443111
           github-token: ${{ github.token }}
           repository: NakuTop/NAKU-Player
           path: release
@@ -38,8 +38,8 @@ jobs:
         working-directory: release
         run: |
           tr -d '\r' < SHA256SUMS | sha256sum --check
-          gh release upload v3.2.2-windows NAKUPlayer-3.2.2-Windows-x64-Setup.exe NAKUPlayer-3.2.2-Windows-x64-portable.zip SHA256SUMS
-          gh release view v3.2.2-windows --json assets > uploaded.json
+          gh release upload v3.2.5-windows NAKUPlayer-3.2.5-Windows-x64-Setup.exe NAKUPlayer-3.2.5-Windows-x64-portable.zip SHA256SUMS
+          gh release view v3.2.5-windows --json assets > uploaded.json
           python3 - <<'PY'
           import json
           assets={a['name']:a for a in json.load(open('uploaded.json'))['assets']}
@@ -47,4 +47,4 @@ jobs:
             sha,name=row.split(); a=assets[name]
             assert a['state']=='uploaded' and a['digest']=='sha256:'+sha, name
           PY
-          gh release edit v3.2.2-windows --draft=false --latest=false
+          gh release edit v3.2.5-windows --draft=false --latest=false
