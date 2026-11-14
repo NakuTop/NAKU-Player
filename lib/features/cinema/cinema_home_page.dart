@@ -1172,7 +1172,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   bool _ordinaryCategory(String name) => cinemaOrdinaryCategory(name);
 
   bool _unifiedSearchSection(_Section section) =>
-      (((Platform.isMacOS || _usesMobileLayout) && !NakuDevice.isTV) ||
+      (((Platform.isMacOS || Platform.isWindows || _usesMobileLayout) &&
+              !NakuDevice.isTV) ||
           (NakuDevice.isTV && _tvDestination == _TVDestination.search)) &&
       (section == _Section.movies || section == _Section.series);
 
@@ -2982,15 +2983,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   Widget _tvSearchBody() {
     final visible = _catalogView.visible
-        .where(_tvTitleVisible)
-        .where(
-          (title) =>
-              _tvSearchFilter == 'all' ||
-              _matchesCategory(
-                title.category,
-                _tvSearchFilter == 'series' ? _Section.series : _Section.movies,
-              ),
-        )
+        .where((title) => _ordinaryCategory(title.category))
         .toList();
     return Column(
       children: [

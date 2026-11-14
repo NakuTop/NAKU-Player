@@ -104,6 +104,19 @@ class _Repository extends CinemaRepository {
     int page = 1,
   }) async {
     searches.add(keyword);
+    if (keyword == '赛博朋克：边缘行者') {
+      return CinemaPage(
+        items: const [
+          CinemaTitle(
+            id: 'edgerunners',
+            sourceId: 'maccms-feifan',
+            title: '赛博朋克：边缘跑手',
+            category: '日本动漫',
+            year: '2022',
+          ),
+        ],
+      );
+    }
     return CinemaPage(items: [keyword.contains('剧') ? _series : _movie]);
   }
 
@@ -477,6 +490,22 @@ void main() {
     await tester.pumpAndSettle();
     expect(discovery.kinds, contains(DoubanKind.tv));
     expect(find.textContaining('剧集测试作品'), findsWidgets);
+    await clean(tester);
+  });
+  testWidgets('TV search shows animation without opening an anime category', (
+    tester,
+  ) async {
+    await mount(tester);
+    expect(find.text('赛博朋克：边缘跑手'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('tv-nav-search')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('tv-search-field')),
+      '赛博朋克：边缘行者',
+    );
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await tester.pumpAndSettle();
+    expect(find.text('赛博朋克：边缘跑手'), findsWidgets);
     await clean(tester);
   });
   testWidgets(
