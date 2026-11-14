@@ -1,21 +1,21 @@
 {
-  "tag_name": "3.2.2",
-  "name": "NAKU Player Windows 3.2.2",
-  "body": "Home Display 持久授权更新\n\n- 展示授权跟随当前 NAS 登录账号保存，应用重启后自动恢复。\n- 有效授权遇到短暂断网不清除；自动续期不再每四分钟重新访问 NAS。\n- 退出 NAS、忘记账号与切换账号时隔离旧授权，保留原有展示权限范围。\n- macOS 同时包含 3.2.1 的离开局域网后远程连接恢复修复。\n\n手机、电视及 Windows 的真实设备运行仍需实际使用确认。\n",
-  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.2-windows",
-  "published_at": "2026-11-10T16:29:02Z",
+  "tag_name": "3.2.5",
+  "name": "NAKU Windows 3.2.5",
+  "body": "NAS 收藏与历史改用增量同步，前台每 8 秒检查更新。",
+  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.5-windows",
+  "published_at": "2026-11-14T08:47:44Z",
   "assets": [
     {
-      "name": "NAKUPlayer-3.2.2-Windows-x64-portable.zip",
-      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.2-windows/NAKUPlayer-3.2.2-Windows-x64-portable.zip",
-      "size": 190431842,
-      "digest": "sha256:ee48dbd84b8ab47f0a1217f4996ed007c286da8f749c8d0eff75c062ec0756af"
+      "name": "NAKUPlayer-3.2.5-Windows-x64-portable.zip",
+      "size": 190467326,
+      "digest": "sha256:2dfd7e3a9d4f8d5ecf6d62195c150fce07c0a83b3e72647a51855ae596972376",
+      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.5-windows/NAKUPlayer-3.2.5-Windows-x64-portable.zip"
     },
     {
-      "name": "NAKUPlayer-3.2.2-Windows-x64-Setup.exe",
-      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.2-windows/NAKUPlayer-3.2.2-Windows-x64-Setup.exe",
-      "size": 173011150,
-      "digest": "sha256:28d5b359997cba91edb855881cc1354ad73039cbebd062899427c0ba61e93c9b"
+      "name": "NAKUPlayer-3.2.5-Windows-x64-Setup.exe",
+      "size": 173036984,
+      "digest": "sha256:83ec22f5027d133e7078678f569f835c7d2ac4b955e1e08295babcdeadd27aee",
+      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.5-windows/NAKUPlayer-3.2.5-Windows-x64-Setup.exe"
     }
   ]
 }
