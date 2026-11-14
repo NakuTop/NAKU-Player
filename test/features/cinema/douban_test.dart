@@ -1,3 +1,5 @@
+import 'package:flutter/gestures.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/douban/douban_models.dart';
@@ -17,6 +19,16 @@ Map<String, dynamic> subject(String id) => {
 
 class Repo extends DoubanRepository {
   final requests = <DoubanKind>[];
+  @override
+  Future<DoubanCharts> charts({required CancelToken cancelToken}) async =>
+      const DoubanCharts([
+        DoubanChartSection('豆瓣新片榜', [
+          DoubanTitle(id: '2', title: '榜单影片', kind: DoubanKind.movie),
+        ]),
+      ], {});
+  @override
+  Future<String> chartPoster(String id) async => '';
+
   @override
   Future<List<String>> discoverThemes({
     required DoubanKind kind,
@@ -52,6 +64,82 @@ class Repo extends DoubanRepository {
 }
 
 void main() {
+  testWidgets(
+    'trackpad switches adjacent Douban boards without leaving the page',
+    (tester) async {
+      final repository = Repo();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DoubanPage(
+            repository: repository,
+            themeCatalog: DoubanThemeCatalog(),
+            onSelect: (_) {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      Future<void> swipe(double dx) async {
+        final gesture = await tester.createGesture(
+          kind: PointerDeviceKind.trackpad,
+        );
+        await gesture.panZoomStart(const Offset(400, 400));
+        await gesture.panZoomUpdate(const Offset(400, 400), pan: Offset(dx, 0));
+        await gesture.panZoomEnd();
+        await tester.pumpAndSettle();
+      }
+
+      await swipe(-150);
+      expect(repository.requests.last, DoubanKind.tv);
+      await swipe(-150);
+      expect(find.text('榜单影片'), findsOneWidget);
+      await swipe(150);
+      expect(find.text('榜单影片'), findsNothing);
+      expect(find.text('豆瓣榜单'), findsOneWidget);
+    },
+  );
+
+  test('official chart preserves board order, genres and title aliases', () async {
+    final dio = Dio();
+    addTearDown(dio.close);
+    dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          expect(options.uri.host, 'movie.douban.com');
+          if (options.path.endsWith('/chart')) {
+            handler.resolve(
+              Response(
+                requestOptions: options,
+                statusCode: 200,
+                data:
+                    '<div class="article"><table><tr class="item"><td><a href="/subject/1/" title="本地片名"></a></td>'
+                    '<td class="pl2"><a href="/subject/1/">本地片名 / 海外片名</a><p>2007-11-01</p></td></tr></table></div>'
+                    '<div class="types"><a href="/typerank?type=11">剧情</a></div>'
+                    '<ul id="listCont2"><li><a href="/subject/1/">本地片名</a></li></ul>',
+              ),
+            );
+          } else {
+            expect(options.queryParameters['type'], '11');
+            handler.resolve(
+              Response(
+                requestOptions: options,
+                statusCode: 200,
+                data:
+                    '[{"id":"1","title":"本地片名","score":"8.5","types":["剧情"]}]',
+              ),
+            );
+          }
+        },
+      ),
+    );
+    final repository = DoubanRepository(dio: dio);
+    final charts = await repository.charts(cancelToken: CancelToken());
+    expect(charts.sections.map((board) => board.label), ['豆瓣新片榜', '一周口碑榜']);
+    expect(charts.sections.last.items.single.aliases, '海外片名');
+    expect(charts.genres, {'剧情': '11'});
+    final films = await repository.genreChart('11', cancelToken: CancelToken());
+    expect(films.single.score, 8.5);
+  });
+
   test(
     'only valid subjects, correct score scale and raw pagination survive',
     () {
@@ -100,7 +188,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('剧集').first);
+    await tester.tap(find.text('选剧集').first);
     await tester.pumpAndSettle();
     expect(repo.requests, [DoubanKind.movie, DoubanKind.tv]);
     await tester.ensureVisible(find.byKey(const ValueKey('douban-1')));

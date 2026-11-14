@@ -1601,6 +1601,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           candidate.player,
           widget.store,
           '${selectedTitle.key}|${episode.url}',
+          backfillOffline: Platform.isMacOS && localFile != null,
           offlineDirectory: localFile == null
               ? null
               : File(localFile).parent.path,

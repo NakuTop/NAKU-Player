@@ -19,6 +19,7 @@ class DoubanTitle {
     this.score,
     this.ratingCount,
     this.originalTitle = '',
+    this.aliases = '',
     this.cardSubtitle = '',
     this.actors = const [],
     this.genres = const [],
@@ -32,7 +33,7 @@ class DoubanTitle {
   final String poster;
   final double? score;
   final int? ratingCount;
-  final String originalTitle;
+  final String originalTitle, aliases;
   final String cardSubtitle;
   final List<String> actors;
   final List<String> genres;
@@ -95,6 +96,7 @@ class DoubanTitle {
           : null,
       ratingCount: count != null && count >= 0 ? count : null,
       originalTitle: _text(json['original_title']),
+      aliases: _names(json['aka']).join(' / '),
       cardSubtitle: subtitle,
       actors: List.unmodifiable(metadata('actors', 4)),
       genres: List.unmodifiable(metadata('genres', 2)),
@@ -375,3 +377,15 @@ List<String> _names(Object? value) => value is List
           .toSet()
           .toList()
     : const [];
+
+class DoubanChartSection {
+  const DoubanChartSection(this.label, this.items);
+  final String label;
+  final List<DoubanTitle> items;
+}
+
+class DoubanCharts {
+  const DoubanCharts(this.sections, this.genres);
+  final List<DoubanChartSection> sections;
+  final Map<String, String> genres;
+}

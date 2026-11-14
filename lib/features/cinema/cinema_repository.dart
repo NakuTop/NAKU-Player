@@ -346,6 +346,18 @@ class CinemaRepository {
       ).items;
       final match = items.where((item) => item.id == title.id).firstOrNull;
       if (match == null) throw const CinemaSourceException('片源未返回此影片详情，可能已下架');
+      if (match.category == '伦理片' &&
+          title.category == '电影' &&
+          title.doubanId.isNotEmpty &&
+          title.year == match.year &&
+          (match.doubanId.isEmpty || match.doubanId == title.doubanId) &&
+          cinemaSameSearchTitle(match.title, title.title, title.year)) {
+        return match.copyWith(
+          category: title.category,
+          doubanId: title.doubanId,
+          aliases: title.aliases,
+        );
+      }
       return match;
     }
     final plugin = Plugin.fromJson(source.rule!);

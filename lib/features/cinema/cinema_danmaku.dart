@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:typed_data' show BytesBuilder;
 import 'package:canvas_danmaku/canvas_danmaku.dart' as canvas;
 import 'package:crypto/crypto.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -190,6 +191,8 @@ class CinemaDanmakuController extends ChangeNotifier {
     String mediaIdentity, {
     this.autoQuery,
     this.offlineDirectory,
+    this.backfillOffline = false,
+    this.checkOfflineConnectivity,
     this.readLogvarConfiguration,
     this.logvarClientFactory,
     this.directClientFactory,
@@ -230,6 +233,10 @@ class CinemaDanmakuController extends ChangeNotifier {
   final Player player;
   final CinemaStore store;
   final String? offlineDirectory;
+  final bool backfillOffline;
+  final Future<bool> Function()? checkOfflineConnectivity;
+  CancelToken? _offlineCapture;
+  bool _offlineAttempted = false;
   final String _mediaIdentity;
   final CinemaLogvarQuery? autoQuery;
   final Future<LogvarConfiguration?> Function()? readLogvarConfiguration;
@@ -517,6 +524,7 @@ class CinemaDanmakuController extends ChangeNotifier {
           CinemaDanmakuSourceStatus.empty;
     }
     source = '离线聚合弹幕';
+    matchMessage = '';
     await _ensureWindow(
       player.state.position.inMilliseconds / 1000 - offset,
       force: true,
@@ -735,10 +743,57 @@ class CinemaDanmakuController extends ChangeNotifier {
 
   Future<void> setAutomaticMatching(bool value) => setEnabled(value);
 
+  Future<void> _backfillOffline({required bool force}) async {
+    final directory = offlineDirectory, query = matchQuery;
+    if (!backfillOffline ||
+        directory == null ||
+        query == null ||
+        _closed ||
+        _offlineCapture != null ||
+        (_offlineAttempted && !force))
+      return;
+    final token = _offlineCapture = CancelToken();
+    var attempted = false;
+    try {
+      if (await CinemaOfflineDanmaku.open(directory, _mediaIdentity) != null)
+        return;
+      final online =
+          await (checkOfflineConnectivity?.call() ??
+              Connectivity().checkConnectivity().then(
+                (paths) => paths.any((path) => path != ConnectivityResult.none),
+              ));
+      if (!online || _closed || token.isCancelled) return;
+      _offlineAttempted = attempted = true;
+      matchMessage = '正在补存离线弹幕';
+      notifyListeners();
+      final client =
+          directClientFactory?.call() ?? CinemaMultiSourceDanmakuClient();
+      if (client is! CinemaMultiSourceDanmakuMatcher) {
+        client.close();
+        return;
+      }
+      await CinemaOfflineDanmaku.capture(
+        episodeDirectory: directory,
+        identity: _mediaIdentity,
+        query: query,
+        client: client as CinemaMultiSourceDanmakuMatcher,
+        cancelToken: token,
+        isCurrent: () => !_closed && !token.isCancelled,
+        retryUnavailable: true,
+      );
+    } catch (_) {
+      // Downloads remain playable, and another session can retry.
+    } finally {
+      _offlineCapture = null;
+      if (attempted && !_closed && !token.isCancelled) await _loadOffline();
+    }
+  }
+
   Future<void> loadAutomatic({bool force = false}) async {
     await ready;
     if (offlineDirectory != null) {
       if (!_closed && enabled) await _loadOffline();
+      await _backfillOffline(force: force);
       return;
     }
     final query = matchQuery;
@@ -994,6 +1049,7 @@ class CinemaDanmakuController extends ChangeNotifier {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    _offlineCapture?.cancel('offline playback closed');
     cancelMatching(notify: false);
     for (final sub in _subscriptions) {
       await sub.cancel();

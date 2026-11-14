@@ -172,8 +172,12 @@ String cinemaCleanWorkTitle(String title, String releaseYear) {
   return name;
 }
 
-String cinemaWorkTitleKey(String title, String year) =>
-    cinemaSeasonTitleKey(cinemaCleanWorkTitle(title, year));
+String cinemaWorkTitleKey(String title, String year) => cinemaSeasonTitleKey(
+  cinemaCleanWorkTitle(
+    title.replaceFirst(RegExp(r'[（(](?:完整版|未删减版)[）)]$'), ''),
+    year,
+  ),
+).replaceAll(RegExp(r'(?<=[\u3400-\u9fff])[,，、·](?=[\u3400-\u9fff])'), '');
 
 const _edgerunnersTitles = [
   '赛博朋克：边缘行者',
@@ -222,7 +226,10 @@ List<String> cinemaWorkSearchQueries(String value) {
     plain,
     plain.replaceAll(':', '：'),
     normalized,
-    plain.replaceAll(RegExp(r'\s*[:：]\s*'), ''),
+    plain.replaceAll(
+      RegExp(r'(?<=[\u3400-\u9fff])\s*[:：,，、·]\s*(?=[\u3400-\u9fff])'),
+      '',
+    ),
   }.where((q) => q.isNotEmpty).take(3).toList();
   final key = cinemaWorkTitleKey(plain, '');
   return _edgerunnersKeys.contains(key) || _edgerunnersShortKeys.contains(key)

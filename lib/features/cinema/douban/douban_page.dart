@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:kazumi/services/network/proxy_aware_image_cache_manager.dart';
 import '../cinema_theme.dart';
 import '../cinema_navigation_island.dart';
+import '../cinema_swipe_navigation.dart';
 import 'douban_models.dart';
 import 'douban_repository.dart';
 import 'douban_image_headers.dart';
@@ -22,6 +23,7 @@ class DoubanPage extends StatefulWidget {
     this.themeCatalog,
     this.session,
   });
+  static const routeName = 'naku-douban-board';
   final ValueChanged<DoubanTitle> onSelect;
   final DoubanRepository? repository;
   final DoubanThemeCatalog? themeCatalog;
@@ -34,6 +36,7 @@ class DoubanPage extends StatefulWidget {
 /// board; scroll controllers and in-flight requests belong to each route.
 class DoubanBrowseSession {
   DoubanKind _kind = DoubanKind.movie;
+  bool charts = false;
   final _states = <DoubanKind, _KindSnapshot>{};
 }
 
@@ -146,6 +149,196 @@ class _DoubanPageState extends State<DoubanPage> {
       kind: _KindState(_session._states[kind]),
   };
   _KindState get _state => _states[_kind]!;
+  late bool _showCharts = _session.charts;
+  Future<DoubanCharts>? _charts;
+  Future<List<DoubanTitle>>? _chartGenre;
+  CancelToken? _chartToken, _genreToken;
+  String? _genre;
+  String? _board;
+
+  static const _boardNames = ['movie', 'tv', 'chart'];
+  static const _boardLabels = ['选电影', '选剧集', '排行榜'];
+  int get _boardIndex => _showCharts ? 2 : _kind.index;
+  final _chartPosters = <String, Future<String>>{};
+
+  VoidCallback? _swipeBoard(int direction) {
+    final target = _boardIndex + direction;
+    return target < 0 || target >= _boardNames.length
+        ? null
+        : () => _selectBoard(_boardNames[target]);
+  }
+
+  void _loadCharts() {
+    _chartToken?.cancel();
+    _genreToken?.cancel();
+    _chartGenre = null;
+    _chartPosters.clear();
+    _genre = null;
+    _charts = _repository.charts(cancelToken: _chartToken = CancelToken());
+  }
+
+  void _selectBoard(String value) {
+    if (value == 'chart') {
+      setState(() {
+        _showCharts = true;
+        if (_charts == null) _loadCharts();
+      });
+    } else {
+      final returning = _showCharts;
+      setState(() => _showCharts = false);
+      final kind = DoubanKind.values.byName(value);
+      if (returning && kind == _kind)
+        _resumeKind(kind);
+      else
+        _selectKind(kind);
+    }
+  }
+
+  Widget _chartPage() => FutureBuilder<DoubanCharts>(
+    future: _charts,
+    builder: (context, snapshot) {
+      if (snapshot.connectionState != ConnectionState.done) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      if (!snapshot.hasData) {
+        return Center(
+          child: TextButton(
+            onPressed: () => setState(_loadCharts),
+            child: const Text('排行榜加载失败，重试'),
+          ),
+        );
+      }
+      final data = snapshot.data!;
+      final section =
+          data.sections.where((item) => item.label == _board).firstOrNull ??
+          data.sections.first;
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+        children: [
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final item in data.sections)
+                ChoiceChip(
+                  label: Text(item.label),
+                  selected: _genre == null && section == item,
+                  onSelected: (_) => setState(() {
+                    _genreToken?.cancel();
+                    _genre = null;
+                    _board = item.label;
+                  }),
+                ),
+            ],
+          ),
+          if (data.genres.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            const Text('分类排行榜'),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final entry in data.genres.entries)
+                  ChoiceChip(
+                    label: Text(entry.key),
+                    selected: _genre == entry.key,
+                    onSelected: (_) => setState(() {
+                      _genreToken?.cancel();
+                      _genre = entry.key;
+                      _chartGenre = _repository.genreChart(
+                        entry.value,
+                        cancelToken: _genreToken = CancelToken(),
+                      );
+                    }),
+                  ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 16),
+          if (_genre == null)
+            _chartItems(section.items)
+          else
+            FutureBuilder<List<DoubanTitle>>(
+              future: _chartGenre,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                return snapshot.hasData
+                    ? _chartItems(snapshot.data!)
+                    : const Text('分类排行榜暂时无法读取');
+              },
+            ),
+          if (_genre == null && section.label == '豆瓣电影TOP250')
+            TextButton(
+              onPressed: () =>
+                  launchUrl(Uri.parse('https://movie.douban.com/top250')),
+              child: const Text('查看完整 TOP250'),
+            ),
+        ],
+      );
+    },
+  );
+
+  Widget _chartItems(List<DoubanTitle> items) => Column(
+    children: [
+      for (final (index, item) in items.indexed)
+        ListTile(
+          leading: _chartPoster(item),
+          minTileHeight: 96,
+          leadingAndTrailingTextStyle: const TextStyle(fontSize: 13),
+          titleTextStyle: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+          title: Text(item.title),
+          subtitle: Text(
+            [
+              '第 ${index + 1} 名',
+              if (item.year.isNotEmpty) item.year,
+            ].join(' · '),
+          ),
+          trailing: item.score == null
+              ? null
+              : Text(item.score!.toStringAsFixed(1)),
+          onTap: () => widget.onSelect(item),
+        ),
+      if (items.isEmpty) const Text('暂无榜单条目'),
+    ],
+  );
+
+  Widget _chartPoster(DoubanTitle item) {
+    Widget image(String url) => url.isEmpty
+        ? _posterFallback()
+        : CachedNetworkImage(
+            cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
+            memCacheWidth: 180,
+            imageUrl: url,
+            httpHeaders: doubanImageHeaders,
+            fit: BoxFit.cover,
+            placeholder: (_, _) => _posterFallback(),
+            errorWidget: (_, _, _) => _posterFallback(),
+          );
+    return SizedBox(
+      width: 54,
+      height: 81,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(6),
+        child: item.poster.isNotEmpty
+            ? image(item.poster)
+            : FutureBuilder<String>(
+                future: _chartPosters.putIfAbsent(
+                  item.id,
+                  () => _repository.chartPoster(item.id),
+                ),
+                builder: (_, snapshot) => image(snapshot.data ?? ''),
+              ),
+      ),
+    );
+  }
+
   bool _layoutInitialized = false;
   bool get _cinemaLayout =>
       defaultTargetPlatform == TargetPlatform.macOS &&
@@ -174,7 +367,11 @@ class _DoubanPageState extends State<DoubanPage> {
     }
     _themeCatalog.addListener(_restoreThemes);
     unawaited(_themeCatalog.initialize());
-    _resumeKind(_kind);
+    if (_showCharts) {
+      _loadCharts();
+    } else {
+      _resumeKind(_kind);
+    }
   }
 
   void _restoreThemes() {
@@ -193,6 +390,9 @@ class _DoubanPageState extends State<DoubanPage> {
   void dispose() {
     _themeCatalog.removeListener(_restoreThemes);
     _session._kind = _kind;
+    _session.charts = _showCharts;
+    _chartToken?.cancel();
+    _genreToken?.cancel();
     for (final entry in _states.entries) {
       _session._states[entry.key] = _KindSnapshot(entry.value);
     }
@@ -839,171 +1039,213 @@ class _DoubanPageState extends State<DoubanPage> {
         actions: [
           IconButton(
             tooltip: '豆瓣官网',
-            onPressed: () => launchUrl(Uri.parse(_kind.pageUrl)),
+            onPressed: () => launchUrl(
+              Uri.parse(
+                _showCharts ? 'https://movie.douban.com/chart' : _kind.pageUrl,
+              ),
+            ),
             icon: const Icon(Icons.open_in_new),
           ),
           IconButton(
             tooltip: '刷新',
-            onPressed: _state.loading ? null : _refresh,
+            onPressed: _showCharts
+                ? () => setState(_loadCharts)
+                : _state.loading
+                ? null
+                : _refresh,
             icon: const Icon(Icons.refresh),
           ),
         ],
       ),
       body: CinemaCanvas(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 10, 24, 14),
-              child: Row(
-                children: [
-                  if (_cinemaLayout)
-                    CinemaNavigationIsland<DoubanKind>(
-                      key: const ValueKey('douban-cinema-navigation'),
-                      value: _kind,
-                      destinations: const [
-                        (DoubanKind.movie, Icons.movie_outlined, '电影'),
-                        (DoubanKind.tv, Icons.tv_rounded, '剧集'),
-                      ],
-                      keyFor: (kind) => ValueKey('douban-kind-${kind.name}'),
-                      onChanged: _selectKind,
-                    )
-                  else
-                    SegmentedButton<DoubanKind>(
-                      segments: [
-                        for (final kind in DoubanKind.values)
-                          ButtonSegment(value: kind, label: Text(kind.label)),
-                      ],
-                      selected: {_kind},
-                      onSelectionChanged: (values) =>
-                          _selectKind(values.single),
-                    ),
-                  const Spacer(),
-                  TextButton.icon(
-                    key: const ValueKey('douban-reset-filters'),
-                    onPressed:
-                        _state.filters.isEmpty &&
-                            (_state.sort == null || _state.sort == 'U') &&
-                            _state.selectedThemes.isEmpty
-                        ? null
-                        : _reset,
-                    icon: const Icon(Icons.filter_alt_off_outlined, size: 17),
-                    label: const Text('重置筛选'),
-                  ),
-                ],
+        child: CinemaSwipeNavigation(
+          destination: _boardNames[_boardIndex],
+          onBack: _swipeBoard(-1),
+          onForward: _swipeBoard(1),
+          backLabel: _boardIndex > 0 ? _boardLabels[_boardIndex - 1] : null,
+          forwardLabel: _boardIndex < 2 ? _boardLabels[_boardIndex + 1] : null,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 10, 24, 14),
+                child: Row(
+                  children: [
+                    if (_cinemaLayout)
+                      CinemaNavigationIsland<String>(
+                        key: const ValueKey('douban-cinema-navigation'),
+                        value: _showCharts ? 'chart' : _kind.name,
+                        destinations: const [
+                          ('movie', Icons.movie_outlined, '选电影'),
+                          ('tv', Icons.tv_rounded, '选剧集'),
+                          ('chart', Icons.leaderboard_outlined, '排行榜'),
+                        ],
+                        keyFor: (value) => ValueKey('douban-kind-$value'),
+                        onChanged: _selectBoard,
+                      )
+                    else
+                      Flexible(
+                        child: SegmentedButton<String>(
+                          segments: const [
+                            ButtonSegment(
+                              value: 'movie',
+                              label: Text(
+                                '选电影',
+                                key: ValueKey('douban-kind-movie'),
+                              ),
+                            ),
+                            ButtonSegment(
+                              value: 'tv',
+                              label: Text(
+                                '选剧集',
+                                key: ValueKey('douban-kind-tv'),
+                              ),
+                            ),
+                            ButtonSegment(value: 'chart', label: Text('排行榜')),
+                          ],
+                          selected: {_showCharts ? 'chart' : _kind.name},
+                          onSelectionChanged: (values) =>
+                              _selectBoard(values.single),
+                        ),
+                      ),
+                    const Spacer(),
+                    if (!_showCharts)
+                      TextButton.icon(
+                        key: const ValueKey('douban-reset-filters'),
+                        onPressed:
+                            _state.filters.isEmpty &&
+                                (_state.sort == null || _state.sort == 'U') &&
+                                _state.selectedThemes.isEmpty
+                            ? null
+                            : _reset,
+                        icon: const Icon(
+                          Icons.filter_alt_off_outlined,
+                          size: 17,
+                        ),
+                        label: const Text('重置筛选'),
+                      ),
+                  ],
+                ),
               ),
-            ),
-            Expanded(
-              child: CustomScrollView(
-                key: PageStorageKey('douban-${_kind.name}-scroll'),
-                controller: _state.scroll,
-                slivers: [
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
-                    sliver: SliverToBoxAdapter(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _filters(),
-                          if (!_cinemaLayout) ...[
-                            const SizedBox(height: 14),
-                            const Text(
-                              '按豆瓣公开分类筛选，点击作品搜索可用片源。',
-                              style: TextStyle(
-                                color: CinemaTheme.muted,
-                                fontSize: 12,
+              Expanded(
+                child: _showCharts
+                    ? _chartPage()
+                    : CustomScrollView(
+                        key: PageStorageKey('douban-${_kind.name}-scroll'),
+                        controller: _state.scroll,
+                        slivers: [
+                          SliverPadding(
+                            padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+                            sliver: SliverToBoxAdapter(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _filters(),
+                                  if (!_cinemaLayout) ...[
+                                    const SizedBox(height: 14),
+                                    const Text(
+                                      '按豆瓣公开分类筛选，点击作品搜索可用片源。',
+                                      style: TextStyle(
+                                        color: CinemaTheme.muted,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                  if (_state.error != null) ...[
+                                    const SizedBox(height: 14),
+                                    Text(
+                                      _state.items.isEmpty
+                                          ? _state.error!
+                                          : '本次加载未完成，已保留现有作品。${_state.error}',
+                                      style: const TextStyle(
+                                        color: CinemaTheme.copper,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                    TextButton(
+                                      key: const ValueKey('douban-retry'),
+                                      onPressed: () => _loadPage(
+                                        _kind,
+                                        append: _state.failedAppend,
+                                        preserve: true,
+                                      ),
+                                      child: const Text('重试'),
+                                    ),
+                                  ],
+                                  if (_state.loading) ...[
+                                    const SizedBox(height: 12),
+                                    const LinearProgressIndicator(minHeight: 2),
+                                  ],
+                                ],
                               ),
                             ),
-                          ],
-                          if (_state.error != null) ...[
-                            const SizedBox(height: 14),
-                            Text(
-                              _state.items.isEmpty
-                                  ? _state.error!
-                                  : '本次加载未完成，已保留现有作品。${_state.error}',
-                              style: const TextStyle(
-                                color: CinemaTheme.copper,
-                                fontSize: 12,
+                          ),
+                          SliverPadding(
+                            padding: const EdgeInsets.symmetric(horizontal: 24),
+                            sliver: SliverLayoutBuilder(
+                              builder: (context, constraints) {
+                                final columns =
+                                    (constraints.crossAxisExtent /
+                                            (_cinemaLayout ? 205 : 175))
+                                        .floor()
+                                        .clamp(2, 7);
+                                return SliverGrid.builder(
+                                  gridDelegate:
+                                      SliverGridDelegateWithFixedCrossAxisCount(
+                                        crossAxisCount: columns,
+                                        crossAxisSpacing: math.min(
+                                          18,
+                                          constraints.crossAxisExtent / 25,
+                                        ),
+                                        mainAxisSpacing: _cinemaLayout
+                                            ? 24
+                                            : 20,
+                                        childAspectRatio: _cinemaLayout
+                                            ? .57
+                                            : .54,
+                                      ),
+                                  itemCount: _state.items.length,
+                                  itemBuilder: (context, index) =>
+                                      _card(_state.items[index]),
+                                );
+                              },
+                            ),
+                          ),
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Center(
+                                child: _state.loading
+                                    ? const SizedBox(
+                                        width: 22,
+                                        height: 22,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : _state.more
+                                    ? OutlinedButton(
+                                        onPressed: () =>
+                                            _loadPage(_kind, append: true),
+                                        child: const Text('加载更多'),
+                                      )
+                                    : Text(
+                                        _state.error != null
+                                            ? ''
+                                            : _state.items.isEmpty
+                                            ? '当前筛选暂无可显示的作品'
+                                            : '已显示当前公开列表',
+                                        style: const TextStyle(
+                                          color: CinemaTheme.muted,
+                                        ),
+                                      ),
                               ),
                             ),
-                            TextButton(
-                              key: const ValueKey('douban-retry'),
-                              onPressed: () => _loadPage(
-                                _kind,
-                                append: _state.failedAppend,
-                                preserve: true,
-                              ),
-                              child: const Text('重试'),
-                            ),
-                          ],
-                          if (_state.loading) ...[
-                            const SizedBox(height: 12),
-                            const LinearProgressIndicator(minHeight: 2),
-                          ],
+                          ),
                         ],
                       ),
-                    ),
-                  ),
-                  SliverPadding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24),
-                    sliver: SliverLayoutBuilder(
-                      builder: (context, constraints) {
-                        final columns =
-                            (constraints.crossAxisExtent /
-                                    (_cinemaLayout ? 205 : 175))
-                                .floor()
-                                .clamp(2, 7);
-                        return SliverGrid.builder(
-                          gridDelegate:
-                              SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: columns,
-                                crossAxisSpacing: math.min(
-                                  18,
-                                  constraints.crossAxisExtent / 25,
-                                ),
-                                mainAxisSpacing: _cinemaLayout ? 24 : 20,
-                                childAspectRatio: _cinemaLayout ? .57 : .54,
-                              ),
-                          itemCount: _state.items.length,
-                          itemBuilder: (context, index) =>
-                              _card(_state.items[index]),
-                        );
-                      },
-                    ),
-                  ),
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Center(
-                        child: _state.loading
-                            ? const SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : _state.more
-                            ? OutlinedButton(
-                                onPressed: () => _loadPage(_kind, append: true),
-                                child: const Text('加载更多'),
-                              )
-                            : Text(
-                                _state.error != null
-                                    ? ''
-                                    : _state.items.isEmpty
-                                    ? '当前筛选暂无可显示的作品'
-                                    : '已显示当前公开列表',
-                                style: const TextStyle(
-                                  color: CinemaTheme.muted,
-                                ),
-                              ),
-                      ),
-                    ),
-                  ),
-                ],
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     ),

@@ -401,7 +401,7 @@ void main() {
     final repo = _Repository();
     DoubanTitle? picked;
     await mount(tester, repo, width: 1280, onSelect: (item) => picked = item);
-    expect(find.byType(CinemaNavigationIsland<DoubanKind>), findsOneWidget);
+    expect(find.byType(CinemaNavigationIsland<String>), findsOneWidget);
     expect(find.byKey(const ValueKey('douban-cinema-filters')), findsOneWidget);
     expect(find.text('按豆瓣公开分类筛选，点击作品搜索可用片源。'), findsNothing);
     expect(find.byKey(const ValueKey('douban-theme-旅行')), findsNothing);
@@ -487,14 +487,14 @@ void main() {
         isTrue,
       );
       expect(find.byKey(const ValueKey('douban-theme-孤独')), findsOneWidget);
-      await tester.tap(find.text('剧集'));
+      await tester.tap(find.text('选剧集'));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('douban-theme-孤独')));
       await tester.pumpAndSettle();
       expect(repo.requests.last.tags, ['孤独']);
       expect(repo.requests.last.filters.isEmpty, isTrue);
       final calls = repo.requests.length;
-      await tester.tap(find.text('电影'));
+      await tester.tap(find.text('选电影'));
       await tester.pumpAndSettle();
       expect(
         tester
@@ -525,7 +525,7 @@ void main() {
       await tester.pumpAndSettle();
       final movieOffset = offset();
       expect(movieOffset, greaterThan(500));
-      await tester.tap(find.text('剧集'));
+      await tester.tap(find.text('选剧集'));
       await tester.pumpAndSettle();
       expect(offset(), 0);
       await choose(tester, 'format', '电视剧');
@@ -534,7 +534,7 @@ void main() {
       await tester.pumpAndSettle();
       final tvOffset = offset();
       final calls = repo.requests.length;
-      await tester.tap(find.text('电影'));
+      await tester.tap(find.text('选电影'));
       await tester.pumpAndSettle();
       expect(offset(), closeTo(movieOffset, 1));
       expect(repo.requests, hasLength(calls));
@@ -547,7 +547,7 @@ void main() {
             .selected,
         isTrue,
       );
-      await tester.tap(find.text('剧集'));
+      await tester.tap(find.text('选剧集'));
       await tester.pumpAndSettle();
       expect(offset(), closeTo(tvOffset, 1));
       await tester.drag(view, const Offset(0, 800));
@@ -615,13 +615,13 @@ void main() {
     await mount(tester, repo);
     final pending = repo.pending = Completer<DoubanResultPage>();
     await choose(tester, 'genre', '科幻');
-    await tester.tap(find.text('剧集'));
+    await tester.tap(find.text('选剧集'));
     await tester.pumpAndSettle();
     pending.complete(repo.result(DoubanKind.movie, suffix: '后台完成'));
     await tester.pumpAndSettle();
     expect(find.textContaining('后台完成'), findsNothing);
     final calls = repo.requests.length;
-    await tester.tap(find.text('电影'));
+    await tester.tap(find.text('选电影'));
     await tester.pumpAndSettle();
     expect(find.text('电影作品1后台完成'), findsOneWidget);
     expect(repo.requests, hasLength(calls));
@@ -787,12 +787,12 @@ void main() {
       final pending = repo.pendingThemes = Completer<List<String>>();
       await tester.tap(find.byKey(const ValueKey('douban-more-themes')));
       await tester.pump();
-      await tester.tap(find.text('剧集'));
+      await tester.tap(find.text('选剧集'));
       await tester.pumpAndSettle();
       pending.complete(['电影新主题']);
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('douban-theme-电影新主题')), findsNothing);
-      await tester.tap(find.text('电影'));
+      await tester.tap(find.text('选电影'));
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('douban-theme-电影新主题')), findsOneWidget);
       expect(find.byKey(const ValueKey('douban-11')), findsOneWidget);
@@ -839,7 +839,7 @@ void main() {
           .controller!;
       movieScroll.jumpTo(640);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('剧集'));
+      await tester.tap(find.text('选剧集'));
       await tester.pumpAndSettle();
       await choose(tester, 'format', '电视剧');
       await choose(tester, 'year', '2023');
@@ -857,10 +857,10 @@ void main() {
         ..failFilters = true
         ..failThemes = true;
       await mount(tester, offline, session: session, themeCatalog: themes);
-      final active = tester.widget<SegmentedButton<DoubanKind>>(
-        find.byType(SegmentedButton<DoubanKind>),
+      final active = tester.widget<SegmentedButton<String>>(
+        find.byType(SegmentedButton<String>),
       );
-      expect(active.selected, {DoubanKind.tv});
+      expect(active.selected, {'tv'});
       final restoredTv = tester
           .widget<CustomScrollView>(find.byType(CustomScrollView))
           .controller!;
@@ -871,7 +871,7 @@ void main() {
       expect(selected(tester, 'format'), '电视剧');
       expect(selected(tester, 'year'), '2023');
       expect(find.byKey(const ValueKey('douban-theme-旅行')), findsNothing);
-      await tester.tap(find.text('电影'));
+      await tester.tap(find.text('选电影'));
       await tester.pumpAndSettle();
       final restoredMovie = tester
           .widget<CustomScrollView>(find.byType(CustomScrollView))
@@ -1021,11 +1021,11 @@ void main() {
         closeTo(originalOffset, 1),
       );
     }
-    await tester.tap(find.text('剧集'));
+    await tester.tap(find.text('选剧集'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('风格与主题'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('电影'));
+    await tester.tap(find.text('选电影'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     expect(find.byType(ErrorWidget), findsNothing);
@@ -1067,7 +1067,7 @@ void main() {
     (tester) async {
       final repo = _Repository();
       await mount(tester, repo, width: 560);
-      await tester.tap(find.text('剧集'));
+      await tester.tap(find.text('选剧集'));
       await tester.pumpAndSettle();
       await choose(tester, 'format', '电视剧');
       await choose(tester, 'genre', '科幻');

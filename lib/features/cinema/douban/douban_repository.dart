@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
+import 'package:html/parser.dart' as html;
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 
 import 'douban_models.dart';
@@ -117,6 +118,160 @@ class DoubanRepository {
       cancelToken: cancelToken,
     );
     return page.tags;
+  }
+
+  Future<String> _web(
+    String path,
+    CancelToken token, {
+    Map<String, dynamic>? params,
+  }) async {
+    final response = await _dio.get<String>(
+      'https://movie.douban.com$path',
+      queryParameters: params,
+      cancelToken: token,
+      options: Options(
+        responseType: ResponseType.plain,
+        followRedirects: false,
+        headers: {
+          'Referer': 'https://movie.douban.com/chart',
+          'Accept': path.startsWith('/j/') ? 'application/json' : 'text/html',
+        },
+      ),
+    );
+    final body = response.data;
+    if (response.statusCode != 200 ||
+        body == null ||
+        body.length > 2 * 1024 * 1024) {
+      throw const DoubanException('豆瓣排行榜暂时无法读取');
+    }
+    return body;
+  }
+
+  Future<String> chartPoster(String id) async {
+    if (!RegExp(r'^[1-9]\d{0,15}$').hasMatch(id)) return '';
+    final token = CancelToken();
+    try {
+      final doc = html.parse(
+        await _web('/subject/$id/', token).timeout(
+          const Duration(seconds: 8),
+          onTimeout: () {
+            token.cancel();
+            throw const DoubanException('封面加载超时');
+          },
+        ),
+      );
+      final url =
+          doc.querySelector('#mainpic img')?.attributes['src'] ??
+          doc.querySelector('meta[property="og:image"]')?.attributes['content'];
+      final uri = Uri.tryParse(url ?? '');
+      return uri != null &&
+              uri.scheme == 'https' &&
+              uri.host.endsWith('.doubanio.com')
+          ? uri.toString()
+          : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<DoubanCharts> charts({required CancelToken cancelToken}) async {
+    final doc = html.parse(await _web('/chart', cancelToken));
+    final items = <String, DoubanTitle>{};
+    List<DoubanTitle> read(String selector) {
+      final seen = <String>{};
+      return [
+        for (final row in doc.querySelectorAll(selector))
+          if (row.querySelector('a[href*="/subject/"]') case final link?)
+            if (RegExp(
+                  r'/subject/([1-9]\d*)/',
+                ).firstMatch(link.attributes['href'] ?? '')
+                case final id?)
+              if (seen.add(id[1]!))
+                items.putIfAbsent(id[1]!, () {
+                  final label = row.querySelector('.pl2 a, dd a') ?? link;
+                  final titles = label.text.trim().split(RegExp(r'\s+/\s+'));
+                  final title =
+                      link.attributes['title']?.trim().isNotEmpty == true
+                      ? link.attributes['title']!.trim()
+                      : titles.first;
+                  return DoubanTitle(
+                    id: id[1]!,
+                    title: title,
+                    kind: DoubanKind.movie,
+                    aliases: titles.skip(1).join(' / '),
+                    year:
+                        RegExp(r'^\d{4}').stringMatch(
+                          row.querySelector('.pl2 p')?.text.trim() ?? '',
+                        ) ??
+                        '',
+                    score: double.tryParse(
+                      row.querySelector('.rating_nums')?.text ?? '',
+                    ),
+                    poster:
+                        row
+                            .querySelector('img[src*="/view/photo/"]')
+                            ?.attributes['src'] ??
+                        '',
+                  );
+                }),
+      ];
+    }
+
+    final sections = [
+      DoubanChartSection('豆瓣新片榜', read('.article tr.item')),
+      DoubanChartSection('一周口碑榜', read('#listCont2 li')),
+      DoubanChartSection('北美票房榜', read('#listCont1 li')),
+      DoubanChartSection('豆瓣电影TOP250', read('#douban-top250 dl')),
+    ].where((section) => section.items.isNotEmpty).toList();
+    if (sections.isEmpty) throw const DoubanException('豆瓣未返回排行榜，请稍后刷新');
+    final genres = <String, String>{};
+    for (final link in doc.querySelectorAll('.types a')) {
+      final type = Uri.tryParse(
+        link.attributes['href'] ?? '',
+      )?.queryParameters['type'];
+      if (type != null && RegExp(r'^\d+$').hasMatch(type))
+        genres[link.text.trim()] = type;
+    }
+    return DoubanCharts(sections, genres);
+  }
+
+  Future<List<DoubanTitle>> genreChart(
+    String type, {
+    required CancelToken cancelToken,
+    int start = 0,
+  }) async {
+    if (!RegExp(r'^\d{1,3}$').hasMatch(type) || start < 0) {
+      throw const DoubanException('无效的排行榜分类');
+    }
+    final rows = jsonDecode(
+      await _web(
+        '/j/chart/top_list',
+        cancelToken,
+        params: {
+          'type': type,
+          'interval_id': '100:90',
+          'action': '',
+          'start': start,
+          'limit': 20,
+        },
+      ),
+    );
+    if (rows is! List) throw const DoubanException('豆瓣未返回分类排行榜');
+    return [
+      for (final row in rows.whereType<Map>())
+        if (DoubanTitle.fromJson({
+              'id': row['id'],
+              'title': row['title'],
+              'type': 'movie',
+              'card': 'subject',
+              'pic': {'large': row['cover_url']},
+              'rating': {'value': row['score'], 'max': 10},
+              'genres': row['types'],
+              'countries': row['regions'],
+            }, DoubanKind.movie)
+            case final item?)
+          item,
+    ];
   }
 
   static void _validateFilters(DoubanFilters filters, List<String> tags) {

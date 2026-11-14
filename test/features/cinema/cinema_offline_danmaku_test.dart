@@ -199,6 +199,67 @@ void main() {
     },
   );
   test(
+    'old downloads backfill all sources and replay the snapshot offline',
+    () async {
+      final store = CinemaStore(
+        file: File('${directory.path}/library.json'),
+        defaults: const [],
+      );
+      await store.load();
+      final video = await File(
+        '${directory.path}/video.mp4',
+      ).writeAsString('existing');
+      final matcher = Matcher();
+      var online = false;
+      var networkCalls = 0;
+      final backend = Backend();
+      CinemaDanmakuController create() => CinemaDanmakuController(
+        FakePlayer(backend),
+        store,
+        'movie|episode1',
+        offlineDirectory: directory.path,
+        backfillOffline: true,
+        autoQuery: const CinemaLogvarQuery(title: '测试影片'),
+        checkOfflineConnectivity: () async => online,
+        directClientFactory: () {
+          networkCalls++;
+          return matcher;
+        },
+      );
+
+      final controller = create();
+      await controller.loadAutomatic();
+      expect(networkCalls, 0);
+      online = true;
+      await Future.wait([
+        controller.loadAutomatic(),
+        controller.loadAutomatic(),
+      ]);
+      expect(networkCalls, 1);
+      expect(matcher.requested, cinemaSelectableDanmakuSources.keys.toSet());
+      expect(controller.entries.map((e) => e.source).toSet(), {
+        '[renren]',
+        '[aiyifan]',
+      });
+      await controller.close();
+
+      online = false;
+      final reopened = create();
+      await reopened.loadAutomatic();
+      expect(networkCalls, 1);
+      expect(reopened.entries.map((e) => e.source).toSet(), {
+        '[renren]',
+        '[aiyifan]',
+      });
+      expect(await video.readAsString(), 'existing');
+      await reopened.close();
+      await backend.dispose();
+      await store.flush();
+      store.dispose();
+    },
+  );
+
+  test(
     'queue is serial, delete cancels active work before files are removed and skips queued work',
     () async {
       final queue = CinemaOfflineDanmakuQueue();

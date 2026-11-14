@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_discovery_resolver.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
+import 'package:kazumi/features/cinema/cinema_work_sources.dart';
+import 'package:kazumi/features/cinema/cinema_media_identity.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 
 CinemaSource _source(
@@ -100,6 +102,49 @@ class _Harness {
 }
 
 void main() {
+  test(
+    'official film finds punctuation and category variants without a remake',
+    () async {
+      final anchor = _title('douban-discovery', name: '色，戒', year: '2007');
+      final repository = _Repository()
+        ..replies['a'] = Future.value(
+          CinemaPage(
+            items: [
+              _title(
+                'a',
+                name: '色戒(完整版)',
+                year: '2007',
+                category: '伦理片',
+                doubanId: '',
+              ),
+              _title(
+                'a',
+                id: 'old',
+                name: '色戒',
+                year: '2002',
+                category: '伦理片',
+                doubanId: '',
+              ),
+            ],
+          ),
+        );
+      final rounds = await discoverCinemaWorkSources(
+        anchor: anchor,
+        known: [],
+        sources: [_source('a')],
+        repository: repository,
+        isCurrent: () => true,
+      ).toList();
+      expect(cinemaWorkSearchQueries(anchor.title), contains('色戒'));
+      expect(
+        rounds.last
+            .where((item) => item.sourceId == 'a')
+            .map((item) => item.id),
+        ['one'],
+      );
+    },
+  );
+
   testWidgets(
     'returns compatible source identities only and skips disabled or absent sources',
     (tester) async {
@@ -117,9 +162,7 @@ void main() {
             ],
           ),
         )
-        ..replies['b'] = Future.value(
-          CinemaPage(items: [_title('b')]),
-        );
+        ..replies['b'] = Future.value(CinemaPage(items: [_title('b')]));
       final harness = _Harness();
       await harness.open(
         tester,

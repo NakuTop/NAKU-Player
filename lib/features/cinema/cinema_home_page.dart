@@ -531,16 +531,18 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   Future<void> _openDouban() async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
+        settings: const RouteSettings(name: DoubanPage.routeName),
         builder: (_) => DoubanPage(
           repository: widget.catalogDiscovery,
           session: _doubanSession,
           themeCatalog: widget.doubanThemeCatalog,
-          onSelect: (title) => _openTitle(
-            CinemaDiscoveryTitle(
+          onSelect: (title) async {
+            var anchor = CinemaDiscoveryTitle(
               id: title.id,
               title: title.title,
               originalTitle: title.originalTitle,
               year: title.year,
+              aliases: title.aliases,
               poster: title.poster,
               kind: title.kind.apiType,
               actors: title.actors.join(' / '),
@@ -548,9 +550,27 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               area: title.regions.join(' / '),
               score: title.score,
               identityVerified: true,
-            ).metadata,
-            keepBrowseRoute: true,
-          ),
+            ).metadata;
+            try {
+              final metadata = await _ratings
+                  .loadDoubanDetails(anchor)
+                  .timeout(const Duration(seconds: 5));
+              if (metadata.doubanId == title.id) {
+                anchor = anchor.copyWith(
+                  year: anchor.year.isEmpty ? metadata.year : anchor.year,
+                  aliases: {
+                    anchor.aliases,
+                    metadata.title,
+                    metadata.originalTitle,
+                    ...metadata.aliases,
+                  }.where((name) => name.isNotEmpty).join(' / '),
+                );
+              }
+            } catch (_) {
+              // The official card still supplies a usable search anchor.
+            }
+            if (mounted) await _openTitle(anchor, keepBrowseRoute: true);
+          },
         ),
       ),
     );

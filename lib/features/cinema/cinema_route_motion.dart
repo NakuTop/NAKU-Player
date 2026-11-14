@@ -1,4 +1,5 @@
 import 'cinema_swipe_navigation.dart';
+import 'douban/douban_page.dart';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -29,6 +30,9 @@ class CinemaPageTransitionsBuilder extends PageTransitionsBuilder {
         path == '/video' ||
         path.startsWith('/video/')) {
       return child;
+    }
+    if (route.settings.name == DoubanPage.routeName) {
+      return CinemaRouteMotion(animation: animation, child: child);
     }
     final swipe = CinemaSwipeNavigation(
       enabled: route.isCurrent,

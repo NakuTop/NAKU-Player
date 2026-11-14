@@ -75,6 +75,8 @@ class CinemaOfflineDanmaku {
     return combined;
   }
 
+  static final _activeCaptures = <String, Future<void>>{};
+
   static Future<void> capture({
     required String episodeDirectory,
     required String identity,
@@ -82,6 +84,39 @@ class CinemaOfflineDanmaku {
     required CinemaMultiSourceDanmakuMatcher client,
     required CancelToken cancelToken,
     bool Function()? isCurrent,
+    bool retryUnavailable = false,
+  }) async {
+    final key = Directory(episodeDirectory).absolute.path;
+    if (_activeCaptures[key] case final pending?) {
+      client.close();
+      await pending;
+      return;
+    }
+    final work = _capture(
+      episodeDirectory: episodeDirectory,
+      identity: identity,
+      query: query,
+      client: client,
+      cancelToken: cancelToken,
+      isCurrent: isCurrent,
+      retryUnavailable: retryUnavailable,
+    );
+    _activeCaptures[key] = work;
+    try {
+      await work;
+    } finally {
+      _activeCaptures.remove(key);
+    }
+  }
+
+  static Future<void> _capture({
+    required String episodeDirectory,
+    required String identity,
+    required CinemaLogvarQuery query,
+    required CinemaMultiSourceDanmakuMatcher client,
+    required CancelToken cancelToken,
+    required bool Function()? isCurrent,
+    required bool retryUnavailable,
   }) async {
     final capturedAt = DateTime.now().toUtc().toIso8601String();
     Directory? staging;
@@ -225,6 +260,13 @@ class CinemaOfflineDanmaku {
         };
       }
       check();
+      if (retryUnavailable &&
+          !sources.values.any(
+            (value) =>
+                value['status'] == 'empty' ||
+                (value['chunks'] as List?)?.isNotEmpty == true,
+          ))
+        return;
       await File('${staging.path}/manifest.json').writeAsString(
         jsonEncode({
           'version': 1,

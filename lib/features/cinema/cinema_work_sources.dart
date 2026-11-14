@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'cinema_grouping.dart';
 import 'cinema_models.dart';
+import 'cinema_media_identity.dart';
 import 'cinema_repository.dart';
 import 'cinema_seasons.dart';
 
@@ -18,6 +19,37 @@ Stream<List<CinemaTitle>> discoverCinemaWorkSources({
   Duration? maxDuration,
 }) async* {
   if (anchor.isDirectMedia) return;
+  // Some providers catalog verified theatrical films under their ethics label.
+  // Only an exact official name and release year can supply the missing kind.
+  CinemaTitle classify(CinemaTitle item) {
+    if (anchor.sourceId != 'douban-discovery' ||
+        anchor.category != '电影' ||
+        item.category != '伦理片' ||
+        !RegExp(r'^\d{4}$').hasMatch(anchor.year) ||
+        item.year != anchor.year ||
+        (item.doubanId.isNotEmpty && item.doubanId != anchor.doubanId))
+      return item;
+    String name(String value) => cinemaGroupedWorkTitleKey(
+      value.replaceFirst(RegExp(r'[（(](?:完整版|未删减版)[）)]$'), ''),
+      anchor.year,
+    );
+    final official = {
+      name(anchor.title),
+      ...cinemaTitleAliases(anchor.aliases).map(name),
+    };
+    return official.contains(name(item.title))
+        ? item.copyWith(
+            category: anchor.category,
+            doubanId: anchor.doubanId,
+            aliases: [
+              item.aliases,
+              anchor.title,
+              anchor.aliases,
+            ].where((s) => s.isNotEmpty).join(' / '),
+          )
+        : item;
+  }
+
   final variants = groupCinemaTitles([
     anchor,
     ...known,
@@ -44,26 +76,38 @@ Stream<List<CinemaTitle>> discoverCinemaWorkSources({
               .variants
               .where((t) => t.sourceId == source.id && t.key != anchor.key)
               .toList();
-          for (final query in cinemaWorkQueries(anchor)) {
-            for (var page = 1; page <= 3 && isCurrent(); page++) {
+          final pages = <String, int>{};
+          Object? failure;
+          for (var page = 1; page <= 3 && isCurrent(); page++) {
+            for (final query in cinemaWorkQueries(anchor)) {
+              if (!isCurrent() || page > (pages[query] ?? 1)) continue;
               final remaining = deadline.difference(DateTime.now());
-              if (remaining <= Duration.zero) {
-                throw TimeoutException('片源查询超时');
+              if (remaining <= Duration.zero) break;
+              try {
+                final found = await repository
+                    .search(source, query, page: page)
+                    .timeout(
+                      remaining < const Duration(seconds: 6)
+                          ? remaining
+                          : const Duration(seconds: 6),
+                    );
+                pages[query] = found.pageCount;
+                result.addAll(
+                  found.items
+                      .where((t) => t.sourceId == source.id)
+                      .map(classify),
+                );
+              } catch (error) {
+                pages[query] = 0;
+                failure ??= error;
               }
-              final found = await repository
-                  .search(source, query, page: page)
-                  .timeout(remaining);
-              if (!isCurrent()) return <CinemaTitle>[];
-              result.addAll(found.items.where((t) => t.sourceId == source.id));
-              if (matches().any((t) => cinemaVariantQuality(t) > 0)) {
-                onSourceChecked?.call(source);
-                return result;
-              }
-              if (found.page >= found.pageCount) break;
             }
-            if (!isCurrent()) break;
+            if (matches().any((t) => cinemaVariantQuality(t) > 0)) break;
           }
-          onSourceChecked?.call(source);
+          if (failure != null)
+            onSourceError?.call(source, failure);
+          else
+            onSourceChecked?.call(source);
           return result;
         } catch (error) {
           onSourceError?.call(source, error);
