@@ -11,6 +11,7 @@ bool cinemaMatchesKeyword(CinemaTitle title, String keyword) {
   if (season != null) return cinemaMatchesSeason(title.title, season);
   final key = cinemaSearchKey(keyword);
   return key.isEmpty ||
+      cinemaSameSearchTitle(title.title, keyword, title.year) ||
       [
         title.title,
         title.aliases,

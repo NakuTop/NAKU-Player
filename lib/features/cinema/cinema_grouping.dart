@@ -168,10 +168,15 @@ enum _Kind { movie, series, anime, documentary, commentary, unknown }
 
 class _Candidate {
   _Candidate(this.title)
-    : name = cinemaWorkTitleKey(title.title, title.year),
+    : name = cinemaGroupedWorkTitleKey(title.title, title.year),
       doubanId = title.doubanId.trim(),
       kind = _kind(title.category),
-      year = _year(title.year, _kind(title.category));
+      year =
+          _year(title.year, _kind(title.category)) ??
+          (_kind(title.category) == _Kind.anime &&
+                  cinemaIsEdgerunnersTitle(title.title, title.year)
+              ? 2022
+              : null);
 
   final CinemaTitle title;
   final String name;

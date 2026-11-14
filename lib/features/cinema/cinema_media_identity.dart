@@ -187,11 +187,22 @@ final _edgerunnersKeys = _edgerunnersTitles
     .map((title) => cinemaWorkTitleKey(title, ''))
     .toSet();
 
+final _edgerunnersShortKeys = {'赛博朋克', 'cyberpunk'};
+
+bool cinemaIsEdgerunnersTitle(String title, String year) =>
+    _edgerunnersKeys.contains(cinemaWorkTitleKey(title, year));
+
+String cinemaGroupedWorkTitleKey(String title, String year) =>
+    cinemaIsEdgerunnersTitle(title, year)
+    ? cinemaWorkTitleKey(_edgerunnersTitles.first, '')
+    : cinemaWorkTitleKey(title, year);
+
 bool cinemaSameSearchTitle(String first, String second, String year) {
-  final a = cinemaWorkTitleKey(first, year);
-  final b = cinemaWorkTitleKey(second, year);
+  final a = cinemaGroupedWorkTitleKey(first, year);
+  final b = cinemaGroupedWorkTitleKey(second, year);
   return a == b ||
-      (_edgerunnersKeys.contains(a) && _edgerunnersKeys.contains(b));
+      (cinemaIsEdgerunnersTitle(first, year) &&
+          _edgerunnersShortKeys.contains(b));
 }
 
 /// Expanded queries only accept the same normalized title or known alias.
@@ -213,7 +224,8 @@ List<String> cinemaWorkSearchQueries(String value) {
     normalized,
     plain.replaceAll(RegExp(r'\s*[:：]\s*'), ''),
   }.where((q) => q.isNotEmpty).take(3).toList();
-  return _edgerunnersKeys.contains(cinemaWorkTitleKey(plain, ''))
-      ? {...equivalent, ..._edgerunnersTitles.take(3)}.toList()
+  final key = cinemaWorkTitleKey(plain, '');
+  return _edgerunnersKeys.contains(key) || _edgerunnersShortKeys.contains(key)
+      ? {...equivalent, ..._edgerunnersTitles, '赛博朋克'}.toList()
       : equivalent;
 }
