@@ -91,7 +91,19 @@ class CatalogueStub extends CinemaRepository {
     CinemaSource source,
     String keyword, {
     int page = 1,
-  }) async => CinemaPage(items: [sample(source)]);
+  }) async => CinemaPage(
+    items: keyword == '赛博朋克：边缘行者'
+        ? [
+            CinemaTitle(
+              id: 'edgerunners',
+              sourceId: source.id,
+              title: '赛博朋克：边缘跑手',
+              category: '日本动漫',
+              year: '2022',
+            ),
+          ]
+        : [sample(source)],
+  );
   @override
   Future<CinemaTitle> detail(CinemaSource source, CinemaTitle title) async {
     details.add(source.id);
@@ -194,6 +206,17 @@ void main() {
   }
 
   Finder card() => find.byKey(const ValueKey('title-card:maccms-feifan::m1'));
+
+  testWidgets('movie search displays an animated series returned by a source', (
+    tester,
+  ) async {
+    await mount(tester);
+    expect(find.text('赛博朋克：边缘跑手'), findsNothing);
+    await tester.enterText(find.byType(TextField).first, '赛博朋克：边缘行者');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expect(find.text('赛博朋克：边缘跑手'), findsWidgets);
+  });
 
   testWidgets(
     'history enters the player immediately without waiting for detail refresh',

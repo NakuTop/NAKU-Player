@@ -226,8 +226,7 @@ class CinemaRepository {
       if (result.pageCount > pageCount) pageCount = result.pageCount;
       for (final title in result.items) {
         if (index > 0 &&
-            cinemaWorkTitleKey(title.title, title.year) !=
-                cinemaWorkTitleKey(query, title.year)) {
+            !cinemaSameSearchTitle(title.title, query, title.year)) {
           continue;
         }
         items.putIfAbsent(title.key, () => title);

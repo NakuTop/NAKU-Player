@@ -175,8 +175,26 @@ String cinemaCleanWorkTitle(String title, String releaseYear) {
 String cinemaWorkTitleKey(String title, String year) =>
     cinemaSeasonTitleKey(cinemaCleanWorkTitle(title, year));
 
-/// At most three equivalent queries. Expanded results still require exact
-/// metadata-backed work matching; never accept fuzzy sequel/remake matches.
+const _edgerunnersTitles = [
+  '赛博朋克：边缘行者',
+  '赛博朋克：边缘跑手',
+  '赛博浪客',
+  '電馭叛客：邊緣行者',
+  'Cyberpunk: Edgerunners',
+];
+
+final _edgerunnersKeys = _edgerunnersTitles
+    .map((title) => cinemaWorkTitleKey(title, ''))
+    .toSet();
+
+bool cinemaSameSearchTitle(String first, String second, String year) {
+  final a = cinemaWorkTitleKey(first, year);
+  final b = cinemaWorkTitleKey(second, year);
+  return a == b ||
+      (_edgerunnersKeys.contains(a) && _edgerunnersKeys.contains(b));
+}
+
+/// Expanded queries only accept the same normalized title or known alias.
 List<String> cinemaWorkSearchQueries(String value) {
   final original = value.trim(),
       normalized = cinemaIdentityTypography(value).trim();
@@ -188,10 +206,14 @@ List<String> cinemaWorkSearchQueries(String value) {
   final plain = year == null
       ? normalized
       : cinemaCleanWorkTitle(normalized, year);
-  return {
+  final equivalent = {
     original,
     plain,
     plain.replaceAll(':', '：'),
     normalized,
+    plain.replaceAll(RegExp(r'\s*[:：]\s*'), ''),
   }.where((q) => q.isNotEmpty).take(3).toList();
+  return _edgerunnersKeys.contains(cinemaWorkTitleKey(plain, ''))
+      ? {...equivalent, ..._edgerunnersTitles.take(3)}.toList()
+      : equivalent;
 }

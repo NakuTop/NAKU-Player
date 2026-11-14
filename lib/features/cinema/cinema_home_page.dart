@@ -1178,8 +1178,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   bool _searchCategoryMatches(String name, _Section section) =>
       _unifiedSearchSection(section)
-      ? _matchesCategory(name, _Section.movies) ||
-            _matchesCategory(name, _Section.series)
+      ? _ordinaryCategory(name)
       : _matchesCategory(name, section);
 
   bool _sameDiscoveryKind(CinemaTitle item, CinemaDiscoveryTitle title) {
