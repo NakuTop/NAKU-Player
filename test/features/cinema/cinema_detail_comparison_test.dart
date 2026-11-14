@@ -71,6 +71,7 @@ class Probe extends CinemaMediaProbe {
     return CinemaMediaProbeResult(
       ok: true,
       elapsedMs: 30,
+      qualityEvidence: CinemaQualityEvidence.videoHeader,
       firstByteMs: 20,
       mbps: url.contains('juliang') ? 999 : 12,
       width: url.contains('TD')
@@ -88,36 +89,44 @@ class Probe extends CinemaMediaProbe {
 }
 
 void main() {
-  test(
-    'fastest highlight follows successful speed without changing source priority',
-    () async {
-      final probe = Probe();
-      final comparison = CinemaDetailComparison(
-        title: movie(first),
-        source: first,
-        variants: [movie(second)],
-        sources: [first, second],
-        repository: Repository(),
-        probe: probe,
+  test('verified 4K beats faster 1080p and ties use speed', () async {
+    final probe = Probe();
+    final comparison = CinemaDetailComparison(
+      title: movie(first),
+      source: first,
+      variants: [movie(second)],
+      sources: [first, second],
+      repository: Repository(),
+      probe: probe,
+    );
+    addTearDown(comparison.dispose);
+    addTearDown(() => probe.transport.dio.close(force: true));
+    expect(comparison.measuredRecommendation, isNull);
+    await comparison.start();
+    expect(comparison.measuredRecommendation?.source.id, second.id);
+    expect(comparison.recommended?.source.id, first.id);
+    final faster4k = comparison.measuredRecommendation!;
+    comparison.results[faster4k.key] = const CinemaMediaProbeResult(
+      ok: true,
+      elapsedMs: 1,
+      mbps: 2000,
+      width: 3840,
+      height: 2160,
+      qualityEvidence: CinemaQualityEvidence.manifest,
+    );
+    expect(comparison.results[faster4k.key]!.qualityLabel, '待检测');
+    expect(comparison.measuredRecommendation?.source.id, first.id);
+    for (final candidate in comparison.candidates.where(
+      (c) => c.source.id == second.id,
+    )) {
+      comparison.results[candidate.key] = const CinemaMediaProbeResult(
+        ok: false,
+        elapsedMs: 1,
+        mbps: 2000,
       );
-      addTearDown(comparison.dispose);
-      addTearDown(() => probe.transport.dio.close(force: true));
-      expect(comparison.fastest, isNull);
-      await comparison.start();
-      expect(comparison.fastest?.source.id, second.id);
-      expect(comparison.recommended?.source.id, first.id);
-      for (final candidate in comparison.candidates.where(
-        (c) => c.source.id == second.id,
-      )) {
-        comparison.results[candidate.key] = const CinemaMediaProbeResult(
-          ok: false,
-          elapsedMs: 1,
-          mbps: 2000,
-        );
-      }
-      expect(comparison.fastest?.source.id, first.id);
-    },
-  );
+    }
+    expect(comparison.measuredRecommendation?.source.id, first.id);
+  });
   test(
     'unmeasured web sibling never hides completed source evidence',
     () async {

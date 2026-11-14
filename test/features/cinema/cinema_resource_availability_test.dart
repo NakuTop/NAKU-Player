@@ -123,6 +123,11 @@ void main() {
       expect(result.state, CinemaResourceState.found);
       expect(result.variants, [native]);
       expect(result.has4K, isTrue);
+      expect(result.label, '有资源 · 画质待检测');
+      service.confirmQuality(native, [_source], 2160);
+      expect(service.entry(native, [_source]).value.label, '有资源 · 4K');
+      service.confirmQuality(native, [_source], 0);
+      expect(service.entry(native, [_source]).value.label, '有资源 · 画质待检测');
       expect((result.checked, result.total), (1, 1));
       expect((repo.calls, repo.details), (0, 0));
     },
@@ -312,7 +317,7 @@ void main() {
   );
 
   test(
-    'quality wins source priority without merging remakes or sequel numbers',
+    'source priority picks the catalogue card without merging remakes or sequel numbers',
     () {
       final ordinary = _edition('1', '泰坦尼克号');
       final uhd = _edition('2', '泰坦尼克号国语4K', source: 'two');
@@ -326,7 +331,7 @@ void main() {
         sourcePriority: ['one', 'two'],
       );
       expect(groups, hasLength(3));
-      expect(groups.first.representative.key, uhd.key);
+      expect(groups.first.representative.key, ordinary.key);
       expect(groups.first.variants, hasLength(2));
       expect(cinemaWorkQueries(uhd).first, '泰坦尼克号');
     },

@@ -865,6 +865,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     Map<String, String>? offlinePaths,
     int? initialPositionSeconds,
     CinemaHistory? resumeHistory,
+    CinemaMediaProbeResult? measuredQuality,
   }) {
     unawaited(
       Navigator.of(context)
@@ -881,6 +882,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                     source: source,
                     offlinePaths: offlinePaths,
                     manualRouteSelection: manualRouteSelection,
+                    measuredQuality: measuredQuality,
                     initialPositionSeconds: initialPositionSeconds,
                     resumeHistory: resumeHistory,
                     watchTogether: widget.enableWatchTogether
@@ -1118,7 +1120,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   String get _catalogSortExplanation {
     if (_currentCatalogSort == CinemaCatalogSort.popular && !_searching) {
-      return '按豆瓣近期热门顺序展示，卡片会自动检查片源；同片优先选择标记为 4K 的版本。';
+      return '按豆瓣近期热门顺序展示，打开详情可检测画质。';
     }
     if (_currentCatalogSort == CinemaCatalogSort.rating) {
       final works = [
@@ -1911,6 +1913,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     CinemaHistory? resume,
     List<CinemaTitle> variants = const [],
     bool keepBrowseRoute = false,
+    CinemaTitle? resourceCard,
   }) async {
     if (NakuDevice.isTV &&
         title.sourceId == cinemaNASSource.id &&
@@ -2000,6 +2003,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       ).first.catalogTitle;
       await _openTitle(
         representative,
+        resourceCard: resourceCard ?? title,
         variants: available,
         keepBrowseRoute: keepBrowseRoute,
       );
@@ -2062,6 +2066,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     }
     Widget buildDetails(BuildContext context) => _TitleDetails(
       mediaProbe: widget.detailMediaProbe,
+      onQualityConfirmed: (tier) => _resources.confirmQuality(
+        resourceCard ?? title,
+        _activeSources,
+        tier,
+      ),
       title: title,
       source: source,
       variants: variants
@@ -2089,18 +2098,28 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         _search.text = recommendation.title;
         _runSearch();
       },
-      onPlay: (detail, selectedSource, road, episode, allVariants, manual) {
-        Navigator.pop(context);
-        _playTitle(
-          detail,
-          selectedSource,
-          road,
-          episode,
-          allVariants,
-          manualRouteSelection: manual,
-          keepBrowseRoute: keepBrowseRoute,
-        );
-      },
+      onPlay:
+          (
+            detail,
+            selectedSource,
+            road,
+            episode,
+            allVariants,
+            manual,
+            quality,
+          ) {
+            Navigator.pop(context);
+            _playTitle(
+              detail,
+              selectedSource,
+              road,
+              episode,
+              allVariants,
+              manualRouteSelection: manual,
+              keepBrowseRoute: keepBrowseRoute,
+              measuredQuality: quality,
+            );
+          },
     );
     if (NakuDevice.isTV) {
       await Navigator.of(context).push(
@@ -3260,7 +3279,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               resolveRatingsTitle: _resolveTVRatingTitle,
               artworkRepository: widget.artworkRepository,
               onRecommendationSelected: (_) {},
-              onPlay: (detail, source, road, episode, variants, manual) {
+              onPlay: (detail, source, road, episode, variants, manual, _) {
                 Navigator.of(detailsContext).pop();
                 _playTitle(
                   detail,
@@ -5394,8 +5413,10 @@ class _TitleDetails extends StatefulWidget {
     this.resolvedDetail = false,
     this.tvPoster,
     this.mediaProbe,
+    this.onQualityConfirmed,
   });
   final CinemaMediaProbe? mediaProbe;
+  final ValueChanged<int>? onQualityConfirmed;
   final Widget? tvPoster;
   final CinemaTitle title;
   final CinemaSource source;
@@ -5415,6 +5436,7 @@ class _TitleDetails extends StatefulWidget {
     int,
     List<CinemaTitle>,
     bool,
+    CinemaMediaProbeResult?,
   )
   onPlay;
   @override
@@ -5436,7 +5458,10 @@ class _TitleDetailsState extends State<_TitleDetails> {
   void _comparisonChanged() {
     if (!mounted || _disposing) return;
     if (widget.source.id == cinemaNASSource.id) return;
-    final best = _comparison.fastest ?? _comparison.recommended;
+    final measured = _comparison.measuredRecommendation;
+    final tier = _comparison.results[measured?.key]?.confirmedQualityTier ?? 0;
+    widget.onQualityConfirmed?.call(tier);
+    final best = measured ?? _comparison.recommended;
     if (!_variantChosen && !_routeChosen) {
       _recommended = best;
     }
@@ -5461,6 +5486,14 @@ class _TitleDetailsState extends State<_TitleDetails> {
     source =
         widget.store.sources.where((s) => s.id == title.sourceId).firstOrNull ??
         source;
+    final recommendation = _recommended;
+    final quality =
+        !manual &&
+            recommendation?.title.key == title.key &&
+            recommendation?.routeIndex == route &&
+            recommendation?.episodeIndex == episode
+        ? _comparison.results[recommendation!.key]
+        : null;
     widget.onPlay(
       title,
       source,
@@ -5468,6 +5501,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
       episode,
       variants,
       manual || _recommended != null,
+      quality,
     );
   }
 
@@ -5537,6 +5571,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
             setState(() => _variants = orderCinemaVariants(variants, priority));
             _comparison.addVariants(variants);
             if (!_variantChosen &&
+                !_routeChosen &&
                 widget.resume == null &&
                 _variants.isNotEmpty) {
               final preferred = _variants.first;
@@ -5795,13 +5830,16 @@ class _TitleDetailsState extends State<_TitleDetails> {
           ticket != _playSelectionTicket) {
         return;
       }
-      final road = _preferredRoad(title);
+      final best = _comparison.forVariant(title);
+      final measured =
+          best != null && _comparison.results[best.key]?.ok == true;
+      final road = measured ? best.routeIndex : _preferredRoad(title);
       if (road < 0) return;
       _playCompared(
         title,
         source,
         road,
-        _preferredEpisode(title, road),
+        measured ? best.episodeIndex : _preferredEpisode(title, road),
         _variants,
         true,
       );
@@ -5950,41 +5988,28 @@ class _TitleDetailsState extends State<_TitleDetails> {
             .firstOrNull
             ?.name ??
         '已移除片源';
-    // Source chips compare measured facts; editorial source labels stay in details.
     final width = measured?.width ?? 0, height = measured?.height ?? 0;
-    final quality = width > 0 && height > 0
-        ? (width >= 7000 || height >= 4000
-              ? '8K'
-              : width >= 3500 || height >= 2000
-              ? '4K'
-              : width >= 1800 || height >= 1000
-              ? '1080p'
-              : width >= 1200 || height >= 700
-              ? '720p'
-              : '${height}p')
-        : '';
+    final quality = switch (measured?.confirmedQualityTier ?? 0) {
+      0 => _comparison.pending.contains(choice?.key) ? '检测中' : '待检测',
+      4320 => '8K',
+      2160 => '4K',
+      final tier => '${tier}p',
+    };
     final speed = measured?.ok == true && measured?.mbps != null
         ? '${measured!.mbps!.toStringAsFixed(1)} Mbps'
         : '';
-    final summary = [
-      if (quality.isNotEmpty) quality,
-      if (speed.isNotEmpty) speed,
-    ].join(' · ');
-    final status = _comparison.running && measured == null
-        ? '检测中'
-        : measured?.ok == false ||
-              _comparison.catalogue.errors.containsKey(variant.key)
-        ? '未连通'
-        : '—';
+    final summary = [quality, if (speed.isNotEmpty) speed].join(' · ');
     final detail = [
-      if (width > 0 && height > 0) '$width × $height',
+      if ((measured?.confirmedQualityTier ?? 0) > 0) '$width × $height',
       if (measured?.firstByteMs != null) '响应 ${measured!.firstByteMs} ms',
       if (measured?.ok == false) measured!.reason,
       if (_comparison.catalogue.errors.containsKey(variant.key))
         _comparison.catalogue.errors[variant.key]!,
     ].where((value) => value.isNotEmpty).join(' · ');
     final recommended =
-        _recommended?.title.key == variant.key && !_variantChosen;
+        _recommended?.title.key == variant.key &&
+        !_variantChosen &&
+        !_routeChosen;
     return Tooltip(
       message: detail,
       child: Column(
@@ -6010,7 +6035,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
           ),
           const SizedBox(height: 4),
           Text(
-            summary.isEmpty ? status : summary,
+            summary,
             style: TextStyle(
               fontSize: NakuDevice.isTV ? 13 : 11,
               color: CinemaTheme.muted,
@@ -6025,7 +6050,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
     CinemaTitle title,
     AsyncSnapshot<CinemaTitle> snapshot,
   ) {
-    final fastestKey = _comparison.fastest?.title.key;
+    final recommendedKey = _variantChosen || _routeChosen
+        ? null
+        : _comparison.measuredRecommendation?.title.key;
     if (!_variantChosen && !_routeChosen && _recommended != null) {
       title = _recommended!.title;
     }
@@ -6114,8 +6141,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
                 for (final variant in _variants)
                   CinemaSourceGlow(
                     key: ValueKey('source-glow:${variant.key}'),
-                    active: fastestKey == variant.key,
-                    dimmed: fastestKey != null && fastestKey != variant.key,
+                    active: recommendedKey == variant.key,
+                    dimmed:
+                        recommendedKey != null && recommendedKey != variant.key,
                     color:
                         _posterPalette.firstOrNull ?? const Color(0xFFB5C9D0),
                     reduceMotion:

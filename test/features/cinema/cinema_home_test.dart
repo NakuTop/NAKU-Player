@@ -860,10 +860,7 @@ void main() {
     await tapSort(tester, CinemaCatalogSort.popular);
     await tester.pumpAndSettle();
     await expectSelected(tester, CinemaCatalogSort.popular);
-    expect(
-      find.byTooltip('按豆瓣近期热门顺序展示，卡片会自动检查片源；同片优先选择标记为 4K 的版本。'),
-      findsOneWidget,
-    );
+    expect(find.byTooltip('按豆瓣近期热门顺序展示，打开详情可检测画质。'), findsOneWidget);
     expectBefore(tester, '电影较早热门', '电影最近更新');
     expectBefore(tester, '电影最近更新', '电影缺少数据');
     expect(repository.browsed, hasLength(requests));
@@ -943,10 +940,7 @@ void main() {
       expect(find.byTooltip('片源未提供可用更新时间，保留目录顺序。'), findsOneWidget);
       await tapSort(tester, CinemaCatalogSort.popular);
       await tester.pumpAndSettle();
-      expect(
-        find.byTooltip('按豆瓣近期热门顺序展示，卡片会自动检查片源；同片优先选择标记为 4K 的版本。'),
-        findsOneWidget,
-      );
+      expect(find.byTooltip('按豆瓣近期热门顺序展示，打开详情可检测画质。'), findsOneWidget);
       expect(find.text('电影较早热门'), findsWidgets);
     },
   );

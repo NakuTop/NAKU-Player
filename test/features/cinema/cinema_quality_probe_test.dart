@@ -217,7 +217,7 @@ void main() {
       ).measure(url('/encrypted.m3u8'), headers);
       expect(result.ok, isTrue);
       expect(result.qualityEvidence, CinemaQualityEvidence.unknown);
-      expect(result.qualityLabel, '画质未知');
+      expect(result.qualityLabel, '待检测');
       expect(hits['/key'], 1);
     },
   );

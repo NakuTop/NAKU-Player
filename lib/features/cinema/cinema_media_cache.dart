@@ -292,7 +292,9 @@ class CinemaMediaCache extends ChangeNotifier {
     bool backgroundPrefetchAllowed = true,
   }) async {
     final uri = Uri.tryParse(url);
-    if ((!preferences.enabled && transport.router?.active != true) ||
+    if ((!preferences.enabled &&
+            transport.router?.active != true &&
+            manifestPolicy == null) ||
         uri == null ||
         !['http', 'https'].contains(uri.scheme) ||
         !(hls || uri.path.toLowerCase().endsWith('.m3u8'))) {

@@ -51,41 +51,14 @@ class CinemaDetailComparison extends ChangeNotifier {
     sourceOrder: catalogue.sourceOrder,
     results: results,
   );
-  CinemaPlaybackCandidate? forVariant(CinemaTitle title) {
-    final options = candidates.where((c) => c.title.key == title.key).toList();
-    final measured = options.where((c) => results.containsKey(c.key)).toList();
-    // A higher-labelled web route must not hide a measured media sibling.
-    // This chooses the chip's evidence, not the user's playback selection.
-    return cinemaRecommendedCandidate(
-          measured,
-          sourceOrder: catalogue.sourceOrder,
-          results: results,
-        ) ??
-        measured.where((c) => results[c.key]?.height != null).firstOrNull ??
-        measured.firstOrNull ??
-        cinemaRecommendedCandidate(
-          options,
-          sourceOrder: catalogue.sourceOrder,
-          results: results,
-        );
-  }
+  CinemaPlaybackCandidate? get measuredRecommendation =>
+      cinemaBestConfirmedCandidate(candidates, results: results);
 
-  CinemaPlaybackCandidate? get fastest {
-    CinemaPlaybackCandidate? best;
-    var speed = 0.0;
-    for (final variant in catalogue.variants) {
-      final candidate = forVariant(variant);
-      final result = candidate == null ? null : results[candidate.key];
-      final measuredSpeed = result?.mbps;
-      if (result?.ok == true &&
-          measuredSpeed != null &&
-          measuredSpeed.isFinite &&
-          measuredSpeed > speed) {
-        best = candidate;
-        speed = measuredSpeed;
-      }
-    }
-    return best;
+  CinemaPlaybackCandidate? forVariant(CinemaTitle title) {
+    final options = candidates.where((c) => c.title.key == title.key);
+    return cinemaBestConfirmedCandidate(options, results: results) ??
+        options.where((c) => results.containsKey(c.key)).firstOrNull ??
+        cinemaRecommendedCandidate(options, sourceOrder: catalogue.sourceOrder);
   }
 
   Future<CinemaTitle> load(CinemaTitle title, {bool retry = false}) =>
@@ -134,7 +107,7 @@ class CinemaDetailComparison extends ChangeNotifier {
     }
 
     // One preferred edition from each source gets a turn before extra versions
-    // of the same source. Recommendation still follows the user's source order.
+    // of the same source.
     Iterable<CinemaPlaybackCandidate> fairCandidates() sync* {
       final groups = <String, List<CinemaPlaybackCandidate>>{};
       for (final candidate in candidates) {

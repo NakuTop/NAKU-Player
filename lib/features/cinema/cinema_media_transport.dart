@@ -171,18 +171,34 @@ class CinemaMediaProbeResult {
     this.bitrate,
     this.reason = '',
     this.codec = '',
+    this.hlsVariants = const [],
     this.qualityEvidence = CinemaQualityEvidence.unknown,
   });
   final String codec;
+  final List<Uri> hlsVariants;
   final CinemaQualityEvidence qualityEvidence;
   final bool ok;
   final int elapsedMs;
   final int? firstByteMs, width, height, bitrate;
   final double? mbps;
   final String reason;
-  String get qualityLabel => width == null || height == null
-      ? '画质未知'
-      : '$width×$height${codec.isEmpty ? '' : ' · $codec'} · ${qualityEvidence == CinemaQualityEvidence.videoHeader ? '视频头确认' : '清单标注'}';
+  int get confirmedQualityTier {
+    final w = width ?? 0, h = height ?? 0;
+    if (!ok ||
+        qualityEvidence != CinemaQualityEvidence.videoHeader ||
+        w <= 0 ||
+        h <= 0)
+      return 0;
+    if (w >= 7680 || h >= 4320) return 4320;
+    if (w >= 3840 || h >= 2160) return 2160;
+    if (w >= 1800 || h >= 1000) return 1080;
+    if (w >= 1200 || h >= 700) return 720;
+    return h;
+  }
+
+  String get qualityLabel => confirmedQualityTier == 0
+      ? '待检测'
+      : '$width×$height${codec.isEmpty ? '' : ' · $codec'} · 视频头确认';
   String get label => labelForRate(1);
   String labelForRate(double rate) => ok
       ? '${mbps?.toStringAsFixed(1) ?? '?'}Mbps · 响应 ${firstByteMs ?? elapsedMs}ms'
@@ -290,6 +306,7 @@ class CinemaMediaProbe {
     var evidence = CinemaQualityEvidence.unknown;
     CinemaHlsProbeResource? sampleResource, initialization;
     var codec = '';
+    final selectedVariants = <Uri>[];
     try {
       var target = Uri.parse(url);
       if (!['http', 'https'].contains(target.scheme)) {
@@ -324,6 +341,7 @@ class CinemaMediaProbe {
                   : b;
             });
             target = variant.uri;
+            selectedVariants.add(target);
             width = variant.width;
             height = variant.height;
             bitrate = variant.bitrate;
@@ -491,6 +509,7 @@ class CinemaMediaProbe {
         bitrate: bitrate,
         codec: codec,
         qualityEvidence: evidence,
+        hlsVariants: List.unmodifiable(selectedVariants),
       );
     } catch (error) {
       return CinemaMediaProbeResult(

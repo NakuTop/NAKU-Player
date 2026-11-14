@@ -251,6 +251,7 @@ class CinemaPlayerPage extends StatefulWidget {
     this.mediaCache,
     this.autoSelectBestRoute,
     this.manualRouteSelection = false,
+    this.measuredQuality,
     this.posterImage,
     this.backgroundPlaybackClock,
   });
@@ -279,6 +280,7 @@ class CinemaPlayerPage extends StatefulWidget {
 
   /// An explicit source/route choice takes precedence over automatic startup.
   final bool manualRouteSelection;
+  final CinemaMediaProbeResult? measuredQuality;
   @visibleForTesting
   final ImageProvider? posterImage;
   @visibleForTesting
@@ -1674,6 +1676,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           final upstreamHeaders = Map<String, String>.unmodifiable(
             mediaHeaders,
           );
+          final measured = widget.measuredQuality;
+          final preferredVariants =
+              Platform.isMacOS &&
+                  initial &&
+                  (measured?.confirmedQualityTier ?? 0) >= 2160
+              ? measured!.hlsVariants
+              : const <Uri>[];
           final cached = await _cache.open(
             mediaUrl,
             upstreamHeaders,
@@ -1690,7 +1699,18 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                       generation,
                     ),
                   )
-                : null,
+                : preferredVariants.isEmpty
+                ? null
+                : (text, base) async {
+                    final selected = cinemaHlsVariants(text, base)
+                        .where(
+                          (variant) => preferredVariants.contains(variant.uri),
+                        )
+                        .firstOrNull;
+                    return selected == null
+                        ? text
+                        : cinemaTVSelectHlsVariant(text, base, selected.uri);
+                  },
           );
           if (!_isCurrent(generation)) {
             await cached?.session.close();
@@ -3468,13 +3488,27 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   CinemaRouteMeasurement? _bestSourcePriority(
     Iterable<CinemaRouteMeasurement> values,
-  ) => cinemaBestSourcePriorityRoute(
-    values,
-    sourceOrder: _catalogue.sourceOrder,
-    supported: NakuDevice.isTV
-        ? CinemaTVMediaEnvironment.instance.supports
-        : null,
-  );
+  ) {
+    if (Platform.isMacOS) {
+      final usable = values.where((value) => value.usable).toList();
+      final best = cinemaBestConfirmedCandidate(
+        usable.map((value) => value.candidate),
+        results: {
+          for (final value in usable) value.candidate.key: value.result,
+        },
+      );
+      return usable
+          .where((value) => value.candidate.key == best?.key)
+          .firstOrNull;
+    }
+    return cinemaBestSourcePriorityRoute(
+      values,
+      sourceOrder: _catalogue.sourceOrder,
+      supported: NakuDevice.isTV
+          ? CinemaTVMediaEnvironment.instance.supports
+          : null,
+    );
+  }
 
   Future<void> _useBestRoute(
     CinemaRouteMeasurement best, {
@@ -3508,6 +3542,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     CinemaRouteMeasurement best,
     CinemaPlaybackCandidate current,
   ) {
+    if (Platform.isMacOS) {
+      return cinemaBestConfirmedCandidate([
+            current,
+            best.candidate,
+          ], results: _probeResults)?.key ==
+          best.candidate.key;
+    }
     final order = _catalogue.sourceOrder.toList();
     final before = order.indexOf(best.candidate.source.id),
         now = order.indexOf(current.source.id);
@@ -3654,7 +3695,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _probeStatus = best == null
             ? '本次未测得可用线路，保留当前播放'
             : automatic
-            ? '已按片源顺序检查画质'
+            ? '已完成画质检测'
             : '本次测速完成，可使用推荐线路';
       });
       if (automatic &&

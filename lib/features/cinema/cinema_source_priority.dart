@@ -71,3 +71,32 @@ CinemaRouteMeasurement? cinemaBestSourcePriorityRoute(
   );
   return usable.where((m) => m.candidate.key == best?.key).firstOrNull;
 }
+
+/// Compare measured routes across sources. Catalogue order breaks exact ties.
+CinemaPlaybackCandidate? cinemaBestConfirmedCandidate(
+  Iterable<CinemaPlaybackCandidate> candidates, {
+  required Map<String, CinemaMediaProbeResult> results,
+}) {
+  final usable =
+      candidates.where((c) => results[c.key]?.ok == true).indexed.toList()
+        ..sort((left, right) {
+          final (indexA, a) = left;
+          final (indexB, b) = right;
+          final ar = results[a.key]!, br = results[b.key]!;
+          final edition = (cinemaCandidateQuality(b) >= 0 ? 1 : 0).compareTo(
+            cinemaCandidateQuality(a) >= 0 ? 1 : 0,
+          );
+          if (edition != 0) return edition;
+          final quality = br.confirmedQualityTier.compareTo(
+            ar.confirmedQualityTier,
+          );
+          if (quality != 0) return quality;
+          final speed = (br.mbps ?? 0).compareTo(ar.mbps ?? 0);
+          if (speed != 0) return speed;
+          final latency = (ar.firstByteMs ?? ar.elapsedMs).compareTo(
+            br.firstByteMs ?? br.elapsedMs,
+          );
+          return latency != 0 ? latency : indexA.compareTo(indexB);
+        });
+  return usable.firstOrNull?.$2;
+}

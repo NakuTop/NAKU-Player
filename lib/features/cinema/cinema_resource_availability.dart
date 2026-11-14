@@ -25,15 +25,21 @@ class CinemaResourceAvailability {
     this.variants = const [],
     this.checked = 0,
     this.total = 0,
+    this.confirmedQualityTier = 0,
   });
   final CinemaResourceState state;
   final List<CinemaTitle> variants;
-  final int checked, total;
+  final int checked, total, confirmedQualityTier;
   bool get has4K => variants.any((t) => cinemaVariantQuality(t) > 0);
   String get label => switch (state) {
     CinemaResourceState.waiting => '待查找资源',
     CinemaResourceState.checking => '正在查找资源',
-    CinemaResourceState.found => has4K ? '有资源 · 4K' : '有资源',
+    CinemaResourceState.found => switch (confirmedQualityTier) {
+      >= 4320 => '有资源 · 8K',
+      >= 2160 => '有资源 · 4K',
+      0 => '有资源 · 画质待检测',
+      _ => '有资源',
+    },
     CinemaResourceState.missing => '暂未找到资源',
     CinemaResourceState.incomplete => '资源查询未完成',
     CinemaResourceState.noSources => '未启用片源',
@@ -137,6 +143,25 @@ class CinemaResourceAvailabilityService {
     });
   }
 
+  void confirmQuality(
+    CinemaTitle title,
+    Iterable<CinemaSource> sources,
+    int tier,
+  ) {
+    if (_disposed) return;
+    final target = _entries[_key(title, sources)];
+    if (target == null) return;
+    final value = target.value;
+    if (value.confirmedQualityTier == tier) return;
+    target.value = CinemaResourceAvailability(
+      state: value.state,
+      variants: value.variants,
+      checked: value.checked,
+      total: value.total,
+      confirmedQualityTier: tier,
+    );
+  }
+
   CinemaResourceAvailability? peek(
     CinemaTitle title,
     Iterable<CinemaSource> sources,
@@ -197,6 +222,7 @@ class CinemaResourceAvailabilityService {
           variants: List.unmodifiable(variants),
           checked: checked,
           total: selected.length,
+          confirmedQualityTier: target.value.confirmedQualityTier,
         );
       }
 

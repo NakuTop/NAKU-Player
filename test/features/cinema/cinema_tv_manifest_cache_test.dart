@@ -35,7 +35,7 @@ class _ManifestOrigin implements HttpClientAdapter {
 
 void main() {
   test(
-    'optional TV manifest policy keeps external audio and upstream headers through loopback',
+    'manifest selection preserves external audio and headers with segment caching disabled',
     () async {
       final directory = await Directory.systemTemp.createTemp(
         'tv-master-policy-',
@@ -57,18 +57,19 @@ void main() {
       }
 
       try {
+        await cache.configure(const CinemaCachePreferences(enabled: false));
         final opened = (await cache.open(
           'https://media.example/title/master.m3u8',
           {'X-Fixture': 'fixture-session'},
           manifestPolicy: (text, base) async => cinemaTVSelectHlsVariant(
             text,
             base,
-            base.resolve('1080/index.m3u8'),
+            base.resolve('4k/index.m3u8'),
           ),
         ))!;
         final master = await read(opened.url);
-        expect(master, contains('BANDWIDTH=4000000'));
-        expect(master, isNot(contains('BANDWIDTH=20000000')));
+        expect(master, contains('BANDWIDTH=20000000'));
+        expect(master, isNot(contains('BANDWIDTH=4000000')));
         expect(master, contains('AUDIO="audio"'));
         final audio = RegExp(
           r'#EXT-X-MEDIA:[^\n]*URI="([^"]+)"',
