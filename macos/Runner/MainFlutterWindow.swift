@@ -106,7 +106,7 @@ private final class NakuUpdaterObserver: NSObject, SPUUpdaterDelegate, SPUStanda
     enable()
     defaults.set(true, forKey: key)
   }
-  static let checkInterval: TimeInterval = 3 * 60 * 60
+  static let checkInterval: TimeInterval = 24 * 60 * 60
   static let checkGrace: TimeInterval = 30
   weak var controller: SPUStandardUpdaterController?
   private var checkTimer: Timer?
@@ -726,7 +726,7 @@ class MainFlutterWindow: NakuFullscreenWindow {
     let updater = SPUStandardUpdaterController(
       startingUpdater: false, updaterDelegate: updaterObserver, userDriverDelegate: updaterObserver)
     // Set the persisted value as well as Info.plist's fresh-install default:
-    // existing installations must adopt the three-hour schedule too.
+    // existing installations must adopt the daily schedule too.
     updater.updater.updateCheckInterval = NakuUpdaterObserver.checkInterval
     updaterController = updater
     updaterObserver.controller = updater
@@ -735,11 +735,6 @@ class MainFlutterWindow: NakuFullscreenWindow {
       updater.updater.automaticallyDownloadsUpdates = true
     }
     updater.startUpdater()
-    // Sparkle recommends doing an additional launch check immediately after
-    // start, before the next runloop; respect the persisted opt-out preference.
-    if updater.updater.automaticallyChecksForUpdates {
-      updater.updater.checkForUpdatesInBackground()
-    }
     updaterObserver.startAutomaticCheckFallback()
     let updateChannel = FlutterMethodChannel(
       name: "naku/updater", binaryMessenger: flutterViewController.engine.binaryMessenger)

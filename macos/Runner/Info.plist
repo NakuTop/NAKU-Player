@@ -62,7 +62,7 @@
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
 	<key>SUScheduledCheckInterval</key>
-	<integer>10800</integer>
+	<integer>86400</integer>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUAutomaticallyUpdate</key>

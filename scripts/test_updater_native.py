@@ -44,10 +44,10 @@ private final class PromptController: SPUStandardUpdaterController {
 }
 let item = SUAppcastItem(dictionary: ["title": "Test", "sparkle:version": "999", "enclosure": ["url": "https://example.invalid/update.zip", "sparkle:version": "999"]])!
 let now = Date(timeIntervalSince1970: 100_000)
-precondition(NakuUpdaterObserver.checkInterval == 10_800)
-precondition(NakuUpdaterObserver.secondsUntilFallback(lastCheck: now - 10_799, now: now) == 31)
-precondition(NakuUpdaterObserver.secondsUntilFallback(lastCheck: now - 15_000, now: now) == 0)
-precondition(NakuUpdaterObserver.secondsUntilFallback(lastCheck: now + 10, now: now) == 10_830)
+precondition(NakuUpdaterObserver.checkInterval == 86_400)
+precondition(NakuUpdaterObserver.secondsUntilFallback(lastCheck: now - 86_399, now: now) == 31)
+precondition(NakuUpdaterObserver.secondsUntilFallback(lastCheck: now - 90_000, now: now) == 0)
+precondition(NakuUpdaterObserver.secondsUntilFallback(lastCheck: now + 10, now: now) == 86_430)
 precondition(!observer.standardUserDriverShouldHandleShowingScheduledUpdate(item, andInImmediateFocus: false))
 do {
  let promptObserver = NakuUpdaterObserver()

@@ -132,7 +132,7 @@ class _NakuUpdatePageState extends State<NakuUpdatePage> {
                 const SizedBox(height: 24),
                 SwitchListTile.adaptive(
                   title: const Text('自动检查更新'),
-                  subtitle: const Text('启动时检查，运行期间每 3 小时检查一次；睡眠错过时会在唤醒后补查。'),
+                  subtitle: const Text('运行期间每 24 小时自动检查一次，睡眠错过时会在唤醒后补查。新版下载完成后会提示安装。'),
                   value: _state?['automaticChecks'] == true,
                   onChanged: _state == null || _busy
                       ? null
