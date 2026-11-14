@@ -1,16 +1,19 @@
 [
   {
-    "tag_name": "android-tv-v3.2.2+118",
+    "tag_name": "android-tv-v3.2.5+125",
+    "name": "NAKU Android TV 3.2.5",
+    "body": "加快 NAS 收藏和历史同步，前台每 8 秒检查更新。未变化时跳过快照下载，仅并行读取新增快照。",
+    "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.5%2B125",
+    "published_at": "2026-11-14T08:47:21.413923+00:00",
     "draft": false,
     "prerelease": false,
-    "body": "Home Display 持久授权更新\n\n- 展示授权跟随当前 NAS 登录账号保存，应用重启后自动恢复。\n- 有效授权遇到短暂断网不清除；自动续期不再每四分钟重新访问 NAS。\n- 退出 NAS、忘记账号与切换账号时隔离旧授权，保留原有展示权限范围。\n- macOS 同时包含 3.2.1 的离开局域网后远程连接恢复修复。\n\n手机、电视及 Windows 的真实设备运行仍需实际使用确认。\n",
     "assets": [
       {
-        "name": "NAKU-TV-3.2.2-Android-universal.apk",
+        "name": "NAKU-TV-3.2.5-Android-universal.apk",
         "state": "uploaded",
-        "size": 91967300,
-        "digest": "sha256:12e3dca94001cb5fb96d7b36826261a3a2765b83d85a5b91afe42e81b12a013f",
-        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.2%2B118/NAKU-TV-3.2.2-Android-universal.apk"
+        "size": 92087742,
+        "digest": "sha256:4ecc36442b70cfa4c16bdaf996e746294dce636e655271ef666e0984ad22d0de",
+        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/untagged-d280bf68abe6fcb0b566/NAKU-TV-3.2.5-Android-universal.apk"
       }
     ]
   }
