@@ -121,12 +121,9 @@ class CinemaNASSync extends ChangeNotifier with WidgetsBindingObserver {
         lifecycle == null ||
         lifecycle == AppLifecycleState.resumed ||
         lifecycle == AppLifecycleState.inactive;
-    _timer = Timer.periodic(
-      Duration(seconds: Platform.isMacOS && visible ? 12 : 60),
-      (_) {
-        if (_retryPollAfter?.isAfter(DateTime.now()) != true) unawaited(sync());
-      },
-    );
+    _timer = Timer.periodic(Duration(seconds: visible ? 8 : 60), (_) {
+      if (_retryPollAfter?.isAfter(DateTime.now()) != true) unawaited(sync());
+    });
   }
 
   @override

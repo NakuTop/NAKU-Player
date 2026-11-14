@@ -1029,23 +1029,73 @@ class CinemaAndroidNAS {
     }
   }
 
-  Future<Map<String, dynamic>> _pull(String expected) async {
+  Future<Map<String, dynamic>> _pull(Map<String, dynamic> args) async {
+    final expected = '${args['namespace']}';
     await _ensure(expected);
-    final dir = await _directory(),
-        files = await _list(dir),
-        latest = <String, String>{};
+    final dir = await _directory();
+    final files = await _list(dir);
+    final latest = <String, Map<String, dynamic>>{};
     for (final row in files) {
       final name = '${row['name']}';
       if (!RegExp(r'^[a-f0-9-]{36}-[0-9]{12}\.json$').hasMatch(name)) continue;
       final device = name.substring(0, 36);
-      if (name.compareTo(latest[device] ?? '') > 0) latest[device] = name;
+      if (name.compareTo('${latest[device]?['name'] ?? ''}') > 0) {
+        latest[device] = row;
+      }
     }
-    if (latest.length > 100) _fail();
+    if (latest.length > 100 || _namespace != expected) _fail();
+    final metadata =
+        latest.values
+            .map(
+              (row) => [
+                for (final key in [
+                  'name',
+                  'size',
+                  'file_size',
+                  'modify_time',
+                  'mtime',
+                ])
+                  '${row[key] ?? ''}',
+              ],
+            )
+            .toList()
+          ..sort((a, b) => a.first.compareTo(b.first));
+    final revision = _digest(jsonEncode([expected, dir, metadata]));
+    if (args['revision'] == revision) {
+      return {'notModified': true, 'revision': revision, 'path': dir};
+    }
+    final snapshots = metadata
+        .map(
+          (row) => _digest(jsonEncode([expected, dir, row])).substring(0, 32),
+        )
+        .toList();
+    final supplied = args['snapshots'];
+    final known = supplied is List
+        ? supplied.whereType<String>().toSet()
+        : <String>{};
+    final names = [
+      for (var i = 0; i < metadata.length; i++)
+        if (!known.contains(snapshots[i])) metadata[i].first,
+    ];
     final docs = <String>[];
-    for (final name in latest.values) {
-      docs.add(utf8.decode(await _read('$dir/$name')));
+    for (var i = 0; i < names.length; i += 3) {
+      if (_namespace != expected) _fail();
+      docs.addAll(
+        await Future.wait(
+          names
+              .skip(i)
+              .take(3)
+              .map((name) async => utf8.decode(await _read('$dir/$name'))),
+        ),
+      );
     }
-    return {'documents': docs, 'path': dir};
+    if (_namespace != expected) _fail();
+    return {
+      'documents': docs,
+      'path': dir,
+      'revision': revision,
+      'snapshots': snapshots,
+    };
   }
 
   Future<Map<String, dynamic>> _push(Map<String, dynamic> a) async {
@@ -1540,7 +1590,7 @@ class CinemaAndroidNAS {
         }
         return r;
       case 'syncPull':
-        return _pull('${a['namespace']}');
+        return _pull(a);
       case 'syncPush':
         return _push(a);
       case 'playbackOptions':
