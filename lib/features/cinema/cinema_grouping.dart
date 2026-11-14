@@ -134,7 +134,10 @@ List<CinemaTitleGroup> groupCinemaTitles(
     });
   for (final title in prioritized) {
     final candidate = _Candidate(title);
-    final possible = (byName[candidate.name] ?? const <_Group>[])
+    final lookup = {candidate.name, ...candidate.aliases};
+    final possible = lookup
+        .expand((key) => byName[key] ?? const <_Group>[])
+        .toSet()
         .where((group) => group.accepts(candidate))
         .toList();
     final exactIdMatches = candidate.doubanId.isEmpty
@@ -145,11 +148,17 @@ List<CinemaTitleGroup> groupCinemaTitles(
     final matches = exactIdMatches.isNotEmpty ? exactIdMatches : possible;
     if (matches.length == 1) {
       matches.single.add(candidate);
+      for (final key in lookup) {
+        final bucket = byName.putIfAbsent(key, () => []);
+        if (!bucket.contains(matches.single)) bucket.add(matches.single);
+      }
     } else {
       // Ambiguous candidates stay separate rather than bridging two identities.
       final group = _Group(candidate);
       groups.add(group);
-      byName.putIfAbsent(candidate.name, () => []).add(group);
+      for (final key in lookup) {
+        byName.putIfAbsent(key, () => []).add(group);
+      }
     }
   }
   final result = groups.map((group) {
@@ -180,6 +189,9 @@ class _Candidate {
 
   final CinemaTitle title;
   final String name;
+  late final aliases = cinemaTitleAliases(
+    title.aliases,
+  ).map((alias) => cinemaGroupedWorkTitleKey(alias, title.year)).toSet();
   final String doubanId;
   final _Kind kind;
   final int? year;
@@ -203,7 +215,7 @@ class _Group {
     if (candidate.title.isDirectMedia || variants.first.isDirectMedia) {
       return candidate.title.key == variants.first.key;
     }
-    if (name.isEmpty || name != candidate.name) return false;
+
     if (doubanId.isNotEmpty &&
         candidate.doubanId.isNotEmpty &&
         doubanId != candidate.doubanId) {
@@ -216,6 +228,22 @@ class _Group {
         candidate.kind != _Kind.unknown &&
         kind != candidate.kind) {
       return false;
+    }
+    final sameSeason =
+        cinemaSeasonName(variants.first.title)?.number ==
+        cinemaSeasonName(candidate.title.title)?.number;
+    if (name.isEmpty || name != candidate.name) {
+      return sameSeason &&
+          kind == candidate.kind &&
+          kind != _Kind.unknown &&
+          year != null &&
+          year == candidate.year &&
+          (candidate.aliases.contains(name) ||
+              cinemaTitleAliases(variants.first.aliases).any(
+                (alias) =>
+                    cinemaGroupedWorkTitleKey(alias, variants.first.year) ==
+                    candidate.name,
+              ));
     }
     if (doubanId.isNotEmpty && doubanId == candidate.doubanId) return true;
     if (kind == _Kind.series &&

@@ -252,7 +252,7 @@ void main() {
       expect(result.titles.single.metadata.aliases, contains('星际启示录'));
       expect(result.titles.single.metadata.actors, '主演');
       expect(result.titles.single.metadata.area, '美国');
-      expect(result.queries, ['星际穿越']);
+      expect(result.queries, ['星际穿越', '星际空间']);
       expect(adapter.calls.every((r) => r.followRedirects == false), isTrue);
       expect(adapter.calls.length, 4);
     },

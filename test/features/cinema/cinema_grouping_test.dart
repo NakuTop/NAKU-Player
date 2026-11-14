@@ -19,24 +19,29 @@ CinemaTitle _title(
 );
 
 void main() {
-  test(
-    'user source order outranks a later source quality label',
-    () {
-      final ordinary = _title('jl', source: 'juliang');
-      final high = _title('4k', source: 'other', name: '星际穿越4K');
-      expect(
-        orderCinemaVariants([high, ordinary], ['other', 'juliang']).first,
-        high,
-      );
-      expect(
-        orderCinemaVariants(
-          [high, ordinary],
-          ['juliang', 'other'],
-        ),
-        [ordinary, high],
-      );
-    },
-  );
+  test('translated aliases group only compatible editions', () {
+    final original = _title(
+      '1',
+      name: '明日边缘',
+    ).copyWith(aliases: 'Edge of Tomorrow / 异空战士');
+    final translation = _title('2', source: 'other', name: '异空战士');
+    final remake = _title('3', name: '异空战士', year: '2025');
+    final groups = groupCinemaTitles([original, translation, remake]);
+    expect(groups.map((group) => group.variants.length), [2, 1]);
+  });
+
+  test('user source order outranks a later source quality label', () {
+    final ordinary = _title('jl', source: 'juliang');
+    final high = _title('4k', source: 'other', name: '星际穿越4K');
+    expect(
+      orderCinemaVariants([high, ordinary], ['other', 'juliang']).first,
+      high,
+    );
+    expect(orderCinemaVariants([high, ordinary], ['juliang', 'other']), [
+      ordinary,
+      high,
+    ]);
+  });
 
   test(
     'detail keeps freshly loaded routes even if its 4K card has a higher quality label',

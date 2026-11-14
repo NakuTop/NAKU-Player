@@ -62,7 +62,6 @@ Stream<List<CinemaTitle>> discoverCinemaWorkSources({
               if (found.page >= found.pageCount) break;
             }
             if (!isCurrent()) break;
-            if (matches().isNotEmpty) break;
           }
           onSourceChecked?.call(source);
           return result;

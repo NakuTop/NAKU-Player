@@ -229,3 +229,10 @@ List<String> cinemaWorkSearchQueries(String value) {
       ? {...equivalent, ..._edgerunnersTitles, '赛博朋克'}.toList()
       : equivalent;
 }
+
+Iterable<String> cinemaTitleAliases(String aliases) => aliases
+    .split(RegExp(r'\s+[/／]\s+|[|｜,，;；\n]'))
+    .map((value) => value.trim())
+    .where((value) => value.length >= 2 && value.length <= 100)
+    .toSet()
+    .take(8);

@@ -95,7 +95,20 @@ class CinemaRatingIdentitySearch {
     List<CinemaDiscoveryTitle> candidates,
   ) {
     final candidate = _candidate(title, candidates);
-    return candidate == null ? null : title.copyWith(doubanId: candidate.id);
+    return candidate == null
+        ? null
+        : title.copyWith(
+            doubanId: candidate.id,
+            aliases:
+                {
+                      ...cinemaTitleAliases(title.aliases),
+                      candidate.title,
+                      candidate.originalTitle,
+                      ...cinemaTitleAliases(candidate.aliases),
+                    }
+                    .where((name) => name.isNotEmpty && name != title.title)
+                    .join(' / '),
+          );
   }
 
   static CinemaDiscoveryTitle? _candidate(

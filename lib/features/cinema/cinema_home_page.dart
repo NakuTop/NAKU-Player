@@ -1485,6 +1485,49 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         }
       },
     );
+    if (!loadMore && mounted && generation == state.generation) {
+      final anchors = state.items
+          .where(
+            (title) =>
+                cinemaMatchesKeyword(title, keyword) &&
+                title.aliases.isNotEmpty,
+          )
+          .take(3)
+          .toList();
+      final queries = anchors
+          .expand((title) => cinemaTitleAliases(title.aliases))
+          .where((alias) => cinemaSearchKey(alias) != cinemaSearchKey(keyword))
+          .toSet()
+          .take(3);
+      await _searchInPool(
+        sources,
+        () => mounted && generation == state.generation,
+        (source) async {
+          for (final query in queries) {
+            try {
+              final result = await _repository.search(source, query);
+              if (!mounted || generation != state.generation) return;
+              final keys = state.items.map((item) => item.key).toSet();
+              final anchorKeys = anchors.map((item) => item.key).toSet();
+              final matches = groupCinemaTitles([...anchors, ...result.items])
+                  .where(
+                    (group) => group.variants.any(
+                      (item) => anchorKeys.contains(item.key),
+                    ),
+                  )
+                  .expand((group) => group.variants)
+                  .where(
+                    (item) =>
+                        _ordinaryCategory(item.category) && keys.add(item.key),
+                  );
+              _changed(state, () => state.items = [...state.items, ...matches]);
+            } catch (_) {
+              // Alias lookup is supplemental to the original source search.
+            }
+          }
+        },
+      );
+    }
     await discoveryFuture;
     if (mounted && generation == state.generation) {
       _changed(state, () => state.loading = false);

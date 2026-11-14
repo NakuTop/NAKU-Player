@@ -25,9 +25,9 @@ List<String> cinemaWorkQueries(CinemaTitle title) {
   return {
     ...cinemaWorkSearchQueries(name),
     if (cinemaSeasonName(name) case final season?) season.work,
-    for (final alias in title.aliases.split(RegExp(r'[/／]')).take(1))
+    for (final alias in cinemaTitleAliases(title.aliases).take(3))
       cinemaSourceQuery(alias),
-  }.where((query) => query.isNotEmpty).take(3).toList();
+  }.where((query) => query.isNotEmpty).take(6).toList();
 }
 
 /// The same bounded query set is used regardless of how the season was typed.

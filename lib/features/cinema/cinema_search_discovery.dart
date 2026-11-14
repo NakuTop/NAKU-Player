@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 import 'cinema_models.dart';
+import 'cinema_media_identity.dart';
 import 'cinema_douban_access.dart';
 import 'cinema_filters.dart' show cinemaSearchKey;
 
@@ -416,8 +417,14 @@ class CinemaSearchDiscoveryRepository {
     }
     final exact = people.where((person) => person.matches(keyword)).toList();
     final queries = titles
-        .map((t) => t.title)
-        .where((title) => cinemaSearchKey(title) != cinemaSearchKey(keyword))
+        .expand(
+          (t) => [t.title, t.originalTitle, ...cinemaTitleAliases(t.aliases)],
+        )
+        .where(
+          (title) =>
+              title.trim().isNotEmpty &&
+              cinemaSearchKey(title) != cinemaSearchKey(keyword),
+        )
         .toSet()
         .take(2)
         .toList();

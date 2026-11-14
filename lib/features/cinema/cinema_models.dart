@@ -230,6 +230,7 @@ class CinemaTitle {
   bool get isDirectMedia => sourceId == cinemaDirectSource.id;
   CinemaTitle copyWith({
     String? year,
+    String? aliases,
     List<CinemaRoute>? routes,
     String? doubanId,
     String? imdbId,
@@ -251,7 +252,7 @@ class CinemaTitle {
     language: language,
     genres: genres,
     durationText: durationText,
-    aliases: aliases,
+    aliases: aliases ?? this.aliases,
     sourceHits: sourceHits,
     sourceUpdatedAt: sourceUpdatedAt,
     releaseDateText: releaseDateText,
