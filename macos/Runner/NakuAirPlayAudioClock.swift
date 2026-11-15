@@ -41,7 +41,7 @@ final class NakuAirPlayDriftBuffer {
     struct Configuration {
         let targetMs: Double, maximumMs: Double, maxCorrectionPPM: Double
     }
-    static let capacity = 8192, taps = 48, phases = 512
+    static let capacity = 16384, taps = 48, phases = 512
     private static let rate = NakuAirPlayAudioClock.sampleRate
     private let configuration: Configuration
     private var samples = [Float](repeating: 0, count: capacity*2)

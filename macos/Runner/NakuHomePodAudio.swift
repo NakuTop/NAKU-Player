@@ -261,7 +261,7 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
     counterLock.lock()
     capturedBytes = 0; nonzeroSamples = 0; peakSample = 0
     counterLock.unlock()
-    let newSender = NakuAirPlaySender(address: speaker.address, port: UInt16(speaker.port), latencyMs: requestedLatency)
+    let newSender = NakuAirPlaySender(address: speaker.address, port: UInt16(speaker.port), latencyMs: requestedLatency, systemCapture: true)
     let fallbackVolume = receiverVolume / 100
     newSender.onDiagnostic = { phase in NakuAudioLog.write("NAKUHomePod connection: %@", phase) }
     sessionQueue.async { [weak self] in

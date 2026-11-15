@@ -471,8 +471,11 @@ public final class NakuAirPlaySender {
     private var reportedInitialVolume: Double?
     // Unisson's observed default DriftCompensatedSource configuration at
     // 0x1000f48c4: 15 ms target, 40 ms maximum, bounded ±1000 ppm correction.
-    private let pcmSource = NakuAirPlayDriftBuffer(configuration: .init(
-        targetMs: 15, maximumMs: 40, maxCorrectionPPM: 1000))
+    private let pcmSource: NakuAirPlayDriftBuffer
+    // Keep startup headroom at 100 ms. Allow a producer burst on top of
+    // that headroom before trimming; capacity is not a playout delay.
+    static let systemCaptureBuffer = NakuAirPlayDriftBuffer.Configuration(
+        targetMs: 100, maximumMs: 275, maxCorrectionPPM: 1000)
     private var connection: RTSPConnection?, events: RTSPConnection?
     private var audioFD: Int32 = -1, controlFD: Int32 = -1, timingFD: Int32 = -1
     private var audioDest = sockaddr_in(), controlDest = sockaddr_in()
@@ -483,7 +486,15 @@ public final class NakuAirPlaySender {
     private var firstSync = true
     private var uri = ""
     private static let frames = 352, pcmBytes = 1408
-    public init(address: String, port: UInt16 = 7000, latencyMs: Int = 120) { self.address = address; self.port = port; configuredLatencyMs = max(20, min(latencyMs, 2000)) }
+    public init(address: String, port: UInt16 = 7000, latencyMs: Int = 120,
+                systemCapture: Bool = false) {
+        self.address = address; self.port = port
+        configuredLatencyMs = max(20, min(latencyMs, 2000))
+        // CoreAudio can deliver many frames together even with regular RTP deadlines.
+        pcmSource = NakuAirPlayDriftBuffer(configuration: systemCapture
+            ? Self.systemCaptureBuffer
+            : .init(targetMs: 15, maximumMs: 40, maxCorrectionPPM: 1000))
+    }
 
     public func connect() throws {
         lifecycle.lock(); defer { lifecycle.unlock() }
@@ -706,6 +717,8 @@ public final class NakuAirPlaySender {
         var clock = NakuAirPlayAudioClock(ticks: mach_absolute_time(),
             wall: Date().timeIntervalSince1970, ticksPerSecond: ticksPerSecond)
         var packetsUntilSync = 0
+        var observedUnderruns: UInt64 = 0, observedDrops: UInt64 = 0
+        var lastFaultReport = 0.0
         while isConnected {
             mach_wait_until(clock.deadline)
             guard isConnected else { break }
@@ -719,9 +732,18 @@ public final class NakuAirPlaySender {
                 onDiagnostic?("audio clock reanchored after \(Int(wake.lateness*1000)) ms interruption")
             }
             do {
-                serviceDatagrams()
                 if packetsUntilSync == 0 { try syncPacket(unixTime: clock.syncWall); packetsUntilSync = 126 }
-                let pcm = state.withLock { pcmSource.read(lateness: wake.reset ? 0 : wake.lateness) }
+                let snapshot = state.withLock { () -> (Data, UInt64, UInt64, Int) in
+                    let pcm = pcmSource.read(lateness: wake.reset ? 0 : wake.lateness)
+                    return (pcm, pcmSource.underruns, pcmSource.droppedFrames, pcmSource.bufferedFrames)
+                }
+                let now = ProcessInfo.processInfo.systemUptime
+                if (snapshot.1 != observedUnderruns || snapshot.2 != observedDrops || wake.lateness > 0.005), now - lastFaultReport >= 1 {
+                    onDiagnostic?("audio discontinuity: underruns=\(snapshot.1) dropped=\(snapshot.2) queue=\(snapshot.3) lateMs=\(String(format: "%.2f", wake.lateness*1000))")
+                    lastFaultReport = now
+                }
+                observedUnderruns = snapshot.1; observedDrops = snapshot.2
+                let pcm = snapshot.0
                 let packet = try audioPacket(pcm)
                 try sendUDP(packet, fd: audioFD, destination: audioDest)
                 history[seq] = packet; historyOrder.append(seq)
@@ -730,6 +752,9 @@ public final class NakuAirPlaySender {
                 state.withLock { packetCount &+= 1 }
             } catch { fail(error); break }
             clock.advance(); packetsUntilSync -= 1
+            // Retransmissions should use the spare time after the current live
+            // packet has left, rather than delaying it on a loss burst.
+            serviceDatagrams()
         }
     }
     private func audioPacket(_ littlePCM: Data) throws -> Data {

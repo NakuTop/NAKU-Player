@@ -61,6 +61,29 @@ func runHomePodAudioClockTests() throws {
     buffer.reset()
     try require(buffer.bufferedFrames == 0 && buffer.driftPPM == 0 && buffer.isPriming, "flush resets sample phase and controller")
 
+    // System capture may deliver eleven packet periods in a single burst.
+    for (settings, shouldDrop) in [(configuration, true), (NakuAirPlaySender.systemCaptureBuffer, false)] {
+        let burst = NakuAirPlayDriftBuffer(configuration: settings)
+        burst.append(pcm(frames * 2))
+        for tick in 0..<550 {
+            if tick % 11 == 0 { burst.append(pcm(frames * 11)) }
+            _ = burst.read()
+        }
+        try require((burst.droppedFrames > 0) == shouldDrop, "capture bursts reproduce old trimming and fit the system queue")
+        if !shouldDrop { try require(burst.underruns == 0, "system queue stays fed between bursts") }
+    }
+
+    // A 144 ms producer burst can arrive while 100 ms of normal headroom
+    // remains. Queue capacity/ceiling must not mistake it for stale audio.
+    let wideBurst = NakuAirPlayDriftBuffer(configuration: NakuAirPlaySender.systemCaptureBuffer)
+    wideBurst.append(pcm(4410))
+    for tick in 0..<1800 {
+        if tick % 18 == 0 { wideBurst.append(pcm(frames * 18)) }
+        _ = wideBurst.read()
+    }
+    try require(wideBurst.droppedFrames == 0 && wideBurst.underruns == 0,
+                "144 ms producer bursts preserve audio without increasing startup target")
+
     // Exercise the actual FIR/PI consumer against a deterministic source clock,
     // with fixed 352-frame deadlines and source clocks 300 ppm faster/slower.
     for ppm in [-300.0, 300.0] {
