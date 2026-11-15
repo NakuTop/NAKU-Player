@@ -1688,6 +1688,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             mediaUrl,
             upstreamHeaders,
             hls: mediaFormat == VideoSourceFormat.hls,
+            detectAds: Platform.isMacOS,
             titleKey: _preferences.privateMode ? null : candidate.title.key,
             backgroundPrefetchAllowed: !NakuDevice.isTV,
             manifestPolicy: NakuDevice.isTV
@@ -2772,6 +2773,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           }
         }
         playback.position = position;
+        if (playback.ready &&
+            (playback._adFallbackActive ||
+                playback.player.state.playing &&
+                    !playback.player.state.buffering)) {
+          playback.skipMarkedAd(position);
+        }
         if (NakuDevice.isTV &&
             playback.ready &&
             playback.player.state.playing &&
@@ -6280,6 +6287,86 @@ class _CinemaPlayback {
   CinemaSeasonSubtitleController? subtitles;
   CinemaSubtitleAutoSync? subtitleAutoSync;
   CinemaDanmakuController? danmaku;
+  Duration? _lastAdSeekEnd;
+  final _adSeekClock = Stopwatch();
+  bool _adActionPending = false;
+  bool _adFallbackActive = false;
+  bool _adMuted = false;
+  double? _adOriginalRate;
+  static const _adRate = 2.0;
+
+  void skipMarkedAd(Duration position) {
+    if (_adActionPending) return;
+    final ad = cacheSession?.adBreaks
+        .where((ad) => position >= ad.start && position < ad.end)
+        .firstOrNull;
+    if (ad == null || _lastAdSeekEnd != ad.end) {
+      if (_adFallbackActive) {
+        _lastAdSeekEnd = null;
+        _adFallbackActive = false;
+        _runAdAction(_restoreAdPlayback);
+        return;
+      }
+      _lastAdSeekEnd = null;
+      if (ad == null) return;
+      _lastAdSeekEnd = ad.end;
+      _adSeekClock
+        ..reset()
+        ..start();
+      danmaku?.prepareForSeek();
+      _runAdAction(() => player.seek(ad.end));
+    } else if (!_adFallbackActive &&
+        _adSeekClock.elapsed >= const Duration(milliseconds: 1200)) {
+      _adFallbackActive = true;
+      _runAdAction(() async {
+        final native = player.platform;
+        if (native is NativePlayer) {
+          try {
+            if (await native.getProperty('mute') == 'no' &&
+                player.state.position >= ad.start &&
+                player.state.position < ad.end) {
+              await native.setProperty('mute', 'yes');
+              _adMuted = true;
+            }
+          } catch (_) {
+            // Some backends only support playback speed changes.
+          }
+        }
+        if (player.state.position >= ad.start &&
+            player.state.position < ad.end &&
+            player.state.rate < _adRate) {
+          _adOriginalRate = player.state.rate;
+          await player.setRate(_adRate);
+        }
+      });
+    }
+  }
+
+  Future<void> _restoreAdPlayback() async {
+    final rate = _adOriginalRate;
+    _adOriginalRate = null;
+    final native = player.platform;
+    try {
+      if (_adMuted && native is NativePlayer) {
+        await native.setProperty('mute', 'no');
+      }
+    } finally {
+      _adMuted = false;
+      if (rate != null && player.state.rate == _adRate) {
+        await player.setRate(rate);
+      }
+    }
+  }
+
+  void _runAdAction(Future<void> Function() action) {
+    _adActionPending = true;
+    unawaited(
+      Future<void>.sync(action)
+          .then<void>((_) {}, onError: (Object _) {})
+          .whenComplete(() => _adActionPending = false),
+    );
+  }
+
   String lastStage = 'created';
   bool _controllerDiagnosticsAttached = false;
 

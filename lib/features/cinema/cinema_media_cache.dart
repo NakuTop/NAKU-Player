@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'cinema_media_transport.dart';
+import 'cinema_hls_ads.dart';
 import 'cinema_playback_buffer.dart';
 import 'cinema_store.dart';
 
@@ -46,9 +47,9 @@ class CinemaCachePreferences {
 }
 
 class _Resource {
-  const _Resource(this.uri, this.manifest, this.persist);
+  const _Resource(this.uri, this.manifest, this.persist, this.rendition);
   final Uri uri;
-  final bool manifest, persist;
+  final bool manifest, persist, rendition;
 }
 
 class _Segment {
@@ -64,6 +65,7 @@ class CinemaCacheSession {
     this.id,
     this.headers, {
     this.manifestPolicy,
+    this.detectAds = false,
     this.titleKey,
     bool backgroundPrefetchAllowed = true,
   }) : _backgroundPrefetchAllowed = backgroundPrefetchAllowed;
@@ -72,6 +74,20 @@ class CinemaCacheSession {
   final String? titleKey;
   final Map<String, String> headers;
   final Future<String> Function(String manifest, Uri base)? manifestPolicy;
+  final bool detectAds;
+  final Map<Uri, List<CinemaHlsAdBreak>> _adTimelines = {};
+  List<CinemaHlsAdBreak> adBreaks = const [];
+
+  void _observeAdTimeline(Uri uri, String manifest) {
+    if (!detectAds || manifest.contains('#EXT-X-STREAM-INF:')) return;
+    _adTimelines[uri] = cinemaHlsAdBreaks(manifest);
+    final first = _adTimelines.values.first;
+    adBreaks =
+        _adTimelines.values.every((timeline) => listEquals(first, timeline))
+        ? first
+        : const [];
+  }
+
   final Map<String, _Resource> _resources = {};
   final Map<String, String> _ids = {};
   final Map<String, List<_Segment>> _playlists = {};
@@ -101,17 +117,23 @@ class CinemaCacheSession {
   final Set<CancelToken> _requests = {};
   Timer? _timer;
   DateTime? _lastPrefetchAt;
-  Uri register(Uri uri, {bool manifest = false, bool persist = true}) {
+  Uri register(
+    Uri uri, {
+    bool manifest = false,
+    bool persist = true,
+    bool rendition = false,
+  }) {
     if (!['http', 'https'].contains(uri.scheme) || uri.userInfo.isNotEmpty) {
       throw const FormatException('媒体地址无效');
     }
-    final key = '${manifest ? 'm' : 's'}:${persist ? 'cache' : 'pass'}:$uri';
+    final key =
+        '${manifest ? 'm' : 's'}:${persist ? 'cache' : 'pass'}:$rendition:$uri';
     var index = _ids[key];
     if (index == null) {
       if (_resources.length >= 20000) throw const FormatException('媒体清单过大');
       index = '${_resources.length}';
       _ids[key] = index;
-      _resources[index] = _Resource(uri, manifest, persist);
+      _resources[index] = _Resource(uri, manifest, persist, rendition);
       cache._protectionRevision++;
     }
     return Uri.parse(
@@ -287,6 +309,7 @@ class CinemaMediaCache extends ChangeNotifier {
     String url,
     Map<String, String> headers, {
     bool hls = false,
+    bool detectAds = false,
     String? titleKey,
     Future<String> Function(String manifest, Uri base)? manifestPolicy,
     bool backgroundPrefetchAllowed = true,
@@ -294,7 +317,8 @@ class CinemaMediaCache extends ChangeNotifier {
     final uri = Uri.tryParse(url);
     if ((!preferences.enabled &&
             transport.router?.active != true &&
-            manifestPolicy == null) ||
+            manifestPolicy == null &&
+            !detectAds) ||
         uri == null ||
         !['http', 'https'].contains(uri.scheme) ||
         !(hls || uri.path.toLowerCase().endsWith('.m3u8'))) {
@@ -306,6 +330,7 @@ class CinemaMediaCache extends ChangeNotifier {
       '${++_serial}',
       Map.unmodifiable(headers),
       manifestPolicy: manifestPolicy,
+      detectAds: detectAds,
       titleKey: titleKey,
       backgroundPrefetchAllowed: backgroundPrefetchAllowed,
     );
@@ -484,6 +509,9 @@ class CinemaMediaCache extends ChangeNotifier {
         if (session.closed) {
           response.statusCode = 410;
           return;
+        }
+        if (request.method == 'GET' && !resource.rendition) {
+          session._observeAdTimeline(resource.uri, selected);
         }
         final rewritten = _rewrite(session, document.uri, selected);
         response.headers.contentType = ContentType(
@@ -787,7 +815,7 @@ class CinemaMediaCache extends ChangeNotifier {
             final key =
                 line.startsWith('#EXT-X-KEY:') ||
                 line.startsWith('#EXT-X-SESSION-KEY:');
-            return 'URI="${session.register(uri, manifest: manifest, persist: !key)}"';
+            return 'URI="${session.register(uri, manifest: manifest, persist: !key, rendition: manifest)}"';
           }),
         );
       }

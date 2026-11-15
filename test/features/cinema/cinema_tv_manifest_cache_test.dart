@@ -21,6 +21,9 @@ class _ManifestOrigin implements HttpClientAdapter {
     return ResponseBody.fromString(
       options.uri.path.endsWith('master.m3u8')
           ? master
+          : options.uri.path.contains('/4k/')
+          ? '#EXTM3U\n#EXTINF:10,\nfirst.ts\n#EXT-X-CUE-OUT:5\n'
+                '#EXTINF:5,\nad.ts\n#EXT-X-CUE-IN\n#EXTINF:10,\nlast.ts\n#EXT-X-ENDLIST\n'
           : '#EXTM3U\n#EXTINF:5,\naudio.ts\n#EXT-X-ENDLIST\n',
       200,
       headers: {
@@ -61,6 +64,7 @@ void main() {
         final opened = (await cache.open(
           'https://media.example/title/master.m3u8',
           {'X-Fixture': 'fixture-session'},
+          detectAds: true,
           manifestPolicy: (text, base) async => cinemaTVSelectHlsVariant(
             text,
             base,
@@ -76,6 +80,21 @@ void main() {
         ).firstMatch(master)![1]!;
         expect(audio, startsWith('http://127.0.0.1:'));
         await read(audio);
+        expect(opened.session.adBreaks, isEmpty);
+        final video = master
+            .split('\n')
+            .firstWhere((line) => line.startsWith('http'));
+        final media = await read(video);
+        expect(media, contains('#EXT-X-CUE-OUT:5'));
+        expect(media, contains('#EXT-X-CUE-IN'));
+        expect(opened.session.adBreaks, [
+          (
+            start: const Duration(seconds: 10),
+            end: const Duration(seconds: 15),
+          ),
+        ]);
+        await read(audio);
+        expect(opened.session.adBreaks, hasLength(1));
         expect(
           origin.requests.map((r) => r.uri.path),
           contains('/title/audio/index.m3u8'),
