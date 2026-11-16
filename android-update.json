@@ -1,18 +1,18 @@
 {
-  "tag_name": "3.2.6",
-  "name": "NAKU Android 手机版 3.2.6",
-  "body": "主动搜索支持跨分类结果和片名异译，首页按原分类浏览。",
-  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.6-android",
-  "published_at": "2026-11-14T14:31:10.602309+00:00",
+  "tag_name": "3.2.13",
+  "name": "NAKU Android 手机版 3.2.13",
+  "body": "同步通用异译搜索、实测画质选择、明确标记广告跳过、旧下载补存弹幕和新版豆瓣榜单。保留 Home Display、手机投屏到电视及遥控器操作。相关 316 项自动测试通过，2 项条件测试跳过。",
+  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.13-android",
+  "published_at": "2026-11-16T14:05:30.420408+00:00",
   "draft": false,
   "prerelease": false,
   "assets": [
     {
-      "name": "NAKUPlayer-3.2.6-Android-Mobile.apk",
+      "name": "NAKUPlayer-3.2.13-Android-Mobile.apk",
       "state": "uploaded",
-      "size": 92074068,
-      "digest": "sha256:49adee637fde4195975311d0c395d1a9f970631f6d03551df1d613dca5dbe3d2",
-      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/untagged-14f2bb3358acd94bb1d3/NAKUPlayer-3.2.6-Android-Mobile.apk"
+      "size": 92158125,
+      "digest": "sha256:cae09be1cefcade858f314ebeb4086c1e9ba2935e377eeb665405667057f211d",
+      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/untagged-59966c0b6e6b027292de/NAKUPlayer-3.2.13-Android-Mobile.apk"
     }
   ]
 }

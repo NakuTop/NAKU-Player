@@ -1,19 +1,19 @@
 [
   {
-    "tag_name": "android-tv-v3.2.6+126",
-    "name": "NAKU Android TV 3.2.6",
-    "body": "主动搜索支持跨分类结果和片名异译，首页按原分类浏览。",
-    "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.6%2B126",
-    "published_at": "2026-11-14T14:32:06.708463+00:00",
+    "tag_name": "android-tv-v3.2.13+133",
+    "name": "NAKU Android TV 3.2.13",
+    "body": "同步通用异译搜索、实测画质选择、明确标记广告跳过、旧下载补存弹幕和新版豆瓣榜单。保留 Home Display、手机投屏到电视及遥控器操作。相关 316 项自动测试通过，2 项条件测试跳过。",
+    "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.13%2B133",
+    "published_at": "2026-11-16T14:05:52.289482+00:00",
     "draft": false,
     "prerelease": false,
     "assets": [
       {
-        "name": "NAKU-TV-3.2.6-Android-universal.apk",
+        "name": "NAKU-TV-3.2.13-Android-universal.apk",
         "state": "uploaded",
-        "size": 92074189,
-        "digest": "sha256:430a1ebe4d98c60068adadf5c6634f9802357af0b0640462caf64e2718e7a78c",
-        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/untagged-a571a54a22d0ebbe583b/NAKU-TV-3.2.6-Android-universal.apk"
+        "size": 92158404,
+        "digest": "sha256:01b4358f01b5f195308495fbc368709a4b8cc138982d1f1f4850caae83f79890",
+        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/untagged-0561e58903fbf1025ae7/NAKU-TV-3.2.13-Android-universal.apk"
       }
     ]
   }
