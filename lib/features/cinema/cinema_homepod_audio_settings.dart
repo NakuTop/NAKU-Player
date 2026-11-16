@@ -64,8 +64,14 @@ class _CinemaHomePodAudioSettingsState
           'streaming' =>
             '已连接${controls.deviceName == null ? '' : ' · ${controls.deviceName}'}',
           'error' => '连接未建立',
-          'interrupted' => '输出已停止 · 需要重新开启',
-          _ => controls.enabled ? '输出已开启' : '已关闭',
+          'interrupted' => '等待唤醒后连接',
+          'reconnecting' => '等待 HomePod 恢复连接…',
+          _ =>
+            controls.enabled
+                ? '输出已开启'
+                : controls.remembered
+                ? '已保存扬声器'
+                : '已关闭',
         };
 
   @override
@@ -81,9 +87,14 @@ class _CinemaHomePodAudioSettingsState
             contentPadding: EdgeInsets.zero,
             title: const Text('HomePod 低延迟输出'),
             subtitle: const Text(
-              '将整个 Mac 的声音送到 HomePod。NAKU 可留在后台；关闭或退出后恢复电脑出声。',
+              '将整个 Mac 的声音送到 HomePod。退出时恢复电脑出声，下次打开 NAKU 时自动连接已选扬声器。',
             ),
-            value: controls.enabled || controls.installing,
+            value:
+                controls.enabled ||
+                controls.installing ||
+                (controls.remembered &&
+                    controls.driverInstalled &&
+                    !controls.needsDriverUpdate),
             onChanged:
                 controls.supported &&
                     !controls.restoring &&

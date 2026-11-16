@@ -42,14 +42,25 @@ struct SessionGuardTests {
     precondition(done.wait(timeout: .now() + 2) == .success)
     precondition(activeRoute == 4, "An old queued stop must finish before a new start")
 
-    let wifi = NakuHomePodNetworkRoute(available: true, interfaces: ["en0"])
-    let ethernet = NakuHomePodNetworkRoute(available: true, interfaces: ["en5"])
-    let down = NakuHomePodNetworkRoute(available: false, interfaces: [])
-    precondition(!wifi.interrupts(nil))
-    precondition(!wifi.interrupts(wifi))
-    precondition(ethernet.interrupts(wifi))
-    precondition(down.interrupts(wifi))
-    precondition(down.interrupts(nil))
+    precondition(NakuHomePodNetworkAction(available: true) == .cancelLoss)
+    precondition(NakuHomePodNetworkAction(available: false) == .confirmLoss)
+    var recovery = NakuHomePodRecovery()
+    precondition(recovery.nextDelay() == nil)
+    recovery.request()
+    precondition([recovery.nextDelay(), recovery.nextDelay(), recovery.nextDelay(), recovery.nextDelay()] == [2, 4, 8, 15])
+    for _ in 0..<1000 { precondition(recovery.nextDelay() == 15) }
+    recovery.sleeping = true
+    precondition(recovery.nextDelay() == nil)
+    recovery.sleeping = false
+    precondition(recovery.nextDelay() == 15)
+    recovery.connected()
+    precondition(recovery.nextDelay() == 2)
+    recovery.cancel()
+    precondition(recovery.nextDelay() == nil)
+    recovery.sleeping = true
+    recovery.sleeping = false
+    precondition(recovery.nextDelay() == nil, "Wake must not undo manual disable")
+    print("PASS retry backoff, sleep suspension, wake recovery, manual cancellation")
     print("PASS immediate cancellation during IPC, stale startup rejection, ordered cleanup/new session, destination-path policy")
   }
 }

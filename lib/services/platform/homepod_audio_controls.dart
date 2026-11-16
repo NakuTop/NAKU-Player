@@ -43,7 +43,7 @@ class HomePodAudioDevice {
   }
 }
 
-/// Session state only: starting NAKU never discovers devices or enables capture.
+/// Reflects the native session and its saved output preference.
 /// Closing a settings dialog leaves an explicitly enabled session running.
 class HomePodAudioControls extends ChangeNotifier {
   HomePodAudioControls({
@@ -67,6 +67,7 @@ class HomePodAudioControls extends ChangeNotifier {
   String? driverName;
   String driverInstallStatus = 'idle';
   bool enabled = false;
+  bool remembered = false;
   bool _audioRouteActive = false;
   bool get audioRouteActive => _audioRouteActive;
   double receiverVolume = 40;
@@ -153,6 +154,7 @@ class HomePodAudioControls extends ChangeNotifier {
     if (!driverInstalled || needsDriverUpdate) driverCheckMessage = null;
     enabled = !installing && supported && value['enabled'] == true;
     _desiredEnabled = enabled || installing;
+    remembered = value['remembered'] == true;
     final reportedStatus = value['status'];
     status = installing
         ? 'installing'
@@ -373,7 +375,9 @@ class HomePodAudioControls extends ChangeNotifier {
   Future<void> _releaseNative() async {
     final generation = _generation;
     try {
-      final value = await _channel.invokeMapMethod<String, dynamic>('disable');
+      final value = await _channel.invokeMapMethod<String, dynamic>('disable', {
+        'forget': false,
+      });
       if (!_disposed && generation == _generation) _apply(value);
     } catch (_) {}
   }
@@ -539,6 +543,7 @@ class HomePodAudioControls extends ChangeNotifier {
     driverCheckMessage = null;
     _desiredEnabled = false;
     enabled = false;
+    remembered = false;
     connecting = false;
     status = 'off';
     error = null;

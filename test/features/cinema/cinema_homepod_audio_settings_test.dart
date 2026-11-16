@@ -25,7 +25,7 @@ void main() {
           (call) async => {
             'supported': true,
             'enabled': false,
-            'status': 'interrupted',
+            'status': 'reconnecting',
             'interruptionReason': 'network',
             'deviceName': 'Private bedroom',
             'address': '192.168.1.2',
@@ -44,7 +44,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('输出已停止 · 需要重新开启'), findsOneWidget);
+    expect(find.text('等待 HomePod 恢复连接…'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('homepod-copy-diagnostics')));
     await tester.pumpAndSettle();
     expect(clipboard, contains('123'));

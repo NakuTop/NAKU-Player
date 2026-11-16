@@ -483,6 +483,7 @@ class MainFlutterWindow: NakuFullscreenWindow {
     NakuHomePodAudio.shared.onEnabledChange = { [weak self] active in
       self?.setNativePlaybackSession("homepod-system-audio", active: active)
     }
+    DispatchQueue.main.async { NakuHomePodAudio.shared.restoreSavedRoute() }
     let nasChannel = FlutterMethodChannel(name: "naku/nas-movies", binaryMessenger: flutterViewController.engine.binaryMessenger)
     nasChannel.setMethodCallHandler { [weak self] call, result in
       guard let self else { result(nil); return }

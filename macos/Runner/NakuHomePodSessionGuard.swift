@@ -22,14 +22,29 @@ final class NakuHomePodSessionGuard {
   }
 }
 
-/// A first satisfied path is only a baseline. Later loss or egress-interface
-/// replacement for the HomePod destination needs an explicit new session.
-/// This is not the global/default Internet path.
-struct NakuHomePodNetworkRoute: Equatable {
-  let available: Bool
-  let interfaces: [String]
+/// Path updates are advisory. Brief loss can recover without replacing the
+/// AirPlay connection, which separately reports control-channel failures.
+enum NakuHomePodNetworkAction: Equatable {
+  case cancelLoss, confirmLoss
 
-  func interrupts(_ previous: Self?) -> Bool {
-    !available || (previous != nil && previous!.interfaces != interfaces)
+  init(available: Bool) {
+    self = available ? .cancelLoss : .confirmLoss
+  }
+}
+
+/// Main-thread retry intent, independent of the current socket/capture lifetime.
+struct NakuHomePodRecovery {
+  private(set) var wanted = false
+  var sleeping = false
+  private var attempts = 0
+
+  mutating func request() { wanted = true }
+  mutating func connected() { attempts = 0 }
+  mutating func cancel() { wanted = false; attempts = 0 }
+  mutating func nextDelay() -> TimeInterval? {
+    guard wanted, !sleeping else { return nil }
+    let delay = min(15, 2 * pow(2, Double(min(attempts, 3))))
+    attempts = min(attempts + 1, 3)
+    return delay
   }
 }

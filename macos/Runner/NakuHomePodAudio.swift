@@ -8,8 +8,7 @@ import Network
 import FlutterMacOS
 #endif
 
-/// Opt-in system audio forwarding. Construction/state reads never start capture
-/// or discovery. No enabled preference survives process exit.
+/// Opt-in system audio forwarding. Only an explicitly connected speaker is restored at launch.
 final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
   static let shared = NakuHomePodAudio()
   var onEnabledChange: ((Bool) -> Void)?
@@ -35,7 +34,7 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
   private var workspaceObservers: [NSObjectProtocol] = []
   private var networkMonitor: NWConnection?
   private let networkQueue = DispatchQueue(label: "naku.homepod.network")
-  private var networkRoute: NakuHomePodNetworkRoute?
+  private var networkLossTimer: Timer?
   private let captureGuard = NakuHomePodSessionGuard()
   // Accessed only on sessionQueue; start/stop ordering prevents old cleanup
   // from touching a newer session.
@@ -46,6 +45,14 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
   private var generation: UInt64 = 0
   private var status = "off"
   private var enabled = false
+  private static let savedRouteKey = "naku.homepod.savedRoute"
+  private var reconnectTimer: Timer?
+  private var recovery = NakuHomePodRecovery()
+  private var recoveryOutput: AudioDeviceID?
+
+  private var savedRoute: [String: Any]? {
+    UserDefaults.standard.dictionary(forKey: Self.savedRouteKey)
+  }
   private var errorMessage: String?
   private var selected: Speaker?
   private var latencyMs = 120
@@ -72,14 +79,17 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
     workspaceObservers.append(workspace.addObserver(
       forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
     ) { [weak self] _ in
-      guard let self, self.enabled || self.capture != nil || self.pendingStops > 0 else { return }
-      self.interrupt("sleep", restoreImmediately: true, message: "Mac 已进入睡眠，HomePod 输出已停止。唤醒后请重新开启。")
+      guard let self, self.enabled || self.capture != nil || self.pendingStops > 0 || self.recovery.wanted else { return }
+      self.recovery.sleeping = true
+      self.interrupt("sleep", restoreImmediately: true, message: "Mac 已进入睡眠，唤醒后自动连接 HomePod。")
     })
     workspaceObservers.append(workspace.addObserver(
       forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
     ) { [weak self] _ in
-      guard let self, self.interruptionReason == "sleep" else { return }
-      self.errorMessage = "Mac 已唤醒，HomePod 输出保持关闭。需要时请重新查找并开启。"
+      guard let self else { return }
+      self.recovery.sleeping = false
+      guard self.interruptionReason == "sleep" else { return }
+      self.scheduleReconnect()
     })
   }
 
@@ -87,6 +97,8 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
     if let observer = terminationObserver { NotificationCenter.default.removeObserver(observer) }
     for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
     networkMonitor?.cancel()
+    reconnectTimer?.invalidate()
+    networkLossTimer?.invalidate()
   }
 
   var state: [String: Any] {
@@ -96,6 +108,7 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
     counterLock.unlock()
     var result: [String: Any] = [
       "supported": Self.supported, "enabled": enabled, "status": status,
+      "remembered": savedRoute != nil,
       "devices": speakers.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         .map { $0.dictionary },
       "source": "system", "latencyMs": latencyMs,
@@ -108,6 +121,9 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
     result.merge(sender.map(diagnostics) ?? lastDiagnostics) { _, current in current }
     if let interruptionReason { result["interruptionReason"] = interruptionReason }
     if let selected { result["deviceId"] = selected.id; result["deviceName"] = selected.name }
+    else if let savedRoute {
+      result["deviceId"] = savedRoute["id"]; result["deviceName"] = savedRoute["name"]
+    }
     if let errorMessage { result["error"] = errorMessage }
     return result.merging(NakuVirtualAudioDriver.state) { _, new in new }
   }
@@ -126,6 +142,7 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
   }
 
   private func interrupt(_ reason: String, restoreImmediately: Bool = false, message: String) {
+    reconnectTimer?.invalidate(); reconnectTimer = nil
     generation &+= 1
     stopSession(restoreImmediately: restoreImmediately)
     interruptionReason = reason
@@ -136,11 +153,12 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
     for service in services.values { service.delegate = nil; service.stop() }
     services.removeAll(); speakers.removeAll()
     finishDiscovery()
+    scheduleReconnect()
   }
 
   private func monitorNetwork(address: String, port: Int, token: UInt64) {
     networkMonitor?.cancel()
-    networkRoute = nil
+    networkLossTimer?.invalidate(); networkLossTimer = nil
     // UDP supplies destination-specific route observation without sending any
     // application payload or creating a second AirPlay/control/audio stream.
     // The global Internet route can change under a VPN while LAN audio works.
@@ -148,13 +166,20 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
     let monitor = NWConnection(host: NWEndpoint.Host(address), port: endpointPort, using: .udp)
     networkMonitor = monitor
     monitor.pathUpdateHandler = { [weak self] path in
-      let route = NakuHomePodNetworkRoute(available: path.status == .satisfied,
-        interfaces: path.availableInterfaces.filter { path.usesInterfaceType($0.type) }.map { $0.name }.sorted())
+      let action = NakuHomePodNetworkAction(available: path.status == .satisfied)
       DispatchQueue.main.async {
         guard let self, self.generation == token, self.enabled else { return }
-        if route.interrupts(self.networkRoute) {
-          self.interrupt("network", message: "网络连接已更改，HomePod 输出已停止。请确认网络后重新查找并开启。")
-        } else { self.networkRoute = route }
+        switch action {
+        case .cancelLoss:
+          self.networkLossTimer?.invalidate(); self.networkLossTimer = nil
+        case .confirmLoss:
+          guard self.networkLossTimer == nil else { return }
+          self.networkLossTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in
+            guard let self, self.generation == token, self.enabled else { return }
+            NakuAudioLog.write("NAKUHomePod destination unavailable for 3 seconds")
+            self.interrupt("network", message: "HomePod 网络暂时不可达，已恢复本机声音。")
+          }
+        }
       }
     }
     monitor.start(queue: networkQueue)
@@ -233,6 +258,60 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
     }
   }
 
+  func restoreSavedRoute() {
+    guard !enabled, let route = savedRoute, route["id"] is String,
+          let latency = route["latencyMs"] as? Int,
+          NakuVirtualAudioDriver.installed, NakuVirtualAudioDriver.authorized else { return }
+    latencyMs = latency
+    recovery.request()
+    scheduleReconnect()
+  }
+
+  // Each retry resolves the saved identity again: an address from the previous
+  // Wi-Fi lease must never be reused after a network interruption.
+  private func scheduleReconnect() {
+    guard !enabled, reconnectTimer == nil,
+          let id = selected?.id ?? savedRoute?["id"] as? String,
+          let delay = recovery.nextDelay() else { return }
+    let token = generation
+    status = "reconnecting"
+    errorMessage = nil
+    NakuAudioLog.write("NAKUHomePod reconnect scheduled in %.0f seconds", delay)
+    reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+      guard let self else { return }
+      self.reconnectTimer = nil
+      guard self.generation == token, self.recovery.wanted, !self.recovery.sleeping, !self.enabled else { return }
+      guard self.pendingStops == 0 else { self.scheduleReconnect(); return }
+      if let output = self.recoveryOutput,
+         NakuVirtualAudioDriver.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice) != output {
+        self.cancelReconnect(); self.status = "off"
+        NakuAudioLog.write("NAKUHomePod reconnect cancelled: output changed")
+        return
+      }
+      guard NakuVirtualAudioDriver.ready else { self.scheduleReconnect(); return }
+      guard NakuVirtualAudioDriver.installed, NakuVirtualAudioDriver.authorized else {
+        self.cancelReconnect()
+        self.status = "error"; self.errorMessage = "虚拟声卡尚未授权。"
+        return
+      }
+      self.discover { [weak self] _ in
+        guard let self, self.generation == token, self.recovery.wanted,
+              !self.recovery.sleeping, !self.enabled else { return }
+        guard self.speakers[id] != nil else { self.scheduleReconnect(); return }
+        self.enable(id: id, requestedLatency: self.latencyMs) { [weak self] error in
+          guard let self, error != nil, self.recovery.wanted, !self.enabled else { return }
+          self.scheduleReconnect()
+        }
+      }
+    }
+  }
+
+  private func cancelReconnect() {
+    reconnectTimer?.invalidate(); reconnectTimer = nil
+    recovery.cancel()
+    recoveryOutput = nil
+  }
+
   func enable(id: String, requestedLatency: Int, completion: @escaping (Error?) -> Void) {
     guard pendingStops == 0 else { completion(NakuVirtualAudioError.unavailable("正在关闭上一次音频连接，请稍后重新开启。")); return }
     guard NakuVirtualAudioDriver.installed else { completion(NakuVirtualAudioError.driverRequired); return }
@@ -244,6 +323,9 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
     guard [120, 200, 300].contains(requestedLatency) else {
       completion(NakuAirPlayError.invalid("发送缓冲目标无效。")); return
     }
+    reconnectTimer?.invalidate(); reconnectTimer = nil
+    recovery.request()
+    recoveryOutput = nil
     stopSession()
     generation &+= 1
     let token = generation
@@ -307,6 +389,9 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
           self.capture = tap
           self.receiverVolume = initialVolume * 100
           self.status = "streaming"
+          self.recovery.connected()
+          UserDefaults.standard.set(["id": speaker.id, "name": speaker.name,
+                                     "latencyMs": requestedLatency], forKey: Self.savedRouteKey)
           NakuAudioLog.write("NAKUHomePod system capture started; target=%d ms", self.latencyMs)
           self.monitorSession(token: token)
           completion(nil)
@@ -322,7 +407,7 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
           guard let self, self.generation == token else {
             completion(NakuAirPlayError.invalid("连接已取消。")); return
           }
-          self.fail(error.localizedDescription)
+          self.fail(error.localizedDescription, reconnect: true)
           completion(error)
         }
       }
@@ -348,7 +433,7 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
               self.sender?.retransmitRequests ?? 0)
       }
       if let sender = self.sender, !sender.isConnected || sender.lastError != nil {
-        self.fail(sender.lastError ?? "HomePod 连接已断开，已恢复本机声音。")
+        self.fail(sender.lastError ?? "HomePod 连接已断开，已恢复本机声音。", reconnect: true)
       }
     }
     var property = AudioObjectPropertyAddress(
@@ -364,7 +449,9 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
     }
   }
 
-  func disable() {
+  func disable(forget: Bool = true) {
+    cancelReconnect()
+    if forget { UserDefaults.standard.removeObject(forKey: Self.savedRouteKey) }
     generation &+= 1
     stopSession()
     status = "off"; errorMessage = nil; interruptionReason = nil
@@ -403,6 +490,7 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
     guard NakuVirtualAudioDriver.installed else { completion(nil, NakuVirtualAudioError.driverRequired); return }
     guard NakuVirtualAudioDriver.authorized else { completion(nil, NakuVirtualAudioError.authorizationRequired); return }
     guard NakuVirtualAudioDriver.ready else { completion(nil, NakuVirtualAudioError.unavailable("NAKU 虚拟声卡尚未就绪，请稍后检查。")); return }
+    cancelReconnect()
     generation &+= 1
     let token = generation
     captureGuard.begin(token)
@@ -469,15 +557,18 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
     return data
   }
 
-  private func fail(_ message: String) {
+  private func fail(_ message: String, reconnect: Bool = false) {
+    if !reconnect { cancelReconnect() }
     NakuAudioLog.write("NAKUHomePod stopped: %@", message)
     generation &+= 1
     stopSession()
     status = "error"; errorMessage = message; interruptionReason = nil
+    if reconnect { scheduleReconnect() }
   }
 
   private func stopSession(restoreImmediately: Bool = false) {
-    networkMonitor?.cancel(); networkMonitor = nil; networkRoute = nil
+    networkMonitor?.cancel(); networkMonitor = nil
+    networkLossTimer?.invalidate(); networkLossTimer = nil
     // Never wait on capture startup's two bounded XPC requests on the UI thread.
     captureGuard.invalidate()
     if restoreImmediately { NakuVirtualAudioDriver.recoverInterruptedRoute() }
@@ -505,13 +596,19 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
       NakuAudioLog.write("NAKUHomePod capture released")
       DispatchQueue.main.async { [self] in
         pendingStops -= 1
-        if pendingStops == 0 && !enabled { onEnabledChange?(false) }
+        if pendingStops == 0 && !enabled {
+          if recovery.wanted {
+            recoveryOutput = NakuVirtualAudioDriver.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice)
+          }
+          onEnabledChange?(false)
+        }
       }
       previous?.close()
     }
   }
 
   func shutdown() {
+    cancelReconnect()
     generation &+= 1
     stopSession(restoreImmediately: true)
     status = "off"; errorMessage = nil; interruptionReason = nil
@@ -561,7 +658,9 @@ final class NakuHomePodAudio: NSObject, NetServiceBrowserDelegate, NetServiceDel
             result(FlutterError(code: code, message: error.localizedDescription, details: nil))
           } else { result(controls.state) }
         }
-      case "disable": controls.disable(); result(controls.state)
+      case "disable":
+        let forget = (call.arguments as? [String: Any])?["forget"] as? Bool ?? true
+        controls.disable(forget: forget); result(controls.state)
       default: result(FlutterMethodNotImplemented)
       }
     }
