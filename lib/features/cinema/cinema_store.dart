@@ -1,4 +1,3 @@
-import 'cinema_fourk_av.dart';
 import 'dart:async';
 import 'package:kazumi/services/storage/personal_defaults.dart';
 import 'dart:convert';
@@ -1279,26 +1278,20 @@ const cinemaZuidSourcePack = CinemaSourcePack(
   ],
 );
 
-const cinemaFourkAVSourcePack = CinemaSourcePack(
-  id: 'cinema-sources-4kav-2026-11-20',
-  backupVersion: '3.2.14',
-  sources: [
-    CinemaSource(
-      id: 'maccms-4kav',
-      name: '4K-AV',
-      kind: CinemaSourceKind.maccms,
-      url: 'https://4k-av.com/',
-      description: '电影 / 剧集 · 原画',
-      requestHeaders: cinemaFourkAVHeaders,
-    ),
-  ],
+// Withdraw the 3.2.14 preset from existing libraries as well as fresh installs.
+// Library records and user source ordering are retained by the normal migration.
+const cinemaWithdrawFourkAVSourcePack = CinemaSourcePack(
+  id: 'cinema-sources-withdraw-4kav-2026-11-20',
+  backupVersion: '3.2.15',
+  removedSourceIds: ['maccms-4kav'],
+  sources: [],
 );
 
-final bundledCinemaSourcePacks = [
+const bundledCinemaSourcePacks = [
   cinema030SourcePack,
   cinema110SourcePack,
   cinemaZuidSourcePack,
-  if (Platform.isMacOS) cinemaFourkAVSourcePack,
+  cinemaWithdrawFourkAVSourcePack,
 ];
 
 /// Public third-party catalogues verified on 2026-10-08. Availability and quality
@@ -1328,7 +1321,6 @@ final List<CinemaSource> bundledCinemaSources = [
   ),
   ...cinema030SourcePack.sources.where((s) => s.id != 'maccms-360'),
   ...cinemaZuidSourcePack.sources,
-  if (Platform.isMacOS) ...cinemaFourkAVSourcePack.sources,
   CinemaSource(
     id: 'kazumi-dm84',
     name: 'DM84',

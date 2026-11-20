@@ -69,20 +69,75 @@ void main() {
   }
 
   test(
-    '4K-AV appends once without changing custom order or saved progress',
+    'withdraws 3.2.14 preset once and preserves source order and library',
     () async {
-      await writeLegacy(legacyLibrary([customSource]));
+      const retired = CinemaSource(
+        id: 'maccms-4kav',
+        name: '4K-AV',
+        kind: CinemaSourceKind.maccms,
+        url: 'https://4k-av.com/',
+      );
+      final after = customSource.copyWith(
+        id: 'after',
+        url: 'https://second.example/api',
+      );
+      final raw = legacyLibrary([customSource, retired, after]);
+      raw['appliedSourcePacks'] = ['cinema-sources-4kav-2026-11-20'];
+      final original = await writeLegacy(raw);
       final store = CinemaStore(
         file: file,
-        sourcePacks: [cinemaFourkAVSourcePack],
+        sourcePacks: [cinemaWithdrawFourkAVSourcePack],
       );
       addTearDown(store.dispose);
       await store.load();
-      expect(store.sources.map((s) => s.id), ['my-source', 'maccms-4kav']);
+      expect(store.lastError, isNull);
+      expect(store.sources.map((s) => s.id), ['my-source', 'after']);
       expect(store.sources.first.enabled, false);
+      expect(store.favorites.single.toJson(), favorite.toJson());
       expect(store.history.single.positionSeconds, 123);
+      expect(
+        await File('${file.path}.pre-3.2.15.bak').readAsString(),
+        original,
+      );
+      final saved = jsonDecode(await file.readAsString()) as Map;
+      expect(saved['userLibraryNote'], {'keep': true});
+      expect(
+        saved['appliedSourcePacks'],
+        contains(cinemaWithdrawFourkAVSourcePack.id),
+      );
+      final reopened = CinemaStore(
+        file: file,
+        sourcePacks: [cinemaWithdrawFourkAVSourcePack],
+      );
+      addTearDown(reopened.dispose);
+      await reopened.load();
+      expect(reopened.sources.map((s) => s.id), ['my-source', 'after']);
+      expect(
+        await file.readAsString(),
+        const JsonEncoder.withIndent('  ').convert(saved),
+      );
+    },
+  );
+
+  test(
+    'fresh defaults and direct 3.2.13 upgrades never add the withdrawn source',
+    () async {
+      expect(bundledCinemaSources.any((s) => s.id == 'maccms-4kav'), false);
+      expect(
+        bundledCinemaSourcePacks
+            .expand((p) => p.sources)
+            .any((s) => s.id == 'maccms-4kav'),
+        false,
+      );
+      await writeLegacy(legacyLibrary([customSource]));
+      final store = CinemaStore(
+        file: file,
+        sourcePacks: [cinemaWithdrawFourkAVSourcePack],
+      );
+      addTearDown(store.dispose);
       await store.load();
-      expect(store.sources.where((s) => s.id == 'maccms-4kav').length, 1);
+      expect(store.sources.single.id, customSource.id);
+      expect(store.history.single.positionSeconds, 123);
     },
   );
 
@@ -130,7 +185,7 @@ void main() {
 
   test('1.10 presets add Feifan and Juliang and remove Modu and 360', () {
     final sources = bundledCinemaSources;
-    expect(sources.take(9).map((source) => source.id), [
+    expect(sources.take(8).map((source) => source.id), [
       'maccms-feifan',
       'maccms-juliang',
       'maccms-guangsu',
@@ -139,10 +194,9 @@ void main() {
       'maccms-jisu',
       'maccms-ruyi',
       'maccms-zuid',
-      'maccms-4kav',
     ]);
     expect(
-      sources.skip(9).every((s) => s.kind == CinemaSourceKind.kazumi),
+      sources.skip(8).every((s) => s.kind == CinemaSourceKind.kazumi),
       true,
     );
     expect(cinema030SourcePack.sources.map((source) => source.url), [
