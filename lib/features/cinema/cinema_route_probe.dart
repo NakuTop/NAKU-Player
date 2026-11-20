@@ -1,3 +1,4 @@
+import 'cinema_fourk_av.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'package:dio/dio.dart';
@@ -81,6 +82,8 @@ class CinemaRouteProbeBatch {
       if (!seen.add(candidate.key)) continue;
       final known = resolved[candidate.key];
       if (known == null &&
+          !(candidate.source.id == 'maccms-4kav' &&
+              CinemaFourkAV.isPage(candidate.episode.url)) &&
           !cinemaUsesDirectMedia(
             candidate.source,
             candidate.route,
@@ -137,11 +140,17 @@ class CinemaRouteProbeBatch {
         final target = targets[next++];
         CinemaMediaProbeResult? result;
         try {
+          final fourk = CinemaFourkAV.isPage(target.url);
+          final url = fourk
+              ? await CinemaFourkAV(
+                  transport: probe.transport,
+                ).resolve(target.url, cancel: owned)
+              : target.url;
           result = await Future.any<CinemaMediaProbeResult?>([
             probe.measure(
-              target.url,
-              target.headers,
-              hls: target.hls,
+              url,
+              fourk ? cinemaFourkAVHeaders : target.headers,
+              hls: fourk || target.hls,
               cancel: owned,
               timeout: probeTimeout,
             ),

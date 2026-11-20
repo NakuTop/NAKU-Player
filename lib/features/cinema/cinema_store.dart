@@ -1,3 +1,4 @@
+import 'cinema_fourk_av.dart';
 import 'dart:async';
 import 'package:kazumi/services/storage/personal_defaults.dart';
 import 'dart:convert';
@@ -1278,10 +1279,26 @@ const cinemaZuidSourcePack = CinemaSourcePack(
   ],
 );
 
-const bundledCinemaSourcePacks = [
+const cinemaFourkAVSourcePack = CinemaSourcePack(
+  id: 'cinema-sources-4kav-2026-11-20',
+  backupVersion: '3.2.14',
+  sources: [
+    CinemaSource(
+      id: 'maccms-4kav',
+      name: '4K-AV',
+      kind: CinemaSourceKind.maccms,
+      url: 'https://4k-av.com/',
+      description: '电影 / 剧集 · 原画',
+      requestHeaders: cinemaFourkAVHeaders,
+    ),
+  ],
+);
+
+final bundledCinemaSourcePacks = [
   cinema030SourcePack,
   cinema110SourcePack,
   cinemaZuidSourcePack,
+  if (Platform.isMacOS) cinemaFourkAVSourcePack,
 ];
 
 /// Public third-party catalogues verified on 2026-10-08. Availability and quality
@@ -1311,6 +1328,7 @@ final List<CinemaSource> bundledCinemaSources = [
   ),
   ...cinema030SourcePack.sources.where((s) => s.id != 'maccms-360'),
   ...cinemaZuidSourcePack.sources,
+  if (Platform.isMacOS) ...cinemaFourkAVSourcePack.sources,
   CinemaSource(
     id: 'kazumi-dm84',
     name: 'DM84',

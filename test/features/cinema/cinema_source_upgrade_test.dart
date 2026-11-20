@@ -69,6 +69,24 @@ void main() {
   }
 
   test(
+    '4K-AV appends once without changing custom order or saved progress',
+    () async {
+      await writeLegacy(legacyLibrary([customSource]));
+      final store = CinemaStore(
+        file: file,
+        sourcePacks: [cinemaFourkAVSourcePack],
+      );
+      addTearDown(store.dispose);
+      await store.load();
+      expect(store.sources.map((s) => s.id), ['my-source', 'maccms-4kav']);
+      expect(store.sources.first.enabled, false);
+      expect(store.history.single.positionSeconds, 123);
+      await store.load();
+      expect(store.sources.where((s) => s.id == 'maccms-4kav').length, 1);
+    },
+  );
+
+  test(
     'Zuid migration deduplicates custom URLs and preserves user settings',
     () async {
       final custom = customSource.copyWith(
@@ -112,7 +130,7 @@ void main() {
 
   test('1.10 presets add Feifan and Juliang and remove Modu and 360', () {
     final sources = bundledCinemaSources;
-    expect(sources.take(8).map((source) => source.id), [
+    expect(sources.take(9).map((source) => source.id), [
       'maccms-feifan',
       'maccms-juliang',
       'maccms-guangsu',
@@ -121,9 +139,10 @@ void main() {
       'maccms-jisu',
       'maccms-ruyi',
       'maccms-zuid',
+      'maccms-4kav',
     ]);
     expect(
-      sources.skip(8).every((s) => s.kind == CinemaSourceKind.kazumi),
+      sources.skip(9).every((s) => s.kind == CinemaSourceKind.kazumi),
       true,
     );
     expect(cinema030SourcePack.sources.map((source) => source.url), [

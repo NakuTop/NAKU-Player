@@ -1,3 +1,5 @@
+import 'cinema_fourk_av.dart';
+import 'cinema_media_transport.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -407,6 +409,12 @@ class CinemaRepository {
     CinemaSource source,
     Map<String, String> query,
   ) async {
+    if (source.id == 'maccms-4kav' &&
+        Uri.tryParse(source.url)?.host == '4k-av.com') {
+      return CinemaFourkAV(
+        transport: CinemaMediaTransport(dio: _dio),
+      ).catalog(query);
+    }
     final uri = requireHttpUrl(source.url);
     final target = uri.replace(
       queryParameters: {...uri.queryParameters, ...query},

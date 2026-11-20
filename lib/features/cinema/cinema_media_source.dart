@@ -1,3 +1,4 @@
+import 'cinema_fourk_av.dart';
 import 'package:kazumi/services/video_source/video_source_format.dart';
 import 'cinema_models.dart';
 import 'cinema_nas_media.dart';
@@ -24,6 +25,7 @@ resolveCinemaMedia({
   required CinemaEpisode episode,
   required Future<VideoSource> Function(String url, bool legacy) resolve,
   CinemaNASClient? nasClient,
+  CinemaFourkAV? fourkAV,
 }) async {
   if (source.id == cinemaNASSource.id) {
     return (
@@ -31,6 +33,18 @@ resolveCinemaMedia({
       headers: <String, String>{},
       format: VideoSourceFormat.auto,
     );
+  }
+  if (source.id == 'maccms-4kav' && CinemaFourkAV.isPage(episode.url)) {
+    final client = fourkAV ?? CinemaFourkAV();
+    try {
+      return (
+        url: await client.resolve(episode.url),
+        headers: cinemaFourkAVHeaders,
+        format: VideoSourceFormat.hls,
+      );
+    } finally {
+      if (fourkAV == null) client.transport.dio.close(force: true);
+    }
   }
   final page = requireHttpUrl(episode.url);
   final headers = Map<String, String>.of(source.headers);
