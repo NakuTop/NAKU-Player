@@ -42,6 +42,7 @@ Future<void> showCinemaTracksSheet(
   CinemaStore store, {
   String title = '',
   String imdbId = '',
+  String year = '',
   Widget? nasControls,
   CinemaLiveSubtitles? liveSubtitles,
   String category = '',
@@ -60,6 +61,7 @@ Future<void> showCinemaTracksSheet(
           store: store,
           title: title,
           imdbId: imdbId,
+          year: year,
           liveSubtitles: liveSubtitles,
           category: category,
           episodeName: episodeName,
@@ -84,6 +86,7 @@ Future<void> showCinemaTracksSheet(
               store: store,
               title: title,
               imdbId: imdbId,
+              year: year,
               nasControls: nasControls,
               liveSubtitles: liveSubtitles,
               category: category,
@@ -104,6 +107,7 @@ class CinemaTracksPanel extends StatefulWidget {
     required this.store,
     this.title = '',
     this.imdbId = '',
+    this.year = '',
     this.nasControls,
     this.liveSubtitles,
     this.category = '',
@@ -115,7 +119,7 @@ class CinemaTracksPanel extends StatefulWidget {
   });
   final Player player;
   final CinemaStore store;
-  final String title, imdbId, category, episodeName;
+  final String title, imdbId, year, category, episodeName;
   final Widget? nasControls;
   final CinemaLiveSubtitles? liveSubtitles;
   final int? episodeNumber;
@@ -504,6 +508,7 @@ class _CinemaTracksPanelState extends State<CinemaTracksPanel> {
                             widget.player,
                             title: widget.title,
                             imdbId: widget.imdbId,
+                            year: widget.year,
                             category: widget.category,
                             episodeName: widget.episodeName,
                             episodeNumber: widget.episodeNumber,
@@ -782,6 +787,7 @@ class _CinemaTracksPanelState extends State<CinemaTracksPanel> {
                       widget.player,
                       title: widget.title,
                       imdbId: widget.imdbId,
+                      year: widget.year,
                       category: widget.category,
                       episodeName: widget.episodeName,
                       episodeNumber: widget.episodeNumber,

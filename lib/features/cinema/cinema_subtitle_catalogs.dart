@@ -49,9 +49,34 @@ class CinemaSubtitleCatalogs {
     int episode = 1,
     String source = 'all',
   }) async {
-    final query =
-        '$title${type == 'series' ? ' S${season.toString().padLeft(2, '0')}E${episode.toString().padLeft(2, '0')}' : ''}'
-            .trim();
+    final code = season.toString().padLeft(2, '0');
+    final numbered = type == 'series';
+    final queries = [
+      if (numbered) '$title S${code}E${episode.toString().padLeft(2, '0')}',
+      numbered ? '$title S$code' : title,
+    ];
+    final found = await Future.wait(
+      queries.map((q) => _searchPage(q.trim(), source)),
+    );
+    if (found.length == 1) return found.first;
+    final byUrl = {
+      for (final result in found)
+        for (final row in result.rows) row['url']: row,
+    };
+    final status = {for (final result in found) ...result.status};
+    for (final provider in status.keys.toList()) {
+      final count = byUrl.values
+          .where((row) => row['provider'] == provider)
+          .length;
+      if (count > 0) status[provider] = '$count 条';
+    }
+    return CinemaSubtitleCatalogResult(byUrl.values.toList(), status);
+  }
+
+  Future<CinemaSubtitleCatalogResult> _searchPage(
+    String query,
+    String source,
+  ) async {
     final key = '$source:$query';
     if (_cache.containsKey(key)) return _cache[key]!;
     final rows = <Map<String, dynamic>>[];
@@ -88,6 +113,7 @@ class CinemaSubtitleCatalogs {
     final result = CinemaSubtitleCatalogResult(rows, status);
     if (!status.values.any((value) => value.contains('跳过'))) {
       _cache[key] = result;
+      if (_cache.length > 64) _cache.remove(_cache.keys.first);
     }
     return result;
   }

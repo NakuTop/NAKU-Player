@@ -3,9 +3,52 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/foundation.dart';
 import 'package:kazumi/features/cinema/cinema_search_discovery.dart';
+import 'package:kazumi/features/cinema/cinema_models.dart';
+import 'package:kazumi/features/cinema/cinema_repository.dart';
+import 'package:kazumi/features/cinema/cinema_grouping.dart';
+import 'package:kazumi/features/cinema/cinema_store.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 
 void main() {
+  test(
+    'compact title resolves exact Dangal film sources through their detail IDs',
+    () async {
+      final repository = CinemaRepository();
+      const ids = {'maccms-juliang', 'maccms-haohua', 'maccms-ruyi'};
+      final sources = {
+        ...bundledCinemaSources,
+        ...cinema030SourcePack.sources,
+      }.where((s) => ids.contains(s.id)).toList();
+      const anchor = CinemaTitle(
+        id: '26387939',
+        sourceId: 'douban-discovery',
+        title: '摔跤吧！爸爸',
+        year: '2016',
+        doubanId: '26387939',
+        category: '电影',
+      );
+      final pages = await Future.wait(
+        sources.map((s) => repository.search(s, '摔跤吧爸爸')),
+      );
+      final group = groupCinemaTitles([
+        anchor,
+        ...pages.expand((page) => page.items),
+      ]).first;
+      for (final source in sources) {
+        final entries = group.variants.where((v) => v.sourceId == source.id);
+        expect(entries, isNotEmpty, reason: source.name);
+        final detail = await repository.detail(source, entries.first);
+        expect(detail.routes.any((r) => r.episodes.isNotEmpty), isTrue);
+        expect(detail.category, isNot(contains('解说')));
+        stdout.writeln(
+          'SEARCH ${source.name} ${detail.title} ${detail.year} · ${entries.length} 条目 · ${detail.routes.length} 线路',
+        );
+      }
+      expect(sources.map((s) => s.id).toSet(), ids);
+    },
+    skip: Platform.environment['NAKU_LIVE_TESTS'] != '1',
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
   test(
     'live Chinese English titles and actor aliases resolve real public credits',
     () async {

@@ -34,13 +34,15 @@ class CinemaSeasonSubtitleController {
     this.year = '',
     this.mediaRelease = '',
     this.canResume,
-    this.automateMissing = false,
+    bool automateMissing = false,
+    this.originalPlayback = false,
     this.autoSync,
     this.seasonEpisodes = const [],
     this.prefetchClientFactory,
     CinemaOnlineSubtitles? client,
     CinemaSeasonSubtitleApply? apply,
-  }) : preferences = CinemaSeasonSubtitlePreferences(store),
+  }) : automateMissing = automateMissing || originalPlayback,
+       preferences = CinemaSeasonSubtitlePreferences(store),
        _saved = CinemaSavedSubtitleStore(store, mediaIdentity),
        _client = client,
        _apply = apply ?? applyCinemaExternalSubtitle {
@@ -60,7 +62,7 @@ class CinemaSeasonSubtitleController {
     cinemaExternalSubtitleState(player).disableSavedSelection = disable;
   }
 
-  final bool automateMissing;
+  final bool automateMissing, originalPlayback;
   final CinemaSubtitleAutoSync? autoSync;
   final List<CinemaSubtitleQuery> seasonEpisodes;
   final CinemaOnlineSubtitles Function()? prefetchClientFactory;
@@ -311,6 +313,9 @@ class CinemaSeasonSubtitleController {
     await preferences.flush();
     await flushCinemaSubtitleTiming(preferences.store);
     if (!_current(revision)) return;
+    final cachedProfile = query.type == 'series'
+        ? preferences.read(seriesIdentity, query.season)
+        : null;
     try {
       var saved = await _saved.read();
       if (saved != null &&
@@ -347,9 +352,11 @@ class CinemaSeasonSubtitleController {
             ? SubtitleTrack.auto()
             : matches.isNotEmpty
             ? matches.first
-            : candidates
+            : saved.title.isEmpty && saved.language.isEmpty
+            ? candidates
                   .where((track) => track.id == saved!.nativeTrack)
-                  .firstOrNull;
+                  .firstOrNull
+            : null;
         if (track != null) {
           await player.setSubtitleTrack(track);
           if (!_current(revision)) return;
@@ -359,7 +366,24 @@ class CinemaSeasonSubtitleController {
           return;
         }
       }
-      if (saved != null && saved.nativeTrack == null) {
+      final manualFile =
+          saved != null &&
+          saved.nativeTrack == null &&
+          saved.origin != 'automatic';
+      if (originalPlayback &&
+          !manualFile &&
+          (cachedProfile == null ||
+              cinemaSubtitleLanguageMatches(cachedProfile.language, 'zh')) &&
+          await _selectEmbeddedChinese(revision, notice)) {
+        return;
+      }
+      if (!_current(revision)) return;
+      if (saved != null &&
+          saved.nativeTrack == null &&
+          (!originalPlayback ||
+              saved.origin != 'automatic' ||
+              (cinemaSubtitleLanguageMatches(saved.language, 'zh') &&
+                  await _hasChineseDialogue(saved.text)))) {
         _inheritedTiming = saved.timing;
         try {
           await _apply(
@@ -407,9 +431,7 @@ class CinemaSeasonSubtitleController {
       if (!_current(revision)) return;
       notice('已保存字幕未能恢复，可手动搜索或导入');
     }
-    final cachedProfile = query.type == 'series'
-        ? preferences.read(seriesIdentity, query.season)
-        : null;
+    if (!_current(revision)) return;
     if (query.type == 'series' && cachedProfile != null) {
       prefetchSeason();
       notice('正在读取本季字幕缓存，未完成时优先下载本集…');
@@ -464,7 +486,7 @@ class CinemaSeasonSubtitleController {
                         player.platform!.configuration.libass)),
           )
           .toList();
-      if (embedded.isNotEmpty) {
+      if (!originalPlayback && embedded.isNotEmpty) {
         final chinese = embedded
             .where(
               (track) =>
@@ -509,7 +531,7 @@ class CinemaSeasonSubtitleController {
       }
       return;
     }
-    var resumeOwnedPause = player.state.playing;
+    var resumeOwnedPause = !originalPlayback && player.state.playing;
 
     Future<void> resume() async {
       if (!resumeOwnedPause) return;
@@ -547,7 +569,7 @@ class CinemaSeasonSubtitleController {
     try {
       if (resumeOwnedPause) await player.pause();
       if (!_current(revision)) return;
-      notice('正在自动匹配本集字幕，播放已暂停以保留对白位置');
+      notice(originalPlayback ? '正在匹配本集中文字幕' : '正在自动匹配本集字幕，播放已暂停以保留对白位置');
       final result = await client.aggregate(
         profile.queryTitle,
         'series',
@@ -576,6 +598,45 @@ class CinemaSeasonSubtitleController {
       await resume();
       _resumeAfterSearch = null;
     }
+    if (originalPlayback &&
+        _current(revision) &&
+        !_loaded &&
+        cinemaSubtitleLanguageMatches(profile.language, 'zh')) {
+      await _loadMissing(revision, notice);
+    }
+  }
+
+  Future<bool> _selectEmbeddedChinese(
+    int revision,
+    void Function(String) notice,
+  ) async {
+    final chinese = player.state.tracks.subtitle.where((track) {
+      if (track.uri || track.data || const {'no', 'auto'}.contains(track.id)) {
+        return false;
+      }
+      return cinemaSubtitleLanguageMatches(track.language ?? '', 'zh') ||
+          RegExp(
+            r'中文|简体|簡體|繁体|繁體|中字|中英|\b(?:Chinese|Mandarin|CHS|CHT)\b',
+            caseSensitive: false,
+          ).hasMatch(track.title ?? '');
+    }).toList();
+    final partial = RegExp(
+      r'forced|signs(?: and songs)?|commentary|强制|強制|仅标识|僅標識|评论|評論',
+      caseSensitive: false,
+    );
+    final complete = chinese
+        .where((track) => !partial.hasMatch(track.title ?? ''))
+        .firstOrNull;
+    if (complete == null) return false;
+    try {
+      await player.setSubtitleTrack(complete);
+    } catch (_) {
+      return false;
+    }
+    if (!_current(revision)) return false;
+    _loaded = true;
+    notice('已选用片源内置中文字幕');
+    return true;
   }
 
   Future<void> _loadMissing(int revision, void Function(String) notice) async {
@@ -584,7 +645,7 @@ class CinemaSeasonSubtitleController {
       return;
     }
     final client = _client ??= CinemaOnlineSubtitles();
-    notice('未检测到字幕，正在搜索中文优先字幕…');
+    notice(originalPlayback ? '正在匹配中文字幕' : '未检测到字幕，正在搜索中文优先字幕…');
     try {
       final result = await client.aggregate(
         query.title,
@@ -593,12 +654,19 @@ class CinemaSeasonSubtitleController {
         year: year,
         season: query.season,
         episode: query.episode,
-        language: 'zh-eng',
+        language: originalPlayback ? 'zh' : 'zh-eng',
         mediaRelease: mediaRelease,
       );
       if (!_current(revision)) return;
       final rows = chooseCinemaAutomaticSubtitles(
-        result.rows,
+        originalPlayback
+            ? result.rows
+                  .where(
+                    (row) =>
+                        cinemaSubtitleLanguageMatches('${row['lang']}', 'zh'),
+                  )
+                  .toList()
+            : result.rows,
         query: query,
         mediaRelease: mediaRelease,
       );
@@ -609,6 +677,8 @@ class CinemaSeasonSubtitleController {
             '${row['url']}',
             archiveEntry: row['archiveEntry'] as String?,
           );
+          if (!_current(revision)) return;
+          if (originalPlayback && !await _hasChineseDialogue(text)) continue;
           if (!_current(revision)) return;
           final session = cinemaExternalSubtitleState(player);
           if (session.active.value) return;
@@ -659,11 +729,22 @@ class CinemaSeasonSubtitleController {
           /* Try the next verified exact-episode candidate. */
         }
       }
-      if (_current(revision)) notice('暂无可用的匹配字幕，可手动搜索或导入');
+      if (_current(revision)) {
+        notice(originalPlayback ? '暂无匹配的中文字幕' : '暂无可用的匹配字幕，可手动搜索或导入');
+      }
     } catch (_) {
       if (_current(revision)) notice('自动字幕连接失败，可手动搜索重试');
     }
   }
+
+  static final _han = RegExp(r'[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]');
+  static bool _containsChineseCue(String text) =>
+      _han.hasMatch(text) &&
+      cinemaSubtitleCues(text).any((cue) => _han.hasMatch(cue.text));
+  static Future<bool> _hasChineseDialogue(String text) async =>
+      text.length > 32768
+      ? compute(_containsChineseCue, text)
+      : _containsChineseCue(text);
 
   Future<void> _loadRows(
     List<Map<String, dynamic>> rows,
@@ -691,6 +772,11 @@ class CinemaSeasonSubtitleController {
           archiveEntry: row['archiveEntry'] as String?,
         );
         if (!_current(revision)) return;
+        if (originalPlayback &&
+            cinemaSubtitleLanguageMatches(profile.language, 'zh') &&
+            !await _hasChineseDialogue(text)) {
+          continue;
+        }
         final session = cinemaExternalSubtitleState(player);
         if (session.active.value) return;
         final family = cinemaSeasonSubtitleFamilyMatches(profile, row);

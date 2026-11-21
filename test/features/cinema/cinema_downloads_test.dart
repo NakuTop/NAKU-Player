@@ -1,4 +1,7 @@
 import 'dart:io';
+import 'dart:convert';
+import 'package:kazumi/features/cinema/cinema_original_search.dart';
+import 'package:kazumi/features/cinema/cinema_original_match.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_ce/hive.dart';
 import 'package:kazumi/features/cinema/cinema_downloads.dart';
@@ -43,6 +46,59 @@ DownloadEpisode episode(int n) => DownloadEpisode(
   'https://fixture.invalid/$n',
 );
 void main() {
+  test(
+    'saved original references share library identity and downloads resolve each episode separately',
+    () {
+      final v = OriginalEdition(
+        hash: 'a' * 40,
+        name: 'a',
+        size: 110,
+        seeds: 1,
+        pack: true,
+        magnet: '',
+      );
+      final m = OriginalMatches(
+        OriginalWork(
+          names: ['Slow Horses', '流人'],
+          years: {'2022'},
+          season: 1,
+          episode: 2,
+          imdbId: 'tt5875444',
+        ),
+        [v],
+      );
+      final saved = originalLibraryTitle(title, m, edition: v);
+      final roundtrip = CinemaTitle.fromJson(
+        jsonDecode(jsonEncode(saved.toJson())),
+      );
+      expect(roundtrip.key, title.key);
+      expect(roundtrip.originalReference?.hash, v.hash);
+      expect(roundtrip.aliases, contains('Slow Horses Season 1'));
+      final record = cinemaDownloadRecord(roundtrip, source, 0, original: true);
+      final legacy = cinemaDownloadRecord(title, source, 0);
+      expect(record.key, isNot(legacy.key));
+      expect(record.sourceLabel, '原画');
+      expect(CinemaOriginalDownload.fromRecord(legacy, episode(1)), isNull);
+      for (final n in [1, 2]) {
+        final target = CinemaOriginalDownload.fromRecord(record, episode(n))!;
+        expect(target.episode, '$n');
+        expect(target.title.originalReference?.imdbId, 'tt5875444');
+      }
+      final history = CinemaHistory.fromJson(
+        CinemaHistory(
+          title: roundtrip,
+          routeIndex: 0,
+          episodeIndex: 1,
+          positionSeconds: 200,
+          durationSeconds: 400,
+          updatedAt: DateTime.utc(2026),
+        ).toJson(),
+      );
+      expect(history.title.originalReference?.episode, 2);
+      expect(history.positionSeconds, 200);
+      expect(record.mediaMetadata, isNot(contains('127.0.0.1')));
+    },
+  );
   test(
     'offline selection retains original identity and URL while excluding missing downloads',
     () {

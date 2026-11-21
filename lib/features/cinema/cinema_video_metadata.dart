@@ -13,6 +13,12 @@ CinemaVideoMetadata? cinemaVideoMetadata(
 }) {
   if (bytes.length < 8) return null;
   try {
+    if (bytes[0] == 0x1a &&
+        bytes[1] == 0x45 &&
+        bytes[2] == 0xdf &&
+        bytes[3] == 0xa3) {
+      return _matroska(bytes);
+    }
     final direct = _mp4(bytes);
     if (direct != null) return direct;
     if (mp4Tail) {
@@ -39,6 +45,99 @@ CinemaVideoMetadata? cinemaVideoMetadata(
   } on RangeError {
     return null;
   }
+}
+
+/// Read the first enabled video track. Segment sizes can span the whole movie,
+/// while everything needed for this decision is in its completed Tracks header.
+CinemaVideoMetadata? _matroska(Uint8List bytes) {
+  final data = ByteData.sublistView(bytes);
+  int cursor = 0;
+  int vint(int end, {required bool id}) {
+    if (cursor >= end || bytes[cursor] == 0) throw const FormatException();
+    final first = bytes[cursor++];
+    int marker = 128, width = 1;
+    while ((first & marker) == 0) {
+      marker >>= 1;
+      width++;
+    }
+    if (width > (id ? 4 : 8) || cursor + width - 1 > end) {
+      throw const FormatException();
+    }
+    int value = id ? first : first ^ marker;
+    bool unknown = !id && value == marker - 1;
+    for (var i = 1; i < width; i++) {
+      final next = bytes[cursor++];
+      value = (value << 8) | next;
+      unknown = unknown && next == 255;
+    }
+    return unknown ? -1 : value;
+  }
+
+  Iterable<({int id, int start, int end})> children(int start, int end) sync* {
+    for (var at = start, n = 0; at < end && n++ < 8192;) {
+      cursor = at;
+      final id = vint(end, id: true),
+          size = vint(end, id: false),
+          content = cursor;
+      if (id == 0x18538067 && (size < 0 || size > end - content)) {
+        yield (id: id, start: content, end: end);
+        return;
+      }
+      if (size < 0 || size > end - content) return;
+      at = content + size;
+      yield (id: id, start: content, end: at);
+    }
+  }
+
+  int number(int start, int end) {
+    if (end == start || end - start > 4) return -1;
+    int n = 0;
+    for (var i = start; i < end; i++) {
+      n = (n << 8) | data.getUint8(i);
+    }
+    return n;
+  }
+
+  for (final segment in children(
+    0,
+    bytes.length,
+  ).where((e) => e.id == 0x18538067)) {
+    for (final tracks in children(
+      segment.start,
+      segment.end,
+    ).where((e) => e.id == 0x1654ae6b)) {
+      for (final entry in children(
+        tracks.start,
+        tracks.end,
+      ).where((e) => e.id == 0xae)) {
+        int type = 0, enabled = 1, width = 0, height = 0;
+        String codec = '';
+        for (final field in children(entry.start, entry.end)) {
+          if (field.id == 0x83) type = number(field.start, field.end);
+          if (field.id == 0xb9) enabled = number(field.start, field.end);
+          if (field.id == 0x86 && field.end - field.start <= 64) {
+            codec = String.fromCharCodes(bytes, field.start, field.end);
+          }
+          if (field.id == 0xe0) {
+            for (final p in children(field.start, field.end)) {
+              if (p.id == 0xb0) width = number(p.start, p.end);
+              if (p.id == 0xba) height = number(p.start, p.end);
+            }
+          }
+        }
+        if (type == 1 && enabled == 1 && _validSize(width, height)) {
+          return CinemaVideoMetadata(width, height, switch (codec) {
+            'V_MPEGH/ISO/HEVC' => 'HEVC',
+            'V_MPEG4/ISO/AVC' => 'H.264',
+            'V_AV1' => 'AV1',
+            'V_VP9' => 'VP9',
+            _ => codec,
+          });
+        }
+      }
+    }
+  }
+  return null;
 }
 
 CinemaVideoMetadata? _mp4(Uint8List bytes) {

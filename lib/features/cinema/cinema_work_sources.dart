@@ -17,6 +17,7 @@ Stream<List<CinemaTitle>> discoverCinemaWorkSources({
   void Function(CinemaSource source, Object error)? onSourceError,
   void Function(CinemaSource source)? onSourceChecked,
   Duration? maxDuration,
+  bool fillAvailableSlots = false,
 }) async* {
   if (anchor.isDirectMedia) return;
   // Some providers catalog verified theatrical films under their ethics label.
@@ -27,8 +28,9 @@ Stream<List<CinemaTitle>> discoverCinemaWorkSources({
         item.category != '伦理片' ||
         !RegExp(r'^\d{4}$').hasMatch(anchor.year) ||
         item.year != anchor.year ||
-        (item.doubanId.isNotEmpty && item.doubanId != anchor.doubanId))
+        (item.doubanId.isNotEmpty && item.doubanId != anchor.doubanId)) {
       return item;
+    }
     String name(String value) => cinemaGroupedWorkTitleKey(
       value.replaceFirst(RegExp(r'[（(](?:完整版|未删减版)[）)]$'), ''),
       anchor.year,
@@ -58,76 +60,91 @@ Stream<List<CinemaTitle>> discoverCinemaWorkSources({
       .where((s) => s.enabled && s.kind == CinemaSourceKind.maccms)
       .toList();
   final end = maxDuration == null ? null : DateTime.now().add(maxDuration);
-  for (var offset = 0; offset < choices.length && isCurrent(); offset += 3) {
-    if (end != null && !DateTime.now().isBefore(end)) {
-      onSourceError?.call(choices[offset], TimeoutException('本轮片源检查已到时限'));
-      return;
-    }
-    final results = await Future.wait(
-      choices.skip(offset).take(3).map((source) async {
-        final result = <CinemaTitle>[];
-        try {
-          final perSource = DateTime.now().add(const Duration(seconds: 18));
-          final deadline = end != null && end.isBefore(perSource)
-              ? end
-              : perSource;
-          List<CinemaTitle> matches() => groupCinemaTitles([anchor, ...result])
-              .first
-              .variants
-              .where((t) => t.sourceId == source.id && t.key != anchor.key)
-              .toList();
-          final pages = <String, int>{};
-          Object? failure;
-          for (var page = 1; page <= 3 && isCurrent(); page++) {
-            for (final query in cinemaWorkQueries(anchor)) {
-              if (!isCurrent() || page > (pages[query] ?? 1)) continue;
-              final remaining = deadline.difference(DateTime.now());
-              if (remaining <= Duration.zero) break;
-              try {
-                final found = await repository
-                    .search(source, query, page: page)
-                    .timeout(
-                      remaining < const Duration(seconds: 6)
-                          ? remaining
-                          : const Duration(seconds: 6),
-                    );
-                pages[query] = found.pageCount;
-                result.addAll(
-                  found.items
-                      .where((t) => t.sourceId == source.id)
-                      .map(classify),
+  var subscribed = true;
+  bool active() => subscribed && isCurrent();
+  Future<List<CinemaTitle>> fetch(CinemaSource source) async {
+    final result = <CinemaTitle>[];
+    try {
+      final perSource = DateTime.now().add(const Duration(seconds: 18));
+      final deadline = end != null && end.isBefore(perSource) ? end : perSource;
+      List<CinemaTitle> matches() => groupCinemaTitles([anchor, ...result])
+          .first
+          .variants
+          .where((t) => t.sourceId == source.id && t.key != anchor.key)
+          .toList();
+      final pages = <String, int>{};
+      Object? failure;
+      for (var page = 1; page <= 3 && active(); page++) {
+        for (final query in cinemaWorkQueries(anchor)) {
+          if (!active() || page > (pages[query] ?? 1)) continue;
+          final remaining = deadline.difference(DateTime.now());
+          if (remaining <= Duration.zero) break;
+          try {
+            final found = await repository
+                .search(source, query, page: page)
+                .timeout(
+                  remaining < const Duration(seconds: 6)
+                      ? remaining
+                      : const Duration(seconds: 6),
                 );
-              } catch (error) {
-                pages[query] = 0;
-                failure ??= error;
-              }
-            }
-            if (matches().any((t) => cinemaVariantQuality(t) > 0)) break;
+            pages[query] = found.pageCount;
+            result.addAll(
+              found.items.where((t) => t.sourceId == source.id).map(classify),
+            );
+          } catch (error) {
+            pages[query] = 0;
+            failure ??= error;
           }
-          if (failure != null)
-            onSourceError?.call(source, failure);
-          else
-            onSourceChecked?.call(source);
-          return result;
-        } catch (error) {
-          onSourceError?.call(source, error);
-          // A later page may fail after an earlier page found usable variants.
-          return result;
         }
-      }),
-    );
-    if (!isCurrent()) return;
-    final grouped = groupCinemaTitles([
-      anchor,
-      ...variants,
-      ...results.expand((r) => r),
-    ]);
-    final matched = grouped
-        .firstWhere((g) => g.variants.any((v) => v.key == anchor.key))
-        .variants;
-    variants
-      ..clear()
-      ..addAll(matched);
-    yield List.unmodifiable(variants);
+        if (matches().any((t) => cinemaVariantQuality(t) > 0)) break;
+      }
+      if (!active()) return result;
+      if (failure != null) {
+        onSourceError?.call(source, failure);
+      } else {
+        onSourceChecked?.call(source);
+      }
+      return result;
+    } catch (error) {
+      if (active()) onSourceError?.call(source, error);
+      // A later page may fail after an earlier page found usable variants.
+      return result;
+    }
+  }
+
+  final pending = <int, Future<(int, List<CinemaTitle>)>>{};
+  final results = List<List<CinemaTitle>>.generate(choices.length, (_) => []);
+  var next = 0;
+  try {
+    while (active()) {
+      final startMore = fillAvailableSlots || pending.isEmpty;
+      while (startMore && next < choices.length && pending.length < 3) {
+        if (end != null && !DateTime.now().isBefore(end)) {
+          onSourceError?.call(choices[next], TimeoutException('本轮片源检查已到时限'));
+          next = choices.length;
+          break;
+        }
+        final index = next++;
+        pending[index] = fetch(choices[index]).then((items) => (index, items));
+      }
+      if (pending.isEmpty) return;
+      final (index, items) = await Future.any(pending.values);
+      pending.remove(index);
+      if (!active()) return;
+      results[index] = items;
+      // Completion order controls when results appear, never source priority.
+      final grouped = groupCinemaTitles([
+        anchor,
+        ...variants,
+        ...results.expand((r) => r),
+      ]);
+      yield List.unmodifiable(
+        grouped
+            .firstWhere((g) => g.variants.any((v) => v.key == anchor.key))
+            .variants,
+      );
+    }
+  } finally {
+    subscribed = false;
   }
 }

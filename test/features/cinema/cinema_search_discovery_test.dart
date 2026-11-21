@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_search_discovery.dart';
 import 'package:kazumi/features/cinema/cinema_douban_access.dart';
+import 'package:kazumi/features/cinema/cinema_models.dart';
 
 class _Adapter implements HttpClientAdapter {
   _Adapter(this.reply);
@@ -80,6 +81,336 @@ CinemaSearchDiscoveryRepository _repository(
 );
 
 void main() {
+  test(
+    'original-name cache keeps same-named remakes separate and retrieves the selected subject ID',
+    () async {
+      CinemaDoubanAccess.resetForTesting();
+      addTearDown(CinemaDoubanAccess.resetForTesting);
+      final adapter = _Adapter((r) {
+        if (r.queryParameters['action'] == 'wbsearchentities') {
+          return {
+            'search': [
+              {'id': 'Q8'},
+            ],
+          };
+        }
+        if (r.queryParameters['action'] == 'wbgetentities') {
+          return {
+            'entities': {
+              'Q8': {
+                'labels': {
+                  'zh': {'value': '回声'},
+                  'en': {'value': 'Echo'},
+                },
+                'claims': {
+                  'P31': [
+                    _claim({'id': 'Q11424'}),
+                  ],
+                  'P4529': [_claim('12341')],
+                  'P577': [
+                    _claim({'time': '+2014-01-01T00:00:00Z'}),
+                  ],
+                },
+              },
+            },
+          };
+        }
+        if (r.path.endsWith('/movie/23456')) {
+          return {
+            ..._title('23456', title: '回声'),
+            'original_title': 'The Echo',
+            'year': '2024',
+          };
+        }
+        throw StateError('Unexpected request ${r.path}');
+      });
+      final repo = _repository(adapter);
+      CinemaTitle movie(String id, String year) => CinemaTitle(
+        id: id,
+        sourceId: 'library',
+        title: '回声',
+        doubanId: id,
+        year: year,
+        category: '电影',
+      );
+      expect(
+        (await repo.originalNames(
+          '回声',
+          subject: movie('12341', '2014'),
+        )).single.originalTitle,
+        'Echo',
+      );
+      expect(
+        (await repo.originalNames(
+          '回声',
+          subject: movie('23456', '2024'),
+        )).single.originalTitle,
+        'The Echo',
+      );
+      expect(
+        adapter.calls.where((r) => r.path.endsWith('/movie/23456')),
+        hasLength(1),
+      );
+    },
+  );
+  for (final field in ['mul', 'P1476']) {
+    test(
+      'original search reads a verified film name from $field without rating hydration',
+      () async {
+        final adapter = _Adapter((request) {
+          if (request.queryParameters['action'] == 'wbsearchentities') {
+            return {
+              'search': [
+                {'id': 'Q20856802'},
+              ],
+            };
+          }
+          if (request.queryParameters['action'] == 'wbgetentities') {
+            expect(
+              (request.queryParameters['languages'] as String).split('|'),
+              contains('mul'),
+            );
+            return {
+              'entities': {
+                'Q20856802': {
+                  'labels': {
+                    'zh-cn': {'value': '爱乐之城'},
+                    if (field == 'mul') 'mul': {'value': 'La La Land'},
+                  },
+                  'claims': {
+                    'P31': [
+                      _claim({'id': 'Q11424'}),
+                    ],
+                    'P577': [
+                      _claim({'time': '+2016-08-31T00:00:00Z'}),
+                    ],
+                    'P4529': [_claim('25934014')],
+                    if (field == 'P1476')
+                      'P1476': [
+                        _claim({'language': 'en', 'text': 'La La Land'}),
+                      ],
+                  },
+                },
+              },
+            };
+          }
+          throw StateError('Unexpected request ${request.path}');
+        });
+        final candidate = (await _repository(
+          adapter,
+        ).originalNames('爱乐之城')).single;
+        expect(candidate.originalTitle, 'La La Land');
+        expect(candidate.identityVerified, isTrue);
+        expect(adapter.calls, hasLength(2));
+      },
+    );
+  }
+  test(
+    'a series-only catalogue entry supplies the exact season, root IMDb ID and episode count',
+    () async {
+      final parent = {
+        'id': 'Q123',
+        'labels': {
+          'zh-cn': {'value': '长街'},
+          'en': {'value': 'Long Street'},
+        },
+        'claims': {
+          'P31': [
+            _claim({'id': 'Q5398426'}),
+          ],
+          'P345': [_claim('tt12345678')],
+          'P580': [
+            _claim({'time': '+2020-08-01T00:00:00Z'}),
+          ],
+          'P527': [
+            {
+              ..._claim({'id': 'Q456'}),
+              'qualifiers': {
+                'P1545': [
+                  {
+                    'datavalue': {'value': '2'},
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      };
+      final season = {
+        'id': 'Q456',
+        'claims': {
+          'P31': [
+            _claim({'id': 'Q3464665'}),
+          ],
+          'P179': [
+            _claim({'id': 'Q123'}),
+          ],
+          'P345': [_claim('tt99999999')],
+          'P1113': [
+            _claim({'amount': '+6'}),
+          ],
+          'P580': [
+            _claim({'time': '+2022-08-01T00:00:00Z'}),
+          ],
+        },
+      };
+      final adapter = _Adapter(
+        (r) => r.queryParameters['action'] == 'wbsearchentities'
+            ? {
+                'search': [
+                  {'id': 'Q123'},
+                ],
+              }
+            : {
+                'entities': r.queryParameters['ids'] == 'Q123'
+                    ? {'Q123': parent}
+                    : {'Q456': season},
+              },
+      );
+      final repo = _repository(adapter);
+      final subject = const CinemaTitle(
+        id: '9',
+        sourceId: 'test',
+        title: '长街 第二季',
+        category: '电视剧',
+        year: '2022',
+      );
+      final result = (await repo.originalNames(
+        subject.title,
+        subject: subject,
+      )).single;
+      expect(result.imdbId, 'tt12345678');
+      expect(result.episodeCount, 6);
+      expect(result.seriesPremiere, '2020');
+      expect(result.year, '2022');
+      expect(result.originalTitle, 'Long Street Season 2');
+      expect(adapter.calls.first.queryParameters['search'], '长街');
+    },
+  );
+
+  test(
+    'a verified season name without a Douban ID is only used for original matching',
+    () async {
+      final adapter = _Adapter((request) {
+        if (request.path.endsWith('subject_suggest')) return [];
+        if (request.queryParameters['action'] == 'wbsearchentities') {
+          return {
+            'search': [
+              if (request.queryParameters['search'] == '基地第二季')
+                {'id': 'Q109315487'},
+            ],
+          };
+        }
+        if (request.queryParameters['action'] == 'wbgetentities') {
+          return {
+            'entities': {
+              'Q109315487': {
+                'labels': {
+                  'zh': {'value': '基地第二季'},
+                  'en': {'value': 'Foundation, season 2'},
+                },
+                'claims': {
+                  'P31': [
+                    _claim({'id': 'Q3464665'}),
+                  ],
+                  'P345': [_claim('tt12345678')],
+                  'P580': [
+                    _claim({'time': '+2023-07-14T00:00:00Z'}),
+                  ],
+                },
+              },
+            },
+          };
+        }
+        throw StateError('Unexpected request ${request.path}');
+      });
+      final repo = _repository(adapter);
+      final title = (await repo.originalNames('基地 第二季')).single;
+      expect(title.originalTitle, 'Foundation, season 2');
+      expect(title.imdbId, isEmpty);
+      expect(title.kind, 'tv');
+      expect(title.year, '2023');
+      expect(title.identityVerified, isTrue);
+      expect((await repo.searchForIdentity('基地 第二季')).titles, isEmpty);
+      expect((await repo.search('基地第二季')).titles, isEmpty);
+    },
+  );
+  test(
+    'an undated film needs the same official title ID, type and year',
+    () async {
+      for (final valid in [true, false]) {
+        final adapter = _Adapter((request) {
+          final action = request.queryParameters['action'];
+          if (action == 'wbsearchentities') return {'search': []};
+          if (action == 'query') {
+            expect(request.queryParameters['srsearch'], '星河 2026');
+            return {
+              'query': {
+                'search': [
+                  {'title': 'Q441'},
+                ],
+              },
+            };
+          }
+          if (action == 'wbgetentities') {
+            return {
+              'entities': {
+                'Q441': {
+                  'labels': {
+                    'zh': {'value': '星河！'},
+                    'en': {'value': 'Bright River!'},
+                  },
+                  'claims': {
+                    'P31': [
+                      _claim({'id': 'Q11424'}),
+                    ],
+                    'P345': [_claim('tt12345678')],
+                  },
+                },
+              },
+            };
+          }
+          if (request.uri.host == 'v3.sg.media-imdb.com') {
+            return {
+              'd': [
+                {
+                  'id': valid ? 'tt12345678' : 'tt99999999',
+                  'l': 'Bright River!',
+                  'y': 2026,
+                  'qid': 'movie',
+                },
+                {
+                  'id': 'tt33333333',
+                  'l': 'Bright River!',
+                  'y': 1996,
+                  'qid': 'movie',
+                },
+              ],
+            };
+          }
+          return request.path.endsWith('subject_suggest') ? [] : {};
+        });
+        final names = await _repository(adapter).originalNames(
+          '星河',
+          subject: const CinemaTitle(
+            id: '42',
+            sourceId: 'film',
+            title: '星河',
+            year: '2026',
+            category: '动画电影',
+          ),
+        );
+        if (valid) {
+          expect(names.single.imdbId, 'tt12345678');
+          expect(names.single.originalTitle, 'Bright River!');
+          expect(names.single.year, '2026');
+          expect(names.single.identityVerified, isTrue);
+        } else {
+          expect(names.where((t) => t.identityVerified), isEmpty);
+        }
+      }
+    },
+  );
   test(
     'series and miniseries identity fallback accepts official start dates and coalesces hydration',
     () async {

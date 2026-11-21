@@ -57,6 +57,65 @@ class Repo extends CinemaRepository {
 }
 
 void main() {
+  test(
+    'ordinary fallback maps explicit season and episode independent of row order',
+    () {
+      final anchor = work('a', episodes: ['第2集', '第三集']);
+      final target = work('b', episodes: ['S02E03', 'E03', '第一集']);
+      expect(
+        cinemaMatchPlaybackEpisode(
+          current: candidate(anchor, episode: 1),
+          target: target,
+          routeIndex: 0,
+        ),
+        1,
+      );
+      final ambiguous = work('b', episodes: ['S01E03', '第三集']);
+      expect(
+        cinemaMatchPlaybackEpisode(
+          current: candidate(anchor, episode: 1),
+          target: ambiguous,
+          routeIndex: 0,
+        ),
+        isNull,
+      );
+    },
+  );
+  test('fallback matches the same half of a split episode', () {
+    final current = candidate(work('a', episodes: ['第2集（下）']));
+    final other = work('b', episodes: ['第02集上', '第02集下']);
+    expect(
+      cinemaMatchPlaybackEpisode(
+        current: current,
+        target: other,
+        routeIndex: 0,
+      ),
+      1,
+    );
+    expect(
+      cinemaMatchPlaybackEpisode(
+        current: current,
+        target: work('b', episodes: ['第02集上']),
+        routeIndex: 0,
+      ),
+      isNull,
+    );
+  });
+  test(
+    'an unseasoned library label cannot select a different explicit season',
+    () {
+      final anchor = work('a', name: '长街', episodes: ['第三集']);
+      final other = work('b', name: '长街', episodes: ['S02E03']);
+      expect(
+        cinemaMatchPlaybackEpisode(
+          current: candidate(anchor),
+          target: other,
+          routeIndex: 0,
+        ),
+        isNull,
+      );
+    },
+  );
   test('full-film provider labels include 播放, 正片 and TC/HD editions', () {
     final anchor = work(
       'a',

@@ -51,6 +51,15 @@ Future<void> configureNativePlayback(
   }
 }
 
+/// Random seeks in a local swarm may need a fresh remote piece. The player's
+/// separate first-frame deadline still owns startup and edition failover.
+Future<void> configureLocalOriginalPlayback(NativePlayer player) async {
+  await player.setProperty('http-proxy', '');
+  await player.setProperty('network-timeout', '90');
+  await player.setProperty('cache-pause-wait', '1');
+  await player.setProperty('slang', 'zh-Hans,zh-CN,zh,chi,zho,zh-Hant,zh-TW');
+}
+
 enum PlaybackFailureKind { network, format }
 
 PlaybackFailureKind? playbackFailureKind(String message) {

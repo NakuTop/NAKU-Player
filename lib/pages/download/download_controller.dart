@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:kazumi/features/cinema/cinema_offline_danmaku.dart';
+import 'package:kazumi/features/cinema/cinema_downloads.dart';
 import 'package:kazumi/features/cinema/cinema_logvar_client.dart';
 import 'package:kazumi/features/cinema/cinema_multi_source_danmaku.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
@@ -642,6 +643,7 @@ abstract class _DownloadController with Store {
       added.add(episode);
     }
     if (added.isEmpty) return 0;
+    CinemaOriginalDownload.rememberSelections(record, media, added);
     await _repository.putRecord(record);
     _refreshRecord(record.key);
     for (final episode in added) {
@@ -804,6 +806,7 @@ abstract class _DownloadController with Store {
       bangumiId: record.bangumiId,
       pluginName: record.pluginName,
       episodeNumber: episode.episodeNumber,
+      original: CinemaOriginalDownload.fromRecord(record, episode),
       m3u8Url: mediaUrl,
       httpHeaders: headers,
       adBlockerEnabled: false,
@@ -1065,7 +1068,8 @@ abstract class _DownloadController with Store {
       return;
     }
     try {
-      if (isNASMediaReference(episode.episodePageUrl)) {
+      if (isNASMediaReference(episode.episodePageUrl) ||
+          CinemaOriginalDownload.fromRecord(record, episode) != null) {
         episode.networkM3u8Url = episode.episodePageUrl;
         episode.requestHeadersJson = '{}';
         await _enqueueDirect(

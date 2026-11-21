@@ -12,9 +12,11 @@ class CinemaCardRatings extends StatefulWidget {
     required this.title,
     this.repository,
     this.resolveTitle,
+    this.onlyAvailable = false,
   });
 
   final CinemaTitle title;
+  final bool onlyAvailable;
   final CinemaRatingsRepository? repository;
   final Future<CinemaTitle> Function(CinemaTitle)? resolveTitle;
 
@@ -229,26 +231,53 @@ class _CinemaCardRatingsState extends State<CinemaCardRatings> {
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
-      final labelWidth =
-          constraints.hasBoundedWidth && constraints.maxWidth < 180
+      final typeSize = MediaQuery.textScalerOf(context).scale(10.5);
+      final columns = constraints.maxWidth >= 16.5 * typeSize ? 3 : 2;
+      final labelWidth = widget.onlyAvailable && constraints.hasBoundedWidth
+          ? ((constraints.maxWidth - 8 * (columns - 1)) / columns).clamp(
+              1.0,
+              double.infinity,
+            )
+          : constraints.hasBoundedWidth && constraints.maxWidth < 180
           ? ((constraints.maxWidth - 8) / 2).clamp(1.0, double.infinity)
           : double.infinity;
-      return Wrap(
-        key: const ValueKey('cinema-card-ratings'),
-        spacing: 8,
-        runSpacing: 3,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          for (final provider in ['豆瓣', 'IMDb', '烂番茄'])
-            _ScoreLabel(
-              provider: provider,
-              rating: _rating(provider),
-              maxWidth: labelWidth,
-            ),
-        ],
+      // Reserve the same caption height while rating requests finish.
+      final lines = columns == 3 ? 1 : 2;
+      return ConstrainedBox(
+        constraints: BoxConstraints(
+          minHeight: widget.onlyAvailable
+              ? (1.25 * typeSize).ceilToDouble() * lines + 3 * (lines - 1)
+              : 0,
+        ),
+        child: Wrap(
+          key: const ValueKey('cinema-card-ratings'),
+          spacing: 8,
+          runSpacing: 3,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            for (final rating in ['豆瓣', 'IMDb', '烂番茄'].map(_rating))
+              if (!widget.onlyAvailable || _hasScore(rating))
+                _ScoreLabel(
+                  provider: rating.provider,
+                  rating: rating,
+                  maxWidth: labelWidth,
+                  compact: widget.onlyAvailable,
+                ),
+          ],
+        ),
       );
     },
   );
+}
+
+bool _hasScore(CinemaRating rating) {
+  final value = rating.value;
+  final scale = rating.provider == '烂番茄' ? 100 : 10;
+  return value != null &&
+      value.isFinite &&
+      value >= 0 &&
+      value <= scale &&
+      rating.scale == scale;
 }
 
 class _ScoreLabel extends StatelessWidget {
@@ -256,23 +285,19 @@ class _ScoreLabel extends StatelessWidget {
     required this.provider,
     required this.rating,
     required this.maxWidth,
+    required this.compact,
   });
 
   final String provider;
   final CinemaRating rating;
   final double maxWidth;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final isTomatometer = provider == '烂番茄';
-    final scale = isTomatometer ? 100 : 10;
     final value = rating.value;
-    final valid =
-        value != null &&
-        value.isFinite &&
-        value >= 0 &&
-        value <= scale &&
-        rating.scale == scale;
+    final valid = value != null && _hasScore(rating);
     final reported = provider == '豆瓣' && valid && !rating.verified;
     final number = valid
         ? value.toStringAsFixed(
@@ -320,7 +345,11 @@ class _ScoreLabel extends StatelessWidget {
             style: TextStyle(
               fontSize: 10.5,
               height: 1.25,
-              color: valid ? CinemaTheme.copper : CinemaTheme.muted,
+              color: compact
+                  ? CinemaTheme.muted
+                  : valid
+                  ? CinemaTheme.copper
+                  : CinemaTheme.muted,
             ),
           ),
         ),

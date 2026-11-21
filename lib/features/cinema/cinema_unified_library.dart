@@ -7,6 +7,7 @@ import 'cinema_library_actions.dart';
 import 'cinema_models.dart';
 import 'cinema_store.dart';
 import 'cinema_theme.dart';
+import 'cinema_poster_lift.dart';
 
 class CinemaUnifiedLibrary extends StatelessWidget {
   const CinemaUnifiedLibrary({
@@ -102,7 +103,14 @@ class CinemaUnifiedLibrary extends StatelessWidget {
                                     movie?.title ??
                                     animeLibraryTitle(animation!.bangumiItem);
                                 final episode = movie != null
-                                    ? '第 ${movie.episodeIndex + 1} 集'
+                                    ? (title.routes
+                                              .elementAtOrNull(movie.routeIndex)
+                                              ?.episodes
+                                              .elementAtOrNull(
+                                                movie.episodeIndex,
+                                              )
+                                              ?.name ??
+                                          '第 ${movie.episodeIndex + 1} 集')
                                     : animation!.lastWatchEpisodeName.isEmpty
                                     ? '第 ${animation.lastWatchEpisode} 话'
                                     : animation.lastWatchEpisodeName;
@@ -133,7 +141,13 @@ class CinemaUnifiedLibrary extends StatelessWidget {
                                     coverWidth: compact ? 66 : 82,
                                     episode: episode,
                                     source: animation == null
-                                        ? sourceName(title.sourceId)
+                                        ? (title
+                                                      .originalReference
+                                                      ?.hash
+                                                      .isNotEmpty ==
+                                                  true
+                                              ? '原画'
+                                              : sourceName(title.sourceId))
                                         : '动漫 · ${animation.adapterName}',
                                     position: seconds,
                                     duration: movie?.durationSeconds ?? 0,
@@ -228,9 +242,12 @@ class _LibraryHistoryRow extends StatelessWidget {
           children: [
             SizedBox(
               width: coverWidth,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: cover,
+              child: CinemaPosterLift(
+                radius: 10,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: cover,
+                ),
               ),
             ),
             const SizedBox(width: 20),

@@ -1,7 +1,7 @@
 name: kazumi
 description: "NAKU播放器：电影、剧集与动漫客户端。"
 publish_to: "none"
-version: 3.2.15+135
+version: 3.2.16+144
 
 environment:
   sdk: ">=3.10.0 <4.0.0"
@@ -180,6 +180,7 @@ flutter:
   uses-material-design: true
   shaders:
     - shaders/cinema_snapshot_decode.frag
+    - shaders/cinema_original_silk.frag
   assets:
     - assets/data/
     - assets/images/

@@ -273,11 +273,15 @@ void main() {
       detail.title.routes.single.episodes.first.url,
       'https://unified-a.invalid/${series ? 'tv' : 'movie'}-1.mp4',
     );
-    expect(repository.details.last, (
-      source: 'unified-a',
-      id: series ? 'tv' : 'movie',
-      category: series ? '欧美剧' : '剧情片',
-    ));
+    // Other sources also hydrate in the background for the comparison.
+    expect(
+      repository.details,
+      contains((
+        source: 'unified-a',
+        id: series ? 'tv' : 'movie',
+        category: series ? '欧美剧' : '剧情片',
+      )),
+    );
     await tester.tap(find.byTooltip('关闭'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);

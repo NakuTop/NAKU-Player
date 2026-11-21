@@ -171,6 +171,43 @@ class CinemaRoute {
   );
 }
 
+class CinemaOriginalReference {
+  const CinemaOriginalReference({
+    this.imdbId = '',
+    this.premiere = '',
+    this.season,
+    this.episode,
+    this.hash = '',
+  });
+  final String imdbId, premiere, hash;
+  final int? season, episode;
+  Map<String, dynamic> toJson() => {
+    if (imdbId.isNotEmpty) 'imdb': imdbId,
+    if (premiere.isNotEmpty) 'year': premiere,
+    if (season != null) 'season': season,
+    if (episode != null) 'episode': episode,
+    if (hash.isNotEmpty) 'hash': hash,
+  };
+  static CinemaOriginalReference? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final season = value['season'], episode = value['episode'];
+    if (season != null && (season is! int || season < 1 || season > 99) ||
+        episode != null && (episode is! int || episode < 1 || episode > 9999) ||
+        (season == null) != (episode == null)) {
+      return null;
+    }
+    final hash = textValue(value['hash']).toLowerCase();
+    final year = textValue(value['year']);
+    return CinemaOriginalReference(
+      imdbId: parseCinemaImdbId(value['imdb']),
+      premiere: RegExp(r'^(?:19|20)\d{2}$').hasMatch(year) ? year : '',
+      season: season,
+      episode: episode,
+      hash: RegExp(r'^[a-f0-9]{40}$').hasMatch(hash) ? hash : '',
+    );
+  }
+}
+
 class CinemaTitle {
   const CinemaTitle({
     required this.id,
@@ -195,6 +232,7 @@ class CinemaTitle {
     this.doubanId = '',
     this.sourceDoubanScore,
     this.imdbId = '',
+    this.originalReference,
     this.rottenTomatoesId = '',
     this.routes = const [],
   });
@@ -224,22 +262,31 @@ class CinemaTitle {
   /// The source's transcription of a Douban score, never the source's own score.
   final double? sourceDoubanScore;
   final String imdbId;
+  final CinemaOriginalReference? originalReference;
+  String get subtitleImdbId {
+    final seriesId = parseCinemaImdbId(originalReference?.imdbId);
+    return seriesId.isNotEmpty ? seriesId : parseCinemaImdbId(imdbId);
+  }
+
   final String rottenTomatoesId;
   final List<CinemaRoute> routes;
   String get key => '$sourceId::$id';
   bool get isDirectMedia => sourceId == cinemaDirectSource.id;
   CinemaTitle copyWith({
+    String? id,
+    String? sourceId,
     String? year,
     String? category,
     String? aliases,
     List<CinemaRoute>? routes,
     String? doubanId,
     String? imdbId,
+    CinemaOriginalReference? originalReference,
     String? rottenTomatoesId,
     double? sourceDoubanScore,
   }) => CinemaTitle(
-    id: id,
-    sourceId: sourceId,
+    id: id ?? this.id,
+    sourceId: sourceId ?? this.sourceId,
     title: title,
     poster: poster,
     description: description,
@@ -260,6 +307,7 @@ class CinemaTitle {
     doubanId: doubanId ?? this.doubanId,
     sourceDoubanScore: sourceDoubanScore ?? this.sourceDoubanScore,
     imdbId: imdbId ?? this.imdbId,
+    originalReference: originalReference ?? this.originalReference,
     rottenTomatoesId: rottenTomatoesId ?? this.rottenTomatoesId,
     routes: routes ?? this.routes,
   );
@@ -286,6 +334,8 @@ class CinemaTitle {
     'doubanId': doubanId,
     'sourceDoubanScore': sourceDoubanScore,
     'imdbId': imdbId,
+    if (originalReference != null)
+      'originalReference': originalReference!.toJson(),
     'rottenTomatoesId': rottenTomatoesId,
     'routes': routes.map((route) => route.toJson()).toList(),
   };
@@ -312,6 +362,9 @@ class CinemaTitle {
     doubanId: parseCinemaDoubanId(json['doubanId']),
     sourceDoubanScore: parseCinemaSourceDoubanScore(json['sourceDoubanScore']),
     imdbId: parseCinemaImdbId(json['imdbId']),
+    originalReference: CinemaOriginalReference.fromJson(
+      json['originalReference'],
+    ),
     rottenTomatoesId: parseCinemaRottenTomatoesId(json['rottenTomatoesId']),
     routes: jsonMaps(json['routes']).map(CinemaRoute.fromJson).toList(),
   );

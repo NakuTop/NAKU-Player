@@ -252,6 +252,20 @@ class CinemaMediaRouter {
     _choices.removeWhere((key, _) => key.startsWith('${uri.origin}|'));
   }
 
+  static bool _transientFailure(DioException error) {
+    final status = error.response?.statusCode;
+    if (status != null) return const {408, 502, 503, 504}.contains(status);
+    return switch (error.type) {
+      DioExceptionType.connectionTimeout ||
+      DioExceptionType.sendTimeout ||
+      DioExceptionType.receiveTimeout ||
+      DioExceptionType.connectionError => true,
+      DioExceptionType.unknown =>
+        error.error is SocketException || error.error is TimeoutException,
+      _ => false,
+    };
+  }
+
   Future<Response<ResponseBody>> open(
     Uri uri,
     Map<String, String> headers, {
@@ -282,7 +296,11 @@ class CinemaMediaRouter {
     try {
       response = await get(route);
     } on DioException catch (e) {
-      if (CancelToken.isCancel(e) ||
+      if (active && const {403, 444}.contains(e.response?.statusCode)) {
+        _choices.remove(_key(uri, proxy, metadata: metadata));
+      }
+      if (!active ||
+          !_transientFailure(e) ||
           proxy == null ||
           LogvarConfiguration.isPrivateHost(uri.host)) {
         rethrow;

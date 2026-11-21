@@ -3,6 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
+import 'package:kazumi/features/cinema/cinema_downloads.dart';
+import 'package:kazumi/features/cinema/cinema_models.dart'
+    show CinemaOriginalReference;
+import 'package:kazumi/features/cinema/cinema_original_engine.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 import 'package:kazumi/modules/download/download_module.dart';
@@ -89,6 +94,7 @@ class DownloadRequest {
   final Map<String, String> httpHeaders;
   final bool adBlockerEnabled;
   final DownloadEpisode episode;
+  final CinemaOriginalDownload? original;
 
   const DownloadRequest({
     required this.recordKey,
@@ -99,6 +105,7 @@ class DownloadRequest {
     required this.httpHeaders,
     required this.adBlockerEnabled,
     required this.episode,
+    this.original,
   });
 }
 
@@ -385,6 +392,7 @@ class DownloadManager implements IDownloadManager {
         httpHeaders: request.httpHeaders,
         adBlockerEnabled: request.adBlockerEnabled,
         episode: request.episode,
+        original: request.original,
       );
     } else {
       request.episode.status = DownloadStatus.pending;
@@ -464,6 +472,7 @@ class DownloadManager implements IDownloadManager {
         httpHeaders: request.httpHeaders,
         adBlockerEnabled: request.adBlockerEnabled,
         episode: request.episode,
+        original: request.original,
       );
     }
   }
@@ -476,6 +485,7 @@ class DownloadManager implements IDownloadManager {
     required Map<String, String> httpHeaders,
     required bool adBlockerEnabled,
     required DownloadEpisode episode,
+    CinemaOriginalDownload? original,
   }) async {
     final key = _taskKey(task.recordKey, task.episodeNumber);
     _runningTasks[key] = task;
@@ -493,6 +503,30 @@ class DownloadManager implements IDownloadManager {
           : m3u8Url;
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
 
+      if (original != null) {
+        final previous = await _readTransfer(episodeDir);
+        await original.transfer(
+          task.cancelToken,
+          (stream, reference) => _runDirectFileDownload(
+            task: task,
+            bangumiId: bangumiId,
+            pluginName: pluginName,
+            episode: episode,
+            videoUrl: stream.url.toString(),
+            httpHeaders: stream.headers,
+            originalStream: stream,
+            originalReference: reference,
+          ),
+          previousHash: previous['originalHash'] is String
+              ? previous['originalHash']
+              : '',
+        );
+        if (task.isPaused && episode.status != DownloadStatus.completed) {
+          episode.status = DownloadStatus.paused;
+          _notifyProgress(task.recordKey, task.episodeNumber, episode);
+        }
+        return;
+      }
       if (isNASMediaReference(episode.episodePageUrl)) {
         await _runDirectFileDownload(
           task: task,
@@ -794,6 +828,23 @@ class DownloadManager implements IDownloadManager {
     }
   }
 
+  Future<Map<String, dynamic>> _readTransfer(String directory) async {
+    try {
+      return jsonDecode(
+            await File(
+              path.join(directory, '.naku-transfer.json'),
+            ).readAsString(),
+          )
+          as Map<String, dynamic>;
+    } on FileSystemException {
+      return {};
+    } on FormatException {
+      return {};
+    } on TypeError {
+      return {};
+    }
+  }
+
   Future<void> _runDirectFileDownload({
     required DownloadTask task,
     required int bangumiId,
@@ -801,8 +852,12 @@ class DownloadManager implements IDownloadManager {
     required String videoUrl,
     required Map<String, String> httpHeaders,
     required DownloadEpisode episode,
+    OriginalStream? originalStream,
+    CinemaOriginalReference? originalReference,
   }) async {
     final key = _taskKey(task.recordKey, task.episodeNumber);
+    Dio? localHttp;
+    bool canTryAnotherOriginal = originalStream != null;
     try {
       final episodeDir = await _prepareEpisodeDir(
         episode,
@@ -811,7 +866,9 @@ class DownloadManager implements IDownloadManager {
         task.episodeNumber,
       );
 
-      final originalExtension = isNASMediaReference(episode.episodePageUrl)
+      final originalExtension = originalStream != null
+          ? path.extension(originalStream.file.path).toLowerCase()
+          : isNASMediaReference(episode.episodePageUrl)
           ? path
                 .extension(
                   parseNASMediaReference(episode.episodePageUrl)['path']!,
@@ -827,20 +884,16 @@ class DownloadManager implements IDownloadManager {
       final identity = sha256
           .convert(
             utf8.encode(
-              isNASMediaReference(episode.episodePageUrl)
+              originalStream != null
+                  ? '${originalReference!.hash}/${originalStream.file.id}/${originalStream.file.length}'
+                  : isNASMediaReference(episode.episodePageUrl)
                   ? episode.episodePageUrl
                   : videoUrl,
             ),
           )
           .toString();
-      Map<String, dynamic> previousTransfer = {};
-      try {
-        previousTransfer =
-            jsonDecode(await transfer.readAsString()) as Map<String, dynamic>;
-      } catch (_) {
-        /* Legacy partial downloads have no transfer metadata. */
-      }
-      if (previousTransfer['identity'] != null &&
+      var previousTransfer = await _readTransfer(episodeDir);
+      if ((originalStream != null || previousTransfer['identity'] != null) &&
           previousTransfer['identity'] != identity &&
           await File(tmpPath).exists()) {
         // Never append bytes from a changed source to an earlier partial file.
@@ -859,6 +912,7 @@ class DownloadManager implements IDownloadManager {
         existingBytes = await tmpFile.length();
       }
 
+      if (existingBytes > 0) canTryAnotherOriginal = false;
       episode.totalSegments = 1;
       episode.downloadedSegments = 0;
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
@@ -874,12 +928,36 @@ class DownloadManager implements IDownloadManager {
         }
       }
 
+      if (originalStream != null) {
+        if (originalStream.url.host != '127.0.0.1' ||
+            originalStream.url.scheme != 'http') {
+          throw const FormatException('原画传输地址无效');
+        }
+        await _checkStorageSpace(
+          episodeDir,
+          requiredBytes: originalStream.file.length - existingBytes,
+        );
+        localHttp =
+            Dio(
+                BaseOptions(
+                  followRedirects: false,
+                  connectTimeout: const Duration(seconds: 5),
+                ),
+              )
+              ..httpClientAdapter = IOHttpClientAdapter(
+                createHttpClient: () =>
+                    HttpClient()..findProxy = (_) => 'DIRECT',
+              );
+      }
       Response<ResponseBody> response;
       try {
         response = await _http.getStream(
           videoUrl,
+          client: localHttp,
           headers: requestHeaders,
-          receiveTimeout: const Duration(minutes: 30),
+          receiveTimeout: originalStream == null
+              ? const Duration(minutes: 30)
+              : const Duration(seconds: 30),
           cancelToken: task.cancelToken,
         );
       } on NetworkException catch (e) {
@@ -892,8 +970,11 @@ class DownloadManager implements IDownloadManager {
           requestHeaders.remove('Range');
           response = await _http.getStream(
             videoUrl,
+            client: localHttp,
             headers: requestHeaders,
-            receiveTimeout: const Duration(minutes: 30),
+            receiveTimeout: originalStream == null
+                ? const Duration(minutes: 30)
+                : const Duration(seconds: 30),
             cancelToken: task.cancelToken,
           );
         } else {
@@ -906,6 +987,10 @@ class DownloadManager implements IDownloadManager {
       await transferPending.writeAsString(
         jsonEncode({
           'identity': identity,
+          if (originalReference != null) ...{
+            'originalHash': originalReference.hash,
+            'originalReference': originalReference.toJson(),
+          },
           if (response.headers.value('etag') case final String value)
             'etag': value,
           if (response.headers.value('last-modified') case final String value)
@@ -946,6 +1031,7 @@ class DownloadManager implements IDownloadManager {
         totalSize = existingBytes + contentLength;
       }
 
+      if (originalStream != null) totalSize = originalStream.file.length;
       final raf = await tmpFile.open(
         mode: existingBytes > 0 ? FileMode.append : FileMode.write,
       );
@@ -954,7 +1040,10 @@ class DownloadManager implements IDownloadManager {
       _speedTrackers[key] = _SpeedTracker();
 
       try {
-        await for (final chunk in response.data!.stream) {
+        final chunks = originalStream == null
+            ? response.data!.stream
+            : response.data!.stream.timeout(const Duration(seconds: 35));
+        await for (final chunk in chunks) {
           if (task.isPaused || task.cancelToken.isCancelled) break;
           if (received == 0) {
             final prefix = ascii
@@ -969,6 +1058,7 @@ class DownloadManager implements IDownloadManager {
             }
           }
           await raf.writeFrom(chunk);
+          if (chunk.isNotEmpty) canTryAnotherOriginal = false;
           received += chunk.length;
           episode.totalBytes = received;
           episode.progressPercent = totalSize > 0 ? received / totalSize : 0;
@@ -1017,6 +1107,9 @@ class DownloadManager implements IDownloadManager {
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
       KazumiLogger().e('DownloadManager: file system error', error: e);
     } on NetworkException catch (e) {
+      if (canTryAnotherOriginal && !task.cancelToken.isCancelled) {
+        throw const OriginalDownloadStartupFailure();
+      }
       if (e.type == NetworkExceptionType.cancel) {
         if (task.isPaused) {
           episode.status = DownloadStatus.paused;
@@ -1027,6 +1120,14 @@ class DownloadManager implements IDownloadManager {
       }
       _notifyProgress(task.recordKey, task.episodeNumber, episode);
     } catch (e) {
+      if (canTryAnotherOriginal &&
+          !task.cancelToken.isCancelled &&
+          (e is FormatException ||
+              e is TimeoutException ||
+              e is HttpException ||
+              e is SocketException)) {
+        throw const OriginalDownloadStartupFailure();
+      }
       if (e is DuplicateDownloadException) episode.networkM3u8Url = '';
       episode.status = task.isPaused
           ? DownloadStatus.paused
@@ -1041,6 +1142,8 @@ class DownloadManager implements IDownloadManager {
         'DownloadManager: direct file download failed',
         error: isNASMediaReference(episode.episodePageUrl) ? 'NAS 请求失败' : e,
       );
+    } finally {
+      localHttp?.close(force: true);
     }
   }
 

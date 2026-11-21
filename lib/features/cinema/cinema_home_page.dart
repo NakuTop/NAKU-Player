@@ -1,4 +1,8 @@
 import 'cinema_source_glow.dart';
+import 'cinema_poster_lift.dart';
+import 'cinema_original_engine.dart';
+import 'cinema_original_match.dart';
+import 'cinema_original_search.dart';
 import 'cinema_detail_comparison.dart';
 import 'cinema_media_transport.dart';
 import 'cinema_playback_candidates.dart';
@@ -22,6 +26,7 @@ import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:kazumi/services/platform/desktop_window_controls.dart';
 import 'cinema_download_sheet.dart';
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -115,6 +120,8 @@ class _CatalogState {
   final search = TextEditingController();
   List<CinemaTitle> items = [];
   final viewCache = CinemaCatalogViewCache();
+  (CinemaCatalogView, CinemaSearchDiscovery, String, int, List<CinemaTitle>)?
+  rankedResults;
   List<CinemaCategory> categories = [];
   final sourceStatus = <String, String>{};
   final searchPages = <String, int>{};
@@ -181,6 +188,8 @@ class CinemaHomePage extends StatefulWidget {
     this.windowControls,
     this.playerPageBuilder,
     this.detailMediaProbe,
+    this.originalSearch,
+    this.originalEngine,
     this.mobileLayout,
     this.initialStartup = const CinemaStartupTarget(),
   });
@@ -190,6 +199,8 @@ class CinemaHomePage extends StatefulWidget {
   /// Allows embedding the player or inspecting navigation without an engine.
   final Widget Function(CinemaPlayerPage)? playerPageBuilder;
   final CinemaMediaProbe? detailMediaProbe;
+  final CinemaOriginalSearch? originalSearch;
+  final CinemaOriginalEngine? originalEngine;
   final CinemaStore? store;
   final CinemaRepository? repository;
   final CinemaRatingsRepository? ratingsRepository;
@@ -882,10 +893,13 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     List<CinemaTitle> variants, {
     bool keepBrowseRoute = false,
     bool manualRouteSelection = false,
+    bool? autoSelectBestRoute,
     Map<String, String>? offlinePaths,
     int? initialPositionSeconds,
     CinemaHistory? resumeHistory,
     CinemaMediaProbeResult? measuredQuality,
+    OriginalSelection? initialOriginal,
+    OriginalLookup? initialOriginalLookup,
   }) {
     unawaited(
       Navigator.of(context)
@@ -902,7 +916,12 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                     source: source,
                     offlinePaths: offlinePaths,
                     manualRouteSelection: manualRouteSelection,
+                    autoSelectBestRoute: autoSelectBestRoute,
                     measuredQuality: measuredQuality,
+                    initialOriginal: initialOriginal,
+                    initialOriginalLookup: initialOriginalLookup,
+                    originalEngine: widget.originalEngine,
+                    originalSearch: widget.originalSearch,
                     initialPositionSeconds: initialPositionSeconds,
                     resumeHistory: resumeHistory,
                     watchTogether: widget.enableWatchTogether
@@ -1139,6 +1158,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       _catalogSort[_section] ?? CinemaCatalogSort.latest;
 
   String get _catalogSortExplanation {
+    if (_searching && Platform.isMacOS) return '按片名和别名的匹配程度排列，同一剧集按季序展示。';
     if (_currentCatalogSort == CinemaCatalogSort.popular && !_searching) {
       return '按豆瓣近期热门顺序展示，打开详情可检测画质。';
     }
@@ -1824,9 +1844,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       )
       .toList();
 
-  Widget _discoveryResults() {
+  Widget _discoveryResults({bool unified = false}) {
     final discovery = _catalog.discovery;
-    var titles = _visibleDiscoveryTitles(_catalog, _section);
+    var titles = unified
+        ? <CinemaDiscoveryTitle>[]
+        : _visibleDiscoveryTitles(_catalog, _section);
     if (_showsCatalogSort && _currentCatalogSort == CinemaCatalogSort.rating) {
       final byId = {for (final title in titles) title.id: title};
       titles = sortCinemaTitles(
@@ -1837,6 +1859,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     }
     if (titles.isEmpty &&
         discovery.people.isEmpty &&
+        discovery.celebrityName.isEmpty &&
         !_catalog.discoveryLoading &&
         _catalog.discoveryMessage.isEmpty &&
         !discovery.hasMore) {
@@ -1877,23 +1900,28 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 ],
               ),
             ),
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  discovery.celebrityName.isEmpty
-                      ? '相关作品 · 点击查找片源'
-                      : '${discovery.celebrityName}参演作品 · 点击查找片源',
-                  style: const TextStyle(fontSize: 13),
+          if (!unified ||
+              discovery.celebrityName.isNotEmpty ||
+              discovery.hasMore)
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    discovery.celebrityName.isEmpty
+                        ? '相关作品'
+                        : '${discovery.celebrityName}参演作品',
+                    style: const TextStyle(fontSize: 13),
+                  ),
                 ),
-              ),
-              if (discovery.hasMore)
-                TextButton(
-                  onPressed: _catalog.discoveryLoading ? null : _moreActorWorks,
-                  child: const Text('更多参演作品'),
-                ),
-            ],
-          ),
+                if (discovery.hasMore)
+                  TextButton(
+                    onPressed: _catalog.discoveryLoading
+                        ? null
+                        : _moreActorWorks,
+                    child: const Text('更多参演作品'),
+                  ),
+              ],
+            ),
           if (_catalog.discoveryLoading)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 8),
@@ -1977,6 +2005,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     List<CinemaTitle> variants = const [],
     bool keepBrowseRoute = false,
     CinemaTitle? resourceCard,
+    bool originalOnly = false,
   }) async {
     if (NakuDevice.isTV &&
         title.sourceId == cinemaNASSource.id &&
@@ -1992,29 +2021,40 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         final route = resume.title.routes.elementAtOrNull(resume.routeIndex);
         final url = route?.episodes.elementAtOrNull(resume.episodeIndex)?.url;
         if (url != null) {
-          for (final record in downloads.records.where((r) => r.isCinema)) {
+          final records = downloads.records.where((r) => r.isCinema).toList();
+          // When the same episode is saved twice, continue the original copy first.
+          if (resume.title.originalReference?.hash.isNotEmpty == true) {
+            records.sort(
+              (a, b) => (b.sourceLabel == '原画' ? 1 : 0).compareTo(
+                a.sourceLabel == '原画' ? 1 : 0,
+              ),
+            );
+          }
+          for (final record in records) {
+            final metadata = jsonDecode(record.mediaMetadata) as Map;
+            final stored = CinemaTitle.fromJson(
+              Map<String, dynamic>.from(metadata['title']),
+            );
+            if (!cinemaSamePlaybackWork(stored, resume.title)) continue;
+            final selected = cinemaResumeSelection(stored, resume);
+            final savedUrl = selected == null
+                ? null
+                : stored
+                      .routes[selected.routeIndex]
+                      .episodes[selected.episodeIndex]
+                      .url;
             for (final episode in record.episodes.values) {
-              if (episode.episodePageUrl != url ||
+              if ((episode.episodePageUrl == url ||
+                      episode.episodePageUrl == savedUrl) &&
                   downloads.getLocalVideoPath(
                         record.bangumiId,
                         record.pluginName,
                         episode.episodeNumber,
-                      ) ==
+                      ) !=
                       null) {
-                continue;
+                _playOffline(record, episode);
+                return;
               }
-              final offline = CinemaOfflinePlayback.fromRecord(
-                record,
-                episode,
-                (e) => downloads.getLocalVideoPath(
-                  record.bangumiId,
-                  record.pluginName,
-                  e.episodeNumber,
-                ),
-              );
-              if (offline?.title.key != resume.title.key) continue;
-              _playOffline(record, episode);
-              return;
             }
           }
         }
@@ -2044,18 +2084,65 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       );
       return;
     }
-    if (title.sourceId == 'douban-discovery' ||
-        _findSource(title.sourceId) == null) {
+    if (resume != null &&
+        _findSource(title.sourceId) == null &&
+        title.originalReference != null &&
+        title.sourceId != originalCatalogSource.id) {
+      final selection = cinemaResumeSelection(title, resume);
+      if (selection != null) {
+        _playTitle(
+          title,
+          originalCatalogSource,
+          selection.routeIndex,
+          selection.episodeIndex,
+          variants,
+          keepBrowseRoute: keepBrowseRoute,
+          resumeHistory: resume,
+          initialPositionSeconds: resume.positionSeconds,
+        );
+        return;
+      }
+    }
+    if (resume != null &&
+        title.sourceId == originalCatalogSource.id &&
+        title.routes.any((r) => r.episodes.isNotEmpty)) {
+      originalOnly = true;
+    }
+    if (resume == null &&
+        title.sourceId == originalCatalogSource.id &&
+        parseCinemaDoubanId(title.doubanId).isNotEmpty &&
+        (widget.originalEngine ?? CinemaOriginalEngine.instance).available) {
+      originalOnly = true;
+    }
+    if (!originalOnly &&
+        (title.sourceId == 'douban-discovery' ||
+            _findSource(title.sourceId) == null)) {
       final cached = _resources.peek(title, _activeSources);
       final found = cached?.variants.isNotEmpty == true
           ? cached!.variants
           : await resolveCinemaDiscoverySources(
               context,
               anchor: title,
+              localOriginal:
+                  (widget.originalEngine ?? CinemaOriginalEngine.instance)
+                      .available
+                  ? originalCatalogDetail(title, search: widget.originalSearch)
+                  : null,
               sources: _activeSources,
               repository: _repository,
             );
       if (!mounted || found == null || found.isEmpty) return;
+      if (found.length == 1 &&
+          found.single.sourceId == originalCatalogSource.id) {
+        await _openTitle(
+          found.single,
+          resume: resume,
+          keepBrowseRoute: keepBrowseRoute,
+          resourceCard: resourceCard ?? title,
+          originalOnly: true,
+        );
+        return;
+      }
       final available = found
           .where((t) => _findSource(t.sourceId)?.enabled == true)
           .toList();
@@ -2066,13 +2153,16 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       ).first.catalogTitle;
       await _openTitle(
         representative,
+        resume: resume,
         resourceCard: resourceCard ?? title,
         variants: available,
         keepBrowseRoute: keepBrowseRoute,
       );
       return;
     }
-    final source = _findSource(title.sourceId);
+    final source = originalOnly
+        ? originalCatalogSource
+        : _findSource(title.sourceId);
     if (source == null) {
       _toast('此片源已移除，请重新添加后播放。');
       return;
@@ -2084,7 +2174,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       final savedSelection = cinemaResumeSelection(title, resume);
       if (savedSelection != null) {
         _playTitle(
-          title,
+          originalLibraryTitle(title, null, identity: resume.title),
           source,
           savedSelection.routeIndex,
           savedSelection.episodeIndex,
@@ -2112,6 +2202,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             selection.episodeIndex,
             variants,
             keepBrowseRoute: keepBrowseRoute,
+            resumeHistory: resume,
             initialPositionSeconds: cinemaResumePosition(
               detail,
               resume,
@@ -2129,6 +2220,10 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     }
     Widget buildDetails(BuildContext context) => _TitleDetails(
       mediaProbe: widget.detailMediaProbe,
+      originalSearch: widget.originalSearch,
+      originalEngine: widget.originalEngine,
+      originalIdentity: resourceCard,
+      resolvedDetail: originalOnly,
       onQualityConfirmed: (tier) => _resources.confirmQuality(
         resourceCard ?? title,
         _activeSources,
@@ -2170,6 +2265,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             allVariants,
             manual,
             quality,
+            original,
+            originalLookup,
           ) {
             Navigator.pop(context);
             _playTitle(
@@ -2179,8 +2276,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               episode,
               allVariants,
               manualRouteSelection: manual,
+              autoSelectBestRoute: Platform.isMacOS && !manual ? true : null,
               keepBrowseRoute: keepBrowseRoute,
               measuredQuality: quality,
+              initialOriginal: original,
+              initialOriginalLookup: originalLookup,
             );
           },
     );
@@ -3342,17 +3442,18 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               resolveRatingsTitle: _resolveTVRatingTitle,
               artworkRepository: widget.artworkRepository,
               onRecommendationSelected: (_) {},
-              onPlay: (detail, source, road, episode, variants, manual, _) {
-                Navigator.of(detailsContext).pop();
-                _playTitle(
-                  detail,
-                  source,
-                  road,
-                  episode,
-                  variants,
-                  manualRouteSelection: manual,
-                );
-              },
+              onPlay:
+                  (detail, source, road, episode, variants, manual, _, _, _) {
+                    Navigator.of(detailsContext).pop();
+                    _playTitle(
+                      detail,
+                      source,
+                      road,
+                      episode,
+                      variants,
+                      manualRouteSelection: manual,
+                    );
+                  },
             ),
           ),
         ),
@@ -4109,6 +4210,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   CinemaCatalogView get _catalogView => _catalog.viewCache.resolve(
     items: _items,
+    search: _searching ? _catalog.activeKeyword : '',
     filters: _catalog.filters,
     grouped: _searching || _aggregates(_section),
     sourcePriority: _store.enabledSources.map((s) => s.id).toList(),
@@ -4121,6 +4223,38 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     ratingRevision: _ratingRevision,
     scoreOf: (title) => _ratings.scoreFor(title, _scoreProvider),
   );
+
+  List<CinemaTitle> _rankedMacSearch(CinemaCatalogView view) {
+    final state = _catalog, cached = state.rankedResults;
+    if (cached != null &&
+        identical(cached.$1, view) &&
+        identical(cached.$2, state.discovery) &&
+        cached.$3 == state.activeKeyword &&
+        cached.$4 == _ratingRevision) {
+      return cached.$5;
+    }
+    final extra = _visibleDiscoveryTitles(state, _section);
+    if (extra.isEmpty) return view.visible;
+    final items = [...view.visible, for (final it in extra) it.metadata];
+    final prior = sortCinemaTitles(
+      items,
+      _currentCatalogSort,
+      scoreOf: (t) => _ratings.scoreFor(t, _scoreProvider),
+    );
+    final ranked = rankCinemaSearch(
+      prior,
+      state.activeKeyword,
+      variants: view.variants,
+    );
+    state.rankedResults = (
+      view,
+      state.discovery,
+      state.activeKeyword,
+      _ratingRevision,
+      ranked,
+    );
+    return ranked;
+  }
 
   Widget _content(bool wide, {double topInset = 0}) {
     if (topInset > 0 && !_isCatalog) {
@@ -4174,9 +4308,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     final view = _catalogView;
     final searchGroups = view.groups;
     final representatives = view.representatives;
-    final visibleItems = view.visible;
+    final unified = searching && Platform.isMacOS;
+    final visibleItems = unified ? _rankedMacSearch(view) : view.visible;
     final variantsByKey = view.variants;
     final immersive = wide && (Platform.isMacOS || NakuDevice.isTV);
+    final compactCatalog = immersive || _usesMobileLayout || Platform.isMacOS;
     final featured = immersive && aggregated && visibleItems.length >= 8
         ? visibleItems.take(4).toList()
         : <CinemaTitle>[];
@@ -4195,14 +4331,22 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     // so those geometry updates do not rebuild every mounted poster, rating and
     // resource badge. Data, sorting and filtering create a fresh delegate here.
     final wallChildren = SliverChildBuilderDelegate(
-      (context, index) => _titleCard(
-        wallItems[index],
-        variants: variantsByKey[wallItems[index].key] ?? const [],
-      ),
+      (context, index) {
+        final t = wallItems[index];
+        final card = _titleCard(t, variants: variantsByKey[t.key] ?? const []);
+        return unified && t.sourceId == originalCatalogSource.id
+            ? KeyedSubtree(
+                key: ValueKey('discovery-title:${t.id}'),
+                child: card,
+              )
+            : card;
+      },
       childCount: wallItems.length,
       findChildIndexCallback: (key) =>
           key is ValueKey<String> && key.value.startsWith('title-card:')
           ? wallIndices[key.value.substring('title-card:'.length)]
+          : key is ValueKey<String> && key.value.startsWith('discovery-title:')
+          ? wallIndices['${originalCatalogSource.id}::${key.value.substring('discovery-title:'.length)}']
           : null,
     );
     // Keep this widget stable across scroll-only sliver constraint updates.
@@ -4226,6 +4370,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 title: title,
                 sources: _activeSources,
                 service: _resources,
+                compact: Platform.isMacOS && !NakuDevice.isTV,
               ),
             ),
           );
@@ -4262,26 +4407,62 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 if (searching && !_usesMobileLayout)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 16),
-                    child: TextButton.icon(
-                      key: const ValueKey('cinema-exit-search'),
-                      onPressed: _exitSearch,
-                      icon: const Icon(Icons.arrow_back_rounded, size: 18),
-                      label: const Text('返回浏览'),
+                    child: Row(
+                      children: [
+                        TextButton.icon(
+                          key: const ValueKey('cinema-exit-search'),
+                          onPressed: _exitSearch,
+                          icon: const Icon(Icons.arrow_back_rounded, size: 18),
+                          label: const Text('返回浏览'),
+                        ),
+                        if (unified) ...[
+                          const Spacer(),
+                          if (visibleItems.isNotEmpty)
+                            Text(
+                              '${visibleItems.length} 部作品',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: CinemaTheme.muted,
+                              ),
+                            ),
+                          if (_sourceStatus.isNotEmpty)
+                            PopupMenuButton<void>(
+                              tooltip: '搜索片源状态',
+                              icon: const Icon(
+                                Icons.info_outline_rounded,
+                                size: 17,
+                                color: CinemaTheme.muted,
+                              ),
+                              itemBuilder: (_) => [
+                                for (final entry in _sourceStatus.entries)
+                                  PopupMenuItem<void>(
+                                    enabled: false,
+                                    child: Text(
+                                      '${entry.key} · ${entry.value}',
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        color: CinemaTheme.text,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                        ],
+                      ],
                     ),
                   ),
                 if (aggregated) ...[
                   Row(
                     children: [
                       Text(
-                        immersive ? _heading : '全部片源',
+                        compactCatalog ? _heading : '全部片源',
                         style: TextStyle(
                           color: CinemaTheme.muted,
                           fontSize: 13,
                         ),
                       ),
                       const Spacer(),
-                      if (immersive || _usesMobileLayout)
-                        _catalogStatusMenu(snapshot!),
+                      if (compactCatalog) _catalogStatusMenu(snapshot!),
                       Text(
                         '${searchGroups.length} 部作品',
                         style: const TextStyle(
@@ -4298,7 +4479,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                       ),
                     ],
                   ),
-                  if (!immersive && !_usesMobileLayout) ...[
+                  if (!compactCatalog) ...[
                     Text(
                       snapshot!.message,
                       style: const TextStyle(
@@ -4388,7 +4569,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                       ),
                     ],
                   ),
-                if (_searching && !_usesMobileLayout)
+                if (_searching && !_usesMobileLayout && !unified)
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
@@ -4412,7 +4593,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         )
                         .toList(),
                   ),
-                if (_searching && _items.isNotEmpty)
+                if (_searching && _items.isNotEmpty && !unified)
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
                     child: Text(
@@ -4455,7 +4636,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                     ),
                   ),
                 CinemaFilterBar(
-                  compact: immersive || _usesMobileLayout,
+                  compact: compactCatalog,
                   value: _catalog.filters,
                   items: aggregated ? representatives : _items,
                   onChanged: _changeCatalogueFilters,
@@ -4466,9 +4647,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                       : '已加载片源目录',
                 ),
                 if (_showsCatalogSort)
-                  _catalogSortControls(compact: immersive || _usesMobileLayout),
-                if (_searching) _discoveryResults(),
-                if (_section == _Section.anime && !_searching)
+                  _catalogSortControls(compact: compactCatalog),
+                if (_searching) _discoveryResults(unified: unified),
+                if (_section == _Section.anime &&
+                    !_searching &&
+                    !Platform.isMacOS)
                   Padding(
                     padding: const EdgeInsets.only(top: 16),
                     child: Text(
@@ -4488,7 +4671,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             ),
           ),
         ),
-        if (_error != null && _items.isNotEmpty)
+        if (_error != null && visibleItems.isNotEmpty)
           SliverToBoxAdapter(
             child: Padding(
               padding: EdgeInsets.fromLTRB(padding, 0, padding, 16),
@@ -4516,7 +4699,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               ),
             ),
           ),
-        if (_error != null && _items.isEmpty)
+        if (_error != null && _items.isEmpty && visibleItems.isEmpty)
           SliverFillRemaining(
             hasScrollBody: false,
             child: _empty(
@@ -4647,54 +4830,38 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     );
   }
 
-  Widget _poster(CinemaTitle title, double? width, double? height) =>
-      DecoratedBox(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(9),
-          boxShadow: Platform.isMacOS && !NakuDevice.isTV
-              ? const [
-                  BoxShadow(
-                    color: Color(0x50000000),
-                    blurRadius: 22,
-                    spreadRadius: -3,
-                    offset: Offset(0, 9),
-                  ),
-                ]
-              : const [],
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(9),
-          child: SizedBox(
-            width: width,
-            height: height,
-            child: title.poster.isEmpty
-                ? _posterFallback(title.title)
-                : CachedNetworkImage(
-                    cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
-                    memCacheWidth: NakuDevice.isTV ? 640 : 480,
-                    fadeInDuration: Duration.zero,
-                    fadeOutDuration: Duration.zero,
-                    imageUrl: title.poster,
-                    httpHeaders: title.sourceId == 'douban-discovery'
-                        ? doubanImageHeaders
-                        : null,
-                    fit: BoxFit.cover,
-                    placeholder: (_, _) => _posterFallback(title.title),
-                    errorWidget: (_, _, _) => _posterFallback(title.title),
-                  ),
-          ),
-        ),
-      );
+  Widget _poster(CinemaTitle title, double? width, double? height) => ClipRRect(
+    borderRadius: BorderRadius.circular(9),
+    child: SizedBox(
+      width: width,
+      height: height,
+      child: title.poster.isEmpty
+          ? _posterFallback(title.title)
+          : CachedNetworkImage(
+              cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
+              memCacheWidth: NakuDevice.isTV ? 640 : 480,
+              fadeInDuration: Duration.zero,
+              fadeOutDuration: Duration.zero,
+              imageUrl: title.poster,
+              httpHeaders: title.sourceId == 'douban-discovery'
+                  ? doubanImageHeaders
+                  : null,
+              fit: BoxFit.cover,
+              placeholder: (_, _) => _posterFallback(title.title),
+              errorWidget: (_, _, _) => _posterFallback(title.title),
+            ),
+    ),
+  );
 
   Widget _posterFallback(String name) => LayoutBuilder(
     builder: (context, bounds) => bounds.maxWidth < 96 || bounds.maxHeight < 100
         ? ColoredBox(
             color: CinemaTheme.raised,
-            child: const Center(
+            child: Center(
               child: Icon(
                 Icons.local_movies_outlined,
                 size: 24,
-                color: CinemaTheme.copper,
+                color: CinemaTheme.accent,
               ),
             ),
           )
@@ -4704,9 +4871,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(
+                Icon(
                   Icons.local_movies_outlined,
-                  color: CinemaTheme.copper,
+                  color: CinemaTheme.accent,
                   size: 30,
                 ),
                 const SizedBox(height: 15),
@@ -4819,118 +4986,142 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     List<CinemaTitle> variants = const [],
     VoidCallback? onOpen,
     Widget? nasPoster,
-  }) => CinemaTVFocus(
-    child: InkWell(
-      key: ValueKey('title-card:${title.key}'),
-      onTap: onOpen ?? () => _openTitle(title, variants: variants),
-      borderRadius: BorderRadius.circular(10),
-      child: _posterCardSurface(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  _poster(title, null, null),
-                  if (nasPoster != null)
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(9),
-                      child: nasPoster,
-                    ),
-                  if (!NakuDevice.isTV &&
-                      (title.sourceId == 'douban-discovery' ||
-                          (_isCatalog && !_searching)))
-                    Positioned(
-                      top: 8,
-                      left: 8,
-                      right: 8,
-                      child: Align(
-                        alignment: Alignment.topLeft,
-                        child: CinemaResourceBadge(
-                          title: title,
-                          sources: _activeSources,
-                          service: _resources,
+  }) {
+    final desktop = Platform.isMacOS && !NakuDevice.isTV;
+    final sourceCount = variants
+        .where(
+          (v) =>
+              v.sourceId != 'douban-discovery' &&
+              v.sourceId != originalCatalogSource.id,
+        )
+        .map((v) => v.sourceId)
+        .toSet()
+        .length;
+    final metadata = [
+      title.year,
+      if (NakuDevice.isTV)
+        title.category
+      else if (sourceCount > 1 && (!desktop || _searching))
+        '$sourceCount 个片源'
+      else if (desktop)
+        title.genres.split(RegExp(r'[/,，、|]')).first.trim()
+      else if (title.sourceId != 'douban-discovery')
+        _findSource(title.sourceId)?.name ?? title.category,
+    ].where((s) => s.isNotEmpty).join(' · ');
+    return CinemaTVFocus(
+      child: InkWell(
+        key: ValueKey('title-card:${title.key}'),
+        hoverColor: desktop ? Colors.transparent : null,
+        onTap: onOpen ?? () => _openTitle(title, variants: variants),
+        borderRadius: BorderRadius.circular(10),
+        child: _posterCardSurface(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: CinemaPosterLift(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      _poster(title, null, null),
+                      if (nasPoster != null)
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(9),
+                          child: nasPoster,
                         ),
-                      ),
-                    ),
-                  if (!NakuDevice.isTV && title.remarks.isNotEmpty)
-                    Positioned(
-                      bottom: 8,
-                      left: 8,
-                      right: 8,
-                      child: Align(
-                        alignment: Alignment.bottomRight,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 7,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: .8),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            title.remarks,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 10,
-                              color: Colors.white,
+                      if (!NakuDevice.isTV &&
+                          (title.sourceId == 'douban-discovery' ||
+                              (_isCatalog && !_searching)))
+                        Positioned(
+                          top: 8,
+                          left: 8,
+                          right: 8,
+                          child: Align(
+                            alignment: Alignment.topLeft,
+                            child: CinemaResourceBadge(
+                              title: title,
+                              sources: _activeSources,
+                              service: _resources,
+                              compact: desktop,
                             ),
                           ),
                         ),
-                      ),
+                      if (!NakuDevice.isTV && title.remarks.isNotEmpty)
+                        Positioned(
+                          bottom: 8,
+                          left: 8,
+                          right: 8,
+                          child: Align(
+                            alignment: Alignment.bottomRight,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 7,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: .8),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                title.remarks,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 10,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                cinemaMediaBaseTitle(title.title),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: NakuDevice.isTV ? 18 : 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              if (metadata.isNotEmpty || desktop) ...[
+                const SizedBox(height: 4),
+                if (metadata.isEmpty)
+                  SizedBox(
+                    height: MediaQuery.textScalerOf(context).scale(11) * 1.32,
+                  )
+                else
+                  Text(
+                    metadata,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: NakuDevice.isTV ? 14 : 11,
+                      height: desktop ? 1.32 : null,
+                      color: CinemaTheme.muted,
                     ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              cinemaMediaBaseTitle(title.title),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: NakuDevice.isTV ? 18 : 13,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              [
-                title.year,
-                if (NakuDevice.isTV) title.category,
-                if (!NakuDevice.isTV)
-                  title.sourceId == 'douban-discovery'
-                      ? '查找全部片源'
-                      : variants
-                                .where((v) => v.sourceId != 'douban-discovery')
-                                .length >
-                            1
-                      ? '${variants.where((v) => v.sourceId != 'douban-discovery').length} 个片源版本'
-                      : _findSource(title.sourceId)?.name ?? title.category,
-              ].where((e) => e.isNotEmpty).join(' · '),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: NakuDevice.isTV ? 14 : 10,
-                color: CinemaTheme.muted,
-              ),
-            ),
-            const SizedBox(height: 5),
-            if (!title.isDirectMedia)
-              CinemaCardRatings(
-                title: title,
-                repository: _ratings,
-                resolveTitle: NakuDevice.isTV
-                    ? _resolveTVRatingTitle
-                    : _ratingTitles.resolve,
-              ),
-          ],
+                  ),
+              ],
+              const SizedBox(height: 5),
+              if (!title.isDirectMedia)
+                CinemaCardRatings(
+                  title: title,
+                  onlyAvailable: desktop,
+                  repository: _ratings,
+                  resolveTitle: NakuDevice.isTV
+                      ? _resolveTVRatingTitle
+                      : _ratingTitles.resolve,
+                ),
+            ],
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 
   Widget _empty(String title, String description, {Widget? action}) => Center(
     child: Padding(
@@ -5477,7 +5668,13 @@ class _TitleDetails extends StatefulWidget {
     this.tvPoster,
     this.mediaProbe,
     this.onQualityConfirmed,
+    this.originalSearch,
+    this.originalEngine,
+    this.originalIdentity,
   });
+  final CinemaOriginalEngine? originalEngine;
+  final CinemaOriginalSearch? originalSearch;
+  final CinemaTitle? originalIdentity;
   final CinemaMediaProbe? mediaProbe;
   final ValueChanged<int>? onQualityConfirmed;
   final Widget? tvPoster;
@@ -5500,6 +5697,8 @@ class _TitleDetails extends StatefulWidget {
     List<CinemaTitle>,
     bool,
     CinemaMediaProbeResult?,
+    OriginalSelection?,
+    OriginalLookup?,
   )
   onPlay;
   @override
@@ -5517,12 +5716,132 @@ class _TitleDetailsState extends State<_TitleDetails> {
     initialRoute: widget.resume?.routeIndex ?? 0,
     initialEpisode: widget.resume?.episodeIndex ?? 0,
   );
+  OriginalLookup? _originalLookup;
+  CancelToken? _originalProbe;
+  CinemaTitle? _originalAnchor;
+  CinemaTitle? _originalSubject;
+  String _originalLabel = '';
+  late final _originalEngine =
+      widget.originalEngine ?? CinemaOriginalEngine.instance;
+  late final _originalSearch =
+      widget.originalSearch ?? CinemaOriginalSearch.instance;
+  int _originalRoad = 0, _originalEpisode = 0;
+  String? _inspectedHash;
+
+  void _retryOriginalOnNetworkChange() {
+    if (mounted && !_disposing && _originalLookup?.matches == null) {
+      _matchOriginal();
+    }
+  }
+
+  void _matchOriginal() {
+    if (widget.source.id == cinemaNASSource.id || !_originalEngine.available) {
+      return;
+    }
+    final detail = _detail;
+    void attach(CinemaTitle t) {
+      if (!mounted || _disposing || !identical(detail, _detail)) return;
+      final saved = widget.resume;
+      final resume = saved == null ? null : cinemaResumeSelection(t, saved);
+      final road =
+          resume?.routeIndex ??
+          (_routeChosen ? _road : cinemaPreferredRoute(t));
+      final index =
+          resume?.episodeIndex ??
+          (road < 0 ? 0 : cinemaPreferredEpisode(t, road));
+      final episode = road < 0 || index < 0
+          ? null
+          : t.routes.elementAtOrNull(road)?.episodes.elementAtOrNull(index);
+      _originalAnchor = episode == null ? null : t;
+      _originalRoad = road;
+      _originalEpisode = index;
+      _originalLabel = episode?.name ?? '第1集';
+      final identity = widget.originalIdentity ?? widget.title;
+      final subject = _originalSubject = identity.copyWith(
+        aliases: {
+          identity.aliases,
+          t.title,
+          t.aliases,
+        }.where((s) => s.isNotEmpty && s != identity.title).join(' / '),
+        year: identity.year.isNotEmpty ? identity.year : t.year,
+        category: identity.category.isNotEmpty ? identity.category : t.category,
+        doubanId: identity.doubanId.isNotEmpty ? identity.doubanId : t.doubanId,
+      );
+      final lookup = _originalSearch.find(subject, _originalLabel);
+      if (!identical(lookup, _originalLookup)) {
+        _originalLookup?.removeListener(_originalChanged);
+        _originalProbe?.cancel('原画匹配已变化');
+        _inspectedHash = null;
+        _originalLookup = lookup..addListener(_originalChanged);
+      }
+      _originalChanged();
+    }
+
+    attach(_selectedTitle);
+    unawaited(detail.then(attach, onError: (Object _, StackTrace _) {}));
+  }
+
+  void _originalChanged() {
+    if (!mounted || _disposing) return;
+    final matches = _originalLookup?.matches;
+    final anchor = _originalAnchor;
+    if (matches != null &&
+        _originalSubject != null &&
+        (anchor == null ||
+            anchor.sourceId == originalCatalogSource.id &&
+                matches.work.episodeCount >
+                    (anchor.routes.firstOrNull?.episodes.length ?? 0))) {
+      _originalAnchor = originalCatalogAnchor(_originalSubject!, matches);
+      _originalRoad = 0;
+      _originalEpisode = matches.work.series ? matches.work.episode! - 1 : 0;
+    }
+    _inspectOriginalWhenIdle();
+    setState(() {});
+  }
+
+  void _inspectOriginalWhenIdle() {
+    if (_discovering || _comparison.running) return;
+    final matches = _originalLookup?.matches;
+    final edition = _originalEngine.preferred(matches)?.edition;
+    if (matches != null &&
+        edition != null &&
+        _inspectedHash != edition.hash &&
+        !_variantChosen &&
+        !_routeChosen) {
+      _originalProbe?.cancel('检测新的原画版本');
+      _inspectedHash = edition.hash;
+      final cancel = _originalProbe = CancelToken();
+      unawaited(
+        _originalEngine.inspect(matches, edition, cancel).then((_) {
+          if (mounted && !_disposing && !cancel.isCancelled) _originalChanged();
+        }),
+      );
+    }
+  }
+
+  bool get _compactQuality =>
+      Platform.isMacOS &&
+      !NakuDevice.isTV &&
+      widget.source.id != cinemaNASSource.id;
+
   CinemaPlaybackCandidate? _recommended;
+  bool get _onlyOriginalPlayable =>
+      !_variantChosen &&
+      !_routeChosen &&
+      !_discovering &&
+      !_comparison.running &&
+      _recommended == null &&
+      _originalAnchor != null &&
+      _originalEngine.preferred(_originalLookup?.matches) != null;
   void _comparisonChanged() {
     if (!mounted || _disposing) return;
     if (widget.source.id == cinemaNASSource.id) return;
+    _inspectOriginalWhenIdle();
     final measured = _comparison.measuredRecommendation;
-    final tier = _comparison.results[measured?.key]?.confirmedQualityTier ?? 0;
+    final tier = _comparison.results.values.fold<int>(
+      0,
+      (highest, result) => math.max(highest, result.confirmedQualityTier),
+    );
     widget.onQualityConfirmed?.call(tier);
     final best = measured ?? _comparison.recommended;
     if (!_variantChosen && !_routeChosen) {
@@ -5543,28 +5862,58 @@ class _TitleDetailsState extends State<_TitleDetails> {
     int route,
     int episode,
     List<CinemaTitle> variants,
-    bool manual,
-  ) {
+    bool manual, {
+    OriginalSelection? original,
+  }) {
     _comparison.pause();
-    source =
-        widget.store.sources.where((s) => s.id == title.sourceId).firstOrNull ??
-        source;
+    source = title.sourceId == originalCatalogSource.id
+        ? originalCatalogSource
+        : widget.store.sources
+                  .where((s) => s.id == title.sourceId)
+                  .firstOrNull ??
+              source;
     final recommendation = _recommended;
     final quality =
-        !manual &&
+        original == null &&
+            !manual &&
             recommendation?.title.key == title.key &&
             recommendation?.routeIndex == route &&
             recommendation?.episodeIndex == episode
         ? _comparison.results[recommendation!.key]
         : null;
+    final matches = _originalLookup?.matches;
+    final label = title.routes[route].episodes[episode].name;
+    final coordinate = originalEpisode(label);
+    final sameEpisode =
+        matches?.acceptsEpisode(label) ??
+        (label == _originalLabel ||
+            coordinate.episode != null &&
+                coordinate == originalEpisode(_originalLabel));
+    if (!_compactQuality &&
+        original == null &&
+        !manual &&
+        _onlyOriginalPlayable &&
+        sameEpisode) {
+      original = _originalEngine.preferred(matches);
+    }
     widget.onPlay(
-      title,
+      originalLibraryTitle(
+        title,
+        sameEpisode ? matches : null,
+        edition: original?.edition,
+        identity: _originalSubject,
+      ),
       source,
       route,
       episode,
-      variants,
-      manual || _recommended != null,
+      [
+        for (final variant in variants)
+          _comparison.catalogue.loaded(variant) ?? variant,
+      ],
+      manual || (!Platform.isMacOS && _recommended != null),
       quality,
+      original,
+      sameEpisode ? _originalLookup : null,
     );
   }
 
@@ -5600,18 +5949,24 @@ class _TitleDetailsState extends State<_TitleDetails> {
   void initState() {
     super.initState();
     _comparison.addListener(_comparisonChanged);
-    if (widget.source.id != cinemaNASSource.id) unawaited(_comparison.start());
+    if (Platform.isMacOS) {
+      MacOSSystemProxy.changes.addListener(_retryOriginalOnNetworkChange);
+    }
     _artworkRatings.changes.addListener(_onArtworkIdentityChanged);
     _variants = orderCinemaVariants(
       _variants,
       widget.store.enabledSources.map((source) => source.id),
     );
-    if (widget.resolvedDetail) {
+    if (widget.resolvedDetail && widget.source.id != originalCatalogSource.id) {
       _discovering = false;
     } else if (widget.resume == null && _variants.isNotEmpty) {
       _selectVariant(_variants.first, automatic: true);
     }
-    if (!widget.resolvedDetail) _discover();
+    _matchOriginal();
+    if (widget.source.id != cinemaNASSource.id) {
+      if (_discovering) _discover();
+      _comparison.resume();
+    }
   }
 
   void _discover() {
@@ -5649,7 +6004,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
             }
           },
           onDone: () {
-            if (mounted && !_disposing) setState(() => _discovering = false);
+            if (!mounted || _disposing) return;
+            setState(() => _discovering = false);
+            _inspectOriginalWhenIdle();
           },
           onError: (Object error, StackTrace stack) {
             if (mounted && !_disposing) {
@@ -5657,6 +6014,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
                 _discovering = false;
                 _discoveryFailed = true;
               });
+              _inspectOriginalWhenIdle();
             }
           },
         );
@@ -5822,6 +6180,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
   @override
   void dispose() {
     _disposing = true;
+    MacOSSystemProxy.changes.removeListener(_retryOriginalOnNetworkChange);
+    _originalLookup?.removeListener(_originalChanged);
+    _originalProbe?.cancel('离开详情');
     _comparison.removeListener(_comparisonChanged);
     _comparison.dispose();
     _artworkRatings.changes.removeListener(_onArtworkIdentityChanged);
@@ -5862,6 +6223,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
           ? Future.value(variant)
           : _comparison.load(variant);
     });
+    _matchOriginal();
   }
 
   /// Catalogue quality labels choose a starting route; the existing player
@@ -5911,24 +6273,92 @@ class _TitleDetailsState extends State<_TitleDetails> {
     }
   }
 
-  Widget _actions(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
-    final source = !_variantChosen && !_routeChosen && _recommended != null
-        ? _recommended!.source
-        : _selectedSource;
-    if (!_variantChosen && !_routeChosen && _recommended != null) {
-      title = _recommended!.title;
+  ({
+    CinemaPlaybackCandidate? regular,
+    ({CinemaPlaybackCandidate route, OriginalSelection selection})? original,
+  })
+  _qualityOptions(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
+    final selection = _originalEngine.preferred(_originalLookup?.matches);
+    final anchor = _originalAnchor;
+    CinemaPlaybackCandidate? regular = !_variantChosen && !_routeChosen
+        ? _recommended
+        : null;
+    if (regular == null &&
+        snapshot.hasData &&
+        title.sourceId != originalCatalogSource.id) {
+      final road = _preferredRoad(title);
+      if (road >= 0) {
+        final candidate = CinemaPlaybackCandidate(
+          title: title,
+          source: _selectedSource,
+          routeIndex: road,
+          episodeIndex: _preferredEpisode(title, road),
+        );
+        if (!_compactQuality ||
+            selection == null ||
+            anchor == null ||
+            _comparison.results[candidate.key]?.ok != false) {
+          regular = candidate;
+        }
+      }
     }
-    final playable = snapshot.hasData && _preferredRoad(title) >= 0;
+    // A catalogue can return a playable stream even when its server refuses
+    // the short media probe. Keep a real route available for a direct attempt.
+    if (_compactQuality &&
+        regular == null &&
+        (selection == null || anchor == null)) {
+      regular = _comparison.candidates.firstOrNull;
+    }
+    if (selection == null || !_compactQuality && !_onlyOriginalPlayable) {
+      return (regular: regular, original: null);
+    }
+    if (!_compactQuality && _onlyOriginalPlayable) regular = null;
+    if (regular != null &&
+        selection.matches.acceptsEpisode(regular.episode.name)) {
+      return (
+        regular: regular,
+        original: (route: regular, selection: selection),
+      );
+    }
+    if (anchor == null) return (regular: regular, original: null);
+    final route = CinemaPlaybackCandidate(
+      title: anchor,
+      source: anchor.sourceId == originalCatalogSource.id
+          ? originalCatalogSource
+          : _selectedSource,
+      routeIndex: _originalRoad,
+      episodeIndex: _originalEpisode,
+    );
+    return (regular: regular, original: (route: route, selection: selection));
+  }
+
+  void _playQuality(
+    CinemaPlaybackCandidate route, {
+    OriginalSelection? original,
+  }) {
+    _playCompared(
+      route.title,
+      route.source,
+      route.routeIndex,
+      route.episodeIndex,
+      _variants,
+      _variantChosen || _routeChosen,
+      original: original,
+    );
+  }
+
+  Widget _actions(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
+    final options = _qualityOptions(title, snapshot);
+    final original = options.regular == null ? options.original : null;
+    final target = options.regular ?? original?.route;
+    final playable = target != null;
+    title = target?.title ?? title;
+    final source = target?.source ?? _selectedSource;
+    final route = target?.routeIndex ?? 0;
     final saved = widget.resume ?? widget.store.historyFor(title);
     final tvResume = NakuDevice.isTV && saved != null && playable
         ? cinemaResumeSelection(title, saved)
         : null;
-    final route = title.routes.isEmpty
-        ? 0
-        : (_routeChosen ? _road : _preferredRoad(title)).clamp(
-            0,
-            title.routes.length - 1,
-          );
     return Wrap(
       spacing: 10,
       runSpacing: 10,
@@ -5949,11 +6379,11 @@ class _TitleDetailsState extends State<_TitleDetails> {
               ? () => _playCompared(
                   title,
                   source,
-                  tvResume?.routeIndex ?? _preferredRoad(title),
-                  tvResume?.episodeIndex ??
-                      _preferredEpisode(title, _preferredRoad(title)),
+                  tvResume?.routeIndex ?? target.routeIndex,
+                  tvResume?.episodeIndex ?? target.episodeIndex,
                   _variants,
                   _variantChosen || _routeChosen,
+                  original: original?.selection,
                 )
               : null,
           icon: const Icon(Icons.play_arrow_rounded, size: 25),
@@ -5964,9 +6394,17 @@ class _TitleDetailsState extends State<_TitleDetails> {
             tooltip: '下载',
             onPressed: () => showCinemaDownloadSheet(
               context,
-              title: title,
-              source: source,
+              title: originalLibraryTitle(
+                title,
+                _originalLookup?.matches,
+                identity: _originalSubject,
+              ),
+              source: title.sourceId == originalCatalogSource.id
+                  ? originalCatalogSource
+                  : source,
               routeIndex: route,
+              preferOriginal: original != null,
+              originalEngine: _originalEngine,
             ),
             icon: const Icon(Icons.download_rounded, size: 21),
           ),
@@ -5976,7 +6414,13 @@ class _TitleDetailsState extends State<_TitleDetails> {
               textStyle: const TextStyle(fontSize: 18),
             ),
             onPressed: () async {
-              await widget.store.toggleFavorite(title);
+              await widget.store.toggleFavorite(
+                originalLibraryTitle(
+                  title,
+                  _originalLookup?.matches,
+                  identity: _originalSubject,
+                ),
+              );
               if (mounted) setState(() {});
             },
             icon: Icon(
@@ -5990,7 +6434,13 @@ class _TitleDetailsState extends State<_TitleDetails> {
           IconButton(
             tooltip: widget.store.isFavorite(title) ? '取消收藏' : '收藏',
             onPressed: () async {
-              await widget.store.toggleFavorite(title);
+              await widget.store.toggleFavorite(
+                originalLibraryTitle(
+                  title,
+                  _originalLookup?.matches,
+                  identity: _originalSubject,
+                ),
+              );
               if (mounted) setState(() {});
             },
             icon: Icon(
@@ -6042,6 +6492,186 @@ class _TitleDetailsState extends State<_TitleDetails> {
     );
   }
 
+  String _qualityLabel(int tier) => switch (tier) {
+    0 => '待检测',
+    2160 => '4K',
+    4320 => '8K',
+    _ => '${tier}p',
+  };
+
+  Widget _qualityChip(
+    String label, {
+    required Key key,
+    required bool highlighted,
+    required VoidCallback onPlay,
+  }) {
+    final tint = _posterPalette.firstOrNull ?? const Color(0xFFB5C9D0);
+    return CinemaSourceGlow(
+      key: key,
+      active: highlighted,
+      dimmed: false,
+      color: tint,
+      original: true,
+      inline: true,
+      palette: _posterPalette,
+      reduceMotion:
+          CinemaAppearanceScope.of(context).reduceMotion ||
+          MediaQuery.disableAnimationsOf(context),
+      child: Semantics(
+        selected: highlighted,
+        child: ActionChip(
+          tooltip: label == '待检测' ? '自动播放' : '播放$label',
+          onPressed: onPlay,
+          avatar: highlighted
+              ? const Icon(Icons.check_rounded, size: 16, color: Colors.white)
+              : null,
+          label: Text(label),
+          labelStyle: CinemaTheme.of(context).textTheme.labelLarge?.copyWith(
+            color: highlighted ? Colors.white : CinemaTheme.muted,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+          ),
+          shape: const StadiumBorder(),
+          side: BorderSide(
+            color: highlighted
+                ? tint.withValues(alpha: .65)
+                : Colors.white.withValues(alpha: .2),
+          ),
+          backgroundColor: highlighted
+              ? Color.alphaBlend(
+                  tint.withValues(alpha: .15),
+                  const Color(0xFF222328),
+                )
+              : const Color(0xCC232429),
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+      ),
+    );
+  }
+
+  void _retryQualityOptions() {
+    if (_discovering || _comparison.running) return;
+    setState(() {
+      _discovering = true;
+      _discoveryFailed = false;
+      if (_selectedTitle.sourceId != originalCatalogSource.id) {
+        _detail = _comparison.load(_selectedTitle, retry: true);
+      }
+    });
+    if (_originalSubject != null) {
+      _originalSearch.invalidate(_originalSubject!, _originalLabel);
+      _matchOriginal();
+    }
+    _discover();
+    unawaited(_comparison.start(refresh: true));
+  }
+
+  Future<void> _pickQualityEpisode(
+    List<CinemaPlaybackCandidate> choices,
+  ) async {
+    final choice = await showDialog<CinemaPlaybackCandidate>(
+      context: context,
+      useRootNavigator: false,
+      builder: (dialog) => AlertDialog(
+        title: const Text('选集'),
+        contentPadding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+        content: SizedBox(
+          width: 320,
+          height: math.min(400.0, choices.length * 48.0),
+          child: ListView.builder(
+            itemExtent: 48,
+            itemCount: choices.length,
+            itemBuilder: (_, index) {
+              final route = choices[index];
+              return ListTile(
+                title: Text(
+                  route.episode.name,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                onTap: () => Navigator.of(dialog).pop(route),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    final best = _recommended;
+    // Preserve a known measurement for this episode only.
+    if (best != null &&
+        cinemaMatchPlaybackEpisode(
+              current: choice,
+              target: best.title,
+              routeIndex: best.routeIndex,
+            ) ==
+            best.episodeIndex) {
+      _playQuality(best);
+    } else {
+      _playQuality(choice);
+    }
+  }
+
+  Widget _qualityControls(
+    CinemaTitle title,
+    AsyncSnapshot<CinemaTitle> snapshot,
+  ) {
+    final options = _qualityOptions(title, snapshot);
+    final regular = options.regular, original = options.original;
+    final sample = regular == null ? null : _comparison.results[regular.key];
+    final episodes = _comparison.episodeChoices(original: original?.route);
+    final working =
+        _discovering ||
+        _comparison.running ||
+        _originalLookup?.done == false ||
+        snapshot.connectionState == ConnectionState.waiting;
+    return Wrap(
+      key: const ValueKey('cinema-detail-qualities'),
+      spacing: 12,
+      runSpacing: 10,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        if (regular != null)
+          _qualityChip(
+            _qualityLabel(sample?.confirmedQualityTier ?? 0),
+            key: const ValueKey('detail-quality-regular'),
+            highlighted: sample?.ok == true,
+            onPlay: () => _playQuality(regular),
+          ),
+        if (original != null)
+          _qualityChip(
+            '原画',
+            key: const ValueKey('source-original'),
+            highlighted: regular == null,
+            onPlay: () =>
+                _playQuality(original.route, original: original.selection),
+          ),
+        if (regular == null && original == null)
+          if (working)
+            const Text(
+              '查找中…',
+              style: TextStyle(color: CinemaTheme.muted, fontSize: 13),
+            )
+          else ...[
+            const Text(
+              '暂无可播放资源',
+              style: TextStyle(color: CinemaTheme.muted, fontSize: 13),
+            ),
+            TextButton(
+              onPressed: _retryQualityOptions,
+              child: const Text('重试'),
+            ),
+          ],
+        if (episodes.isNotEmpty)
+          TextButton.icon(
+            key: const ValueKey('detail-quality-episodes'),
+            onPressed: () => _pickQualityEpisode(episodes),
+            icon: const Icon(Icons.playlist_play_rounded, size: 19),
+            label: const Text('选集'),
+          ),
+      ],
+    );
+  }
+
   Widget _variantLabel(CinemaTitle variant) {
     final choice = _comparison.forVariant(variant);
     final measured = choice == null ? null : _comparison.results[choice.key];
@@ -6054,17 +6684,19 @@ class _TitleDetailsState extends State<_TitleDetails> {
     final width = measured?.width ?? 0, height = measured?.height ?? 0;
     final quality = switch (measured?.confirmedQualityTier ?? 0) {
       0 => _comparison.pending.contains(choice?.key) ? '检测中' : '待检测',
-      4320 => '8K',
-      2160 => '4K',
-      final tier => '${tier}p',
+      final tier => _qualityLabel(tier),
     };
-    final speed = measured?.ok == true && measured?.mbps != null
-        ? '${measured!.mbps!.toStringAsFixed(1)} Mbps'
-        : '';
-    final summary = [quality, if (speed.isNotEmpty) speed].join(' · ');
+    final rate = measured?.mbps;
+    final speed =
+        measured?.ok == true && rate != null && rate.isFinite && rate > 0
+        ? '${rate.toStringAsFixed(rate >= 10 ? 0 : 1)} Mbps'
+        : null;
+    final summary = [
+      quality,
+      if (Platform.isMacOS && speed != null) speed,
+    ].join(' · ');
     final detail = [
       if ((measured?.confirmedQualityTier ?? 0) > 0) '$width × $height',
-      if (measured?.firstByteMs != null) '响应 ${measured!.firstByteMs} ms',
       if (measured?.ok == false) measured!.reason,
       if (_comparison.catalogue.errors.containsKey(variant.key))
         _comparison.catalogue.errors[variant.key]!,
@@ -6113,6 +6745,8 @@ class _TitleDetailsState extends State<_TitleDetails> {
     CinemaTitle title,
     AsyncSnapshot<CinemaTitle> snapshot,
   ) {
+    if (_compactQuality) return _qualityControls(title, snapshot);
+    if (_onlyOriginalPlayable) title = _originalAnchor!;
     final recommendedKey = _variantChosen || _routeChosen
         ? null
         : _comparison.measuredRecommendation?.title.key;
@@ -6163,6 +6797,20 @@ class _TitleDetailsState extends State<_TitleDetails> {
             0,
             title.routes.length - 1,
           );
+    final preferredOriginal = _originalEngine.preferred(
+      _originalLookup?.matches,
+    );
+    final ordinaryVariants = <String, CinemaTitle>{};
+    for (final v in _variants.where(
+      (v) => v.sourceId != originalCatalogSource.id,
+    )) {
+      ordinaryVariants.putIfAbsent(
+        v.sourceId,
+        () => _variantChosen && v.sourceId == _selectedTitle.sourceId
+            ? _selectedTitle
+            : _comparison.measuredForSource(v.sourceId)?.title ?? v,
+      );
+    }
     return Padding(
       padding: const EdgeInsets.only(top: 8),
       child: Column(
@@ -6172,20 +6820,12 @@ class _TitleDetailsState extends State<_TitleDetails> {
             children: [
               Expanded(
                 child: Text(
-                  selectedSource.name,
+                  '播放资源',
                   style: const TextStyle(
                     color: CinemaTheme.muted,
                     fontSize: 12,
                   ),
                 ),
-              ),
-              IconButton(
-                tooltip: '重新检测画质与速度',
-                visualDensity: VisualDensity.compact,
-                onPressed: _comparison.running
-                    ? null
-                    : () => unawaited(_comparison.start(refresh: true)),
-                icon: const Icon(Icons.speed_rounded, size: 18),
               ),
               if (_discovering || _comparison.running)
                 const SizedBox(
@@ -6200,8 +6840,95 @@ class _TitleDetailsState extends State<_TitleDetails> {
             Wrap(
               spacing: 6,
               runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                for (final variant in _variants)
+                if (_originalLookup case final lookup?)
+                  if (preferredOriginal case (
+                    matches: final matches,
+                    edition: final edition,
+                  ))
+                    CinemaSourceGlow(
+                      active: _originalAnchor != null,
+                      original: true,
+                      palette: _posterPalette,
+                      dimmed: false,
+                      color:
+                          _posterPalette.firstOrNull ?? const Color(0xFFB5C9D0),
+                      reduceMotion:
+                          CinemaAppearanceScope.of(context).reduceMotion ||
+                          MediaQuery.disableAnimationsOf(context),
+                      child: ActionChip(
+                        key: const ValueKey('source-original'),
+                        shape: const StadiumBorder(),
+                        side: BorderSide(
+                          color: Colors.white.withValues(
+                            alpha: _originalAnchor != null ? .12 : .26,
+                          ),
+                        ),
+                        backgroundColor: const Color(0xDC222329),
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        avatar: Icon(
+                          Icons.high_quality_outlined,
+                          size: 17,
+                          color: _originalAnchor == null
+                              ? null
+                              : CinemaTheme.text.withValues(alpha: .84),
+                        ),
+                        label: Text(
+                          [
+                            '原画',
+                            if (_originalEngine.measured(matches, edition)
+                                case final video?)
+                              '${video.width}×${video.height}'
+                            else if (!edition.chineseSubtitles)
+                              '${matches.editions.length} 个版本',
+                            if (edition.chineseSubtitles) '中字',
+                          ].join(' · '),
+                        ),
+                        onPressed: _originalAnchor == null
+                            ? null
+                            : () {
+                                _playCompared(
+                                  _originalAnchor!,
+                                  widget.source,
+                                  _originalRoad,
+                                  _originalEpisode,
+                                  _variants,
+                                  true,
+                                  original: preferredOriginal,
+                                );
+                              },
+                      ),
+                    )
+                  else
+                    ActionChip(
+                      key: const ValueKey('source-original-status'),
+                      avatar: lookup.done
+                          ? const Icon(Icons.refresh_rounded, size: 15)
+                          : const SizedBox.square(
+                              dimension: 12,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 1.5,
+                              ),
+                            ),
+                      label: Text(
+                        !lookup.done
+                            ? '原画 · 匹配中'
+                            : lookup.incomplete
+                            ? '原画 · 连接失败，重试'
+                            : '原画 · 暂无匹配',
+                      ),
+                      onPressed: lookup.done
+                          ? () {
+                              _originalSearch.invalidate(
+                                _originalSubject!,
+                                _originalLabel,
+                              );
+                              _matchOriginal();
+                            }
+                          : null,
+                    ),
+                for (final variant in ordinaryVariants.values)
                   CinemaSourceGlow(
                     key: ValueKey('source-glow:${variant.key}'),
                     active: recommendedKey == variant.key,
@@ -6249,72 +6976,89 @@ class _TitleDetailsState extends State<_TitleDetails> {
             ),
             const SizedBox(height: 10),
             FilledButton.tonal(
-              onPressed: () => setState(() {
-                _detail = widget.repository.detail(
-                  _selectedSource,
-                  _selectedTitle,
+              onPressed: () {
+                setState(
+                  () => _detail = widget.repository.detail(
+                    _selectedSource,
+                    _selectedTitle,
+                  ),
                 );
-              }),
+                _matchOriginal();
+              },
               child: const Text('重试'),
             ),
           ],
-          if (snapshot.hasData && title.routes.isEmpty) ...[
+          if (snapshot.hasData &&
+              title.routes.isEmpty &&
+              !_discovering &&
+              _originalAnchor == null) ...[
             const SizedBox(height: 14),
             const Text(
               '这个结果暂未提供可播放线路，可尝试其他片源。',
               style: TextStyle(color: CinemaTheme.muted, fontSize: 12),
             ),
           ],
-          if (snapshot.hasData && title.routes.isNotEmpty) ...[
+          if ((snapshot.hasData ||
+                  _onlyOriginalPlayable ||
+                  _recommended != null) &&
+              title.routes.isNotEmpty) ...[
             const SizedBox(height: 16),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                for (var r = 0; r < title.routes.length; r++)
-                  ChoiceChip(
-                    showCheckmark: false,
-                    side: BorderSide.none,
-                    backgroundColor: Colors.transparent,
-                    selectedColor: Colors.white.withValues(alpha: .08),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
+            if (title.routes.length > 1)
+              PopupMenuButton<int>(
+                key: const ValueKey('detail-route-menu'),
+                tooltip: '选择线路',
+                onSelected: (r) {
+                  setState(() {
+                    _selectedTitle = title;
+                    _selectedSource = selectedSource;
+                    _detail = Future.value(title);
+                    _variantChosen = true;
+                    _routeChosen = true;
+                    _road = r;
+                  });
+                  _matchOriginal();
+                },
+                itemBuilder: (_) => [
+                  for (var r = 0; r < title.routes.length; r++)
+                    CheckedPopupMenuItem(
+                      value: r,
+                      checked: road == r,
+                      child: Text(title.routes[r].name),
                     ),
-                    label: Text(title.routes[r].name),
-                    selected: road == r,
-                    onSelected: (_) => setState(() {
-                      _selectedTitle = title;
-                      _selectedSource = selectedSource;
-                      _detail = Future.value(title);
-                      _variantChosen = true;
-                      _routeChosen = true;
-                      _road = r;
-                    }),
+                ],
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [Text('选择线路'), Icon(Icons.expand_more, size: 16)],
                   ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (var e = 0; e < title.routes[road].episodes.length; e++)
-                  TextButton(
-                    style: TextButton.styleFrom(
-                      foregroundColor: CinemaTheme.text,
+                ),
+              ),
+            if (title.routes[road].episodes.length > 1 ||
+                !cinemaHasMovieVersions(title, road))
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (var e = 0; e < title.routes[road].episodes.length; e++)
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        foregroundColor: CinemaTheme.text,
+                      ),
+                      onPressed: () => _playCompared(
+                        title,
+                        selectedSource,
+                        road,
+                        e,
+                        _variants,
+                        _variantChosen ||
+                            _routeChosen ||
+                            cinemaHasMovieVersions(title, road),
+                      ),
+                      child: Text(title.routes[road].episodes[e].name),
                     ),
-                    onPressed: () => _playCompared(
-                      title,
-                      selectedSource,
-                      road,
-                      e,
-                      _variants,
-                      _variantChosen || _routeChosen,
-                    ),
-                    child: Text(title.routes[road].episodes[e].name),
-                  ),
-              ],
-            ),
+                ],
+              ),
           ],
         ],
       ),
@@ -6436,6 +7180,10 @@ class _TitleDetailsState extends State<_TitleDetails> {
     ),
   );
 
+  static final _episodeStatus = RegExp(
+    r'(?:更新至|更新到|全|共|第)\s*(?:第\s*)?[0-9零一二三四五六七八九十百两]+\s*(?:集|话|話|期)|已完[结結]|完[结結]|[连連][载載]中',
+  );
+
   Widget _layout(
     BuildContext context,
     CinemaTitle title,
@@ -6455,7 +7203,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
       final latestStart = (height - 220).clamp(60.0, 440.0);
       final informationTop = hasArtwork
           ? (height * (wide ? .48 : .40))
-                .clamp(wide ? 228.0 : 172.0, wide ? 440.0 : 320.0)
+                .clamp(wide ? 228.0 : 172.0, wide ? 428.0 : 320.0)
                 .clamp(60.0, latestStart)
           : 60.0;
       final feather = hasArtwork
@@ -6479,7 +7227,10 @@ class _TitleDetailsState extends State<_TitleDetails> {
             [
               title.year,
               title.category,
-              title.remarks,
+              if (_compactQuality)
+                ?_episodeStatus.firstMatch(title.remarks)?.group(0)
+              else
+                title.remarks,
             ].where((value) => value.isNotEmpty).join(' · '),
             style: const TextStyle(color: CinemaTheme.muted, fontSize: 12),
           ),
@@ -6499,8 +7250,11 @@ class _TitleDetailsState extends State<_TitleDetails> {
           CinemaNeonRegion(
             key: const ValueKey('cinema-detail-sources-region'),
             ready:
+                _compactQuality &&
+                    (_recommended != null || _originalAnchor != null) ||
+                _originalLookup != null ||
                 snapshot.connectionState == ConnectionState.done &&
-                !_discovering,
+                    !_discovering,
             child: _sourceControls(title, snapshot),
           ),
         ],
@@ -6526,27 +7280,32 @@ class _TitleDetailsState extends State<_TitleDetails> {
                     palette: _posterPalette,
                   ),
                 ),
-                Padding(
-                  key: const ValueKey('cinema-detail-information-surface'),
-                  padding: EdgeInsets.fromLTRB(
-                    wide ? 38 : 20,
-                    feather,
-                    wide ? 38 : 20,
-                    32,
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minHeight: math.max(0, height - informationTop + feather),
                   ),
-                  child: wide
-                      ? Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(flex: 5, child: left),
-                            const SizedBox(width: 28),
-                            Expanded(flex: 6, child: right),
-                          ],
-                        )
-                      : Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [left, const SizedBox(height: 24), right],
-                        ),
+                  child: Padding(
+                    key: const ValueKey('cinema-detail-information-surface'),
+                    padding: EdgeInsets.fromLTRB(
+                      wide ? 38 : 20,
+                      feather,
+                      wide ? 38 : 20,
+                      32,
+                    ),
+                    child: wide
+                        ? Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(flex: 5, child: left),
+                              const SizedBox(width: 28),
+                              Expanded(flex: 6, child: right),
+                            ],
+                          )
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [left, const SizedBox(height: 24), right],
+                          ),
+                  ),
                 ),
               ],
             ),
@@ -6784,6 +7543,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
             child: ClipRRect(
               borderRadius: BorderRadius.circular(24),
               child: Stack(
+                fit: StackFit.expand,
                 children: [
                   const Positioned.fill(
                     child: IgnorePointer(
@@ -6960,7 +7720,7 @@ class _DetailInformationFrostPainter extends CustomPainter {
     }
     canvas.drawRect(
       bounds,
-      Paint()..color = const Color(0xFF1B1B1F).withValues(alpha: .86),
+      Paint()..color = const Color(0xFF1B1B1F).withValues(alpha: .92),
     );
   }
 

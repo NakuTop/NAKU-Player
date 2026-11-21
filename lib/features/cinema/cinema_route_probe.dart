@@ -121,6 +121,7 @@ class CinemaRouteProbeBatch {
     CancelToken? cancel,
     Duration budget = const Duration(seconds: 10),
     Duration probeTimeout = const Duration(seconds: 6),
+    int concurrency = 2,
     void Function(CinemaRouteProbeTarget target, CinemaMediaProbeResult result)?
     onResult,
   }) async {
@@ -163,7 +164,10 @@ class CinemaRouteProbeBatch {
     }
 
     try {
-      await Future.wait([worker(), worker()]);
+      await Future.wait([
+        for (var i = 0; i < targets.length && i < concurrency.clamp(1, 4); i++)
+          worker(),
+      ]);
       // Completion order is affected by latency; ties use the original plan.
       return [
         for (final target in targets)

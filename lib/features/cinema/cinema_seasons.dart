@@ -17,6 +17,20 @@ final _episode = RegExp(
 );
 
 String cinemaCatalogId(String id) => _seasonId.firstMatch(id)?[1] ?? id;
+
+bool cinemaMatchesWorkQuery(CinemaTitle title, String query) {
+  if (cinemaSameSearchTitle(title.title, query, title.year)) return true;
+  if (RegExp(
+    '解说|解說|影评|影評|预告|預告|花絮',
+  ).hasMatch('${title.title} ${title.category}')) {
+    return false;
+  }
+  return [
+    if (title.doubanId.isNotEmpty) cinemaRegionalTitle(title.title, title.year),
+    ...cinemaTitleAliases(title.aliases),
+  ].any((name) => cinemaSameSearchTitle(name, query, title.year));
+}
+
 bool cinemaIsSeasonProjection(CinemaTitle title) =>
     _seasonId.hasMatch(title.id);
 
@@ -24,7 +38,6 @@ List<String> cinemaWorkQueries(CinemaTitle title) {
   final name = cinemaSourceQuery(cinemaCleanWorkTitle(title.title, title.year));
   return {
     ...cinemaWorkSearchQueries(name),
-    if (cinemaSeasonName(name) case final season?) season.work,
     for (final alias in cinemaTitleAliases(title.aliases).take(3))
       cinemaSourceQuery(alias),
   }.where((query) => query.isNotEmpty).take(6).toList();

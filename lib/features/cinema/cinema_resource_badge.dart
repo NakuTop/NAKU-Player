@@ -11,10 +11,12 @@ class CinemaResourceBadge extends StatefulWidget {
     required this.title,
     required this.sources,
     required this.service,
+    this.compact = false,
   });
   final CinemaTitle title;
   final List<CinemaSource> sources;
   final CinemaResourceAvailabilityService service;
+  final bool compact;
   @override
   State<CinemaResourceBadge> createState() => _CinemaResourceBadgeState();
 }
@@ -68,28 +70,48 @@ class _CinemaResourceBadgeState extends State<CinemaResourceBadge> {
   Widget build(BuildContext context) =>
       ValueListenableBuilder<CinemaResourceAvailability>(
         valueListenable: widget.service.entry(widget.title, widget.sources),
-        builder: (_, value, _) => Tooltip(
-          message: value.state == CinemaResourceState.found
-              ? '已找到带播放线路的片源；实际画质和播放情况以打开后的检测为准'
-              : value.state == CinemaResourceState.incomplete
-              ? '部分片源超时或不可用，暂时无法确定是否有资源；点击影片可重试'
-              : '检查已启用片源 ${value.checked}/${value.total}；暂未找到不代表影片永远没有资源',
-          child: Container(
-            key: ValueKey('resource-${value.state.name}'),
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
-            decoration: BoxDecoration(
-              color: value.state == CinemaResourceState.found
-                  ? const Color(0xFF225445).withValues(alpha: .95)
-                  : Colors.black.withValues(alpha: .85),
-              borderRadius: BorderRadius.circular(5),
+        builder: (_, value, _) {
+          final label = widget.compact
+              ? switch (value.state) {
+                  CinemaResourceState.waiting ||
+                  CinemaResourceState.checking => '',
+                  CinemaResourceState.found =>
+                    value.confirmedQualityTier >= 4320
+                        ? '8K'
+                        : value.confirmedQualityTier >= 2160
+                        ? '4K'
+                        : '有片源',
+                  CinemaResourceState.missing => '暂无片源',
+                  CinemaResourceState.incomplete => '待确认',
+                  CinemaResourceState.noSources => '未启用片源',
+                }
+              : value.label;
+          if (label.isEmpty) return const SizedBox.shrink();
+          return Tooltip(
+            message: value.state == CinemaResourceState.found
+                ? '已找到带播放线路的片源；实际画质和播放情况以打开后的检测为准'
+                : value.state == CinemaResourceState.incomplete
+                ? '部分片源超时或不可用，暂时无法确定是否有资源；点击影片可重试'
+                : '检查已启用片源 ${value.checked}/${value.total}；暂未找到不代表影片永远没有资源',
+            child: Container(
+              key: ValueKey('resource-${value.state.name}'),
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
+              decoration: BoxDecoration(
+                color: widget.compact
+                    ? const Color(0xC3242529)
+                    : value.state == CinemaResourceState.found
+                    ? const Color(0xF2225445)
+                    : Colors.black.withValues(alpha: .85),
+                borderRadius: BorderRadius.circular(widget.compact ? 7 : 5),
+              ),
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 10, color: CinemaTheme.text),
+              ),
             ),
-            child: Text(
-              value.label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 10, color: CinemaTheme.text),
-            ),
-          ),
-        ),
+          );
+        },
       );
 }

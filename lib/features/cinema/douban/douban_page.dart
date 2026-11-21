@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:kazumi/services/network/proxy_aware_image_cache_manager.dart';
 import '../cinema_theme.dart';
+import '../cinema_poster_lift.dart';
 import '../cinema_navigation_island.dart';
 import '../cinema_swipe_navigation.dart';
 import 'douban_models.dart';
@@ -187,10 +188,11 @@ class _DoubanPageState extends State<DoubanPage> {
       final returning = _showCharts;
       setState(() => _showCharts = false);
       final kind = DoubanKind.values.byName(value);
-      if (returning && kind == _kind)
+      if (returning && kind == _kind) {
         _resumeKind(kind);
-      else
+      } else {
         _selectKind(kind);
+      }
     }
   }
 
@@ -324,17 +326,20 @@ class _DoubanPageState extends State<DoubanPage> {
     return SizedBox(
       width: 54,
       height: 81,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(6),
-        child: item.poster.isNotEmpty
-            ? image(item.poster)
-            : FutureBuilder<String>(
-                future: _chartPosters.putIfAbsent(
-                  item.id,
-                  () => _repository.chartPoster(item.id),
+      child: CinemaPosterLift(
+        radius: 6,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: item.poster.isNotEmpty
+              ? image(item.poster)
+              : FutureBuilder<String>(
+                  future: _chartPosters.putIfAbsent(
+                    item.id,
+                    () => _repository.chartPoster(item.id),
+                  ),
+                  builder: (_, snapshot) => image(snapshot.data ?? ''),
                 ),
-                builder: (_, snapshot) => image(snapshot.data ?? ''),
-              ),
+        ),
       ),
     );
   }
@@ -1253,26 +1258,16 @@ class _DoubanPageState extends State<DoubanPage> {
 
   Widget _card(DoubanTitle item) => InkWell(
     key: ValueKey('douban-${item.id}'),
+    hoverColor: defaultTargetPlatform == TargetPlatform.macOS
+        ? Colors.transparent
+        : null,
     onTap: () => widget.onSelect(item),
     borderRadius: BorderRadius.circular(10),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Expanded(
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(9),
-              boxShadow: _cinemaLayout
-                  ? const [
-                      BoxShadow(
-                        color: Color(0x70000000),
-                        blurRadius: 22,
-                        spreadRadius: -3,
-                        offset: Offset(0, 9),
-                      ),
-                    ]
-                  : const [],
-            ),
+          child: CinemaPosterLift(
             child: ClipRRect(
               borderRadius: BorderRadius.circular(9),
               child: SizedBox.expand(

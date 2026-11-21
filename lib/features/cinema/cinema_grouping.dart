@@ -134,7 +134,11 @@ List<CinemaTitleGroup> groupCinemaTitles(
     });
   for (final title in prioritized) {
     final candidate = _Candidate(title);
-    final lookup = {candidate.name, ...candidate.aliases};
+    final lookup = {
+      candidate.name,
+      candidate.regionalName,
+      ...candidate.aliases,
+    };
     final possible = lookup
         .expand((key) => byName[key] ?? const <_Group>[])
         .toSet()
@@ -175,6 +179,29 @@ List<CinemaTitleGroup> groupCinemaTitles(
 
 enum _Kind { movie, series, anime, documentary, commentary, unknown }
 
+Set<String> _credits(String value) => value
+    .split(RegExp(r'[,，、/|;；]'))
+    .map(
+      (s) => cinemaIdentityTypography(
+        s,
+      ).toLowerCase().replaceAll(RegExp(r'[\s·・.]+'), ''),
+    )
+    .where(
+      (s) =>
+          s.length >= 2 &&
+          !const {
+            '未知',
+            '暂无',
+            '不详',
+            '佚名',
+            '待定',
+            '未提供',
+            'unknown',
+            'null',
+          }.contains(s),
+    )
+    .toSet();
+
 class _Candidate {
   _Candidate(this.title)
     : name = cinemaGroupedWorkTitleKey(title.title, title.year),
@@ -195,6 +222,12 @@ class _Candidate {
   final String doubanId;
   final _Kind kind;
   final int? year;
+  late final regionalName = kind == _Kind.movie && doubanId.isNotEmpty
+      ? cinemaGroupedWorkTitleKey(
+          cinemaRegionalTitle(title.title, title.year),
+          title.year,
+        )
+      : name;
 }
 
 class _Group {
@@ -222,7 +255,41 @@ class _Group {
       return false;
     }
     if (year != null && candidate.year != null && year != candidate.year) {
-      return false;
+      if (kind != _Kind.movie ||
+          candidate.kind != _Kind.movie ||
+          (year! - candidate.year!).abs() != 1) {
+        return false;
+      }
+      // Regional release dates may straddle a year. Require the same subject
+      // and name, or a member already verified with this exact name and year.
+      return variants.any((v) {
+        final known = _Candidate(v);
+        if (known.year != null &&
+            (known.year! - candidate.year!).abs() == 1 &&
+            known.regionalName == candidate.regionalName &&
+            known.regionalName.isNotEmpty &&
+            _credits(
+              v.director,
+            ).intersection(_credits(candidate.title.director)).isNotEmpty &&
+            (known.doubanId.isNotEmpty &&
+                    known.doubanId == candidate.doubanId ||
+                _credits(
+                      v.actors,
+                    ).intersection(_credits(candidate.title.actors)).length >=
+                    2)) {
+          return true;
+        }
+        return known.name == candidate.name && known.year == candidate.year ||
+            known.doubanId.isNotEmpty &&
+                known.doubanId == candidate.doubanId &&
+                known.regionalName == candidate.regionalName &&
+                (known.regionalName != known.name ||
+                    candidate.regionalName != candidate.name ||
+                    known.title.releaseDateText.contains(
+                      '${candidate.year}-',
+                    ) ||
+                    candidate.title.releaseDateText.contains('${known.year}-'));
+      });
     }
     if (kind != _Kind.unknown &&
         candidate.kind != _Kind.unknown &&

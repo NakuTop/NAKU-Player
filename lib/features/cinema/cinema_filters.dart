@@ -3,8 +3,9 @@ import 'cinema_media_identity.dart';
 import 'cinema_models.dart';
 import 'cinema_theme.dart';
 
-String cinemaSearchKey(String value) =>
-    value.toLowerCase().replaceAll(RegExp(r'[\s·・,，、/：:;；\-_.()（）]'), '');
+String cinemaSearchKey(String value) => cinemaIdentityTypography(
+  value,
+).toLowerCase().replaceAll(RegExp(r'[\s·・,、/。:;!?\-_.()…—]'), '');
 
 bool cinemaMatchesKeyword(CinemaTitle title, String keyword) {
   final season = cinemaSeasonName(keyword);

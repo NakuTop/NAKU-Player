@@ -5,14 +5,19 @@ import 'package:dio/io.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 import 'cinema_models.dart';
 import 'cinema_media_identity.dart';
+import 'cinema_rating_lookup.dart' show cinemaImdbSuggestionId;
 import 'cinema_douban_access.dart';
 import 'cinema_filters.dart' show cinemaSearchKey;
+import 'cinema_seasons.dart' show cinemaSourceQuery;
 
 class CinemaDiscoveryTitle {
   const CinemaDiscoveryTitle({
     required this.id,
     required this.title,
     this.originalTitle = '',
+    this.imdbId = '',
+    this.seriesPremiere = '',
+    this.episodeCount = 0,
     this.aliases = '',
     this.year = '',
     this.poster = '',
@@ -24,6 +29,7 @@ class CinemaDiscoveryTitle {
     this.identityVerified = false,
   });
   final String id,
+      imdbId,
       title,
       originalTitle,
       aliases,
@@ -33,6 +39,8 @@ class CinemaDiscoveryTitle {
       actors,
       genres,
       area;
+  final String seriesPremiere;
+  final int episodeCount;
   final double? score;
 
   /// Exact ID, type and year were supplied by public subject metadata, or by
@@ -159,8 +167,13 @@ class CinemaSearchDiscoveryRepository {
   final DateTime Function() _now;
   final _cache = <String, (DateTime, CinemaSearchDiscovery)>{};
   final _workCache = <String, (DateTime, CinemaSearchDiscovery)>{};
-  final _identityCache = <String, (DateTime, CinemaSearchDiscovery)>{};
-  final _identityPending = <String, Future<CinemaSearchDiscovery>>{};
+  final _identityCache =
+      <
+        (String, bool, String, String, int),
+        (DateTime, CinemaSearchDiscovery)
+      >{};
+  final _identityPending =
+      <(String, bool, String, String, int), Future<CinemaSearchDiscovery>>{};
   final _people = <String, CinemaDiscoveryPerson>{};
   // Actor failures share a short cooldown by verified identity, independently
   // of punctuation-sensitive movie query caching. An explicit actor retry may
@@ -340,8 +353,30 @@ class CinemaSearchDiscoveryRepository {
   /// Identity lookups verify suggestion records against public subject metadata.
   /// Unverified suggestions remain suggestions; a restricted subject endpoint
   /// may use the existing explicit Wikidata identity crosswalk instead.
-  Future<CinemaSearchDiscovery> searchForIdentity(String keyword) async {
-    final key = keyword.trim().toLowerCase();
+  Future<CinemaSearchDiscovery> searchForIdentity(String keyword) =>
+      _identities(keyword, false);
+
+  /// A release name can use a verified work even without a Douban crosswalk.
+  /// These records are private to original matching, never used for ratings.
+  Future<List<CinemaDiscoveryTitle>> originalNames(
+    String keyword, {
+    CinemaTitle? subject,
+  }) async => (await _identities(keyword, true, subject: subject)).titles;
+
+  Future<CinemaSearchDiscovery> _identities(
+    String keyword,
+    bool originalNames, {
+    CinemaTitle? subject,
+  }) async {
+    final subjectId = parseCinemaDoubanId(subject?.doubanId);
+    final year = subject?.year ?? '';
+    final key = (
+      keyword.trim().toLowerCase(),
+      originalNames,
+      subjectId,
+      year,
+      originalNames ? MacOSSystemProxy.revision : 0,
+    );
     final cached = _identityCache[key];
     if (cached != null) {
       final age = _now().difference(cached.$1);
@@ -352,19 +387,124 @@ class CinemaSearchDiscoveryRepository {
     }
     return _identityPending.putIfAbsent(
       key,
-      () => _searchVerifiedIdentity(keyword)
-          .then((result) {
-            _identityCache.remove(key);
-            _identityCache[key] = (_now(), result);
-            while (_identityCache.length > 40) {
-              _identityCache.remove(_identityCache.keys.first);
-            }
-            return result;
-          })
-          .whenComplete(() {
-            _identityPending.remove(key);
-          }),
+      () =>
+          (originalNames
+                  ? _searchOriginalNames(keyword, subjectId, year)
+                  : _searchVerifiedIdentity(keyword))
+              .then((result) {
+                _identityCache.remove(key);
+                _identityCache[key] = (_now(), result);
+                while (_identityCache.length > 40) {
+                  _identityCache.remove(_identityCache.keys.first);
+                }
+                return result;
+              })
+              .whenComplete(() {
+                _identityPending.remove(key);
+              }),
     );
+  }
+
+  Future<CinemaSearchDiscovery> _searchOriginalNames(
+    String keyword,
+    String subjectId,
+    String year,
+  ) async {
+    final season = cinemaSeasonName(keyword);
+    if (season != null) {
+      try {
+        final matches = (await _wikidataSearch(
+          season.work,
+          null,
+          originalNames: true,
+          releaseYear: year,
+          requestedSeason: season,
+        )).$1;
+        if (matches.length == 1) return CinemaSearchDiscovery(titles: matches);
+      } on Exception {
+        // A season can also have its own catalogue entry.
+      }
+    }
+    List<CinemaDiscoveryTitle> publicNames = const [];
+    Exception? publicError;
+    try {
+      publicNames = (await _wikidataSearch(
+        cinemaSourceQuery(keyword),
+        null,
+        originalNames: true,
+        releaseYear: year,
+      )).$1;
+    } on Exception catch (error) {
+      publicError = error;
+    }
+    bool hasReleaseName(CinemaDiscoveryTitle title) {
+      final names = [
+        title.title,
+        title.originalTitle,
+        ...cinemaTitleAliases(title.aliases),
+      ];
+      return title.identityVerified &&
+          (subjectId.isEmpty ||
+              title.id == subjectId ||
+              title.id.startsWith('wikidata:') &&
+                  title.year == year &&
+                  title.imdbId.isNotEmpty) &&
+          (year.isEmpty || title.year == year || title.id == subjectId) &&
+          names.any(
+            (name) => cinemaSameSearchTitle(name, keyword, title.year),
+          ) &&
+          names.any((name) => RegExp(r'[a-zA-Z]').hasMatch(name));
+    }
+
+    if (publicNames.any(hasReleaseName)) {
+      return CinemaSearchDiscovery(titles: publicNames);
+    }
+    if (RegExp(r'^(?:19|20)\d{2}$').hasMatch(year)) {
+      // Short names often rank myths, people or older adaptations first in
+      // label search. Search the year as well, then verify each entity again.
+      try {
+        final more = (await _wikidataSearch(
+          cinemaSourceQuery(keyword),
+          null,
+          originalNames: true,
+          releaseYear: year,
+          searchByYear: true,
+        )).$1;
+        final combined = {
+          for (final t in [...publicNames, ...more]) t.id: t,
+        };
+        publicNames = combined.values.toList();
+        if (publicNames.any(hasReleaseName)) {
+          return CinemaSearchDiscovery(titles: publicNames);
+        }
+      } on Exception catch (error) {
+        publicError ??= error;
+      }
+    }
+    if (subjectId.isNotEmpty) {
+      final direct = await _hydrate(
+        [CinemaDiscoveryTitle(id: subjectId, title: keyword)],
+        null,
+        limit: 1,
+      );
+      if (direct.any(hasReleaseName)) {
+        return CinemaSearchDiscovery(titles: direct);
+      }
+    }
+    try {
+      final listed = await searchForIdentity(keyword);
+      final byId = {for (final title in publicNames) title.id: title};
+      for (final title in listed.titles) {
+        if (title.identityVerified || !byId.containsKey(title.id)) {
+          byId[title.id] = title;
+        }
+      }
+      if (byId.isEmpty && publicError != null) throw publicError;
+      return CinemaSearchDiscovery(titles: byId.values.toList());
+    } on Exception {
+      if (publicNames.isEmpty) rethrow;
+      return CinemaSearchDiscovery(titles: publicNames);
+    }
   }
 
   Future<CinemaSearchDiscovery> _searchVerifiedIdentity(String keyword) async {
@@ -416,18 +556,19 @@ class CinemaSearchDiscoveryRepository {
       _people.remove(_people.keys.first);
     }
     final exact = people.where((person) => person.matches(keyword)).toList();
-    final queries = titles
-        .expand(
-          (t) => [t.title, t.originalTitle, ...cinemaTitleAliases(t.aliases)],
-        )
-        .where(
-          (title) =>
-              title.trim().isNotEmpty &&
-              cinemaSearchKey(title) != cinemaSearchKey(keyword),
-        )
-        .toSet()
-        .take(2)
-        .toList();
+    final queries = {
+      for (final t in titles)
+        for (final name in [
+          t.title,
+          t.originalTitle,
+          ...cinemaTitleAliases(t.aliases),
+        ])
+          if (name.isNotEmpty &&
+              name.toLowerCase() != keyword.toLowerCase() &&
+              (name == t.title ||
+                  cinemaSearchKey(name) != cinemaSearchKey(keyword)))
+            name,
+    }.take(2).toList();
     // A partial or ambiguous name must not silently select the first person.
     if (exact.length != 1) {
       return CinemaSearchDiscovery(
@@ -484,20 +625,47 @@ class CinemaSearchDiscoveryRepository {
   }
 
   Future<(List<CinemaDiscoveryTitle>, List<CinemaDiscoveryPerson>)>
-  _wikidataSearch(String keyword, CancelToken? cancel) async {
-    final result = await _get(_wikidataApi, {
-      'action': 'wbsearchentities',
-      'search': keyword,
-      'language': RegExp(r'[\u4e00-\u9fff]').hasMatch(keyword) ? 'zh' : 'en',
-      'uselang': 'zh',
-      'format': 'json',
-      'limit': 5,
-    }, cancel);
-    if (result is! Map || result['search'] is! List) {
+  _wikidataSearch(
+    String keyword,
+    CancelToken? cancel, {
+    bool originalNames = false,
+    String releaseYear = '',
+    bool searchByYear = false,
+    CinemaSeasonName? requestedSeason,
+  }) async {
+    final result = await _get(
+      _wikidataApi,
+      searchByYear
+          ? {
+              'action': 'query',
+              'list': 'search',
+              'srsearch': '$keyword $releaseYear',
+              'srlimit': 5,
+              'srprop': '',
+              'format': 'json',
+            }
+          : {
+              'action': 'wbsearchentities',
+              'search': keyword,
+              'language': RegExp(r'[\u4e00-\u9fff]').hasMatch(keyword)
+                  ? 'zh'
+                  : 'en',
+              'uselang': 'zh',
+              'format': 'json',
+              'limit': 5,
+            },
+      cancel,
+    );
+    final dataRows = result is! Map
+        ? null
+        : searchByYear
+        ? (result['query'] is Map ? result['query']['search'] : null)
+        : result['search'];
+    if (dataRows is! List) {
       throw const FormatException('公开资料检索暂时不可用');
     }
-    final ids = jsonMaps(result['search'])
-        .map((r) => textValue(r['id']))
+    final ids = jsonMaps(dataRows)
+        .map((r) => textValue(r[searchByYear ? 'title' : 'id']))
         .where((id) => RegExp(r'^Q[1-9][0-9]*$').hasMatch(id))
         .take(5)
         .toList();
@@ -508,11 +676,24 @@ class CinemaSearchDiscoveryRepository {
       'action': 'wbgetentities',
       'ids': ids.join('|'),
       'props': 'labels|aliases|claims',
-      'languages': 'zh-hans|zh-cn|zh|en',
+      'languages': originalNames
+          ? 'zh-hans|zh-cn|zh|en|mul|it|fr|de|es|ja|ko'
+          : 'zh-hans|zh-cn|zh|en|mul',
       'format': 'json',
     }, cancel);
     if (data is! Map || data['entities'] is! Map) {
       throw const FormatException('公开资料详情暂时不可用');
+    }
+    if (requestedSeason != null) {
+      return (
+        await _seriesSeasons(
+          data['entities'] as Map,
+          requestedSeason,
+          releaseYear,
+          cancel,
+        ),
+        <CinemaDiscoveryPerson>[],
+      );
     }
     final titles = <CinemaDiscoveryTitle>[];
     final people = <CinemaDiscoveryPerson>[];
@@ -524,9 +705,15 @@ class CinemaSearchDiscoveryRepository {
           : const {};
       String label(String language) =>
           labels[language] is Map ? textValue(labels[language]['value']) : '';
+      final officialTitles = _claims(entity, 'P1476')
+          .whereType<Map>()
+          .map((claim) => textValue(claim['text']))
+          .where((name) => name.isNotEmpty)
+          .toList();
       final aliases = <String>{
         for (final value in labels.values.whereType<Map>())
           textValue(value['value']),
+        ...officialTitles,
       };
       if (entity['aliases'] is Map) {
         for (final list in (entity['aliases'] as Map).values) {
@@ -541,6 +728,8 @@ class CinemaSearchDiscoveryRepository {
         label('zh-cn'),
         label('zh'),
         label('en'),
+        label('mul'),
+        ...officialTitles,
       ].firstWhere((s) => s.isNotEmpty, orElse: () => '');
       final instances = _claims(
         entity,
@@ -567,13 +756,23 @@ class CinemaSearchDiscoveryRepository {
         'P4529',
       ).map(parseCinemaDoubanId).where((s) => s.isNotEmpty).toSet();
       // Conflicting mappings must never assign the first subject's rating.
-      if (subjectIds.length != 1 || name.isEmpty) continue;
-      final subjectId = subjectIds.single;
+      if (name.isEmpty ||
+          subjectIds.length > 1 ||
+          (subjectIds.isEmpty && !originalNames)) {
+        continue;
+      }
+      final subjectId = subjectIds.singleOrNull ?? 'wikidata:$id';
+      final kind = _kindFromInstances(instances);
+      // Episode queries need the series ID. A season's own IMDb entry is a
+      // different identity even when both entries share the same show name.
+      final imdbIds = _claims(
+        entity,
+        'P345',
+      ).map(parseCinemaImdbId).where((id) => id.isNotEmpty).toSet();
       final dates =
           [
                 ..._claims(entity, 'P577'),
-                if (_kindFromInstances(instances) == 'tv')
-                  ..._claims(entity, 'P580'),
+                if (kind == 'tv') ..._claims(entity, 'P580'),
               ]
               .whereType<Map>()
               .map(
@@ -586,20 +785,197 @@ class CinemaSearchDiscoveryRepository {
               .where((d) => RegExp(r'^(?:18|19|20|21)[0-9]{2}$').hasMatch(d))
               .toList()
             ..sort();
+      final workImdb = kind.isNotEmpty && !instances.contains('Q3464665')
+          ? imdbIds.singleOrNull ?? ''
+          : '';
+      if (originalNames &&
+          dates.isEmpty &&
+          workImdb.isNotEmpty &&
+          RegExp(r'^(?:19|20)\d{2}$').hasMatch(releaseYear) &&
+          aliases.any((a) => cinemaSameSearchTitle(a, keyword, releaseYear))) {
+        final english = label('en');
+        if (english.isNotEmpty && english.length <= 150) {
+          try {
+            final suggestion = await _get(
+              Uri.https(
+                'v3.sg.media-imdb.com',
+                '/suggestion/x/$english.json',
+              ).toString(),
+              {},
+              cancel,
+            );
+            if (suggestion is Map<String, dynamic> &&
+                cinemaImdbSuggestionId(
+                      suggestion,
+                      names: aliases,
+                      year: releaseYear,
+                      kind: kind,
+                    ) ==
+                    workImdb) {
+              dates.add(releaseYear);
+            }
+          } on Exception {
+            _checkCancellation(cancel);
+          }
+        }
+      }
+      if (subjectIds.isEmpty && (dates.isEmpty || kind.isEmpty)) continue;
       titles.add(
         CinemaDiscoveryTitle(
           id: subjectId,
+          imdbId: workImdb,
           title: name,
-          originalTitle: label('en'),
+          originalTitle: [
+            label('en'),
+            ...officialTitles,
+            label('mul'),
+          ].firstWhere((n) => n.isNotEmpty, orElse: () => ''),
           aliases: aliases.join(' / '),
           year: dates.firstOrNull ?? '',
-          kind: _kindFromInstances(instances),
-          identityVerified:
-              dates.isNotEmpty && _kindFromInstances(instances).isNotEmpty,
+          kind: kind,
+          identityVerified: dates.isNotEmpty && kind.isNotEmpty,
         ),
       );
     }
-    return (await _hydrate(titles, cancel, limit: 2), people);
+    return (
+      originalNames ? titles : await _hydrate(titles, cancel, limit: 2),
+      people,
+    );
+  }
+
+  Future<List<CinemaDiscoveryTitle>> _seriesSeasons(
+    Map entities,
+    CinemaSeasonName season,
+    String year,
+    CancelToken? cancel,
+  ) async {
+    Set<String> names(Map entity) => {
+      for (final row
+          in (entity['labels'] as Map? ?? {}).values.whereType<Map>())
+        textValue(row['value']),
+      for (final rows in (entity['aliases'] as Map? ?? {}).values)
+        for (final row in jsonMaps(rows)) textValue(row['value']),
+    }..remove('');
+    String date(Map entity) {
+      final dates =
+          [..._claims(entity, 'P580'), ..._claims(entity, 'P577')]
+              .whereType<Map>()
+              .map(
+                (r) => RegExp(
+                  r'^\+?(\d{4})-',
+                ).firstMatch(textValue(r['time']))?[1],
+              )
+              .nonNulls
+              .toList()
+            ..sort();
+      return dates.firstOrNull ?? '';
+    }
+
+    Set<String> linked(Map e, String property) => _claims(
+      e,
+      property,
+    ).whereType<Map>().map((v) => textValue(v['id'])).toSet();
+    final roots = entities.values.whereType<Map>().where(
+      (e) =>
+          linked(e, 'P31').any({'Q5398426', 'Q1259759', 'Q581714'}.contains) &&
+          names(e).any((n) => cinemaSameSearchTitle(n, season.work, year)) &&
+          (year.isEmpty || date(e).isEmpty || date(e).compareTo(year) <= 0),
+    );
+    final results = <CinemaDiscoveryTitle>[];
+    for (final root in roots) {
+      final imdb = _claims(
+        root,
+        'P345',
+      ).map(parseCinemaImdbId).where((s) => s.isNotEmpty).toSet().singleOrNull;
+      if (imdb == null) continue;
+      final parts = jsonMaps(root['claims']?['P527'])
+          .where(
+            (r) =>
+                r['rank'] != 'deprecated' &&
+                jsonMaps(r['qualifiers']?['P1545']).any(
+                  (q) =>
+                      int.tryParse(textValue(q['datavalue']?['value'])) ==
+                      season.number,
+                ),
+          )
+          .map((r) => textValue(r['mainsnak']?['datavalue']?['value']?['id']))
+          .where((id) => RegExp(r'^Q[1-9]\d*$').hasMatch(id))
+          .toSet();
+      if (parts.length > 1) continue;
+      final premiere = date(root);
+      var release = premiere, count = 0;
+      String id = 'wikidata:${root['id']}';
+      if (parts.isNotEmpty) {
+        final info = await _get(_wikidataApi, {
+          'action': 'wbgetentities',
+          'ids': parts.single,
+          'props': 'claims',
+          'format': 'json',
+        }, cancel);
+        final child = info is Map && info['entities'] is Map
+            ? info['entities'][parts.single]
+            : null;
+        if (child is! Map ||
+            !linked(child, 'P31').contains('Q3464665') ||
+            !{
+              ...linked(child, 'P179'),
+              ...linked(child, 'P361'),
+            }.contains(root['id'])) {
+          continue;
+        }
+        release = date(child);
+        id =
+            _claims(child, 'P4529')
+                .map(parseCinemaDoubanId)
+                .where((v) => v.isNotEmpty)
+                .toSet()
+                .singleOrNull ??
+            'wikidata:${parts.single}';
+        count =
+            int.tryParse(
+              textValue(
+                _claims(child, 'P1113').whereType<Map>().firstOrNull?['amount'],
+              ),
+            ) ??
+            0;
+        if (count == 0) {
+          final positions = jsonMaps(child['claims']?['P527'])
+              .where((r) => r['rank'] != 'deprecated')
+              .expand((r) => jsonMaps(r['qualifiers']?['P1545']))
+              .map((q) => int.tryParse(textValue(q['datavalue']?['value'])))
+              .nonNulls
+              .toSet();
+          if (positions.isNotEmpty &&
+              positions.length <= 999 &&
+              List.generate(
+                positions.length,
+                (i) => i + 1,
+              ).every(positions.contains)) {
+            count = positions.length;
+          }
+        }
+      } else if (season.number != 1 || year.isEmpty || year != premiere) {
+        continue;
+      }
+      if (release.isEmpty || year.isNotEmpty && release != year) continue;
+      final english = textValue(root['labels']?['en']?['value']);
+      if (english.isEmpty) continue;
+      results.add(
+        CinemaDiscoveryTitle(
+          id: id,
+          imdbId: imdb,
+          kind: 'tv',
+          identityVerified: true,
+          title: '${season.work} 第${season.number}季',
+          originalTitle: '$english Season ${season.number}',
+          aliases: names(root).join(' / '),
+          year: release,
+          seriesPremiere: premiere,
+          episodeCount: count.clamp(0, 999),
+        ),
+      );
+    }
+    return results;
   }
 
   static String _kindFromInstances(Iterable<String> instances) {
@@ -658,6 +1034,7 @@ class CinemaSearchDiscoveryRepository {
           if (found == null) continue;
           output[index] = CinemaDiscoveryTitle(
             id: found.id,
+            imdbId: original.imdbId,
             title: found.title,
             originalTitle: found.originalTitle.isEmpty
                 ? original.originalTitle

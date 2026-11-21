@@ -303,22 +303,35 @@ void main() {
   );
 
   testWidgets(
-    'details prefer the labelled 4K route and retain a manual override',
+    'details expose measured quality on Mac and a manual route menu on other platforms',
     (tester) async {
       repository.qualityRoutes = true;
       await mount(tester);
       await search(tester);
       await tester.tap(card());
       await tester.pumpAndSettle();
-      final best = find.widgetWithText(ChoiceChip, '非凡影视4K线路');
-      final standard = find.widgetWithText(ChoiceChip, '非凡影视专属线路');
-      expect(tester.widget<ChoiceChip>(best).selected, isTrue);
+      final menu = find.byKey(const ValueKey('detail-route-menu'));
+      if (Platform.isMacOS) {
+        expect(menu, findsNothing);
+        expect(find.text('4K正片'), findsNothing);
+        expect(
+          find.byKey(const ValueKey('detail-quality-regular')),
+          findsOneWidget,
+        );
+        return;
+      }
       expect(find.text('4K正片'), findsOneWidget);
-      await tester.ensureVisible(standard);
+      await tester.ensureVisible(menu);
+      await tester.tap(menu);
+      await tester.pumpAndSettle();
+      final best = find.widgetWithText(CheckedPopupMenuItem<int>, '非凡影视4K线路');
+      final standard = find.widgetWithText(
+        CheckedPopupMenuItem<int>,
+        '非凡影视专属线路',
+      );
+      expect(tester.widget<CheckedPopupMenuItem<int>>(best).checked, isTrue);
       await tester.tap(standard);
       await tester.pumpAndSettle();
-      expect(tester.widget<ChoiceChip>(standard).selected, isTrue);
-      expect(tester.widget<ChoiceChip>(best).selected, isFalse);
       expect(find.text('非凡影视正片'), findsOneWidget);
       expect(find.text('4K正片'), findsNothing);
       expect(tester.takeException(), isNull);
@@ -378,7 +391,10 @@ void main() {
         },
       );
       await search(tester);
-      expect(find.text('1 部作品 · 2 个片源版本，进入详情切换片源'), findsOneWidget);
+      expect(
+        find.text(Platform.isMacOS ? '1 部作品' : '1 部作品 · 2 个片源版本，进入详情切换片源'),
+        findsOneWidget,
+      );
       expect(card(), findsOneWidget);
       expect(
         find.byKey(const ValueKey('title-card:source-a::a1')),
@@ -391,20 +407,30 @@ void main() {
       await tester.tap(card());
       await tester.pumpAndSettle();
       expect(find.text('非凡影视的详情'), findsOneWidget);
-      final sheetScroll = find
-          .descendant(
-            of: find.byKey(const ValueKey('cinema-title-detail-layout')),
-            matching: find.byType(Scrollable),
-          )
-          .first;
-      await tester.scrollUntilVisible(
-        find.text('非凡影视专属线路'),
-        200,
-        scrollable: sheetScroll,
+      if (Platform.isMacOS) {
+        expect(
+          find.byKey(const ValueKey('source-variant:source-a::a1')),
+          findsNothing,
+        );
+        final quality = find.byKey(const ValueKey('detail-quality-regular'));
+        await tester.ensureVisible(quality);
+        await tester.tap(quality);
+        await tester.pumpAndSettle();
+        expect(find.text('source playback'), findsOneWidget);
+        expect(
+          selected!.variants.map((v) => v.sourceId),
+          containsAll([modu.id, sourceA.id]),
+        );
+        expect(selected!.manualRouteSelection, isFalse);
+        expect(selected!.autoSelectBestRoute, isTrue);
+        return;
+      }
+      // A source with just one route occupies a single row.
+      expect(find.byKey(const ValueKey('detail-route-menu')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('source-variant:source-a::a1')),
+        findsOneWidget,
       );
-      expect(find.text('非凡影视专属线路'), findsOneWidget);
-      await tester.drag(sheetScroll, const Offset(0, 800));
-      await tester.pumpAndSettle();
       await tester.ensureVisible(
         find.byKey(const ValueKey('source-variant:source-a::a1')),
       );
@@ -441,6 +467,21 @@ void main() {
     repository.delayA = true;
     await tester.tap(card());
     await tester.pumpAndSettle();
+    if (Platform.isMacOS) {
+      final quality = find.byKey(const ValueKey('detail-quality-regular'));
+      await tester.ensureVisible(quality);
+      await tester.tap(quality);
+      await tester.pumpAndSettle();
+      expect(selected!.source.id, modu.id);
+      repository.pendingA!.complete(
+        repository.resolved(sourceA, sample(sourceA)),
+      );
+      await tester.pumpAndSettle();
+      expect(selected!.source.id, modu.id);
+      expect(find.text('source playback'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      return;
+    }
     await tester.ensureVisible(
       find.byKey(const ValueKey('source-variant:source-a::a1')),
     );

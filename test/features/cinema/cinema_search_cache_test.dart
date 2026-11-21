@@ -63,6 +63,81 @@ CinemaRepository _repository(_Adapter adapter, {DateTime Function()? now}) =>
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('compact series fallback retains the requested season only', () async {
+    final adapter = _Adapter(
+      (o, _) => ResponseBody.fromString(
+        jsonEncode({
+          'code': 1,
+          'list': [
+            if (o.uri.queryParameters['wd'] == '重启吧')
+              for (final season in [1, 2])
+                {
+                  'vod_id': season,
+                  'vod_name': '重启吧！宇宙第$season季',
+                  'type_name': '欧美剧',
+                  'vod_year': '2025',
+                },
+          ],
+        }),
+        200,
+      ),
+    );
+    final result = await _repository(adapter).search(_source, '重启吧宇宙第二季');
+    expect(result.items.map((t) => t.id), ['2']);
+  });
+
+  test(
+    'compact titles find punctuated films without admitting fragment-only hits',
+    () async {
+      for (final fixture in [
+        ('摔跤吧爸爸', '摔跤吧', '摔跤吧！爸爸'),
+        ('重启吧宇宙', '重启吧', '重启吧？宇宙'),
+      ]) {
+        final adapter = _Adapter((options, _) {
+          final partial = options.uri.queryParameters['wd'] == fixture.$2;
+          return ResponseBody.fromString(
+            jsonEncode({
+              'code': 1,
+              'list': [
+                if (partial) ...[
+                  {
+                    'vod_id': 1,
+                    'vod_name': fixture.$3,
+                    'type_name': '剧情片',
+                    'vod_year': '2016',
+                  },
+                  {
+                    'vod_id': 2,
+                    'vod_name': '${fixture.$3}国语',
+                    'type_name': '剧情片',
+                    'vod_year': '2016',
+                  },
+                  {
+                    'vod_id': 3,
+                    'vod_name': '${fixture.$3}[电影解说]',
+                    'vod_sub': fixture.$3,
+                    'type_name': '电影解说',
+                  },
+                  {
+                    'vod_id': 4,
+                    'vod_name': '${fixture.$3}2',
+                    'type_name': '剧情片',
+                  },
+                ],
+              ],
+            }),
+            200,
+          );
+        });
+        final result = await _repository(adapter).search(_source, fixture.$1);
+        expect(result.items.map((t) => t.id), ['1', '2']);
+        expect(adapter.requests.map((r) => r.uri.queryParameters['wd']), [
+          fixture.$1,
+          fixture.$2,
+        ]);
+      }
+    },
+  );
 
   test(
     'equivalent year searches retain exact work and both colon spellings',

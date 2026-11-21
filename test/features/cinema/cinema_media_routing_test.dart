@@ -6,11 +6,13 @@ import 'package:kazumi/features/cinema/cinema_media_routing.dart';
 import 'package:kazumi/request/core/network_config.dart';
 
 class _Adapter implements HttpClientAdapter {
-  _Adapter(this.proxy, this.requests, {this.preferProxy});
+  _Adapter(this.proxy, this.requests, {this.preferProxy, this.status});
+  final int? status;
   final bool Function()? preferProxy;
   final bool proxy;
   final List<({bool proxy, RequestOptions request})> requests;
   bool failActual = false;
+  int? actualStatus;
   @override
   Future<ResponseBody> fetch(
     RequestOptions o,
@@ -18,6 +20,10 @@ class _Adapter implements HttpClientAdapter {
     Future<void>? cancel,
   ) async {
     requests.add((proxy: proxy, request: o));
+    if (status != null) return ResponseBody.fromString('', status!);
+    if (actualStatus != null && !o.headers.containsValue('bytes=0-262143')) {
+      return ResponseBody.fromString('', actualStatus!);
+    }
     if (failActual && !o.headers.containsValue('bytes=0-262143')) {
       throw DioException.connectionError(
         requestOptions: o,
@@ -258,6 +264,73 @@ void main() {
       );
     },
   );
+  for (final status in [403, 444]) {
+    test(
+      'an available configured proxy wins when direct media gives $status',
+      () async {
+        final calls = <({bool proxy, RequestOptions request})>[];
+        final router = CinemaMediaRouter(
+          configuration: () => config,
+          enabled: () => true,
+          clientFactory: (r) => Dio()
+            ..httpClientAdapter = _Adapter(
+              r.proxy != null,
+              calls,
+              status: r.proxy == null ? status : null,
+            ),
+        );
+        addTearDown(router.close);
+        final url = Uri.parse('https://video.example/regular.ts');
+        final resp = await router.open(url, {});
+        await resp.data!.stream.drain<void>();
+        expect(resp.extra['cinemaRoute'], '代理');
+        expect(
+          calls
+              .where((c) => !c.request.headers.containsValue('bytes=0-262143'))
+              .single
+              .proxy,
+          isTrue,
+        );
+      },
+    );
+    test(
+      'a refusal on the selected CDN reaches source failover with its status $status',
+      () async {
+        final calls = <({bool proxy, RequestOptions request})>[];
+        final adapters = <bool, _Adapter>{};
+        final router = CinemaMediaRouter(
+          configuration: () => config,
+          enabled: () => true,
+          clientFactory: (r) {
+            final proxy = r.proxy != null;
+            return Dio()
+              ..httpClientAdapter = adapters[proxy] = _Adapter(proxy, calls);
+          },
+        );
+        addTearDown(router.close);
+        final url = Uri.parse('https://direct.example/main.m3u8');
+        await router.select(url, {}, metadata: true);
+        adapters[false]!.actualStatus = status;
+        adapters[true]!.failActual = true;
+        await expectLater(
+          router.open(url, {}, metadata: true),
+          throwsA(
+            isA<DioException>().having(
+              (e) => e.response?.statusCode,
+              'upstream',
+              status,
+            ),
+          ),
+        );
+        expect(
+          calls.where(
+            (c) => !c.request.headers.containsValue('bytes=0-262143'),
+          ),
+          hasLength(1),
+        );
+      },
+    );
+  }
   test(
     'proxy configuration changes invalidate the previous comparison naturally',
     () async {

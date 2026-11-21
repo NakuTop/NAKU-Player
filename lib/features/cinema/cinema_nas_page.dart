@@ -1,4 +1,5 @@
 import 'cinema_tv_focus.dart';
+import 'cinema_poster_lift.dart';
 import 'cinema_lan_cast.dart';
 import 'package:kazumi/services/platform/naku_device.dart';
 import 'dart:async';
@@ -1563,16 +1564,20 @@ class _CinemaNASPageState extends State<CinemaNASPage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Expanded(
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(10),
-                                child: SizedBox(
-                                  width: double.infinity,
-                                  child: _NASPoster(
-                                    key: ValueKey(
-                                      '${row['ug_video_info_id']}-${row['poster_path']}',
+                              child: CinemaPosterLift(
+                                radius: 10,
+                                enabled: !_busy,
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(10),
+                                  child: SizedBox(
+                                    width: double.infinity,
+                                    child: _NASPoster(
+                                      key: ValueKey(
+                                        '${row['ug_video_info_id']}-${row['poster_path']}',
+                                      ),
+                                      client: _client,
+                                      row: row,
                                     ),
-                                    client: _client,
-                                    row: row,
                                   ),
                                 ),
                               ),

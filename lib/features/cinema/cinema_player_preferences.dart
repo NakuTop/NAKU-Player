@@ -173,12 +173,16 @@ class CinemaPlayerPreferences {
 
   double get initialVolume => muted ? 0 : volume;
 
-  PlayerConfiguration get playerConfiguration => PlayerConfiguration(
-    title: 'NAKU播放器',
-    osc: false,
-    bufferSize: bufferSize,
-    adBlocker: forceAdBlocker,
-  );
+  PlayerConfiguration get playerConfiguration => configurationFor();
+
+  PlayerConfiguration configurationFor({bool originalPlayback = false}) =>
+      PlayerConfiguration(
+        libass: originalPlayback,
+        title: 'NAKU播放器',
+        osc: false,
+        bufferSize: bufferSize,
+        adBlocker: forceAdBlocker,
+      );
 
   VideoControllerConfiguration get videoConfiguration =>
       VideoControllerConfiguration(

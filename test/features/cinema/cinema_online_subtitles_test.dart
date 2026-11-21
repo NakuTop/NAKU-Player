@@ -424,6 +424,23 @@ void main() {
     },
   );
 
+  test('season archives only supply members proven to match the episode', () {
+    bool matches(String entry, String pack) =>
+        cinemaSubtitleArchiveEpisodeMatches(entry, pack, 1, 2);
+    expect(
+      matches('Slow.Horses.S01E02.CHS.ass', 'Slow Horses S01 complete'),
+      isTrue,
+    );
+    expect(matches('Slow.Horses.1x01.ass', 'Slow Horses S01'), isFalse);
+    expect(matches('简体/02.chs.srt', 'Slow Horses 第一季'), isTrue);
+    expect(matches('第两集.ass', 'Slow Horses S02'), isFalse);
+    expect(matches('第二集.ass', 'Slow Horses S01'), isTrue);
+    expect(matches('中文.srt', 'Slow Horses S01'), isFalse);
+    expect(matches('中文.srt', 'Slow Horses S01E02'), isTrue);
+    expect(matches('中文.srt', 'Slow Horses S01E02-E06'), isFalse);
+    expect(matches('02.srt', 'Slow Horses'), isFalse);
+  });
+
   test(
     'only matching episodes survive and matching release tags rank higher',
     () {

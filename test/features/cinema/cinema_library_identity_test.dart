@@ -68,6 +68,36 @@ void main() {
     return value;
   }
 
+  test(
+    'favorites and history keep the original reference through export and restore',
+    () async {
+      final a = store();
+      final original = _title('a').copyWith(
+        originalReference: CinemaOriginalReference(
+          imdbId: 'tt0816692',
+          premiere: '2014',
+          hash: 'c' * 40,
+        ),
+      );
+      await a.toggleFavorite(original);
+      await a.recordProgress(
+        title: original,
+        routeIndex: 0,
+        episodeIndex: 0,
+        positionSeconds: 87,
+      );
+      final data = await a.exportLibrary();
+      await file.writeAsString(jsonEncode(data));
+      final reloaded = store();
+      await reloaded.load();
+      expect(reloaded.favorites.single.originalReference?.hash, 'c' * 40);
+      expect(
+        reloaded.history.single.title.originalReference?.imdbId,
+        'tt0816692',
+      );
+      expect(reloaded.history.single.positionSeconds, 87);
+    },
+  );
   Future<String> write({
     List<Map<String, dynamic>> favorites = const [],
     List<Map<String, dynamic>> history = const [],

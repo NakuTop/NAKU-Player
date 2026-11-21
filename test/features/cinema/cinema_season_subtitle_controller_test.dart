@@ -15,12 +15,19 @@ const _line2 = '1\n00:00:01,000 --> 00:00:03,000\n第二集自写测试对白\n'
 const _line3 = '1\n00:00:01,000 --> 00:00:03,000\n第三集自写测试对白\n';
 
 class _Player implements Player {
-  _Player({bool playing = false})
+  _Player({bool playing = false, List<SubtitleTrack> subtitles = const []})
     : _state = PlayerState(
         playing: playing,
+        tracks: Tracks(subtitle: subtitles),
         position: const Duration(seconds: 15),
       );
   PlayerState _state;
+  final selections = <SubtitleTrack>[];
+  @override
+  Future<void> setSubtitleTrack(SubtitleTrack track) async {
+    selections.add(track);
+  }
+
   int pauses = 0, plays = 0;
   Completer<void>? pauseGate;
   Completer<void>? playObserved;
@@ -62,6 +69,7 @@ class _Client extends CinemaOnlineSubtitles {
         })
       >[];
   final downloads = <String>[];
+  final texts = <String, String>{};
   List<Map<String, dynamic>> rows = [];
   List<Map<String, dynamic>>? earlyRows;
   Completer<void>? aggregateGate, downloadGate;
@@ -106,7 +114,7 @@ class _Client extends CinemaOnlineSubtitles {
     downloads.add(url);
     if (!downloadStarted.isCompleted) downloadStarted.complete();
     await downloadGate?.future;
-    return url.contains('E02') ? _line2 : _line3;
+    return texts[url] ?? (url.contains('E02') ? _line2 : _line3);
   }
 }
 
@@ -169,13 +177,16 @@ void main() {
     String series = 'private-nas-library::AHS',
     bool playing = false,
     bool automateMissing = false,
+    bool originalPlayback = false,
+    List<SubtitleTrack> tracks = const [],
     bool Function()? canResume,
   }) {
-    final player = _Player(playing: playing);
+    final player = _Player(playing: playing, subtitles: tracks);
     players.add(player);
     final result = CinemaSeasonSubtitleController(
       player: player,
       automateMissing: automateMissing,
+      originalPlayback: originalPlayback,
       store: store,
       seriesIdentity: series,
       mediaIdentity: 'private-media-S${season}E$episode?token=DO_NOT_SAVE',
@@ -242,6 +253,106 @@ void main() {
     store.dispose();
     await directory.delete(recursive: true);
   });
+
+  const eng = SubtitleTrack('1', 'English', 'eng');
+  const signs = SubtitleTrack('2', 'Chinese (Forced signs)', 'zho');
+  const fullChinese = SubtitleTrack(
+    '3',
+    'Traditional Chinese',
+    null,
+    codec: 'hdmv_pgs_subtitle',
+  );
+  test(
+    'original selects the full embedded Chinese PGS track without an online request',
+    () async {
+      final client = _Client();
+      final session = controller(
+        3,
+        playing: true,
+        originalPlayback: true,
+        tracks: [eng, signs, fullChinese],
+        client: client,
+      );
+      await session.load();
+      final player = session.player as _Player;
+      expect(player.selections, [fullChinese]);
+      expect(player.pauses, 0);
+      expect(client.requests, isEmpty);
+    },
+  );
+
+  test(
+    'the next edition with embedded Chinese replaces a previously automatic online track',
+    () async {
+      final first = controller(
+        3,
+        originalPlayback: true,
+        client: _Client()..rows = [_row(3)],
+      );
+      await first.load();
+      expect(applied, hasLength(1));
+      first.close();
+      final client = _Client();
+      final second = controller(
+        3,
+        originalPlayback: true,
+        tracks: [eng, fullChinese],
+        client: client,
+      );
+      await second.load();
+      expect((second.player as _Player).selections, [fullChinese]);
+      expect(applied, hasLength(1));
+      expect(client.requests, isEmpty);
+    },
+  );
+
+  test(
+    'original with English and forced Chinese keeps playing and finds the same episode in Chinese',
+    () async {
+      final bad = _row(3)
+        ..['url'] = 'https://public-subtitles.invalid/incorrect.srt';
+      final right = _row(3);
+      final client = _Client()
+        ..rows = [_row(2), _row(3, lang: 'eng'), bad, right]
+        ..texts[bad['url'] as String] =
+            '1\n00:00:01,000 --> 00:00:02,000\nEnglish dialogue only\n';
+      final session = controller(
+        3,
+        playing: true,
+        originalPlayback: true,
+        tracks: [eng, signs],
+        client: client,
+      );
+      await session.load();
+      expect(client.requests.first.language, 'zh');
+      expect(client.requests.first.episode, 3);
+      expect(client.downloads, [bad['url'], right['url']]);
+      expect(applied.single.language, 'zh');
+      expect(applied.single.text, _line3);
+      expect((session.player as _Player).pauses, 0);
+    },
+  );
+
+  test(
+    'a saved manual subtitle opt-out survives a change of original edition',
+    () async {
+      final client = _Client()..rows = [_row(3)];
+      final saved = CinemaSavedSubtitleStore(
+        store,
+        'private-media-S10E3?token=DO_NOT_SAVE',
+      );
+      await saved.save(const CinemaSavedSubtitle(disabled: true));
+      final session = controller(
+        3,
+        originalPlayback: true,
+        tracks: [fullChinese],
+        client: client,
+      );
+      await session.load();
+      expect((session.player as _Player).selections.single.id, 'no');
+      expect(client.requests, isEmpty);
+    },
+  );
 
   test(
     'first playback makes no subtitle searches until a manual choice',

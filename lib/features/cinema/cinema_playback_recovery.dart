@@ -11,7 +11,7 @@ enum CinemaPlaybackFailure {
 
 CinemaPlaybackFailure cinemaPlaybackFailure(String message) {
   if (RegExp(
-    r'\b(?:HTTP(?: error)?|server returned|status(?: code)?)[: ]+(?:401|403)\b|unauthorized|forbidden|certificate|SSL peer',
+    r'\b(?:HTTP(?: error)?|server returned|status(?: code)?)[: ]+(?:401|403|444|451)\b|unauthorized|forbidden|certificate|SSL peer',
     caseSensitive: false,
   ).hasMatch(message)) {
     return CinemaPlaybackFailure.accessDenied;
@@ -46,7 +46,7 @@ CinemaPlaybackFailure cinemaPlaybackFailure(String message) {
 CinemaPlaybackFailure cinemaPlaybackException(Object error) {
   if (error is DioException) {
     final status = error.response?.statusCode;
-    if ([401, 403].contains(status) ||
+    if ([401, 403, 444, 451].contains(status) ||
         error.type == DioExceptionType.badCertificate) {
       return CinemaPlaybackFailure.accessDenied;
     }

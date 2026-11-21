@@ -6,6 +6,8 @@ import 'dart:ffi' as ffi;
 import 'package:ffi/ffi.dart';
 import 'package:crypto/crypto.dart';
 import 'cinema_subtitle_catalogs.dart';
+import 'cinema_search_discovery.dart';
+import 'cinema_models.dart' show CinemaTitle, parseCinemaImdbId;
 import 'cinema_subtitle_fallbacks.dart';
 import 'cinema_media_identity.dart';
 import 'cinema_subtitle_network.dart';
@@ -29,7 +31,7 @@ class CinemaSubtitleQuery {
     final number = int.tryParse(value);
     if (number != null) return number;
     const digits = '零一二三四五六七八九';
-    if (value == '两') return 2;
+    if (value == '两' || value == '兩') return 2;
     if (value.contains('十')) {
       final parts = value.split('十');
       return (parts.first.isEmpty ? 1 : digits.indexOf(parts.first)) * 10 +
@@ -170,6 +172,13 @@ bool cinemaSubtitleLanguageMatches(String language, String selected) {
 /// a complete season pack. Entries with no episode code are checked by their
 /// catalog's requested episode; explicit codes must match exactly.
 bool cinemaSubtitleEpisodeMatches(String name, int season, int episode) {
+  final pair = RegExp(
+    r'(?:^|[^a-z0-9])(\d{1,2})x(\d{1,4})(?!\d)',
+    caseSensitive: false,
+  ).firstMatch(name);
+  if (pair != null) {
+    return int.parse(pair[1]!) == season && int.parse(pair[2]!) == episode;
+  }
   final codes = RegExp(
     r'S(\d{1,2})[ ._-]*E(\d{1,3})(?!\d)',
     caseSensitive: false,
@@ -183,11 +192,65 @@ bool cinemaSubtitleEpisodeMatches(String name, int season, int episode) {
   if (chinese != null && CinemaSubtitleQuery._number(chinese[1]!) != season) {
     return false;
   }
+  final isolated = RegExp(
+    r'第\s*([零一二两兩三四五六七八九十\d]+)\s*[集话話]|(?:^|[^a-z0-9])(?:EP?|episode)[ ._-]*(\d{1,4})(?!\d)',
+    caseSensitive: false,
+  ).firstMatch(name);
+  if (isolated != null &&
+      CinemaSubtitleQuery._number(isolated[1] ?? isolated[2]!) != episode) {
+    return false;
+  }
   final english = RegExp(
-    r'\bS(\d{1,2})(?!\d)',
+    r'(?<![a-z0-9])(?:season[ ._-]*|s)(\d{1,2})(?!\d)',
     caseSensitive: false,
   ).firstMatch(name);
   return english == null || int.parse(english[1]!) == season;
+}
+
+/// A season archive is not scoped to one episode the way the ID-based API is.
+bool cinemaSubtitleArchiveEpisodeMatches(
+  String entry,
+  String package,
+  int season,
+  int episode,
+) {
+  if (!cinemaSubtitleEpisodeMatches(entry, season, episode)) return false;
+  final indexed = RegExp(
+    r'S\d{1,2}[ ._-]*E\d{1,4}(?!\d)|(?<![a-z0-9])\d{1,2}x\d{1,4}(?!\d)',
+    caseSensitive: false,
+  );
+  if (indexed.hasMatch(entry)) return true;
+  if (!cinemaSubtitleEpisodeMatches(package, season, episode)) return false;
+  final episodeTag = RegExp(
+    r'第\s*[零一二两兩三四五六七八九十\d]+\s*[集话話]|(?<![a-z0-9])(?:episode|ep?)[ ._-]*\d{1,4}(?!\d)',
+    caseSensitive: false,
+  );
+  final scopedSeason = RegExp(
+    r'(?<![a-z0-9])(?:season[ ._-]*|s)\d{1,2}(?!\d)|第\s*[零一二两兩三四五六七八九十\d]+\s*季',
+    caseSensitive: false,
+  ).hasMatch('$package $entry');
+  if (episodeTag.hasMatch(entry)) return scopedSeason;
+  final leaf = entry.split(RegExp(r'[/\\]')).last;
+  final number = RegExp(
+    r'^(\d{1,3})(?:[._ -](?:chs|cht|zh|en|eng|简体|繁体|中英))*\.(?:srt|ass|ssa|vtt)$',
+    caseSensitive: false,
+  ).firstMatch(leaf);
+  if (number != null) return scopedSeason && int.parse(number[1]!) == episode;
+  // A generic filename is usable only inside an unambiguously single-episode release.
+  if (RegExp(
+    r'全集|整季|全\s*\d+\s*集|complete|[Ee]\d+\s*[-–~至]\s*(?:[Ee]|\d)|第?\s*\d+\s*[-–~至]\s*\d+\s*集',
+    caseSensitive: false,
+  ).hasMatch(package)) {
+    return false;
+  }
+  return (indexed.hasMatch(package) ||
+          scopedSeason && episodeTag.hasMatch(package)) &&
+      indexed
+              .allMatches(package)
+              .map((m) => m[0]!.toLowerCase())
+              .toSet()
+              .length <=
+          1;
 }
 
 /// Only local release tags are compared; filenames and paths are never sent to
@@ -290,6 +353,7 @@ bool cinemaSubtitleCandidateMatches(
   Map<String, dynamic> row,
   CinemaSubtitleQuery query, {
   String imdbId = '',
+  Iterable<String> workNames = const [],
 }) {
   final file =
       '${row['archiveEntry'] ?? row['subtitleFileName'] ?? row['movieReleaseName'] ?? ''}';
@@ -301,16 +365,30 @@ bool cinemaSubtitleCandidateMatches(
       row['matchedWorkType'] == query.type) {
     return true;
   }
-  final aliases = cinemaSubtitleAliases(
-    query.title,
-    imdbId: imdbId,
-  ).map(cinemaMediaTitleKey).where((v) => v.isNotEmpty).toSet();
+  final aliases = {
+    ...cinemaSubtitleAliases(query.title, imdbId: imdbId),
+    ...workNames,
+  }.map(cinemaMediaTitleKey).where((v) => v.isNotEmpty).toSet();
   for (final field in [file, '${row['releaseFormat'] ?? ''}']) {
     var name = field
         .split(RegExp(r'[/\\]'))
         .last
         .replaceFirst(RegExp(r'\.(srt|ass|ssa|vtt)$', caseSensitive: false), '')
         .replaceFirst(RegExp(r'^\s*[\[【][^\]】]{1,60}[\]】]\s*'), '');
+    final releaseTokens = RegExp(
+      r'(?:[ ._/-]+|(?<=\p{Script=Han}))(?=(?:S\d{1,2}(?:[ ._-]*E\d{1,4})?|(?:19|20)\d{2}|\d{3,4}p|BluRay|BDRip|WEB(?:[ ._-]?DL|Rip)?|HDTV|DVDRip)(?![a-z0-9]))',
+      caseSensitive: false,
+      unicode: true,
+    );
+    // A number inside a title (e.g. "1900") can precede the real release year.
+    if (releaseTokens
+        .allMatches(name)
+        .any(
+          (m) =>
+              aliases.contains(cinemaMediaTitleKey(name.substring(0, m.start))),
+        )) {
+      return true;
+    }
     name = name
         .split(
           RegExp(
@@ -360,6 +438,7 @@ class CinemaOnlineSubtitles {
   }
 
   final Dio _dio;
+  late final _identities = CinemaSearchDiscoveryRepository(dio: _dio);
   late final _catalogs = CinemaSubtitleCatalogs(_dio);
   final _verified = <String, String>{};
   final _archives = <String, Future<List<int>>>{};
@@ -402,7 +481,10 @@ class CinemaOnlineSubtitles {
   }
 
   static Future<List<String>> listArchiveSubtitles(List<int> bytes) async {
-    if (Platform.isAndroid) return CinemaSubtitleArchive.list(bytes);
+    if (Platform.isAndroid ||
+        Platform.isMacOS && CinemaSubtitleArchive.isZip(bytes)) {
+      return CinemaSubtitleArchive.list(bytes);
+    }
     if ((!Platform.isMacOS && !Platform.isWindows) ||
         bytes.length > 8 * 1024 * 1024) {
       throw const FormatException('该字幕压缩格式暂不可读取');
@@ -468,6 +550,10 @@ class CinemaOnlineSubtitles {
     void Function(List<Map<String, dynamic>> rows)? onVerified,
   }) async {
     final fallbackNames = cinemaSubtitleAliases(query, imdbId: imdbId);
+    final searchNames = {
+      ...fallbackNames,
+      CinemaSubtitleQuery.parse(query).title,
+    }..removeWhere((name) => name.isEmpty || RegExp(r'^tt\d+$').hasMatch(name));
     var resolvedType = fallbackNames.contains('American Horror Story')
         ? 'series'
         : type;
@@ -493,10 +579,20 @@ class CinemaOnlineSubtitles {
         row,
         CinemaSubtitleQuery(query, resolvedType, season, episode),
         imdbId: imdbId,
+        workNames: searchNames,
       )) {
         return false;
       }
       if (resolvedType != 'series') return true;
+      final entry = row['archiveEntry'];
+      if (entry is String && row['identityVerified'] != true) {
+        return cinemaSubtitleArchiveEpisodeMatches(
+          entry,
+          '${row['releaseFormat'] ?? ''}',
+          season,
+          episode,
+        );
+      }
       return cinemaSubtitleEpisodeMatches(
         '${row['archiveEntry'] ?? row['subtitleFileName'] ?? row['movieReleaseName'] ?? ''}',
         season,
@@ -555,6 +651,77 @@ class CinemaOnlineSubtitles {
       }
     }
 
+    Future<void> verifyDirect(List<Map<String, dynamic>> providerRows) async {
+      final directCandidates = providerRows
+          .where((row) => row['kind'] != 'package')
+          .where(eligible)
+          .toList();
+      directCandidates.sort(
+        (a, b) =>
+            cinemaSubtitleReleaseScore(
+              '${b['subtitleFileName'] ?? b['movieReleaseName'] ?? ''}',
+              mediaRelease,
+            ).compareTo(
+              cinemaSubtitleReleaseScore(
+                '${a['subtitleFileName'] ?? a['movieReleaseName'] ?? ''}',
+                mediaRelease,
+              ),
+            ),
+      );
+      final direct = <Map<String, dynamic>>[];
+      final languageCount = <String, int>{};
+      final directSeen = <String>{};
+      for (final row in directCandidates) {
+        final lang = cinemaSubtitleLanguageMatches('${row['lang']}', 'zh')
+            ? 'zh'
+            : 'eng';
+        final key = '${row['url']}:${row['archiveEntry'] ?? ''}';
+        if ((languageCount[lang] ?? 0) >= 12 || !directSeen.add(key)) continue;
+        languageCount[lang] = (languageCount[lang] ?? 0) + 1;
+        direct.add(row);
+      }
+      for (var offset = 0; offset < direct.length; offset += 3) {
+        await Future.wait(direct.skip(offset).take(3).map(verify));
+      }
+    }
+
+    Future<void> readOpenSubtitles(String id) async {
+      if (id.isEmpty) {
+        status['OpenSubtitles'] = '未匹配作品编号';
+        return;
+      }
+      try {
+        final found = await subtitles(
+          id,
+          resolvedType,
+          season: season,
+          episode: episode,
+        );
+        status['OpenSubtitles'] = '${found.length} 条候选';
+        await verifyDirect([
+          for (final row in found)
+            {
+              ...row,
+              'provider': 'OpenSubtitles',
+              'identityVerified': true,
+              'matchedQuery': cinemaMediaTitleKey(query),
+              'matchedWorkType': resolvedType,
+              'matchedWorkId': id,
+            },
+        ]);
+      } catch (error) {
+        status['OpenSubtitles'] = cinemaSubtitleFailureMessage(error);
+      }
+    }
+
+    final explicitId = RegExp(r'^tt\d+$').hasMatch(imdbId)
+        ? imdbId
+        : RegExp(r'^tt\d+$').hasMatch(query)
+        ? query
+        : '';
+    var directVerification = explicitId.isEmpty
+        ? null
+        : readOpenSubtitles(explicitId);
     final seedVerification = Future.wait(candidates.map(verify));
     var works = <Map<String, dynamic>>[];
     try {
@@ -576,16 +743,14 @@ class CinemaOnlineSubtitles {
       status['作品匹配'] = '目录暂不可用，继续检索字幕网站';
     }
     final aliases = fallbackNames.map(cinemaMediaTitleKey).toSet();
-    final explicitId = RegExp(r'^tt\d+$').hasMatch(imdbId)
-        ? imdbId
-        : RegExp(r'^tt\d+$').hasMatch(query)
-        ? query
-        : '';
     works = works.where((work) {
       if (work['type'] != null && work['type'] != resolvedType) return false;
       final workYear = RegExp(
         r'(?:19|20)\d{2}',
       ).firstMatch('${work['year'] ?? work['releaseInfo'] ?? ''}')?.group(0);
+      if (explicitId.isNotEmpty && resolvedType == 'series') {
+        return work['id'] == explicitId;
+      }
       if (year.isNotEmpty && workYear != year) return false;
       if (explicitId.isNotEmpty) return work['id'] == explicitId;
       final names = [
@@ -602,13 +767,87 @@ class CinemaOnlineSubtitles {
       works = []; // An ambiguous same-title remake needs a year or an IMDb ID.
       status['作品匹配'] = '存在同名作品，未自动选择不确定的作品编号';
     }
-    final names = <String>{
-      ...fallbackNames,
-      CinemaSubtitleQuery.parse(query).title,
-      if (works.isNotEmpty) '${works.first['name'] ?? ''}',
-    }..removeWhere((name) => name.isEmpty || RegExp(r'^tt\d+$').hasMatch(name));
+    if (works.isEmpty &&
+        explicitId.isEmpty &&
+        status['作品匹配']?.startsWith('存在同名') != true) {
+      final base = CinemaSubtitleQuery.parse(query).title;
+      final name = resolvedType == 'series' ? '$base 第$season季' : base;
+      try {
+        final entries = await _identities
+            .originalNames(
+              name,
+              subject: CinemaTitle(
+                id: '',
+                sourceId: '',
+                title: name,
+                year: year,
+              ),
+            )
+            .timeout(const Duration(seconds: 5));
+        final matches = entries
+            .where(
+              (e) =>
+                  e.identityVerified &&
+                  e.kind == (resolvedType == 'series' ? 'tv' : 'movie') &&
+                  (year.isEmpty || e.year == year) &&
+                  parseCinemaImdbId(e.imdbId).isNotEmpty &&
+                  [
+                    e.title,
+                    e.originalTitle,
+                    ...cinemaTitleAliases(e.aliases),
+                  ].any(
+                    (n) =>
+                        cinemaSameSearchTitle(n, name, year) ||
+                        (cinemaSeasonName(n)?.number ?? season) == season &&
+                            cinemaSameSearchTitle(
+                              cinemaSeasonName(n)?.work ?? n,
+                              base,
+                              year,
+                            ),
+                  ),
+            )
+            .toList();
+        if (matches.isNotEmpty &&
+            matches.map((e) => e.imdbId).toSet().length == 1) {
+          final entry = matches.first;
+          final english =
+              cinemaSeasonName(entry.originalTitle)?.work ??
+              entry.originalTitle;
+          works = [
+            {'id': entry.imdbId, 'name': english, 'type': resolvedType},
+          ];
+          searchNames.addAll([
+            english,
+            ...cinemaTitleAliases(
+              entry.aliases,
+            ).map((v) => cinemaSeasonName(v)?.work ?? v),
+          ]);
+        }
+      } on Exception {
+        // Public catalogues can still match a release by its original title.
+      }
+    }
+    if (works.isNotEmpty) {
+      searchNames.addAll(
+        [
+          works.first['name'],
+          works.first['original_name'],
+          works.first['originalTitle'],
+        ].whereType<String>(),
+      );
+    }
+    searchNames.removeWhere(
+      (name) => name.isEmpty || RegExp(r'^tt\d+$').hasMatch(name),
+    );
+    directVerification ??= readOpenSubtitles(
+      works.isNotEmpty
+          ? '${works.first['id']}'
+          : fallbackNames.contains('American Horror Story')
+          ? 'tt1844624'
+          : '',
+    );
     await Future.wait([
-      for (final name in names.take(3))
+      for (final name in searchNames.take(3))
         () async {
           final found = await _catalogs.search(
             name,
@@ -618,49 +857,14 @@ class CinemaOnlineSubtitles {
           );
           candidates.addAll(found.rows);
           for (final item in found.status.entries) {
-            status[item.key] = item.value;
+            final count = candidates
+                .where((r) => r['provider'] == item.key)
+                .map((r) => r['url'])
+                .toSet()
+                .length;
+            status[item.key] = count > 0 ? '$count 条' : item.value;
           }
         }(),
-      () async {
-        try {
-          final selected = RegExp(r'^tt\d+$').hasMatch(imdbId)
-              ? imdbId
-              : RegExp(r'^tt\d+$').hasMatch(query)
-              ? query
-              : works.isEmpty
-              ? fallbackNames.contains('American Horror Story')
-                    ? 'tt1844624'
-                    : ''
-              : '${works.first['id']}';
-          if (selected.isEmpty) {
-            status['OpenSubtitles'] = '未匹配作品编号';
-            return;
-          }
-          final workType = works.isNotEmpty
-              ? '${works.first['type'] ?? resolvedType}'
-              : resolvedType;
-          final found = await subtitles(
-            selected,
-            workType,
-            season: season,
-            episode: episode,
-          );
-          candidates.addAll([
-            for (final row in found)
-              {
-                ...row,
-                'provider': 'OpenSubtitles',
-                'identityVerified': true,
-                'matchedQuery': cinemaMediaTitleKey(query),
-                'matchedWorkType': resolvedType,
-                'matchedWorkId': selected,
-              },
-          ]);
-          status['OpenSubtitles'] = '${found.length} 条候选';
-        } catch (_) {
-          status['OpenSubtitles'] = '暂不可访问';
-        }
-      }(),
     ]);
     await seedVerification;
     final seen = <String>{};
@@ -730,37 +934,7 @@ class CinemaOnlineSubtitles {
         }),
       );
     }
-    final directCandidates = candidates
-        .where((row) => row['kind'] != 'package')
-        .where(eligible)
-        .toList();
-    directCandidates.sort(
-      (a, b) =>
-          cinemaSubtitleReleaseScore(
-            '${b['subtitleFileName'] ?? b['movieReleaseName'] ?? ''}',
-            mediaRelease,
-          ).compareTo(
-            cinemaSubtitleReleaseScore(
-              '${a['subtitleFileName'] ?? a['movieReleaseName'] ?? ''}',
-              mediaRelease,
-            ),
-          ),
-    );
-    final direct = <Map<String, dynamic>>[];
-    final languageCount = <String, int>{};
-    final directSeen = <String>{};
-    for (final row in directCandidates) {
-      final lang = cinemaSubtitleLanguageMatches('${row['lang']}', 'zh')
-          ? 'zh'
-          : 'eng';
-      final key = '${row['url']}:${row['archiveEntry'] ?? ''}';
-      if ((languageCount[lang] ?? 0) >= 12 || !directSeen.add(key)) continue;
-      languageCount[lang] = (languageCount[lang] ?? 0) + 1;
-      direct.add(row);
-    }
-    for (var offset = 0; offset < direct.length; offset += 3) {
-      await Future.wait(direct.skip(offset).take(3).map(verify));
-    }
+    await directVerification;
     sortResults();
     final chineseCount = rows
         .where((row) => cinemaSubtitleLanguageMatches('${row['lang']}', 'zh'))
@@ -910,7 +1084,10 @@ class CinemaOnlineSubtitles {
     List<int> bytes,
     String entry,
   ) async {
-    if (Platform.isAndroid) return CinemaSubtitleArchive.extract(bytes, entry);
+    if (Platform.isAndroid ||
+        Platform.isMacOS && CinemaSubtitleArchive.isZip(bytes)) {
+      return CinemaSubtitleArchive.extract(bytes, entry);
+    }
     if ((!Platform.isWindows && !Platform.isMacOS) ||
         entry.startsWith('/') ||
         entry.contains(':') ||
@@ -1105,6 +1282,7 @@ Future<void> showCinemaOnlineSubtitles(
   Player player, {
   String title = '',
   String imdbId = '',
+  String year = '',
   String category = '',
   String episodeName = '',
   int? episodeNumber,
@@ -1130,6 +1308,7 @@ Future<void> showCinemaOnlineSubtitles(
         player: player,
         title: title,
         imdbId: imdbId,
+        year: year,
         category: category,
         episodeName: episodeName,
         episodeNumber: episodeNumber,
@@ -1153,6 +1332,7 @@ Future<void> showCinemaOnlineSubtitles(
               player: player,
               title: title,
               imdbId: imdbId,
+              year: year,
               category: category,
               episodeName: episodeName,
               episodeNumber: episodeNumber,
@@ -1171,6 +1351,7 @@ class CinemaOnlineSubtitlesPanel extends StatefulWidget {
     required this.player,
     this.title = '',
     this.imdbId = '',
+    this.year = '',
     this.client,
     this.category = '',
     this.episodeName = '',
@@ -1178,7 +1359,7 @@ class CinemaOnlineSubtitlesPanel extends StatefulWidget {
     this.onApplied,
   });
   final Player player;
-  final String title, imdbId;
+  final String title, imdbId, year;
   final String category, episodeName;
   final int? episodeNumber;
   final CinemaOnlineSubtitles? client;
@@ -1328,6 +1509,9 @@ class _CinemaOnlineSubtitlesPanelState
       query,
       snapshot.type,
       imdbId: imdbId,
+      year: parsed.title == _initial.title && snapshot.type == _initial.type
+          ? widget.year
+          : '',
       season: snapshot.season,
       episode: snapshot.episode,
       language: _language,

@@ -1,4 +1,9 @@
 import 'cinema_movie_versions.dart';
+import 'cinema_original_match.dart';
+import 'cinema_original_engine.dart';
+import 'cinema_original_search.dart';
+import 'cinema_downloads.dart' show cinemaSavedOriginalTitle;
+import 'cinema_video_metadata.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 import 'cinema_playback_buffer.dart';
 import 'cinema_tv_background_policy.dart';
@@ -251,6 +256,10 @@ class CinemaPlayerPage extends StatefulWidget {
     this.mediaCache,
     this.autoSelectBestRoute,
     this.manualRouteSelection = false,
+    this.initialOriginal,
+    this.initialOriginalLookup,
+    this.originalEngine,
+    this.originalSearch,
     this.measuredQuality,
     this.posterImage,
     this.backgroundPlaybackClock,
@@ -280,6 +289,12 @@ class CinemaPlayerPage extends StatefulWidget {
 
   /// An explicit source/route choice takes precedence over automatic startup.
   final bool manualRouteSelection;
+  final OriginalSelection? initialOriginal;
+  final OriginalLookup? initialOriginalLookup;
+  @visibleForTesting
+  final CinemaOriginalEngine? originalEngine;
+  @visibleForTesting
+  final CinemaOriginalSearch? originalSearch;
   final CinemaMediaProbeResult? measuredQuality;
   @visibleForTesting
   final ImageProvider? posterImage;
@@ -336,6 +351,77 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   int _probeCompleted = 0, _probeTotal = 0;
   bool _automaticProbePending = false, _autoBestRoute = true;
   bool _manualRouteSelection = false;
+  late final _originalEngine =
+      widget.originalEngine ?? CinemaOriginalEngine.instance;
+  OriginalSelection? _original;
+  OriginalMatches? _selectionOriginals;
+  bool _pinnedOriginalVersion = false;
+  OriginalLookup? _originalLookup;
+  OriginalStream? _originalLease;
+  CancelToken? _originalCancel;
+  final _triedOriginals = <String>{};
+  final _refusedRoutes = <String>{};
+  CancelToken? _recoveryProbe;
+
+  void _originalChanged() {
+    if (!mounted || _closing) return;
+    final matches = _originalLookup?.matches;
+    setState(() {
+      if (_title.sourceId == originalCatalogSource.id &&
+          matches != null &&
+          matches.work.episodeCount >
+              (_title.routes.firstOrNull?.episodes.length ?? 0)) {
+        _title = originalCatalogAnchor(_title, matches) ?? _title;
+      }
+    });
+  }
+
+  void _retryOriginalOnNetworkChange() {
+    final current = _selection;
+    if (mounted &&
+        !_closing &&
+        current != null &&
+        _originalLookup != null &&
+        _originalLookup!.matches == null) {
+      setState(() => _lookupOriginal(current));
+    }
+  }
+
+  void _lookupOriginal(
+    CinemaPlaybackCandidate anchor, {
+    OriginalLookup? existing,
+  }) {
+    _originalLookup?.removeListener(_originalChanged);
+    _originalLookup = null;
+    _triedOriginals.clear();
+    if (widget.offlinePaths != null ||
+        anchor.source.id == cinemaNASSource.id ||
+        !_originalEngine.available) {
+      return;
+    }
+    _originalLookup =
+        (existing ??
+              (widget.originalSearch ?? CinemaOriginalSearch.instance).find(
+                originalLibraryTitle(anchor.title, null, identity: _title),
+                anchor.episode.name,
+              ))
+          ..addListener(_originalChanged);
+  }
+
+  OriginalSelection? _chooseOriginal(OriginalMatches? matches) =>
+      _originalEngine.preferred(matches, excluding: _triedOriginals);
+
+  OriginalSelection? _nextOriginal() =>
+      _chooseOriginal(_originalLookup?.matches ?? _selectionOriginals);
+
+  void _closeOriginal() {
+    _originalCancel?.cancel('播放选择已变化');
+    _originalCancel = null;
+    final stream = _originalLease;
+    _originalLease = null;
+    if (stream != null) unawaited(stream.close());
+  }
+
   bool _probingAutomatic = false;
   String? _probeStatus;
   final Set<String> _cacheBypass = {};
@@ -572,6 +658,16 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       } catch (_) {}
     }());
   }
+
+  bool get _compareMacRoutes =>
+      defaultTargetPlatform == TargetPlatform.macOS && !NakuDevice.isTV;
+
+  bool get _backgroundMacRouting =>
+      _compareMacRoutes &&
+      _autoBestRoute &&
+      !_manualRouteSelection &&
+      widget.offlinePaths == null &&
+      !_usesNASPlayback;
 
   bool get _usesMacCinemaLayout =>
       defaultTargetPlatform == TargetPlatform.macOS &&
@@ -864,6 +960,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   void onWindowLeaveFullScreen() => _fullscreenChanged(false);
 
   Future<void> _showEpisodes() {
+    if (_original != null) _discovering ??= _discoverRoutes();
     if (NakuDevice.isTV) {
       final episodes = _route?.episodes ?? const <CinemaEpisode>[];
       if (episodes.isEmpty) return Future.value();
@@ -913,7 +1010,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   Future<void> _toggleFavorite() async {
     try {
-      await widget.store.toggleFavorite(_title);
+      await widget.store.toggleFavorite(
+        originalLibraryTitle(
+          _title,
+          _originalLookup?.matches,
+          edition: _original?.edition,
+        ),
+      );
       if (mounted) setState(() {});
     } catch (_) {
       if (mounted) {
@@ -964,6 +1067,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
     await for (final variants in discoverCinemaWorkSources(
       anchor: widget.title,
+      fillAvailableSlots: true,
       known: widget.variants,
       sources: widget.store.enabledSources,
       repository: widget.repository ?? CinemaRepository(),
@@ -998,7 +1102,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     bool? playWhenReady,
     bool manual = true,
   }) {
-    if (manual) _manualRouteSelection = true;
+    if (manual &&
+        (routeIndex != _routeIndex ||
+            _original == null &&
+                (!_originalEngine.available ||
+                    cinemaHasMovieVersions(_title, routeIndex)))) {
+      _manualRouteSelection = true;
+    }
     return _startPlayback(
       anchor: CinemaPlaybackCandidate(
         title: _title,
@@ -1042,16 +1152,120 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _preparePlayerEntrance(selectionChanged: !initial);
     _cancelRouteProbe();
     final generation = ++_generation;
-    _automaticProbePending = automaticSelection;
+    _automaticProbePending =
+        automaticSelection &&
+        !(_compareMacRoutes && initial && widget.measuredQuality?.ok == true);
     _probeResults.clear();
-    _discovering ??= _discoverRoutes();
-    final selected = automaticSelection
-        ? await _catalogue.firstMatching(
-                anchor,
-                isCurrent: () => _isCurrent(generation),
-              ) ??
-              anchor
-        : anchor;
+    _refusedRoutes.clear();
+    final stayOriginal =
+        !initial && _original != null && anchor.routeIndex == _routeIndex;
+    final repeatOriginal = stayOriginal && _selection?.key == anchor.key
+        ? _original
+        : null;
+    _selectionOriginals = initial
+        ? widget.initialOriginal?.matches
+        : repeatOriginal?.matches;
+    if (repeatOriginal == null) _pinnedOriginalVersion = false;
+    _lookupOriginal(
+      anchor,
+      existing: initial ? widget.initialOriginalLookup : null,
+    );
+    final onlyOriginal = anchor.source.id == originalCatalogSource.id;
+    final lookup = _originalLookup;
+    final requestedOriginal = initial ? widget.initialOriginal : null;
+    if (onlyOriginal &&
+        requestedOriginal == null &&
+        !stayOriginal &&
+        automaticSelection) {
+      _discovering ??= _discoverRoutes();
+      final ordinary = await _fastestOrdinary(anchor, generation);
+      if (!_isCurrent(generation)) return;
+      if (ordinary != null) {
+        await _playEpisode(
+          ordinary.routeIndex,
+          ordinary.episodeIndex,
+          title: ordinary.title,
+          source: ordinary.source,
+          resumeAt: offset,
+          initial: initial,
+          continuingLoad: true,
+          playWhenReady: playWhenReady,
+        );
+        return;
+      }
+    }
+    final wantsOriginal =
+        widget.offlinePaths == null &&
+        (requestedOriginal != null || stayOriginal || onlyOriginal);
+    if (wantsOriginal &&
+        lookup != null &&
+        !(initial && widget.initialOriginal != null) &&
+        _nextOriginal() == null &&
+        !lookup.done) {
+      setState(() => _phase = '正在匹配原画');
+      await lookup.ready;
+    }
+    if (!_isCurrent(generation)) return;
+    final original = wantsOriginal
+        ? (_pinnedOriginalVersion ? repeatOriginal : null) ??
+              _nextOriginal() ??
+              requestedOriginal
+        : null;
+    if (original == null) _discovering ??= _discoverRoutes();
+    if (stayOriginal && original == null) _manualRouteSelection = false;
+    if (onlyOriginal && original == null) {
+      // No local edition for this episode. Only real catalogue routes are
+      // playable here; the subject URL is an identity for the library.
+      Future<CinemaPlaybackCandidate?> ordinary() => _catalogue.firstMatching(
+        anchor,
+        accept: (c) => c.source.id != originalCatalogSource.id,
+        isCurrent: () => _isCurrent(generation),
+      );
+      var next = await ordinary();
+      if (next == null && _isCurrent(generation)) {
+        await _discovering;
+        if (_isCurrent(generation)) next = await ordinary();
+      }
+      if (!_isCurrent(generation)) return;
+      if (next != null) {
+        _manualRouteSelection = false;
+        await _playEpisode(
+          next.routeIndex,
+          next.episodeIndex,
+          title: next.title,
+          source: next.source,
+          resumeAt: offset,
+          initial: initial,
+          continuingLoad: true,
+          playWhenReady: playWhenReady,
+        );
+        return;
+      }
+      _releasePlayback();
+      setState(() {
+        _routeIndex = anchor.routeIndex;
+        _episodeIndex = anchor.episodeIndex;
+        _loading = false;
+        _error = '这一集暂未匹配到原画，可在播放线路中选择其他片源。';
+      });
+      return;
+    }
+    var selected = anchor;
+    if (automaticSelection &&
+        original == null &&
+        !(initial && widget.measuredQuality?.ok == true)) {
+      selected =
+          (_compareMacRoutes
+              ? await _fastestOrdinary(anchor, generation)
+              : null) ??
+          await _catalogue.firstMatching(
+            anchor,
+            accept: (candidate) =>
+                candidate.source.id != originalCatalogSource.id,
+            isCurrent: () => _isCurrent(generation),
+          ) ??
+          anchor;
+    }
     if (!_isCurrent(generation)) return;
     await _playEpisode(
       selected.routeIndex,
@@ -1060,9 +1274,65 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       source: selected.source,
       resumeAt: offset,
       initial: initial,
+      original: original,
       continuingLoad: true,
       playWhenReady: playWhenReady,
     );
+  }
+
+  Future<CinemaPlaybackCandidate?> _fastestOrdinary(
+    CinemaPlaybackCandidate anchor,
+    int generation,
+  ) async {
+    if ((anchor.source.kind != CinemaSourceKind.maccms &&
+            anchor.source.id != originalCatalogSource.id) ||
+        !_isCurrent(generation)) {
+      return null;
+    }
+    List<CinemaPlaybackCandidate> regular() => _catalogue
+        .matching(anchor)
+        .where((c) => c.source.id != originalCatalogSource.id)
+        .toList();
+    var known = regular();
+    if (known.length < 2 &&
+        _discovering != null &&
+        (anchor.source.id == originalCatalogSource.id ||
+            _catalogue.unread.isNotEmpty)) {
+      await _discovering!.timeout(
+        const Duration(milliseconds: 350),
+        onTimeout: () {},
+      );
+      if (!_isCurrent(generation)) return null;
+      known = regular();
+    }
+    final targets = CinemaRouteProbeBatch.plan(known, limit: known.length);
+    if (targets.length < 2) {
+      return targets.firstOrNull?.candidates.firstOrNull ?? known.firstOrNull;
+    }
+    final represented = <String>{};
+    final primary = <CinemaRouteProbeTarget>[],
+        alternatives = <CinemaRouteProbeTarget>[];
+    for (final target in targets) {
+      (represented.add(target.candidates.first.source.id)
+              ? primary
+              : alternatives)
+          .add(target);
+    }
+    setState(() => _phase = '正在比较同集片源');
+    final token = _routeProbeToken = CancelToken();
+    try {
+      final samples = await CinemaRouteProbeBatch(_mediaProbe).run(
+        [...primary, ...alternatives],
+        cancel: token,
+        concurrency: 4,
+        budget: const Duration(milliseconds: 1500),
+        probeTimeout: const Duration(milliseconds: 1400),
+      );
+      if (!_isCurrent(generation) || token.isCancelled) return null;
+      return _bestSourcePriority(samples)?.candidate;
+    } finally {
+      if (identical(_routeProbeToken, token)) _routeProbeToken = null;
+    }
   }
 
   Future<void> _togglePip() async {
@@ -1181,11 +1451,56 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _requiresEpisodeSelection || _route == null || _route!.episodes.isEmpty
       ? null
       : _route!.episodes[_episodeIndex];
-  bool get _hasNext =>
-      !_requiresEpisodeSelection &&
-      !cinemaHasMovieVersions(_title, _routeIndex) &&
-      _route != null &&
-      _episodeIndex + 1 < _route!.episodes.length;
+  CinemaPlaybackCandidate? _adjacentEpisode(int step) {
+    final current = _selection;
+    if (_requiresEpisodeSelection ||
+        current == null ||
+        cinemaHasMovieVersions(_title, _routeIndex)) {
+      return null;
+    }
+    CinemaPlaybackCandidate at(CinemaPlaybackCandidate source, int index) =>
+        CinemaPlaybackCandidate(
+          title: source.title,
+          source: source.source,
+          routeIndex: source.routeIndex,
+          episodeIndex: index,
+        );
+    final local = current.episodeIndex + step;
+    final next = local >= 0 && local < current.route.episodes.length
+        ? at(current, local)
+        : null;
+    if (!_compareMacRoutes ||
+        !_autoBestRoute ||
+        _manualRouteSelection ||
+        _original != null ||
+        widget.offlinePaths != null) {
+      return next;
+    }
+    final position = originalEpisode(current.episode.name);
+    if (position.episode == null) return next;
+    final target = position.episode! + step;
+    if (target < 1 ||
+        (next != null &&
+            originalEpisode(next.episode.name).episode == target)) {
+      return next;
+    }
+    // A fast route can contain a single episode. Navigate using another
+    // matched listing of this same season, then measure the requested episode.
+    for (final sibling in _catalogue.matching(current)) {
+      if (sibling.source.id == originalCatalogSource.id) continue;
+      final index = sibling.route.episodes.indexWhere((item) {
+        final coord = originalEpisode(item.name);
+        return coord.episode == target &&
+            (coord.season == null ||
+                position.season == null ||
+                coord.season == position.season);
+      });
+      if (index >= 0) return at(sibling, index);
+    }
+    return next;
+  }
+
+  bool get _hasNext => _adjacentEpisode(1) != null;
 
   final _updatePlaybackLease = NakuPlaybackUpdateLease();
 
@@ -1193,6 +1508,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   void initState() {
     super.initState();
     _fullscreen = NakuDevice.isTV;
+    if (Platform.isMacOS) {
+      MacOSSystemProxy.changes.addListener(_retryOriginalOnNetworkChange);
+    }
     if (Platform.isAndroid) {
       unawaited(
         PipUtils.setAndroidPIPInPlayerPage(true, supportsDanmaku: false),
@@ -1331,8 +1649,24 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     bool continuingLoad = false,
     bool? playWhenReady,
     String? selectionNotice,
+    OriginalSelection? original,
   }) async {
-    final selectedTitle = title ?? _title;
+    final requested = title ?? _title;
+    final matching = original?.matches ?? _originalLookup?.matches;
+    final label = requested.routes
+        .elementAtOrNull(routeIndex)
+        ?.episodes
+        .elementAtOrNull(episodeIndex)
+        ?.name;
+    var selectedTitle = originalLibraryTitle(
+      requested,
+      label != null && matching?.acceptsEpisode(label) == true
+          ? matching
+          : null,
+      edition: original?.edition,
+      identity: _title,
+      keepEdition: widget.offlinePaths != null,
+    );
     final selectedSource = source ?? _source;
     _recoveryTimer?.cancel();
     _recoveryTimer = null;
@@ -1344,6 +1678,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             ? true
             : _preferences.autoPlay);
     if (_closing || selectedTitle.routes.isEmpty) return;
+    _recoveryProbe?.cancel('播放选择已变化');
+    _closeOriginal();
+    _original = original;
+    if (original != null) {
+      _selectionOriginals = original.matches;
+      if (_pinnedOriginalVersion) _triedOriginals.add(original.edition.hash);
+    } else {
+      _pinnedOriginalVersion = false;
+    }
     _preparePlayerEntrance(
       selectionChanged: !automatic && !initial && !continuingLoad,
     );
@@ -1440,7 +1783,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _detailAttempts.clear();
       _failoverAnchor = selection;
     }
-    _attempts.claim(selection);
+    if (original == null) _attempts.claim(selection);
     unawaited(_together.prepareMedia(_syncOwner, selectedTitle, episode));
     // Retain the intended position even if this route fails before becoming
     // ready. A subsequent route change can still continue the same episode.
@@ -1465,13 +1808,70 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           (localFile == null || !await File(localFile).exists())) {
         throw const FormatException('本地视频不存在，请重新下载');
       }
+      if (localFile != null && route.name == '原画') {
+        selectedTitle = await cinemaSavedOriginalTitle(
+          selectedTitle,
+          localFile,
+        );
+        if (!_isCurrent(generation)) return;
+        _title = selectedTitle;
+      }
       var mediaUrl = localFile == null
           ? episode.url
           : File(localFile).uri.toString();
       var mediaFormat = VideoSourceFormat.auto;
       Map<String, String> mediaHeaders = const {};
       final nas = localFile == null && isNASMediaReference(episode.url);
-      if (nas) {
+      if (original != null) {
+        final request = original;
+        final count =
+            _originalLookup?.matches?.editions.length ??
+            original.matches.editions.length;
+        final attempt =
+            _triedOriginals.length +
+            (_triedOriginals.contains(original.edition.hash) ? 0 : 1);
+        setState(
+          () => _phase = attempt > 1
+              ? '正在尝试原画 $attempt/$count · ${request.edition.label}'
+              : '正在连接原画 · ${request.edition.label}',
+        );
+        final cancel = _originalCancel = CancelToken();
+        final opened = _pinnedOriginalVersion
+            ? (
+                edition: request.edition,
+                stream: await _originalEngine.open(
+                  request.matches,
+                  request.edition,
+                  cancel: cancel,
+                ),
+              )
+            : await _originalEngine.openFastest(
+                request.matches,
+                request.edition,
+                excluding: _triedOriginals,
+                cancel: cancel,
+                lookup: _originalLookup,
+                onFailure: (hash) {
+                  if (_isCurrent(generation)) _triedOriginals.add(hash);
+                },
+              );
+        if (!_isCurrent(generation) || cancel.isCancelled) {
+          await opened.stream.close();
+          return;
+        }
+        original = (matches: request.matches, edition: opened.edition);
+        _original = original;
+        _triedOriginals.add(opened.edition.hash);
+        selectedTitle = originalLibraryTitle(
+          selectedTitle,
+          request.matches,
+          edition: opened.edition,
+        );
+        _title = selectedTitle;
+        _originalLease = opened.stream;
+        mediaUrl = opened.stream.url.toString();
+        mediaHeaders = opened.stream.headers;
+      } else if (nas) {
         _nasConnectionTimer = Timer.periodic(
           const Duration(seconds: 15),
           (_) => unawaited(_checkNASConnection()),
@@ -1519,7 +1919,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           _nasSubtitle = pendingNAS.subtitle;
         }
       }
-      if (localFile == null &&
+      if (original == null &&
+          localFile == null &&
           (!nas || _nasResolution == nasOriginalFileProfile)) {
         if (!cinemaUsesDirectMedia(selectedSource, route, episode)) {
           setState(() => _phase = '正在解析播放页面');
@@ -1543,6 +1944,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       if (!_isCurrent(generation)) return;
       // Each selection owns a player. A late response from an old selection
       // cannot seek, stop, or reopen the player's newer selection.
+      final originalPlayback =
+          Platform.isMacOS &&
+          (original != null || localFile != null && route.name == '原画');
       final candidate = _CinemaPlayback(
         selectedTitle,
         routeIndex,
@@ -1550,6 +1954,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         generation,
         _preferences,
         widget.createPlayer,
+        originalPlayback: originalPlayback,
       );
       candidate.keyboardTransport = CinemaKeyboardTransport(
         player: candidate.player,
@@ -1653,9 +2058,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           episodeName: _subtitleEpisodeName,
           fallbackEpisode: episodeIndex + 1,
         ),
-        imdbId: selectedTitle.imdbId,
+        imdbId: selectedTitle.subtitleImdbId,
         year: selectedTitle.year,
-        mediaRelease: _subtitleEpisodeName,
+        mediaRelease: original?.edition.name ?? _subtitleEpisodeName,
+        originalPlayback: originalPlayback,
         canResume: () =>
             _isCurrent(generation) &&
             identical(_playback, candidate) &&
@@ -1669,7 +2075,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       candidate.mediaHeaders = mediaHeaders;
       candidate.mediaFormat = mediaFormat;
       candidate.firstFrameWatch = watch;
-      if (localFile == null &&
+      if (original == null &&
+          localFile == null &&
           !nas &&
           !_cacheBypass.contains(selection.key) &&
           widget.createPlayer == null) {
@@ -1720,6 +2127,19 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           }
           if (cached != null) {
             candidate.cacheSession = cached.session;
+            if (Platform.isMacOS) {
+              cached.session.onRootManifestRefused = (status) {
+                if (!_isCurrent(generation) || candidate.ready) return;
+                _refusedRoutes.add(_mediaRouteKey(selection));
+                _fail(
+                  generation,
+                  '${selectedSource.name}的视频服务返回 HTTP $status。',
+                  failure: status == 404 || status == 410
+                      ? CinemaPlaybackFailure.unavailable
+                      : CinemaPlaybackFailure.accessDenied,
+                );
+              };
+            }
             mediaUrl = cached.url;
             mediaHeaders = const {};
             mediaFormat = VideoSourceFormat.hls;
@@ -1740,7 +2160,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             ? '正在恢复到 ${_time(Duration(seconds: offset))}'
             : '正在加载视频',
       );
-      _loadTimer = Timer(const Duration(seconds: 35), () {
+      _loadTimer = Timer(Duration(seconds: original == null ? 35 : 22), () {
         if (_isCurrent(generation) && !candidate.ready) {
           candidate.logStage('timeout(lastStage=${candidate.lastStage})');
           _fail(
@@ -1765,11 +2185,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           diskCache: false,
           bufferBytes: _preferences.bufferSize,
           playbackRate: _rate,
-          automaticRoute: !nas && localFile == null,
+          automaticRoute: original == null && !nas && localFile == null,
           mediaHeaders: mediaHeaders,
         );
         if (!_isCurrent(generation)) return;
-        if (NakuDevice.isTV && nas) await native.setProperty('http-proxy', '');
+        if (original != null) {
+          await configureLocalOriginalPlayback(native);
+        } else if (NakuDevice.isTV && nas) {
+          await native.setProperty('http-proxy', '');
+        }
         // Probe each input independently. Forcing HLS globally also forces
         // external SRT/ASS inputs through the HLS demuxer and rejects them.
         try {
@@ -2374,7 +2798,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       playback.player,
       widget.store,
       title: _title.title,
-      imdbId: _title.imdbId,
+      imdbId: _title.subtitleImdbId,
+      year: _title.year,
       liveSubtitles: playback.liveSubtitles,
       automation: playback.subtitles,
       autoSync: playback.subtitleAutoSync,
@@ -2417,7 +2842,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       context,
       playback.player,
       title: _title.title,
-      imdbId: _title.imdbId,
+      imdbId: _title.subtitleImdbId,
+      year: _title.year,
       category: _title.category,
       episodeName: _subtitleEpisodeName,
       episodeNumber: _episodeIndex + 1,
@@ -2493,7 +2919,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           ),
         ),
       if (_hasNext) '下一集': () => _changeEpisode(1),
-      if (_episodeIndex > 0) '上一集': () => _changeEpisode(-1),
+      if (_adjacentEpisode(-1) != null) '上一集': () => _changeEpisode(-1),
       '画中画': () => unawaited(_togglePip()),
       if (NakuDevice.canDownload && widget.offlinePaths == null)
         '下载选集': _downloadCurrent,
@@ -2886,23 +3312,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         final newlyCompleted = completed && !playback.completed;
         setState(() => playback.completed = completed);
         if (completed) unawaited(_persistProgress(playback));
-        if (newlyCompleted && !cinemaHasMovieVersions(_title, _routeIndex)) {
-          final next = _preferences.nextEpisode(
-            index: _episodeIndex,
-            count: _route?.episodes.length ?? 0,
-            following: _together.following,
-          );
-          if (next != null) {
-            unawaited(
-              _selectEpisode(
-                _routeIndex,
-                next,
-                manual: false,
-                resumeAt: 0,
-                playWhenReady: _pendingPlayIntent,
-              ),
-            );
-          }
+        if (newlyCompleted &&
+            _preferences.autoPlayNext &&
+            !_together.following) {
+          _changeEpisode(1);
         }
       }),
       playback.player.stream.error.listen((message) {
@@ -3005,6 +3418,20 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         (playback.width <= 0 || playback.height <= 0)) {
       return;
     }
+    final original = _original;
+    if (original != null) {
+      _originalEngine.record(
+        original.matches,
+        original.edition,
+        CinemaVideoMetadata(playback.width, playback.height, ''),
+      );
+      if (!_pinnedOriginalVersion &&
+          playback.width < 3840 &&
+          playback.height < 2160) {
+        _fail(generation, '此版本实测低于 4K。', failure: CinemaPlaybackFailure.format);
+        return;
+      }
+    }
     playback.ready = true;
     _syncPauseCache(playback);
     if ((_usesMacCinemaLayout || NakuDevice.isTV) &&
@@ -3031,12 +3458,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         },
       ),
     );
-    _health.observe(
-      _source,
-      ok: true,
-      media: true,
-      firstFrameMs: playback.firstFrameWatch?.elapsedMilliseconds,
-    );
+    if (original == null) {
+      _health.observe(
+        _source,
+        ok: true,
+        media: true,
+        firstFrameMs: playback.firstFrameWatch?.elapsedMilliseconds,
+      );
+    }
     if (NakuDevice.isTV) {
       _tvCurrentProbePending = true;
     } else {
@@ -3106,6 +3535,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _mediaProbe.transport.router?.invalidate(uri);
       }
     }
+    if (_original != null) {
+      unawaited(_advanceAfterFailure(message));
+      return;
+    }
     if (!NakuDevice.isTV &&
         _playback?.cacheSession != null &&
         failure != CinemaPlaybackFailure.accessDenied &&
@@ -3139,7 +3572,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       setState(() {
         _loading = true;
         _phase = '网络连接中断，${delay.inMilliseconds / 1000} 秒后重试当前集';
-        _playbackNotice = _phase;
+        if (!_backgroundMacRouting) _playbackNotice = _phase;
       });
       _recoveryTimer = Timer(delay, () {
         _recoveryTimer = null;
@@ -3174,6 +3607,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   void _releasePlayback() {
+    _closeOriginal();
     _cancelTVBackground('当前播放已释放', reset: true);
     _stopEntranceSound();
     _recoveryTimer?.cancel();
@@ -3190,8 +3624,101 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
   }
 
-  Future<void> _advanceAfterFailure(String message) async {
-    if (widget.offlinePaths != null) {
+  Future<CinemaPlaybackCandidate?> _reachableAfterRefusal(
+    CinemaPlaybackCandidate anchor,
+    int generation,
+  ) async {
+    _recoveryProbe?.cancel('重新选择');
+    _mediaProbe.invalidate();
+    final token = _recoveryProbe = CancelToken();
+    final started = <String>{}, loading = <String>{};
+    final ready = Completer<CinemaPlaybackCandidate?>();
+    final watch = Stopwatch()..start();
+    int active = 0, reading = 0;
+    // Discovery and probing keep running together, so a slow first catalogue
+    // cannot hide a playable alternate that has already returned.
+    try {
+      while (_isCurrent(generation) &&
+          !token.isCancelled &&
+          watch.elapsed < const Duration(seconds: 8)) {
+        for (final variant in _catalogue.unread.toList()) {
+          if (reading >= 3) break;
+          if (!loading.add(variant.key)) continue;
+          reading++;
+          unawaited(
+            _catalogue
+                .load(variant)
+                .then<void>((_) {}, onError: (_) {})
+                .whenComplete(() => reading--),
+          );
+        }
+        final candidates = _catalogue
+            .matching(anchor)
+            .where(
+              (c) =>
+                  !_attempts.contains(c) &&
+                  !_refusedRoutes.contains(_mediaRouteKey(c)),
+            );
+        for (final target in CinemaRouteProbeBatch.plan(
+          candidates,
+          limit: 24,
+        )) {
+          if (active >= 4 || started.length >= 20) break;
+          if (!started.add(target.identity)) continue;
+          active++;
+          unawaited(
+            _mediaProbe
+                .measure(
+                  target.url,
+                  target.headers,
+                  hls: target.hls,
+                  cancel: token,
+                  timeout: const Duration(seconds: 5),
+                )
+                .then<void>((result) {
+                  if (token.isCancelled || !_isCurrent(generation)) return;
+                  for (final c in target.candidates) {
+                    _probeResults[c.key] = result;
+                  }
+                  if (result.ok && !ready.isCompleted) {
+                    ready.complete(target.candidates.first);
+                  }
+                }, onError: (_) {})
+                .whenComplete(() => active--),
+          );
+        }
+        if (active == 0 && reading == 0 && _discovering == null) break;
+        final first = await Future.any<CinemaPlaybackCandidate?>([
+          ready.future,
+          Future<CinemaPlaybackCandidate?>.delayed(
+            const Duration(milliseconds: 140),
+            () => null,
+          ),
+        ]);
+        if (first != null) return first;
+      }
+      return null;
+    } finally {
+      token.cancel('线路比较结束');
+      if (!ready.isCompleted) ready.complete(null);
+    }
+  }
+
+  String _mediaRouteKey(CinemaPlaybackCandidate c) =>
+      '${c.source.id}|${c.episode.url}';
+
+  Future<void> _advanceAfterFailure(
+    String message, {
+    bool explicit = false,
+  }) async {
+    final failedOriginal = _original != null;
+    if (widget.offlinePaths != null ||
+        !explicit &&
+            Platform.isMacOS &&
+            _manualRouteSelection &&
+            !failedOriginal &&
+            !_usesNASPlayback) {
+      ++_generation;
       _releasePlayback();
       setState(() {
         _loading = false;
@@ -3210,6 +3737,62 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _playbackNotice = null;
       _phase = '当前线路未能继续，正在查找同集的其他线路';
     });
+    if (anchor != null &&
+        (_original != null || _refusedRoutes.isNotEmpty) &&
+        !explicit) {
+      if (_original == null && _refusedRoutes.isNotEmpty) {
+        final reachable = await _reachableAfterRefusal(anchor, generation);
+        if (!_isCurrent(generation)) return;
+        if (reachable != null) {
+          await _playEpisode(
+            reachable.routeIndex,
+            reachable.episodeIndex,
+            title: reachable.title,
+            source: reachable.source,
+            resumeAt: position,
+            automatic: true,
+          );
+          return;
+        }
+      }
+      var next = failedOriginal ? _nextOriginal() : null;
+      if (failedOriginal && next == null && _originalLookup != null) {
+        next = await _originalLookup!.nextAvailable(_chooseOriginal);
+      }
+      if (!_isCurrent(generation)) return;
+      if (next != null) {
+        _pinnedOriginalVersion = false;
+        await _playEpisode(
+          anchor.routeIndex,
+          anchor.episodeIndex,
+          title: anchor.title,
+          source: anchor.source,
+          resumeAt: position,
+          automatic: true,
+          original: next,
+          selectionNotice: '正在尝试同集的其他原画版本',
+        );
+        return;
+      }
+      if (failedOriginal) {
+        _discovering ??= _discoverRoutes();
+        _manualRouteSelection = false;
+        if (anchor.source.id != originalCatalogSource.id &&
+            !_attempts.contains(anchor) &&
+            !_refusedRoutes.contains(_mediaRouteKey(anchor))) {
+          await _playEpisode(
+            anchor.routeIndex,
+            anchor.episodeIndex,
+            title: anchor.title,
+            source: anchor.source,
+            resumeAt: position,
+            automatic: true,
+            selectionNotice: '正在切换到${anchor.source.name}',
+          );
+          return;
+        }
+      }
+    }
     // A saved URL may rotate. Refresh this exact history source once, map the
     // episode by URL/name (never stale indexes), then retain normal failover.
     final history = widget.resumeHistory;
@@ -3252,7 +3835,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     while (_isCurrent(generation) && anchor != null && !_attempts.exhausted) {
       final next = await _catalogue.firstMatching(
         anchor,
-        accept: (candidate) => !_attempts.contains(candidate),
+        accept: (candidate) =>
+            candidate.source.id != originalCatalogSource.id &&
+            !_attempts.contains(candidate) &&
+            !_refusedRoutes.contains(_mediaRouteKey(candidate)),
         isCurrent: () => _isCurrent(generation),
       );
       if (!_isCurrent(generation)) return;
@@ -3294,6 +3880,26 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       setState(() {});
     }
     if (!_isCurrent(generation)) return;
+    if (!explicit && anchor != null && _originalLookup != null) {
+      await _originalLookup!.ready.timeout(
+        const Duration(seconds: 3),
+        onTimeout: () {},
+      );
+      if (!_isCurrent(generation)) return;
+      final next = _nextOriginal();
+      if (next != null) {
+        await _playEpisode(
+          anchor.routeIndex,
+          anchor.episodeIndex,
+          title: anchor.title,
+          source: anchor.source,
+          resumeAt: position,
+          automatic: true,
+          original: next,
+        );
+        return;
+      }
+    }
     setState(() {
       _loading = false;
       final limited = _attempts.exhausted || _detailAttempts.length >= 8;
@@ -3381,7 +3987,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Future<void> _probeCurrent(_CinemaPlayback playback, int generation) async {
-    if (_probingRoutes ||
+    if (_original != null ||
+        _probingRoutes ||
         playback.mediaUrl == null ||
         !playback.mediaUrl!.startsWith('http') ||
         widget.offlinePaths != null ||
@@ -3422,6 +4029,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Future<void> _warmNext(_CinemaPlayback playback, int generation) async {
+    if (_original != null) return;
     if (_source.id == cinemaNASSource.id) return;
     if (playback.pauseCache?.conserving == true) return;
     if (NakuDevice.isTV && !_tvBackgroundAllowed(playback)) return;
@@ -3486,7 +4094,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final measurements = [
       for (final candidate in [
         current,
-        ..._catalogue.matching(current).where((c) => c.key != current.key),
+        ..._catalogue
+            .matching(current)
+            .where(
+              (c) =>
+                  c.key != current.key &&
+                  c.source.id != originalCatalogSource.id,
+            ),
       ])
         if (_probeResults[candidate.key] case final result?)
           CinemaRouteMeasurement(candidate, result, playbackRate: _rate),
@@ -3497,10 +4111,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   CinemaRouteMeasurement? _bestSourcePriority(
     Iterable<CinemaRouteMeasurement> values,
   ) {
-    if (Platform.isMacOS) {
+    if (_compareMacRoutes) {
       final usable = values.where((value) => value.usable).toList();
       final best = cinemaBestConfirmedCandidate(
         usable.map((value) => value.candidate),
+        preferSpeed: true,
         results: {
           for (final value in usable) value.candidate.key: value.result,
         },
@@ -3550,11 +4165,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     CinemaRouteMeasurement best,
     CinemaPlaybackCandidate current,
   ) {
-    if (Platform.isMacOS) {
-      return cinemaBestConfirmedCandidate([
-            current,
-            best.candidate,
-          ], results: _probeResults)?.key ==
+    if (_compareMacRoutes) {
+      return cinemaBestConfirmedCandidate(
+            [current, best.candidate],
+            results: _probeResults,
+            preferSpeed: true,
+          )?.key ==
           best.candidate.key;
     }
     final order = _catalogue.sourceOrder.toList();
@@ -3583,7 +4199,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Future<void> _probeRoutes({bool automatic = false}) async {
-    if (_probingRoutes || _selection == null) return;
+    if (_original != null || _probingRoutes || _selection == null) return;
     if (NakuDevice.isTV &&
         (_playback == null || !_tvBackgroundAllowed(_playback!))) {
       if (automatic) _automaticProbePending = _autoBestRoute;
@@ -3650,7 +4266,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }
       final targets = CinemaRouteProbeBatch.plan([
         current,
-        ..._catalogue.matching(current).where((c) => c.key != current.key),
+        ..._catalogue
+            .matching(current)
+            .where(
+              (c) =>
+                  c.key != current.key &&
+                  c.source.id != originalCatalogSource.id,
+            ),
       ], resolved: resolved);
       _updateProbeDisplay(() => _probeTotal = targets.length);
       final budget = Duration(seconds: automatic ? 10 : 30);
@@ -3763,10 +4385,16 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     try {
       await showCinemaDownloadSheet(
         context,
-        title: _title,
+        title: originalLibraryTitle(
+          _title,
+          _originalLookup?.matches,
+          edition: _original?.edition,
+        ),
         source: _source,
         routeIndex: _routeIndex,
         episodeIndex: _episodeIndex,
+        preferOriginal: _original != null,
+        originalEngine: _originalEngine,
       );
     } finally {
       if (mounted) setState(() => _queueingDownload = false);
@@ -3851,13 +4479,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _requiresEpisodeSelection) {
       return;
     }
-    final target = _episodeIndex + delta;
-    if (target >= 0 && target < (_route?.episodes.length ?? 0)) {
+    final target = _adjacentEpisode(delta);
+    if (target != null) {
       unawaited(
-        _selectEpisode(
-          _routeIndex,
-          target,
-          manual: false,
+        _startPlayback(
+          anchor: target,
           resumeAt: 0,
           playWhenReady: _pendingPlayIntent,
         ),
@@ -4111,6 +4737,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   @override
   void dispose() {
+    _recoveryProbe?.cancel('退出播放');
+    MacOSSystemProxy.changes.removeListener(_retryOriginalOnNetworkChange);
+    _originalLookup?.removeListener(_originalChanged);
+    _closeOriginal();
     _mobileControlsToggle.dispose();
     _cache.removeListener(_pauseCachePreferencesChanged);
     if (Platform.isMacOS) {
@@ -4475,6 +5105,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         ),
       const SizedBox(height: 20),
       if (includeVideo &&
+          !_backgroundMacRouting &&
           widget.offlinePaths == null &&
           (_probingRoutes ||
               _probeStatus != null ||
@@ -5058,7 +5689,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                             Icons.skip_previous_rounded,
                                           ),
                                           onPressed:
-                                              _episodeIndex > 0 &&
+                                              _adjacentEpisode(-1) != null &&
                                                   (!_loading ||
                                                       _recoveryTimer != null)
                                               ? () => _changeEpisode(-1)
@@ -5605,7 +6236,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                           const SizedBox(height: 16),
                           Text(
                             _error ??
-                                (waitingForFirstFrame ? '正在等待视频首帧' : _phase),
+                                (waitingForFirstFrame
+                                    ? '正在等待视频首帧'
+                                    : _backgroundMacRouting
+                                    ? '正在载入视频'
+                                    : _phase),
                             textAlign: TextAlign.center,
                             style: const TextStyle(color: _text, fontSize: 14),
                           ),
@@ -5704,6 +6339,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return;
     }
     ++_generation;
+    _closeOriginal();
+    _recoveryProbe?.cancel('用户取消');
     _cancelRouteProbe();
     _resolver.cancel();
     _loadTimer?.cancel();
@@ -5811,7 +6448,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _detailAttempts.clear();
     _failoverAnchor = _selection;
     if (_selection != null) _attempts.claim(_selection!);
-    unawaited(_advanceAfterFailure('手动换线未找到可接续的线路。'));
+    unawaited(_advanceAfterFailure('手动换线未找到可接续的线路。', explicit: true));
   }
 
   void _switchLoadedRoute(CinemaTitle title, int route) {
@@ -5824,6 +6461,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
     if (_closing ||
         (_playback != null &&
+            _original == null &&
             title.key == _title.key &&
             route == _routeIndex &&
             !_requiresEpisodeSelection)) {
@@ -6070,9 +6708,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           SwitchListTile.adaptive(
             contentPadding: EdgeInsets.zero,
             title: const Text('打开影片时自动选线', style: TextStyle(fontSize: 12)),
-            subtitle: const Text(
-              '按片源顺序优先高清；手动选择会取消自动切换',
-              style: TextStyle(fontSize: 11),
+            subtitle: Text(
+              _compareMacRoutes ? '优先实测速率，同速选高清' : '按片源顺序优先高清；手动选择会取消自动切换',
+              style: const TextStyle(fontSize: 11),
             ),
             value: _autoBestRoute && !_manualRouteSelection,
             onChanged: (value) {
@@ -6101,7 +6739,74 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           style: TextStyle(color: _muted, fontSize: 11),
         ),
         const SizedBox(height: 10),
-        for (final variant in _catalogue.variants) ...[
+        if (_originalLookup?.matches case final matches?
+            when matches.editions.isNotEmpty)
+          ExpansionTile(
+            title: const Text('原画'),
+            subtitle: Text('${matches.editions.length} 个版本'),
+            initiallyExpanded: _original != null,
+            tilePadding: EdgeInsets.zero,
+            children: [
+              for (final edition in matches.editions)
+                ListTile(
+                  dense: true,
+                  selected: _original?.edition.hash == edition.hash,
+                  title: Text(edition.label),
+                  subtitle: Text(
+                    edition.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  onTap: () {
+                    _triedOriginals.clear();
+                    _pinnedOriginalVersion = true;
+                    _manualRouteSelection = true;
+                    _automaticProbePending = false;
+                    unawaited(
+                      _playEpisode(
+                        _routeIndex,
+                        _episodeIndex,
+                        resumeAt: _positionForEpisode(
+                          _routeIndex,
+                          _episodeIndex,
+                        ),
+                        original: (matches: matches, edition: edition),
+                      ),
+                    );
+                  },
+                ),
+            ],
+          ),
+        if (_originalLookup case final lookup? when lookup.matches == null)
+          ListTile(
+            dense: true,
+            title: const Text('原画'),
+            subtitle: Text(
+              !lookup.done
+                  ? '匹配中'
+                  : lookup.incomplete
+                  ? '连接失败，点此重试'
+                  : '暂无匹配',
+            ),
+            trailing: lookup.done
+                ? const Icon(Icons.refresh_rounded, size: 16)
+                : const SizedBox.square(
+                    dimension: 14,
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  ),
+            onTap: lookup.done
+                ? () {
+                    final anchor = _selection;
+                    if (anchor == null) return;
+                    (widget.originalSearch ?? CinemaOriginalSearch.instance)
+                        .invalidate(anchor.title, anchor.episode.name);
+                    setState(() => _lookupOriginal(anchor));
+                  }
+                : null,
+          ),
+        for (final variant in _catalogue.variants.where(
+          (v) => v.sourceId != originalCatalogSource.id,
+        )) ...[
           if (_catalogue.loaded(variant) case final detail?)
             Wrap(
               spacing: 7,
@@ -6114,7 +6819,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                       '${_catalogue.sourceFor(detail).name} · ${detail.routes[i].name}${_routeProbeLabel(detail, i, recommended: best?.candidate.title.key == detail.key && best?.candidate.routeIndex == i)}',
                       style: const TextStyle(fontSize: 11),
                     ),
-                    selected: _title.key == detail.key && _routeIndex == i,
+                    selected:
+                        _original == null &&
+                        _title.key == detail.key &&
+                        _routeIndex == i,
                     avatar:
                         best?.candidate.title.key == detail.key &&
                             best?.candidate.routeIndex == i
@@ -6253,8 +6961,10 @@ class _CinemaPlayback {
     this.episodeIndex,
     this.generation,
     this.preferences,
-    this.createPlayer,
-  );
+    this.createPlayer, {
+    required this.originalPlayback,
+  });
+  final bool originalPlayback;
   final CinemaTitle title;
   final int routeIndex;
   final int episodeIndex;
@@ -6265,13 +6975,14 @@ class _CinemaPlayback {
   late final CinemaHomePodPlayerRoute homepodAudioRoute;
 
   Player _createPlayer() {
+    final config = preferences.configurationFor(
+      originalPlayback: originalPlayback,
+    );
     final created =
-        createPlayer?.call(preferences.playerConfiguration) ??
+        createPlayer?.call(config) ??
         (Platform.isAndroid && NakuDevice.isTV
-            ? CinemaTVNativePlayer(
-                configuration: preferences.playerConfiguration,
-              )
-            : Player(configuration: preferences.playerConfiguration));
+            ? CinemaTVNativePlayer(configuration: config)
+            : Player(configuration: config));
     homepodAudioRoute = CinemaHomePodPlayerRoute(created);
     return created;
   }

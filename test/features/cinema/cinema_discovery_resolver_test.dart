@@ -213,6 +213,38 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  test(
+    'during playback a slow catalogue does not hide a reachable later source',
+    () async {
+      final blocked = Completer<CinemaPage>();
+      final repo = _Repository()
+        ..replies['a'] = blocked.future
+        ..replies['d'] = Future.value(CinemaPage(items: [_title('d')]));
+      final found = Completer<List<CinemaTitle>>();
+      final done =
+          discoverCinemaWorkSources(
+            anchor: _title('root'),
+            known: [],
+            sources: [
+              for (final n in ['a', 'b', 'c', 'd']) _source(n),
+            ],
+            repository: repo,
+            isCurrent: () => true,
+            fillAvailableSlots: true,
+          ).forEach((items) {
+            if (!found.isCompleted && items.any((v) => v.sourceId == 'd')) {
+              found.complete(items);
+            }
+          });
+      try {
+        final ready = await found.future.timeout(const Duration(seconds: 2));
+        expect(ready.map((v) => v.sourceId), ['root', 'd']);
+      } finally {
+        blocked.complete(const CinemaPage(items: []));
+        await done;
+      }
+    },
+  );
   testWidgets('cancellation stops later batches and never pops another page', (
     tester,
   ) async {

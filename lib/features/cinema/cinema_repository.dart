@@ -205,7 +205,6 @@ class CinemaRepository {
     int page,
   ) async {
     final queries = cinemaWorkSearchQueries(query);
-    if (queries.length == 1) return _search(source, query, page);
     Object? failure;
     final results = await Future.wait(
       queries.map((q) async {
@@ -218,23 +217,35 @@ class CinemaRepository {
       }),
     );
     final pages = results.whereType<CinemaPage>().toList();
-    if (pages.isEmpty) throw failure!;
+    bool exact(CinemaTitle title) => cinemaMatchesWorkQuery(title, query);
+
     final items = <String, CinemaTitle>{};
     var pageCount = 1;
     for (final (index, result) in results.indexed) {
       if (result == null) continue;
       if (result.pageCount > pageCount) pageCount = result.pageCount;
       for (final title in result.items) {
-        if (index > 0 &&
-            !cinemaSameSearchTitle(title.title, query, title.year)) {
+        if (index > 0 && !exact(title)) {
           continue;
         }
         items.putIfAbsent(title.key, () => title);
       }
     }
+    final fragmentPage = page == 1 && !items.values.any(exact)
+        ? await _searchFragments(source, query, exact)
+        : null;
+    for (final title in fragmentPage?.items ?? const <CinemaTitle>[]) {
+      items.putIfAbsent(title.key, () => title);
+    }
+    if (pages.isEmpty && fragmentPage == null) throw failure!;
+    if (pages.length == 1 &&
+        queries.length == 1 &&
+        items.length == pages.single.items.length) {
+      return pages.single;
+    }
     return CinemaPage(
       items: items.values.toList(),
-      categories: pages.first.categories,
+      categories: (pages.firstOrNull ?? fragmentPage!).categories,
       page: page,
       pageCount: pageCount,
       total: items.length,
@@ -258,7 +269,6 @@ class CinemaRepository {
       }),
     );
     final pages = results.whereType<CinemaPage>().toList();
-    if (pages.isEmpty) throw failure!;
     final items = <String, CinemaTitle>{};
     var pageCount = 1;
     for (final result in pages) {
@@ -269,13 +279,48 @@ class CinemaRepository {
         }
       }
     }
+    final fragmentPage = page == 1 && items.isEmpty
+        ? await _searchFragments(source, season.work, (title) {
+            final found = cinemaSeasonName(title.title);
+            return found != null &&
+                found.number == season.number &&
+                cinemaSameSearchTitle(found.work, season.work, title.year);
+          })
+        : null;
+    if (pages.isEmpty && fragmentPage == null) throw failure!;
+    for (final title in fragmentPage?.items ?? const <CinemaTitle>[]) {
+      items.putIfAbsent(title.key, () => title);
+    }
     return CinemaPage(
       items: items.values.toList(),
-      categories: pages.first.categories,
+      categories: (pages.firstOrNull ?? fragmentPage!).categories,
       page: page,
       pageCount: pageCount,
       total: items.length,
     );
+  }
+
+  Future<CinemaPage?> _searchFragments(
+    CinemaSource source,
+    String query,
+    bool Function(CinemaTitle) exact,
+  ) async {
+    for (final fragment in cinemaWorkSearchFragments(query)) {
+      try {
+        final page = await _search(source, fragment, 1);
+        final matches = page.items.where(exact).toList();
+        if (matches.isNotEmpty) {
+          return CinemaPage(
+            items: matches,
+            categories: page.categories,
+            total: matches.length,
+          );
+        }
+      } on Exception {
+        // The other fragment may still retrieve the exact work.
+      }
+    }
+    return null;
   }
 
   Future<CinemaPage> _search(

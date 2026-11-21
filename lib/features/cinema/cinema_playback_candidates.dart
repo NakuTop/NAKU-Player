@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'cinema_grouping.dart';
 import 'cinema_models.dart';
+import 'cinema_media_identity.dart';
+import 'cinema_original_match.dart' show originalEpisode;
 import 'cinema_movie_versions.dart';
 import 'cinema_repository.dart';
 
@@ -26,6 +28,24 @@ class CinemaPlaybackCandidate {
 
 bool cinemaSamePlaybackWork(CinemaTitle first, CinemaTitle second) =>
     first.key == second.key || groupCinemaTitles([first, second]).length == 1;
+
+final _episodePart = RegExp(r'([上中下])(?:集|部|篇|段|半)?(?:[）)\]】])?\s*$');
+final _numberedPart = RegExp(
+  r'(?:part|cd|disc)\s*[-._ ]?(\d+)\b',
+  caseSensitive: false,
+);
+final _episodeExtra = RegExp(r'花絮|彩蛋|番外|特别篇|特別篇');
+
+/// Keep split episodes and specials distinct when two sources use different labels.
+String cinemaPlaybackEpisodePart(String label) {
+  final part = _episodePart.firstMatch(label)?[1];
+  if (part != null) return {'上': '1', '中': '2', '下': '3'}[part]!;
+  final number = _numberedPart.firstMatch(label)?[1];
+  if (number != null) {
+    return 'part${int.parse(number).toString().padLeft(3, '0')}';
+  }
+  return _episodeExtra.firstMatch(label)?.group(0)?.replaceAll('別', '别') ?? '';
+}
 
 /// Conservative episode matching, independent of provider ordering. Multiple
 /// matches are ambiguous. Explicit full-film editions can match across movie
@@ -54,6 +74,26 @@ int? cinemaMatchPlaybackEpisode({
     if (urls > 0) {
       return urls == 1 ? unique((e) => e.url == current.episode.url) : null;
     }
+  }
+  final number = originalEpisode(current.episode.name);
+  if (number.episode != null && !_movie(current.title) && !_movie(target)) {
+    final part = cinemaPlaybackEpisodePart(current.episode.name);
+    final currentSeason =
+        number.season ??
+        cinemaSeasonName(current.title.title)?.number ??
+        current.title.originalReference?.season;
+    final targetSeason =
+        cinemaSeasonName(target.title)?.number ??
+        target.originalReference?.season;
+    final index = unique((e) {
+      final other = originalEpisode(e.name);
+      final season = other.season ?? targetSeason;
+      if (currentSeason == null && season != null && season != 1) return false;
+      return other.episode == number.episode &&
+          part == cinemaPlaybackEpisodePart(e.name) &&
+          (season == null || currentSeason == null || season == currentSeason);
+    });
+    return index;
   }
   final name = _episodeName(current.episode.name);
   if (name.isNotEmpty) {

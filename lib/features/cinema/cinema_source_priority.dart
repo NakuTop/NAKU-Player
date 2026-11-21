@@ -6,8 +6,9 @@ int _quality(
   CinemaPlaybackCandidate candidate,
   CinemaMediaProbeResult? result,
 ) {
-  if (cinemaCandidateQuality(candidate) < 0)
+  if (cinemaCandidateQuality(candidate) < 0) {
     return cinemaCandidateQuality(candidate);
+  }
   if ((result?.height ?? 0) > 0) return result!.height!;
   return switch (cinemaCandidateQuality(candidate)) {
     5 => 4320,
@@ -72,27 +73,37 @@ CinemaRouteMeasurement? cinemaBestSourcePriorityRoute(
   return usable.where((m) => m.candidate.key == best?.key).firstOrNull;
 }
 
-/// Compare measured routes across sources. Catalogue order breaks exact ties.
+/// Compare successful media reads. Exact ties retain catalogue order.
 CinemaPlaybackCandidate? cinemaBestConfirmedCandidate(
   Iterable<CinemaPlaybackCandidate> candidates, {
   required Map<String, CinemaMediaProbeResult> results,
+  bool preferSpeed = false,
 }) {
+  double speed(CinemaMediaProbeResult r) {
+    final value = r.mbps;
+    return value != null && value.isFinite && value > 0 ? value : 0;
+  }
+
   final usable =
       candidates.where((c) => results[c.key]?.ok == true).indexed.toList()
         ..sort((left, right) {
           final (indexA, a) = left;
           final (indexB, b) = right;
           final ar = results[a.key]!, br = results[b.key]!;
+          final rate = speed(br).compareTo(speed(ar));
+          final quality = br.confirmedQualityTier.compareTo(
+            ar.confirmedQualityTier,
+          );
+          if (preferSpeed) {
+            if (rate != 0) return rate;
+            if (quality != 0) return quality;
+          }
           final edition = (cinemaCandidateQuality(b) >= 0 ? 1 : 0).compareTo(
             cinemaCandidateQuality(a) >= 0 ? 1 : 0,
           );
           if (edition != 0) return edition;
-          final quality = br.confirmedQualityTier.compareTo(
-            ar.confirmedQualityTier,
-          );
           if (quality != 0) return quality;
-          final speed = (br.mbps ?? 0).compareTo(ar.mbps ?? 0);
-          if (speed != 0) return speed;
+          if (rate != 0) return rate;
           final latency = (ar.firstByteMs ?? ar.elapsedMs).compareTo(
             br.firstByteMs ?? br.elapsedMs,
           );

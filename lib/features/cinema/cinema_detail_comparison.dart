@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'cinema_models.dart';
+import 'cinema_media_identity.dart';
+import 'cinema_original_match.dart' show originalEpisode;
 import 'cinema_movie_versions.dart';
 import 'cinema_playback_candidates.dart';
 import 'cinema_repository.dart';
@@ -44,25 +47,132 @@ class CinemaDetailComparison extends ChangeNotifier {
   CancelToken? _token;
   Completer<void>? _wake;
   bool _disposed = false, running = false, _again = false, _paused = false;
-  List<CinemaPlaybackCandidate> get candidates =>
-      _anchor == null ? const [] : catalogue.matching(_anchor!);
+  List<CinemaPlaybackCandidate> get candidates => _anchor == null
+      ? const []
+      : catalogue
+            .matching(_anchor!)
+            .where((c) => c.source.id != 'douban-discovery')
+            .toList();
   CinemaPlaybackCandidate? get recommended => cinemaRecommendedCandidate(
     candidates,
     sourceOrder: catalogue.sourceOrder,
     results: results,
   );
   CinemaPlaybackCandidate? get measuredRecommendation =>
-      cinemaBestConfirmedCandidate(candidates, results: results);
+      cinemaBestConfirmedCandidate(
+        candidates,
+        results: results,
+        preferSpeed: Platform.isMacOS,
+      );
+
+  CinemaPlaybackCandidate? measuredForSource(String id) =>
+      cinemaBestConfirmedCandidate(
+        candidates.where((candidate) => candidate.source.id == id),
+        results: results,
+        preferSpeed: Platform.isMacOS,
+      );
 
   CinemaPlaybackCandidate? forVariant(CinemaTitle title) {
     final options = candidates.where((c) => c.title.key == title.key);
-    return cinemaBestConfirmedCandidate(options, results: results) ??
+    return cinemaBestConfirmedCandidate(
+          options,
+          results: results,
+          preferSpeed: Platform.isMacOS,
+        ) ??
         options.where((c) => results.containsKey(c.key)).firstOrNull ??
         cinemaRecommendedCandidate(options, sourceOrder: catalogue.sourceOrder);
   }
 
-  Future<CinemaTitle> load(CinemaTitle title, {bool retry = false}) =>
-      catalogue.load(title, retry: retry);
+  List<CinemaTitle> _episodeTitles = const [];
+  List<CinemaPlaybackCandidate> _episodes = const [];
+  static final _series = RegExp(r'剧|劇|动漫|動畫|动画|番剧|综艺|綜藝');
+  static final _film = RegExp(r'电影|電影|片$');
+
+  /// The visible episode list belongs to the work, even if its fastest source
+  /// only carries a few episodes. Picking an episode never pins its provider.
+  List<CinemaPlaybackCandidate> episodeChoices({
+    CinemaPlaybackCandidate? original,
+  }) {
+    final titles = [
+      for (final v in catalogue.variants)
+        if (v.sourceId != 'douban-discovery') ?catalogue.loaded(v),
+      if (original != null && original.source.id == 'douban-discovery')
+        original.title,
+    ];
+    if (listEquals(titles, _episodeTitles)) return _episodes;
+    _episodeTitles = titles;
+    final expectedSeason =
+        cinemaSeasonName(_initialTitle.title)?.number ??
+        _initialTitle.originalReference?.season;
+    final numbered = <(int, int, String), CinemaPlaybackCandidate>{};
+    final named = <String, CinemaPlaybackCandidate>{};
+    for (final title in titles) {
+      final season =
+          cinemaSeasonName(title.title)?.number ??
+          title.originalReference?.season ??
+          expectedSeason;
+      final film = _film.hasMatch(title.category);
+      final series =
+          season != null || !film && _series.hasMatch(title.category);
+      final source = title.sourceId == 'douban-discovery'
+          ? original!.source
+          : catalogue.sourceFor(title);
+      for (var r = 0; r < title.routes.length; r++) {
+        if (cinemaHasMovieVersions(title, r)) continue;
+        final items = title.routes[r].episodes;
+        for (var e = 0; e < items.length; e++) {
+          final label = items[e].name.trim();
+          final coordinate = originalEpisode(label);
+          final s = coordinate.season ?? season ?? 1;
+          if (label.isEmpty || expectedSeason != null && s != expectedSeason) {
+            continue;
+          }
+          final part = cinemaPlaybackEpisodePart(label);
+          final number = coordinate.episode;
+          CinemaPlaybackCandidate candidate() => CinemaPlaybackCandidate(
+            title: title,
+            source: source,
+            routeIndex: r,
+            episodeIndex: e,
+          );
+          if (number != null &&
+              number > 0 &&
+              (!film || series || int.tryParse(label) == null)) {
+            numbered.putIfAbsent((s, number, part), candidate);
+          } else if (part.isNotEmpty ||
+              series &&
+                  items.length > 1 &&
+                  cinemaVersionQuality(label) == 0 &&
+                  !const {'正片', '播放'}.contains(label)) {
+            named.putIfAbsent(
+              '$s/${cinemaIdentityTypography(label).toLowerCase()}',
+              candidate,
+            );
+          }
+        }
+      }
+    }
+    final order = numbered.keys.toList()
+      ..sort((a, b) {
+        final seasons = a.$1.compareTo(b.$1);
+        if (seasons != 0) return seasons;
+        final episodes = a.$2.compareTo(b.$2);
+        return episodes == 0 ? a.$3.compareTo(b.$3) : episodes;
+      });
+    _episodes = [for (final key in order) numbered[key]!, ...named.values];
+    return _episodes;
+  }
+
+  bool _hasPlayableRoute(CinemaTitle title) =>
+      title.routes.any((route) => route.episodes.isNotEmpty);
+
+  Future<CinemaTitle> load(CinemaTitle title, {bool retry = false}) {
+    final cached = catalogue.loaded(title);
+    if (retry && cached != null && !_hasPlayableRoute(cached)) {
+      return catalogue.refresh(title);
+    }
+    return catalogue.load(title, retry: retry);
+  }
 
   void addVariants(Iterable<CinemaTitle> values) {
     if (_disposed) return;
@@ -132,7 +242,8 @@ class CinemaDetailComparison extends ChangeNotifier {
         _again = false;
         for (final title in catalogue.variants) {
           if (requested.contains(title.key)) continue;
-          if (catalogue.loaded(title) != null) {
+          final cached = catalogue.loaded(title);
+          if (cached != null && (!refresh || _hasPlayableRoute(cached))) {
             requested.add(title.key);
             continue;
           }
@@ -141,7 +252,7 @@ class CinemaDetailComparison extends ChangeNotifier {
           loading++;
           launch(() async {
             try {
-              await catalogue.load(title, retry: refresh);
+              await load(title, retry: refresh);
             } catch (_) {
               // A slow or failed catalogue must not hold up the other sources.
             } finally {
@@ -224,6 +335,10 @@ class CinemaDetailComparison extends ChangeNotifier {
       if (!_disposed) {
         pending.clear();
         notifyListeners();
+        if (_resumeAfterCancellation && !_paused) {
+          _resumeAfterCancellation = false;
+          unawaited(start());
+        }
       }
     }
   }
@@ -255,7 +370,19 @@ class CinemaDetailComparison extends ChangeNotifier {
     return null;
   }
 
+  bool _resumeAfterCancellation = false;
+
+  void resume() {
+    _paused = false;
+    if (running && _token?.isCancelled == true) {
+      _resumeAfterCancellation = true;
+    } else {
+      unawaited(start());
+    }
+  }
+
   void pause() {
+    _resumeAfterCancellation = false;
     _paused = true;
     _token?.cancel('离开详情对比');
   }

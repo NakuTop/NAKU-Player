@@ -12,9 +12,10 @@ class DownloadHttpClient {
     Map<String, dynamic> headers = const {},
     Duration? receiveTimeout,
     CancelToken? cancelToken,
+    Dio? client,
   }) async {
     try {
-      return await DioFactory.downloadDio.get<ResponseBody>(
+      return await (client ?? DioFactory.downloadDio).get<ResponseBody>(
         url,
         options: Options(
           headers: headers,

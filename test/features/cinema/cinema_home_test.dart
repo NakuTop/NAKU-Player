@@ -369,12 +369,9 @@ void main() {
         name,
       )..addFont(Future.value(ByteData.sublistView(bytes)))).load();
     }
-    await (FontLoader('MaterialIcons')..addFont(
-          File(
-            '../toolchains/flutter/bin/cache/artifacts/material_fonts/MaterialIcons-Regular.otf',
-          ).readAsBytes().then(ByteData.sublistView),
-        ))
-        .load();
+    await (FontLoader(
+      'MaterialIcons',
+    )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
   });
 
   late Directory directory;
@@ -527,6 +524,7 @@ void main() {
       expect(find.text('电影较早热门'), findsWidgets);
       expect(find.byKey(const ValueKey('resource-found')), findsOneWidget);
       expect(find.byKey(const ValueKey('resource-missing')), findsNWidgets(2));
+      expect(find.textContaining('查找全部片源'), findsNothing);
       await captureHome(tester, 'home-wide.png');
       expect(catalogDiscovery.calls.first.year, isEmpty);
       expect(tester.takeException(), isNull);
@@ -729,7 +727,16 @@ void main() {
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.pumpAndSettle();
       expect(repository.searched, containsAll(['Interstellar', '星际穿越']));
-      expect(find.text('测试目录 · 1 个结果'), findsOneWidget);
+      if (Platform.isMacOS) {
+        expect(find.text('测试目录 · 1 个结果'), findsNothing);
+        await tester.tap(find.byTooltip('搜索片源状态'));
+        await tester.pumpAndSettle();
+        expect(find.text('测试目录 · 1 个结果'), findsOneWidget);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+      } else {
+        expect(find.text('测试目录 · 1 个结果'), findsOneWidget);
+      }
       expect(find.text('星际穿越'), findsWidgets);
       expect(tester.takeException(), isNull);
     },
@@ -743,7 +750,7 @@ void main() {
       await tester.enterText(find.byType(TextField).first, 'Jason Statham');
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.pumpAndSettle();
-      expect(find.text('杰森·斯坦森参演作品 · 点击查找片源'), findsOneWidget);
+      expect(find.text('杰森·斯坦森参演作品'), findsOneWidget);
       await tester.tap(find.text('剧集').first);
       await tester.pumpAndSettle();
       await tester.tap(find.text('电影').first);

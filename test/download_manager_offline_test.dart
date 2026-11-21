@@ -3,6 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
+import 'package:kazumi/features/cinema/cinema_downloads.dart';
+import 'package:kazumi/features/cinema/cinema_models.dart';
+import 'package:kazumi/features/cinema/cinema_original_search.dart';
+import 'package:kazumi/features/cinema/cinema_original_engine.dart';
+import 'package:kazumi/features/cinema/cinema_original_match.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_nas_media.dart';
@@ -14,6 +19,47 @@ import 'package:kazumi/services/download/download_catalog.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:logger/logger.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+
+class _OriginalTransfer extends CinemaOriginalDownload {
+  _OriginalTransfer(this.port, this.bytes)
+    : super(
+        const CinemaTitle(id: 's', sourceId: 'test', title: 'Series'),
+        '第2集',
+      );
+  final int port, bytes;
+  late bool released;
+  @override
+  Future<void> transfer(
+    CancelToken cancel,
+    Future<void> Function(OriginalStream, CinemaOriginalReference) save, {
+    String previousHash = '',
+    CinemaOriginalSearch? search,
+    CinemaOriginalEngine? engine,
+  }) async {
+    final stream = OriginalStream(
+      Uri.parse('http://127.0.0.1:$port/video'),
+      {},
+      OriginalFile(3, 'Series.S01/E02.mkv', bytes),
+      () async {
+        released = true;
+      },
+    );
+    released = false;
+    try {
+      await save(
+        stream,
+        CinemaOriginalReference(
+          hash: 'e' * 40,
+          imdbId: 'tt12345678',
+          season: 1,
+          episode: 2,
+        ),
+      );
+    } finally {
+      await stream.close();
+    }
+  }
+}
 
 class _Paths extends PathProviderPlatform {
   _Paths(this.root);
@@ -154,6 +200,68 @@ void main() {
           .where((f) => f.path.contains('.preserved-transfer-'))
           .toList();
       expect(await File(preserved.single.path).readAsBytes(), before);
+    },
+  );
+
+  test(
+    'original download resumes the exact member on a new port and plays offline',
+    () async {
+      final previousOverrides = HttpOverrides.current;
+      HttpOverrides.global = null;
+      addTearDown(() => HttpOverrides.global = previousOverrides);
+      final payload = List<int>.generate(65536, (i) => i % 251);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      String? range;
+      server.listen((req) async {
+        range = req.headers.value('range');
+        req.response.statusCode = 206;
+        req.response.headers.set('Content-Range', 'bytes 1024-65535/65536');
+        req.response.contentLength = payload.length - 1024;
+        req.response.add(payload.sublist(1024));
+        await req.response.close();
+      });
+      final first = File('${media.path}/video.mkv.tmp');
+      await first.writeAsBytes(payload.sublist(0, 1024));
+      final hash = 'e' * 40;
+      await File('${media.path}/.naku-transfer.json').writeAsString(
+        jsonEncode({
+          'identity': sha256.convert(utf8.encode('$hash/3/65536')).toString(),
+          'originalHash': hash,
+        }),
+      );
+      const identity = 'https://catalog.invalid/episode-2';
+      final part = _episode(media.path, identity, number: 2);
+      final item = _OriginalTransfer(server.port, payload.length);
+      await manager.enqueue(
+        DownloadRequest(
+          recordKey: 'fixture_1',
+          bangumiId: 1,
+          pluginName: 'fixture',
+          episodeNumber: 2,
+          m3u8Url: identity,
+          httpHeaders: {},
+          adBlockerEnabled: false,
+          episode: part,
+          original: item,
+        ),
+      );
+      await _until(() => !manager.isDownloading('fixture_1', 2));
+      expect(part.status, DownloadStatus.completed, reason: part.errorMessage);
+      expect(range, 'bytes=1024-');
+      expect(item.released, isTrue);
+      expect(part.networkM3u8Url, identity);
+      final saved = await cinemaSavedOriginalTitle(
+        item.title,
+        part.localM3u8Path,
+      );
+      expect(saved.originalReference?.hash, hash);
+      expect(saved.originalReference?.episode, 2);
+      expect(manager.getLocalVideoPath(part), endsWith('video.mkv'));
+      expect(
+        sha256.convert(await File(part.localM3u8Path).readAsBytes()),
+        sha256.convert(payload),
+      );
     },
   );
 

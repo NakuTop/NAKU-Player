@@ -26,6 +26,38 @@ CinemaTitle title(
 
 void main() {
   test(
+    'search ranks an exact family by season across aliases and late pages',
+    () {
+      final rows = [
+        title('related', name: '流人行动'),
+        title('12', name: '流人 第十二季'),
+        title('actor', name: '另一部剧').copyWith(category: '剧集'),
+        title('2', name: 'Slow Horses Season 2').copyWith(aliases: '流人'),
+        title('1', name: '流人 第一季'),
+        title('comment', name: '流人').copyWith(category: '影视解说'),
+      ];
+      expect(rankCinemaSearch(rows, '流人').map((t) => t.id).take(4), [
+        '1',
+        '2',
+        '12',
+        'related',
+      ]);
+      expect(rankCinemaSearch(rows, '流人第１２季').first.id, '12');
+      expect(rankCinemaSearch(rows, ''), same(rows));
+      final variant = title('other', name: 'Slow Horses S01');
+      expect(
+        rankCinemaSearch(
+          [rows.first, variant],
+          '流人',
+          variants: {
+            variant.key: [variant.copyWith(aliases: '流人 第一季')],
+          },
+        ).first,
+        same(variant),
+      );
+    },
+  );
+  test(
     'same work shares rating IDs without changing playback source or variants',
     () {
       final primary = title('p', source: 'maccms-feifan');

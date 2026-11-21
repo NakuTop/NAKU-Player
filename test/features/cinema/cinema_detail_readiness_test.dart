@@ -1,4 +1,3 @@
-import 'package:kazumi/features/cinema/cinema_player_page.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -14,9 +13,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite/sqflite.dart'
     show databaseFactory, databaseFactorySqflitePlugin;
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
+import 'package:kazumi/features/cinema/cinema_player_page.dart';
+import 'package:kazumi/features/cinema/cinema_source_glow.dart';
 import 'package:kazumi/features/cinema/cinema_appearance.dart';
 import 'package:kazumi/features/cinema/cinema_detail_artwork.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
+import 'package:kazumi/features/cinema/cinema_original_engine.dart';
+import 'package:kazumi/features/cinema/cinema_original_search.dart';
+import 'package:kazumi/features/cinema/cinema_original_match.dart';
+import 'package:kazumi/features/cinema/cinema_video_metadata.dart';
 import 'package:kazumi/features/cinema/cinema_media_transport.dart';
 import 'package:kazumi/features/cinema/cinema_neon_decode.dart';
 import 'package:kazumi/features/cinema/cinema_poster_atmosphere.dart';
@@ -64,12 +69,17 @@ class _Poster extends ImageStreamCompleter {
 
 class _Repository extends CinemaRepository {
   bool posters = true;
+  bool alternateRoad = false,
+      episodic = false,
+      editions = false,
+      emptyRoutes = false;
   CinemaTitle title(CinemaSource source) => CinemaTitle(
     id: 'film',
     sourceId: source.id,
     title: '就绪影片',
-    category: '电影',
+    category: episodic ? '国产剧' : '电影',
     year: '2026',
+    doubanId: emptyRoutes ? '1234567' : '',
   );
   @override
   Future<List<CinemaCategory>> categories(CinemaSource source) async => const [
@@ -102,25 +112,70 @@ class _Repository extends CinemaRepository {
         title: title.title,
         category: title.category,
         year: title.year,
+        doubanId: title.doubanId,
         poster: posters ? 'https://posters.invalid/${source.id}.png' : '',
-        routes: [
-          CinemaRoute(
-            name: '正片线路',
-            episodes: [
-              CinemaEpisode(
-                name: '正片',
-                url: 'https://${source.id}.invalid/video.mp4',
-              ),
-            ],
-          ),
-        ],
+        routes: emptyRoutes
+            ? []
+            : [
+                if (alternateRoad)
+                  CinemaRoute(
+                    name: '备用线路',
+                    episodes: [
+                      CinemaEpisode(
+                        name: '正片',
+                        url: 'https://${source.id}.invalid/alternate.mp4',
+                      ),
+                    ],
+                  ),
+                CinemaRoute(
+                  name: '正片线路',
+                  episodes: [
+                    if (episodic)
+                      for (
+                        var n = 1;
+                        n <= (source.id == 'ready-a' ? 3 : 1);
+                        n++
+                      )
+                        CinemaEpisode(
+                          name: '第${source.id == 'ready-a' ? n : '0$n'}集',
+                          url: 'https://${source.id}.invalid/$n.mp4',
+                        )
+                    else if (editions)
+                      for (final edition in ['TC', 'HD', '4K'])
+                        CinemaEpisode(
+                          name: edition,
+                          url: 'https://${source.id}.invalid/$edition.mp4',
+                        )
+                    else
+                      CinemaEpisode(
+                        name: '正片',
+                        url: 'https://${source.id}.invalid/video.mp4',
+                      ),
+                  ],
+                ),
+              ],
       );
 }
 
+class _OriginalEngine extends CinemaOriginalEngine {
+  @override
+  bool get available => true;
+  @override
+  Future<CinemaVideoMetadata?> inspect(
+    OriginalMatches matches,
+    OriginalEdition edition,
+    CancelToken cancel,
+  ) async => null;
+}
+
 class _DetailProbe extends CinemaMediaProbe {
-  final bool fasterSecond;
-  _DetailProbe({this.fasterSecond = false})
-    : super(transport: CinemaMediaTransport(dio: Dio()));
+  final bool fasterSecond, fasterFirst, verified;
+  final measuredUrls = <String>[];
+  _DetailProbe({
+    this.fasterSecond = false,
+    this.fasterFirst = false,
+    this.verified = true,
+  }) : super(transport: CinemaMediaTransport(dio: Dio()));
   @override
   Future<CinemaMediaProbeResult> measure(
     String url,
@@ -128,15 +183,24 @@ class _DetailProbe extends CinemaMediaProbe {
     CancelToken? cancel,
     Duration timeout = const Duration(seconds: 8),
     bool hls = false,
-  }) async => CinemaMediaProbeResult(
-    ok: true,
-    elapsedMs: 180,
-    firstByteMs: 80,
-    mbps: fasterSecond && url.contains('ready-b') ? 56 : 28,
-    width: url.contains('ready-b') ? 3840 : 1920,
-    height: url.contains('ready-b') ? 2160 : 1080,
-    qualityEvidence: CinemaQualityEvidence.videoHeader,
-  );
+  }) async {
+    measuredUrls.add(url);
+    return CinemaMediaProbeResult(
+      ok: true,
+      elapsedMs: 180,
+      firstByteMs: 80,
+      mbps:
+          (fasterSecond && url.contains('ready-b') ||
+              fasterFirst && url.contains('ready-a'))
+          ? 56
+          : 28,
+      width: url.contains('ready-b') ? 3840 : 1920,
+      height: url.contains('ready-b') ? 2160 : 1080,
+      qualityEvidence: verified
+          ? CinemaQualityEvidence.videoHeader
+          : CinemaQualityEvidence.manifest,
+    );
+  }
 }
 
 class _Ratings extends CinemaRatingsRepository {
@@ -272,9 +336,13 @@ void main() {
                   {'user_version': 3},
                 ]
               : <Map<String, Object>>[],
+        'update' => 0,
         'execute' || 'closeDatabase' || 'options' => null,
         _ => throw UnimplementedError('Unexpected cache call: ${call.method}'),
       },
+    );
+    await ProxyAwareImageCacheManager.cinemaInstance.getFileFromCache(
+      'detail-test-bootstrap',
     );
   });
 
@@ -329,6 +397,7 @@ void main() {
     bool animateAtmosphere = false,
     Widget Function(CinemaPlayerPage)? playerPageBuilder,
     CinemaMediaProbe? detailProbe,
+    CinemaOriginalSearch? originalSearch,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
@@ -402,6 +471,8 @@ void main() {
         home: CinemaHomePage(
           playerPageBuilder: playerPageBuilder,
           detailMediaProbe: detailProbe,
+          originalEngine: originalSearch == null ? null : _OriginalEngine(),
+          originalSearch: originalSearch,
           store: store,
           repository: repository,
           ratingsRepository: ratings,
@@ -426,6 +497,130 @@ void main() {
 
   bool loading(WidgetTester tester) =>
       tester.widget<CinemaNeonDecode>(find.byType(CinemaNeonDecode)).loading;
+
+  final regularChip = find.byKey(const ValueKey('detail-quality-regular'));
+  final originalChip = find.byKey(const ValueKey('source-original'));
+  final primary = find.byKey(const ValueKey('cinema-detail-primary-play'));
+  final qualities = find.byKey(const ValueKey('cinema-detail-qualities'));
+  bool highlighted(WidgetTester tester, Finder finder) =>
+      tester.widget<CinemaSourceGlow>(finder).active;
+  final originalResponse = {
+    'hits': [],
+    'torrents': [
+      {
+        'name': '就绪影片.2026.2160p.WEB',
+        'infohash': 'a' * 40,
+        'size_bytes': 100000,
+        'seeders': 1,
+      },
+    ],
+  };
+
+  for (final mode in ['开始观看', '常规画质', '原画']) {
+    testWidgets(
+      'detail compares every source quietly and opens the displayed choice ($mode)',
+      (tester) async {
+        final index = Completer<Object?>();
+        final probe = _DetailProbe(fasterSecond: true);
+        addTearDown(() => probe.transport.dio.close(force: true));
+        CinemaPlayerPage? opened;
+        await mount(
+          tester,
+          detailProbe: probe,
+          originalSearch: CinemaOriginalSearch(
+            identity: (_) async => [],
+            get: (_) => index.future,
+          ),
+          playerPageBuilder: (page) {
+            opened = page;
+            return const SizedBox();
+          },
+        );
+        ratings.complete('ready-a');
+        posters['ready-a']!.complete(frame);
+        await frames(tester);
+        expect(
+          probe.measuredUrls.map((url) => Uri.parse(url).host).toSet(),
+          containsAll(['ready-a.invalid', 'ready-b.invalid']),
+        );
+        expect(
+          find.descendant(of: regularChip, matching: find.text('4K')),
+          findsOneWidget,
+        );
+        expect(originalChip, findsNothing);
+        expect(highlighted(tester, regularChip), isTrue);
+        final before = tester.getRect(regularChip);
+        index.complete(originalResponse);
+        await tester.pumpAndSettle();
+        expect(
+          find.descendant(of: originalChip, matching: find.text('原画')),
+          findsOneWidget,
+        );
+        expect(highlighted(tester, regularChip), isTrue);
+        expect(highlighted(tester, originalChip), isFalse);
+        expect(tester.getRect(regularChip), before);
+        for (final text in ['版本', 'Mbps', '线路', '片源甲', '片源乙', '匹配中']) {
+          expect(
+            find.descendant(of: qualities, matching: find.textContaining(text)),
+            findsNothing,
+          );
+        }
+        expect(opened, isNull);
+        final button = switch (mode) {
+          '原画' => originalChip,
+          '常规画质' => regularChip,
+          _ => primary,
+        };
+        await tester.ensureVisible(button);
+        await tester.tap(button);
+        await tester.pumpAndSettle();
+        expect(opened!.autoSelectBestRoute, isTrue);
+        expect(opened!.manualRouteSelection, isFalse);
+        expect(opened!.source.id, 'ready-b');
+        expect(
+          opened!.initialOriginal?.edition.hash,
+          mode == '原画' ? 'a' * 40 : null,
+        );
+        expect(
+          opened!.measuredQuality?.confirmedQualityTier,
+          mode == '原画' ? null : 2160,
+        );
+        expect(tester.takeException(), isNull);
+      },
+      skip: !Platform.isMacOS,
+    );
+  }
+
+  testWidgets(
+    'original alone is highlighted and supplies the main play action',
+    (tester) async {
+      repository.emptyRoutes = true;
+      CinemaPlayerPage? opened;
+      await mount(
+        tester,
+        originalSearch: CinemaOriginalSearch(
+          identity: (_) async => [],
+          get: (_) async => originalResponse,
+        ),
+        playerPageBuilder: (page) {
+          opened = page;
+          return const SizedBox();
+        },
+      );
+      ratings.complete('ready-a');
+      posters['ready-a']!.complete(frame);
+      await tester.pumpAndSettle();
+      expect(regularChip, findsNothing);
+      expect(highlighted(tester, originalChip), isTrue);
+      await tester.ensureVisible(primary);
+      await tester.tap(primary);
+      await tester.pumpAndSettle();
+      expect(opened!.initialOriginal?.edition.hash, 'a' * 40);
+      expect(opened!.manualRouteSelection, isFalse);
+      expect(opened!.autoSelectBestRoute, isTrue);
+    },
+    skip: !Platform.isMacOS,
+  );
 
   for (final solid in [false, true]) {
     testWidgets(
@@ -888,109 +1083,147 @@ void main() {
     },
   );
 
+  for (final label in ['1080p', '4K', '待检测']) {
+    testWidgets(
+      'only the winning measured quality appears ($label), never movie editions',
+      (tester) async {
+        repository.editions = true;
+        repository.alternateRoad = true;
+        final probe = _DetailProbe(
+          fasterFirst: label == '1080p',
+          verified: label != '待检测',
+        );
+        addTearDown(() => probe.transport.dio.close(force: true));
+        await mount(tester, detailProbe: probe);
+        ratings.complete('ready-a');
+        posters['ready-a']!.complete(frame);
+        await tester.pumpAndSettle();
+        expect(
+          find.descendant(of: regularChip, matching: find.text(label)),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(of: qualities, matching: find.byType(ActionChip)),
+          findsOneWidget,
+        );
+        expect(find.text('选集'), findsNothing);
+        expect(find.byKey(const ValueKey('detail-route-menu')), findsNothing);
+        expect(
+          find.descendant(of: qualities, matching: find.textContaining('Mbps')),
+          findsNothing,
+        );
+        expect(tester.takeException(), isNull);
+      },
+      skip: !Platform.isMacOS,
+    );
+  }
+
   testWidgets(
-    'detail source chips show both measured resolutions without opening playback',
+    'episode picker includes entries missing from the fastest provider',
     (tester) async {
-      final probe = _DetailProbe();
+      repository.episodic = true;
+      final probe = _DetailProbe(fasterSecond: true);
       addTearDown(() => probe.transport.dio.close(force: true));
-      var players = 0;
+      CinemaPlayerPage? opened;
       await mount(
         tester,
+        size: const Size(700, 600),
         detailProbe: probe,
-        playerPageBuilder: (_) {
-          players++;
+        playerPageBuilder: (page) {
+          opened = page;
           return const SizedBox();
         },
       );
       ratings.complete('ready-a');
       posters['ready-a']!.complete(frame);
       await tester.pumpAndSettle();
-      for (final pair in [('ready-a', '1080p'), ('ready-b', '4K')]) {
-        final chip = find.byKey(ValueKey('source-variant:${pair.$1}::film'));
-        await tester.ensureVisible(chip);
-        expect(
-          find.descendant(of: chip, matching: find.textContaining(pair.$2)),
-          findsOneWidget,
-        );
-        expect(
-          find.descendant(of: chip, matching: find.textContaining('28.0 Mbps')),
-          findsOneWidget,
-        );
-      }
-      expect(players, 0);
-      expect(find.textContaining('播放后可检测'), findsNothing);
+      final picker = find.byKey(const ValueKey('detail-quality-episodes'));
+      await tester.ensureVisible(picker);
+      await tester.tap(picker);
+      await tester.pumpAndSettle();
+      final dialog = find.byType(AlertDialog);
+      expect(
+        find.descendant(of: dialog, matching: find.byType(ListTile)),
+        findsNWidgets(3),
+      );
+      await tester.tap(find.descendant(of: dialog, matching: find.text('第3集')));
+      await tester.pumpAndSettle();
+      final page = opened!;
+      expect(
+        page.title.routes[page.routeIndex].episodes[page.episodeIndex].name,
+        '第3集',
+      );
+      expect(page.source.id, 'ready-a');
+      expect(page.manualRouteSelection, isFalse);
+      expect(page.autoSelectBestRoute, isTrue);
+      expect(page.measuredQuality, isNull);
       expect(tester.takeException(), isNull);
     },
+    skip: !Platform.isMacOS,
   );
-  for (final mode in ['automatic', 'source', 'route']) {
-    testWidgets(
-      'primary play follows glowing fastest source unless manually selected: $mode',
-      (tester) async {
-        final probe = _DetailProbe(fasterSecond: true);
-        addTearDown(() => probe.transport.dio.close(force: true));
-        CinemaPlayerPage? selected;
-        await mount(
-          tester,
-          detailProbe: probe,
-          playerPageBuilder: (page) {
-            selected = page;
-            return const Scaffold(body: Text('playback fixture'));
-          },
-        );
-        ratings.complete('ready-a');
-        posters['ready-a']!.complete(frame);
-        await tester.pumpAndSettle();
-        if (mode == 'route') {
-          final route = find.widgetWithText(ChoiceChip, '正片线路');
-          await tester.ensureVisible(route);
-          await tester.tap(route);
-          await frames(tester);
-          ratings.complete('ready-b');
-          posters['ready-b']!.complete(frame);
-          await tester.pumpAndSettle();
-        }
-        final button = find.byKey(
-          mode == 'source'
-              ? const ValueKey('source-variant:ready-a::film')
-              : const ValueKey('cinema-detail-primary-play'),
-        );
-        await tester.ensureVisible(button);
-        await tester.tap(button);
-        await tester.pumpAndSettle();
-        expect(selected!.source.id, mode == 'source' ? 'ready-a' : 'ready-b');
-        expect(selected!.manualRouteSelection, true);
-        expect(tester.takeException(), isNull);
+
+  testWidgets('retry can recover previously empty provider catalogues', (
+    tester,
+  ) async {
+    repository.emptyRoutes = true;
+    final probe = _DetailProbe(fasterFirst: true);
+    addTearDown(() => probe.transport.dio.close(force: true));
+    await mount(
+      tester,
+      detailProbe: probe,
+      originalSearch: CinemaOriginalSearch(
+        identity: (_) async => [],
+        get: (_) async => {'hits': [], 'torrents': []},
+      ),
+    );
+    ratings.complete('ready-a');
+    posters['ready-a']!.complete(frame);
+    await tester.pumpAndSettle();
+    expect(
+      find.descendant(of: qualities, matching: find.text('暂无可播放资源')),
+      findsOneWidget,
+    );
+    repository.emptyRoutes = false;
+    final retry = find.descendant(of: qualities, matching: find.text('重试'));
+    await tester.ensureVisible(retry);
+    await tester.tap(retry);
+    await tester.pumpAndSettle();
+    expect(
+      find.descendant(of: regularChip, matching: find.text('1080p')),
+      findsOneWidget,
+    );
+    expect(
+      probe.measuredUrls.map((value) => Uri.parse(value).host),
+      containsAll(['ready-a.invalid', 'ready-b.invalid']),
+    );
+    expect(tester.takeException(), isNull);
+  }, skip: !Platform.isMacOS);
+
+  testWidgets('a quality can start playback before artwork finishes', (
+    tester,
+  ) async {
+    CinemaPlayerPage? opened;
+    final probe = _DetailProbe(fasterFirst: true);
+    addTearDown(() => probe.transport.dio.close(force: true));
+    await mount(
+      tester,
+      detailProbe: probe,
+      playerPageBuilder: (page) {
+        opened = page;
+        return const Text('playback fixture');
       },
     );
-  }
-
-  testWidgets(
-    'choosing a source opens playback without waiting for artwork or another play click',
-    (tester) async {
-      CinemaPlayerPage? selected;
-      await mount(
-        tester,
-        playerPageBuilder: (page) {
-          selected = page;
-          return const Scaffold(body: Text('playback fixture'));
-        },
-      );
-      final alternate = find.byKey(
-        const ValueKey('source-variant:ready-b::film'),
-      );
-      await tester.ensureVisible(alternate);
-      await tester.tap(alternate);
-      await tester.pumpAndSettle();
-      expect(find.text('playback fixture'), findsOneWidget);
-      expect(selected!.source.id, 'ready-b');
-      expect(selected!.manualRouteSelection, true);
-      ratings.complete('ready-a');
-      posters['ready-a']!.complete(frame);
-      await frames(tester);
-      expect(find.text('playback fixture'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    },
-  );
+    await tester.ensureVisible(regularChip);
+    await tester.tap(regularChip);
+    await tester.pumpAndSettle();
+    expect(opened!.source.id, 'ready-a');
+    expect(opened!.manualRouteSelection, isFalse);
+    ratings.complete('ready-a');
+    posters['ready-a']!.complete(frame);
+    await frames(tester);
+    expect(find.text('playback fixture'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  }, skip: !Platform.isMacOS);
 
   testWidgets(
     'rating and poster failures are terminal and retain visible failure information',

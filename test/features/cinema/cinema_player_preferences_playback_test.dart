@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'package:kazumi/features/cinema/cinema_original_match.dart';
+import 'package:kazumi/features/cinema/cinema_original_engine.dart';
+import 'package:kazumi/features/cinema/cinema_original_search.dart';
 import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'package:kazumi/features/cinema/cinema_nas_playback.dart';
 import 'package:kazumi/features/cinema/cinema_mobile_playback_bar.dart';
@@ -81,19 +84,68 @@ class _PopObserver extends NavigatorObserver {
   }
 }
 
+class _OriginalFixture extends CinemaOriginalEngine {
+  _OriginalFixture({this.failAll = false, this.failHashes = const {'first'}});
+  final Set<String> failHashes;
+  final bool failAll;
+  final attempts = <String>[], released = <String>[];
+  @override
+  bool get available => true;
+  @override
+  Future<OriginalStartupSample> sampleStartup(
+    OriginalMatches matches,
+    OriginalEdition edition,
+    OriginalStream stream,
+    Stopwatch clock,
+    CancelToken cancel,
+  ) async => OriginalStartupSample(10, 100, stream.file.length, 1024 * 1024);
+  @override
+  Future<OriginalStream> open(
+    OriginalMatches matches,
+    OriginalEdition edition, {
+    required CancelToken cancel,
+    Duration budget = const Duration(seconds: 1),
+  }) async {
+    attempts.add(edition.hash);
+    if (failHashes.contains(edition.hash) || failAll) {
+      throw const FormatException('此版本暂时无法连接');
+    }
+    return OriginalStream(
+      Uri.parse('http://127.0.0.1:7777/video'),
+      {},
+      const OriginalFile(3, 'episode.mkv', 100),
+      () async {
+        released.add(edition.hash);
+      },
+    );
+  }
+}
+
+class _OriginalIndexFixture extends CinemaOriginalSearch {
+  _OriginalIndexFixture(this.results);
+  final OriginalMatches results;
+  @override
+  OriginalLookup find(CinemaTitle title, String episode) => OriginalLookup()
+    ..matches = results
+    ..done = true;
+}
+
 class _Backend extends PlatformPlayer {
   _Backend(
     PlayerConfiguration configuration, {
     this.failOpen = false,
     this.emitVideo = true,
     this.rejectOpen,
+    this.videoWidth = 1280,
+    this.videoHeight = 720,
   }) : super(configuration: configuration);
   final bool failOpen;
   final bool emitVideo;
+  final int videoWidth, videoHeight;
   final bool Function(Media media)? rejectOpen;
   void emitVideoDimensions() {
-    widthController.add(1280);
-    heightController.add(720);
+    widthController.add(videoWidth);
+    heightController.add(videoHeight);
   }
 
   Media? opened;
@@ -114,8 +166,8 @@ class _Backend extends PlatformPlayer {
     );
     durationController.add(state.duration);
     if (emitVideo) {
-      widthController.add(1280);
-      heightController.add(720);
+      widthController.add(videoWidth);
+      heightController.add(videoHeight);
     }
     positionController.add(state.position);
     playingController.add(play);
@@ -555,6 +607,10 @@ void main() {
     bool? mobileControls,
     bool? autoBest = false,
     bool manualRouteSelection = false,
+    CinemaMediaProbeResult? measuredQuality,
+    OriginalSelection? initialOriginal,
+    CinemaOriginalEngine? originalEngine,
+    CinemaOriginalSearch? originalSearch,
     CinemaRepository? repository,
     CinemaMediaProbe? probe,
     CinemaMediaCache? cache,
@@ -592,12 +648,18 @@ void main() {
       title: selectedTitle ?? _title,
       variants: variants,
       episodeIndex: initialEpisode,
-      subtitleClientFactory: subtitleClientFactory,
+      subtitleClientFactory:
+          subtitleClientFactory ??
+          (originalEngine == null ? null : _EpisodeSubtitleClient.new),
       nasPlayback: nasPlayback,
       mobileControls: mobileControls,
       resolveNASRatings: resolveNASRatings,
       autoSelectBestRoute: autoBest,
+      measuredQuality: measuredQuality,
       manualRouteSelection: manualRouteSelection,
+      initialOriginal: initialOriginal,
+      originalEngine: originalEngine,
+      originalSearch: originalSearch,
       backgroundPlaybackClock: backgroundClock,
       mediaProbe: probe,
       mediaCache: cache,
@@ -1094,11 +1156,15 @@ void main() {
     },
   );
 
-  Future<void> waitForProbe(WidgetTester tester, _Probe probe) async {
-    for (var i = 0; i < 30 && probe.requests.length < 2; i++) {
+  Future<void> waitForProbe(
+    WidgetTester tester,
+    _Probe probe, {
+    int simultaneous = 2,
+  }) async {
+    for (var i = 0; i < 30 && probe.requests.length < simultaneous; i++) {
       await tester.pump(const Duration(milliseconds: 20));
     }
-    expect(probe.requests.length, 2);
+    expect(probe.requests.length, simultaneous);
     expect(
       probe.requests.keys,
       isNot(contains('https://fixture.invalid/extra.mp4')),
@@ -1146,11 +1212,7 @@ void main() {
       ),
     ],
   );
-  for (final platform in [
-    TargetPlatform.android,
-    TargetPlatform.windows,
-    TargetPlatform.macOS,
-  ]) {
+  for (final platform in [TargetPlatform.android, TargetPlatform.windows]) {
     testWidgets(
       '$platform opens user-first source without foreground speed tests',
       (tester) async {
@@ -1396,31 +1458,465 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  testWidgets('Mac compares every known line on entry and starts the fastest', (
+    tester,
+  ) async {
+    await enableMacSources(tester);
+    final probe = _Probe();
+    addTearDown(() => probe.transport.dio.close(force: true));
+    await mount(
+      tester,
+      {},
+      autoBest: null,
+      probe: probe,
+      selectedSource: juliangSource,
+      selectedTitle: juliangTitle,
+    );
+    await waitForProbe(tester, probe);
+    expect(
+      probe.calls,
+      containsAll([
+        'https://fixture.invalid/juliang.mp4',
+        'https://fixture.invalid/juliang-backup.mp4',
+      ]),
+    );
+    probe.complete();
+    await tester.pumpAndSettle();
+    expect(
+      backends.first.opened!.uri,
+      'https://fixture.invalid/juliang-backup.mp4',
+    );
+    await unmount(tester);
+    debugDefaultTargetPlatformOverride = null;
+  });
   testWidgets(
-    'Mac unified opens selected Juliang without a standalone preflight',
+    'ordinary playback starts while original discovery is slow and keeps playing when a match arrives',
     (tester) async {
       await enableMacSources(tester);
-      final probe = _Probe();
-      addTearDown(() => probe.transport.dio.close(force: true));
+      final replies = Completer<Object?>();
+      final search = CinemaOriginalSearch(
+        identity: (_) async => [],
+        get: (_) => replies.future,
+      );
+      final selected = CinemaTitle(
+        id: 'film',
+        sourceId: store.enabledSources.first.id,
+        title: 'Quiet River',
+        year: '2025',
+        category: '电影',
+        routes: const [
+          CinemaRoute(
+            name: '正片',
+            episodes: [
+              CinemaEpisode(name: '正片', url: 'https://a.invalid/ordinary.mp4'),
+            ],
+          ),
+        ],
+      );
+      final engine = _OriginalFixture();
       await mount(
         tester,
         {},
-        autoBest: null,
-        probe: probe,
-        selectedSource: juliangSource,
-        selectedTitle: juliangTitle,
+        selectedTitle: selected,
+        selectedSource: store.enabledSources.first,
+        autoBest: true,
+        originalSearch: search,
+        originalEngine: engine,
+        stallFirst: true,
+        playerFactory: (c) {
+          final b = _Backend(c, videoWidth: 3840, videoHeight: 2160);
+          backends.add(b);
+          return _Player(b);
+        },
       );
-      for (var i = 0; i < 20 && backends.isEmpty; i++) {
-        await tester.pump(const Duration(milliseconds: 20));
-      }
-      expect(backends.first.opened!.uri, 'https://fixture.invalid/juliang.mp4');
-      await finishUnifiedProbe(tester, probe);
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(backends.single.opened?.uri, 'https://a.invalid/ordinary.mp4');
+      expect(engine.attempts, isEmpty);
+      replies.complete({
+        'hits': [],
+        'torrents': [
+          {
+            'name': 'Quiet.River.2025.2160p.WEB',
+            'seeders': 2,
+            'size_bytes': 20000,
+            'infohash': 'a' * 40,
+          },
+        ],
+      });
+      await tester.pumpAndSettle();
+      expect(engine.attempts, isEmpty);
+      expect(backends.single.opened!.uri, 'https://a.invalid/ordinary.mp4');
       await unmount(tester);
       debugDefaultTargetPlatformOverride = null;
     },
   );
+  for (final manual in [false, true]) {
+    testWidgets(
+      'ordinary startup keeps the original as a separate option, manual=$manual',
+      (tester) async {
+        await enableMacSources(tester);
+        const edition = OriginalEdition(
+          hash: 'available',
+          name: 'Online Original',
+          size: 100,
+          seeds: 1,
+          pack: false,
+          magnet: '',
+        );
+        final matches = OriginalMatches(
+          OriginalWork(
+            names: ['Series'],
+            years: {'2023'},
+            season: 1,
+            episode: 1,
+          ),
+          [edition],
+        );
+        final engine = _OriginalFixture();
+        await mount(
+          tester,
+          {},
+          autoBest: true,
+          manualRouteSelection: manual,
+          originalSearch: _OriginalIndexFixture(matches),
+          originalEngine: engine,
+          playerFactory: (c) {
+            final b = _Backend(c, videoWidth: 3840, videoHeight: 2160);
+            backends.add(b);
+            return _Player(b);
+          },
+        );
+        await tester.pumpAndSettle();
+        expect(engine.attempts, isEmpty);
+        expect(
+          backends.first.opened!.uri,
+          startsWith('https://fixture.invalid/'),
+        );
+        await unmount(tester);
+        debugDefaultTargetPlatformOverride = null;
+      },
+    );
+    testWidgets('Original opening failure respects manual choice: $manual', (
+      tester,
+    ) async {
+      await enableMacSources(tester);
+      const first = OriginalEdition(
+        hash: 'first',
+        name: 'First',
+        size: 10,
+        seeds: 2,
+        pack: false,
+        magnet: '',
+      );
+      const second = OriginalEdition(
+        hash: 'second',
+        name: 'Second',
+        size: 12,
+        seeds: 1,
+        pack: false,
+        magnet: '',
+      );
+      final matches = OriginalMatches(
+        OriginalWork(names: ['Series'], years: {'2023'}, season: 1, episode: 1),
+        [first, second],
+      );
+      final engine = _OriginalFixture(failAll: manual);
+      await mount(
+        tester,
+        {},
+        autoBest: true,
+        manualRouteSelection: manual,
+        initialOriginal: (matches: matches, edition: first),
+        originalEngine: engine,
+        originalSearch: _OriginalIndexFixture(matches),
+        playerFactory: (c) {
+          final b = _Backend(c, videoWidth: 3840, videoHeight: 2160);
+          backends.add(b);
+          return _Player(b);
+        },
+      );
+      await tester.pumpAndSettle();
+      expect(engine.attempts, ['first', 'second']);
+      if (manual) {
+        expect(
+          backends.last.opened!.uri,
+          _title.routes.first.episodes.first.url,
+        );
+      } else {
+        expect(backends.last.opened!.uri, 'http://127.0.0.1:7777/video');
+      }
+      await unmount(tester);
+      expect(engine.released, manual ? isEmpty : ['second']);
+      debugDefaultTargetPlatformOverride = null;
+    });
+  }
+  for (final exhaust in [false, true]) {
+    testWidgets(
+      'all same-episode originals precede ordinary playback, exhausted=$exhaust',
+      (tester) async {
+        await enableMacSources(tester);
+        final hashes = List.generate(6, (i) => (i + 1).toString() * 40);
+        final all = OriginalMatches(
+          OriginalWork(
+            names: ['Series'],
+            years: {'2022'},
+            season: 1,
+            episode: 2,
+          ),
+          [
+            for (final h in hashes)
+              OriginalEdition(
+                hash: h,
+                name: h,
+                size: 100,
+                seeds: 1,
+                pack: false,
+                magnet: '',
+              ),
+          ],
+        );
+        final engine = _OriginalFixture(
+          failHashes: hashes.take(exhaust ? 6 : 4).toSet(),
+        );
+        await mount(
+          tester,
+          {},
+          autoBest: true,
+          initialPosition: 134,
+          initialEpisode: 1,
+          manualRouteSelection: true,
+          initialOriginal: (matches: all, edition: all.editions.first),
+          originalSearch: _OriginalIndexFixture(all),
+          originalEngine: engine,
+          playerFactory: (c) {
+            final b = _Backend(c, videoWidth: 3840, videoHeight: 2160);
+            backends.add(b);
+            return _Player(b);
+          },
+        );
+        await tester.pumpAndSettle();
+        expect(engine.attempts, hashes);
+        expect(
+          backends.where(
+            (b) => b.opened?.uri.startsWith('http://127.') ?? false,
+          ),
+          hasLength(exhaust ? 0 : 1),
+        );
+        expect(
+          backends.last.opened?.uri,
+          exhaust
+              ? _title.routes[0].episodes[1].url
+              : 'http://127.0.0.1:7777/video',
+        );
+        expect(backends.last.opened?.start, const Duration(seconds: 134));
+        await unmount(tester);
+        debugDefaultTargetPlatformOverride = null;
+      },
+    );
+  }
   testWidgets(
-    'Mac uses saved source order and a faster later source cannot take over',
+    'a library original-only anchor discovers ordinary routes for the same episode',
+    (tester) async {
+      await enableMacSources(tester);
+      final normal = CinemaTitle(
+        id: 'listed',
+        sourceId: juliangSource.id,
+        title: '长街 第一季',
+        year: '2022',
+        category: '电视剧',
+        doubanId: '12345',
+        routes: [
+          const CinemaRoute(
+            name: '线路',
+            episodes: [
+              CinemaEpisode(name: '第三集', url: 'https://a.invalid/3.mp4'),
+              CinemaEpisode(name: '第二集', url: 'https://a.invalid/2.mp4'),
+            ],
+          ),
+        ],
+      );
+      final edition = OriginalEdition(
+        hash: 'e' * 40,
+        name: '版',
+        size: 100,
+        seeds: 1,
+        pack: true,
+        magnet: '',
+      );
+      final matches = OriginalMatches(
+        OriginalWork(
+          names: ['长街', 'Long Street'],
+          years: {'2022'},
+          season: 1,
+          episode: 2,
+          episodeCount: 3,
+          doubanId: '12345',
+        ),
+        [edition],
+      );
+      final anchor = originalCatalogAnchor(normal, matches)!;
+      final engine = _OriginalFixture(failAll: true);
+      await mount(
+        tester,
+        {},
+        autoBest: true,
+        manualRouteSelection: true,
+        initialEpisode: 1,
+        initialPosition: 88,
+        selectedTitle: anchor,
+        selectedSource: originalCatalogSource,
+        variants: [normal],
+        initialOriginal: (matches: matches, edition: edition),
+        originalSearch: _OriginalIndexFixture(matches),
+        originalEngine: engine,
+      );
+      expect(engine.attempts, [edition.hash]);
+      expect(backends.last.opened?.uri, 'https://a.invalid/2.mp4');
+      expect(backends.last.opened?.start, const Duration(seconds: 88));
+      await unmount(tester);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+  testWidgets('late same-episode version is tried before the ordinary route', (
+    tester,
+  ) async {
+    await enableMacSources(tester);
+    final later = Completer<Object?>();
+    final a = 'a' * 40, b = 'b' * 40;
+    final identity = CinemaTitle(
+      id: '1',
+      sourceId: 'fixture',
+      title: 'Long Street Season 1',
+      year: '2022',
+      category: '剧集',
+      routes: _title.routes,
+    );
+    Map row(String h) => {
+      'name': 'Long.Street.S01E02.2160p',
+      'infohash': h,
+      'size_bytes': 1000,
+    };
+    final search = CinemaOriginalSearch(
+      identity: (_) async => [],
+      get: (u) async {
+        if (u.host == 'api.knaben.org') return later.future;
+        return {
+          'torrents': [row(a)],
+        };
+      },
+    );
+    final engine = _OriginalFixture(failHashes: {a});
+    final selected = OriginalEdition(
+      hash: a,
+      name: 'Long.Street.S01E02.2160p',
+      size: 1000,
+      seeds: 1,
+      pack: false,
+      magnet: '',
+    );
+    final options = OriginalMatches(
+      OriginalWork(
+        names: ['Long Street'],
+        years: {'2022'},
+        season: 1,
+        episode: 2,
+      ),
+      [selected],
+    );
+    await mount(
+      tester,
+      {},
+      autoBest: true,
+      initialEpisode: 1,
+      initialOriginal: (matches: options, edition: selected),
+      selectedTitle: identity,
+      stallFirst: true,
+      originalSearch: search,
+      originalEngine: engine,
+      playerFactory: (c) {
+        final b = _Backend(c, videoWidth: 3840, videoHeight: 2160);
+        backends.add(b);
+        return _Player(b);
+      },
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1450));
+    expect(engine.attempts, [a]);
+    expect(backends, isEmpty);
+    later.complete({
+      'hits': [
+        {
+          'title': 'Long.Street.S01E02.2160p',
+          'hash': b,
+          'bytes': 1000,
+          'category': 'TV / HD',
+        },
+      ],
+    });
+    await tester.pumpAndSettle();
+    expect(engine.attempts, [a, b]);
+    expect(backends.single.opened?.uri, 'http://127.0.0.1:7777/video');
+    await unmount(tester);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets(
+    'manual original tries the selected file first and recovers on another edition',
+    (tester) async {
+      const first = OriginalEdition(
+        hash: 'first',
+        name: 'Explicit failing file',
+        size: 10,
+        seeds: 1,
+        pack: false,
+        magnet: '',
+      );
+      const second = OriginalEdition(
+        hash: 'second',
+        name: 'Other file',
+        size: 20,
+        seeds: 2,
+        pack: false,
+        magnet: '',
+      );
+      final matches = OriginalMatches(
+        OriginalWork(names: ['Series'], years: {'2023'}, season: 1, episode: 1),
+        [first, second],
+      );
+      final engine = _OriginalFixture();
+      await mount(
+        tester,
+        {},
+        autoBest: false,
+        originalEngine: engine,
+        originalSearch: _OriginalIndexFixture(matches),
+        manualRouteSelection: true,
+        playerFactory: (configuration) {
+          final backend = _Backend(
+            configuration,
+            videoWidth: 3840,
+            videoHeight: 2160,
+          );
+          backends.add(backend);
+          return _Player(backend);
+        },
+      );
+      await tester.pumpAndSettle();
+      expect(engine.attempts, isEmpty);
+      final tile = find.widgetWithText(ExpansionTile, '原画');
+      await tester.ensureVisible(tile);
+      await tester.tap(find.text('原画').first);
+      await tester.pumpAndSettle();
+      final version = find.text('Explicit failing file');
+      await tester.ensureVisible(version);
+      await tester.tap(version);
+      await tester.pumpAndSettle();
+      expect(engine.attempts, ['first', 'second']);
+      await unmount(tester);
+    },
+  );
+  testWidgets(
+    'Mac uses the fastest same-episode route on first open and retains resume time',
     (tester) async {
       await enableMacSources(tester);
       final probe = _Probe();
@@ -1434,15 +1930,66 @@ void main() {
         variants: [juliangTitle],
         initialPosition: 83,
       );
-      await waitForProbe(tester, probe);
-      expect(backends.first.opened!.uri, 'https://fixture.invalid/1.mp4');
+      await waitForProbe(tester, probe, simultaneous: 4);
       await finishUnifiedProbe(tester, probe);
-      expect(backends.last.opened!.uri, isNot(contains('juliang')));
+      expect(backends.first.opened!.uri, 'https://fixture.invalid/backup.mp4');
+      expect(backends, hasLength(1));
       expect(backends.last.opened!.start, const Duration(seconds: 83));
       await unmount(tester);
       debugDefaultTargetPlatformOverride = null;
     },
   );
+  testWidgets(
+    'Mac immediately opens the measured detail winner and recovers on the same episode',
+    (tester) async {
+      await enableMacSources(tester, automatic: false);
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      final attempts = <String>[];
+      await mount(
+        tester,
+        {},
+        autoBest: true,
+        initialEpisode: 1,
+        initialPosition: 73,
+        measuredQuality: const CinemaMediaProbeResult(
+          ok: true,
+          elapsedMs: 60,
+          mbps: 50,
+          width: 1920,
+          height: 1080,
+          qualityEvidence: CinemaQualityEvidence.videoHeader,
+        ),
+        probe: probe,
+        selectedSource: juliangSource,
+        selectedTitle: juliangTitle,
+        variants: [fallbackTitle()],
+        playerFactory: (config) {
+          final backend = _Backend(
+            config,
+            rejectOpen: (media) {
+              attempts.add(media.uri);
+              return media.uri.contains('juliang');
+            },
+          );
+          backends.add(backend);
+          return _Player(backend);
+        },
+      );
+      for (var i = 0; i < 12; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+        await finishUnifiedProbe(tester, probe);
+        if (backends.last.opened?.uri.endsWith('/2.mp4') == true) break;
+      }
+      expect(attempts.first, 'https://fixture.invalid/juliang-2.mp4');
+      expect(attempts.last, 'https://fixture.invalid/2.mp4');
+      expect(backends.last.opened!.start, const Duration(seconds: 73));
+      expect(find.text('本次最佳线路'), findsNothing);
+      await unmount(tester);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
   testWidgets(
     'Mac failed probes never veto the already playable user-first stream',
     (tester) async {
@@ -1458,7 +2005,7 @@ void main() {
         selectedTitle: juliangTitle,
         variants: [fallbackTitle()],
       );
-      await waitForProbe(tester, probe);
+      await waitForProbe(tester, probe, simultaneous: 4);
       await finishUnifiedProbe(tester, probe, allFail: true);
       expect(backends, hasLength(1));
       expect(backends.single.opened!.uri, 'https://fixture.invalid/1.mp4');
@@ -1518,7 +2065,7 @@ void main() {
   );
   for (final completed in [false, true]) {
     testWidgets(
-      'Mac unified ${completed ? 'completed' : 'toolbar'} next episode has no provider-only preflight',
+      'Mac unified ${completed ? 'completed' : 'toolbar'} next episode compares the available routes for the correct episode',
       (tester) async {
         await enableMacSources(tester);
         final probe = _Probe();
@@ -1534,29 +2081,18 @@ void main() {
           selectedTitle: juliangTitle,
           variants: [fallbackTitle()],
         );
-        await waitForProbe(tester, probe);
-        final old = probe.requests.values.toList();
+        await waitForProbe(tester, probe, simultaneous: 4);
+        await finishUnifiedProbe(tester, probe);
+        expect(
+          backends.single.opened!.uri,
+          'https://fixture.invalid/backup.mp4',
+        );
         if (completed) {
           backends.last.complete();
           await tester.pump();
         } else {
           await tester.ensureVisible(find.byTooltip('下一集'));
           await tester.tap(find.byTooltip('下一集'));
-        }
-        for (
-          var i = 0;
-          i < 25 && (backends.length < 2 || backends.last.opened == null);
-          i++
-        ) {
-          await tester.pump(const Duration(milliseconds: 20));
-        }
-        expect(backends.last.opened!.uri, 'https://fixture.invalid/2.mp4');
-        for (final pending in old) {
-          if (!pending.isCompleted) {
-            pending.complete(
-              const CinemaMediaProbeResult(ok: true, elapsedMs: 1, mbps: 999),
-            );
-          }
         }
         await finishUnifiedProbe(tester, probe);
         expect(backends.last.opened!.uri, 'https://fixture.invalid/2.mp4');

@@ -111,6 +111,9 @@ class CinemaCacheSession {
   double position = 0;
   int hits = 0, downloadedBytes = 0;
   String networkRoute = '';
+  Uri? _rootManifest;
+  Uri? _onlyVideoManifest;
+  void Function(int status)? onRootManifestRefused;
   Uri? networkMediaUri;
   CancelToken? _token;
   String? _fetchKey;
@@ -334,6 +337,7 @@ class CinemaMediaCache extends ChangeNotifier {
       titleKey: titleKey,
       backgroundPrefetchAllowed: backgroundPrefetchAllowed,
     );
+    session._rootManifest = uri;
     _sessions[session.id] = session;
     _protectionRevision++;
     session._timer = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -497,6 +501,16 @@ class CinemaMediaCache extends ChangeNotifier {
             session.headers,
             cancel: cancel,
           );
+        } on DioException catch (error) {
+          final status = error.response?.statusCode;
+          if (!session.closed &&
+              !resource.rendition &&
+              (resource.uri == session._rootManifest ||
+                  resource.uri == session._onlyVideoManifest) &&
+              const {401, 403, 404, 410, 444, 451}.contains(status)) {
+            session.onRootManifestRefused?.call(status!);
+          }
+          rethrow;
         } finally {
           session._requests.remove(cancel);
         }
@@ -506,6 +520,14 @@ class CinemaMediaCache extends ChangeNotifier {
         }
         final selected =
             await session.manifestPolicy?.call(text, document.uri) ?? text;
+        if (resource.uri == session._rootManifest) {
+          session._onlyVideoManifest = selected.contains('#EXT-X-STREAM-INF:')
+              ? cinemaHlsVariants(
+                  selected,
+                  document.uri,
+                ).map((v) => v.uri).toSet().singleOrNull
+              : null;
+        }
         if (session.closed) {
           response.statusCode = 410;
           return;
@@ -629,9 +651,14 @@ class CinemaMediaCache extends ChangeNotifier {
           await _prune();
         }
       }
-    } catch (_) {
+    } catch (error) {
       try {
-        response.statusCode = 502;
+        final status = error is DioException
+            ? error.response?.statusCode
+            : null;
+        response.statusCode = status != null && status >= 400 && status < 500
+            ? status
+            : 502;
       } catch (_) {}
     } finally {
       if (counted) _foreground = (_foreground - 1).clamp(0, 1000);

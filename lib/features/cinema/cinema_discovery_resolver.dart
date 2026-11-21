@@ -13,6 +13,7 @@ Future<List<CinemaTitle>?> resolveCinemaDiscoverySources(
   required CinemaTitle anchor,
   required List<CinemaSource> sources,
   required CinemaRepository repository,
+  Future<CinemaTitle?>? localOriginal,
 }) async {
   if (!context.mounted) return null;
   final available = List<CinemaSource>.unmodifiable(
@@ -31,6 +32,7 @@ Future<List<CinemaTitle>?> resolveCinemaDiscoverySources(
       data: CinemaTheme.of(dialogContext),
       child: _DiscoveryDialog(
         anchor: anchor,
+        localOriginal: localOriginal,
         sources: available,
         repository: repository,
         callerMounted: () => context.mounted,
@@ -45,9 +47,11 @@ class _DiscoveryDialog extends StatefulWidget {
     required this.sources,
     required this.repository,
     required this.callerMounted,
+    this.localOriginal,
   });
 
   final CinemaTitle anchor;
+  final Future<CinemaTitle?>? localOriginal;
   final List<CinemaSource> sources;
   final CinemaRepository repository;
   final bool Function() callerMounted;
@@ -78,6 +82,12 @@ class _DiscoveryDialogState extends State<_DiscoveryDialog> {
 
   Future<void> _resolve() async {
     final sourceIds = widget.sources.map((source) => source.id).toSet();
+    final original = widget.localOriginal?.then((title) {
+      if (title != null && _current) {
+        _finish(_variants.isEmpty ? [title] : _variants);
+      }
+      return title;
+    }, onError: (Object _, StackTrace _) => null);
     try {
       await for (final found in discoverCinemaWorkSources(
         anchor: widget.anchor,
@@ -96,11 +106,21 @@ class _DiscoveryDialogState extends State<_DiscoveryDialog> {
             ),
           );
         });
+        if (original != null && _variants.isNotEmpty) {
+          _finish(_variants);
+          return;
+        }
       }
       if (!_current) return;
       if (_variants.isNotEmpty) {
         _finish(_variants);
       } else {
+        final matched = await original;
+        if (!_current) return;
+        if (matched != null) {
+          _finish([matched]);
+          return;
+        }
         setState(() => _complete = true);
       }
     } catch (_) {
@@ -108,6 +128,12 @@ class _DiscoveryDialogState extends State<_DiscoveryDialog> {
       if (_variants.isNotEmpty) {
         _finish(_variants);
       } else {
+        final matched = await original;
+        if (!_current) return;
+        if (matched != null) {
+          _finish([matched]);
+          return;
+        }
         setState(() {
           _complete = true;
           _failed = true;
@@ -196,7 +222,9 @@ class _DiscoveryDialogState extends State<_DiscoveryDialog> {
                     const SizedBox(height: 12),
                     Text(
                       foundSources.isEmpty
-                          ? '正在查询 ${widget.sources.length} 个已启用片源…'
+                          ? (widget.localOriginal == null
+                                ? '正在查询 ${widget.sources.length} 个已启用片源…'
+                                : '正在查找片源与原画…')
                           : '已找到 ${foundSources.length} 个片源，继续查找其他线路…',
                       style: const TextStyle(color: CinemaTheme.muted),
                     ),

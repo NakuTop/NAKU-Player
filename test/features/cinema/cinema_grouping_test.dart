@@ -19,6 +19,92 @@ CinemaTitle _title(
 );
 
 void main() {
+  test(
+    'a regional release can be recovered from matching credits across sources',
+    () {
+      CinemaTitle entry(
+        String id,
+        String year,
+        String douban,
+        String director,
+        String actors,
+      ) => CinemaTitle(
+        id: id,
+        sourceId: id,
+        title: '爱乐之城',
+        category: '爱情片',
+        year: year,
+        doubanId: douban,
+        director: director,
+        actors: actors,
+      );
+      final primary = entry('a', '2016', '', '达米恩·查泽雷', '瑞恩·高斯林,艾玛·斯通');
+      final regional = entry(
+        'b',
+        '2017',
+        '25934014',
+        '达米恩·查泽雷,',
+        '艾玛·斯通、瑞恩·高斯林',
+      );
+      expect(groupCinemaTitles([primary, regional]).single.variants, [
+        primary,
+        regional,
+      ]);
+      expect(groupCinemaTitles([regional, primary]).single.variants, [
+        regional,
+        primary,
+      ]);
+      for (final other in [
+        entry('x', '2017', '', '另一位', '瑞恩·高斯林,艾玛·斯通'),
+        entry('x', '2017', '', '达米恩·查泽雷', '艾玛·斯通'),
+        entry('x', '2020', '25934014', '达米恩·查泽雷', '瑞恩·高斯林,艾玛·斯通'),
+      ]) {
+        expect(groupCinemaTitles([primary, other]), hasLength(2));
+      }
+    },
+  );
+  test(
+    'premiere year suffix needs corroboration for a different local release year',
+    () {
+      final movie = _title(
+        'official',
+        name: '摔跤吧！爸爸',
+        year: '2016',
+        doubanId: '26387939',
+      );
+      final regional = _title(
+        'regional',
+        name: '摔跤吧！爸爸2016',
+        year: '2017',
+        doubanId: '26387939',
+      );
+      final regular = _title('online', name: '摔跤吧爸爸国语', year: '2016');
+      for (final items in [
+        [regional, movie, regular],
+        [regular, movie, regional],
+      ]) {
+        expect(groupCinemaTitles(items).single.variants, items);
+      }
+      for (final other in [
+        _title(
+          'remake',
+          name: movie.title,
+          year: '2017',
+          doubanId: movie.doubanId,
+        ),
+        _title('other', name: regional.title, year: '2017', doubanId: '99999'),
+        _title(
+          'commentary',
+          name: regional.title,
+          year: '2017',
+          category: '电影解说',
+          doubanId: movie.doubanId,
+        ),
+      ]) {
+        expect(groupCinemaTitles([movie, other]), hasLength(2));
+      }
+    },
+  );
   test('translated aliases group only compatible editions', () {
     final original = _title(
       '1',

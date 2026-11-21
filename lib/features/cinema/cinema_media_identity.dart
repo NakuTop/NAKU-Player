@@ -83,7 +83,7 @@ CinemaSeasonName? cinemaSeasonName(String value) {
   final number = _seasonNumber(match[1] ?? match[2]!);
   final work = name
       .substring(0, match.start)
-      .replaceFirst(RegExp(r'[\s:：_–—-]+$'), '')
+      .replaceFirst(RegExp(r'[\s,:：，_–—-]+$'), '')
       .trim();
   return number == null || work.isEmpty ? null : (work: work, number: number);
 }
@@ -105,7 +105,7 @@ String cinemaSeasonTitleKey(String value) {
 bool cinemaMatchesSeason(String title, CinemaSeasonName query) {
   final season = cinemaSeasonName(title);
   if (season == null || season.number != query.number) return false;
-  String key(String work) => work.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+  String key(String work) => cinemaWorkTitleKey(work, '');
   return key(season.work).contains(key(query.work));
 }
 
@@ -172,12 +172,49 @@ String cinemaCleanWorkTitle(String title, String releaseYear) {
   return name;
 }
 
-String cinemaWorkTitleKey(String title, String year) => cinemaSeasonTitleKey(
-  cinemaCleanWorkTitle(
-    title.replaceFirst(RegExp(r'[（(](?:完整版|未删减版)[）)]$'), ''),
-    year,
-  ),
-).replaceAll(RegExp(r'(?<=[\u3400-\u9fff])[,，、·](?=[\u3400-\u9fff])'), '');
+final _hanSeparator = RegExp(
+  r'(?<=[\u3400-\u9fff])\s*[,:;!?。、·・…—-]+\s*(?=[\u3400-\u9fff])',
+);
+
+String cinemaWorkTitleKey(String title, String year) =>
+    cinemaSeasonTitleKey(
+          cinemaCleanWorkTitle(
+            title.replaceFirst(RegExp(r'[（(](?:完整版|未删减版)[）)]$'), ''),
+            year,
+          ),
+        )
+        .replaceAll(_hanSeparator, '')
+        .replaceAll(RegExp(r'(?<=[\u3400-\u9fff])[!?…。]+$'), '');
+
+// Some catalogues append the premiere year to the name but use the local
+// release year in vod_year. Only an identified film can use this extra key.
+String cinemaRegionalTitle(String title, String year) {
+  final embedded = RegExp(
+    r'((?:19|20)\d{2})[)\]】]?$',
+  ).firstMatch(cinemaIdentityTypography(title))?[1];
+  final local = int.tryParse(year);
+  if (embedded == null ||
+      local == null ||
+      (int.parse(embedded) - local).abs() != 1) {
+    return title;
+  }
+  return cinemaCleanWorkTitle(title, embedded);
+}
+
+/// Literal catalogues can miss an entire CJK title when the user omits an
+/// unguessable punctuation mark. Fragments retrieve candidates only.
+Iterable<String> cinemaWorkSearchFragments(String query) sync* {
+  final name = cinemaIdentityTypography(query).trim();
+  final parts = name.split(_hanSeparator);
+  if (parts.length > 1) {
+    final fragments = parts.where((p) => p.length >= 2).toSet().toList()
+      ..sort((a, b) => b.length.compareTo(a.length));
+    yield* fragments.take(2);
+  } else if (RegExp(r'^[\u3400-\u9fff]{5,40}$').hasMatch(name)) {
+    final size = ((name.length + 1) ~/ 2).clamp(3, 6);
+    yield* {name.substring(0, size), name.substring(name.length - size)};
+  }
+}
 
 const _edgerunnersTitles = [
   '赛博朋克：边缘行者',
@@ -226,10 +263,7 @@ List<String> cinemaWorkSearchQueries(String value) {
     plain,
     plain.replaceAll(':', '：'),
     normalized,
-    plain.replaceAll(
-      RegExp(r'(?<=[\u3400-\u9fff])\s*[:：,，、·]\s*(?=[\u3400-\u9fff])'),
-      '',
-    ),
+    plain.replaceAll(_hanSeparator, ''),
   }.where((q) => q.isNotEmpty).take(3).toList();
   final key = cinemaWorkTitleKey(plain, '');
   return _edgerunnersKeys.contains(key) || _edgerunnersShortKeys.contains(key)

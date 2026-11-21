@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_detail_comparison.dart';
@@ -89,44 +90,90 @@ class Probe extends CinemaMediaProbe {
 }
 
 void main() {
-  test('verified 4K beats faster 1080p and ties use speed', () async {
-    final probe = Probe();
-    final comparison = CinemaDetailComparison(
-      title: movie(first),
-      source: first,
-      variants: [movie(second)],
-      sources: [first, second],
-      repository: Repository(),
-      probe: probe,
-    );
-    addTearDown(comparison.dispose);
-    addTearDown(() => probe.transport.dio.close(force: true));
-    expect(comparison.measuredRecommendation, isNull);
-    await comparison.start();
-    expect(comparison.measuredRecommendation?.source.id, second.id);
-    expect(comparison.recommended?.source.id, first.id);
-    final faster4k = comparison.measuredRecommendation!;
-    comparison.results[faster4k.key] = const CinemaMediaProbeResult(
-      ok: true,
-      elapsedMs: 1,
-      mbps: 2000,
-      width: 3840,
-      height: 2160,
-      qualityEvidence: CinemaQualityEvidence.manifest,
-    );
-    expect(comparison.results[faster4k.key]!.qualityLabel, '待检测');
-    expect(comparison.measuredRecommendation?.source.id, first.id);
-    for (final candidate in comparison.candidates.where(
-      (c) => c.source.id == second.id,
-    )) {
-      comparison.results[candidate.key] = const CinemaMediaProbeResult(
-        ok: false,
+  test(
+    'measured startup uses speed first and never promotes a manifest hint to proven 4K',
+    () async {
+      final probe = Probe();
+      final comparison = CinemaDetailComparison(
+        title: movie(first),
+        source: first,
+        variants: [movie(second)],
+        sources: [first, second],
+        repository: Repository(),
+        probe: probe,
+      );
+      addTearDown(comparison.dispose);
+      addTearDown(() => probe.transport.dio.close(force: true));
+      expect(comparison.measuredRecommendation, isNull);
+      await comparison.start();
+      expect(comparison.measuredRecommendation?.source.id, second.id);
+      expect(comparison.recommended?.source.id, first.id);
+      final faster4k = comparison.measuredRecommendation!;
+      comparison.results[faster4k.key] = const CinemaMediaProbeResult(
+        ok: true,
         elapsedMs: 1,
         mbps: 2000,
+        width: 3840,
+        height: 2160,
+        qualityEvidence: CinemaQualityEvidence.manifest,
       );
-    }
-    expect(comparison.measuredRecommendation?.source.id, first.id);
-  });
+      expect(comparison.results[faster4k.key]!.qualityLabel, '待检测');
+      expect(comparison.measuredRecommendation?.key, faster4k.key);
+      for (final candidate in comparison.candidates.where(
+        (c) => c.source.id == second.id,
+      )) {
+        comparison.results[candidate.key] = const CinemaMediaProbeResult(
+          ok: false,
+          elapsedMs: 1,
+          mbps: 2000,
+        );
+      }
+      expect(comparison.measuredRecommendation?.source.id, first.id);
+    },
+  );
+  test(
+    'ordinary routes choose actual speed first and measured resolution at equal speed',
+    () async {
+      final probe = Probe();
+      final comparison = CinemaDetailComparison(
+        title: movie(first),
+        source: first,
+        variants: [movie(second)],
+        sources: [first, second],
+        repository: Repository(),
+        probe: probe,
+      );
+      addTearDown(comparison.dispose);
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await comparison.start();
+      final hd = comparison.candidates.firstWhere(
+        (c) => c.source.id == first.id && c.episode.name == 'HD',
+      );
+      final uhd = comparison.candidates.firstWhere(
+        (c) => c.source.id == second.id && c.episode.name == '4K',
+      );
+      CinemaMediaProbeResult measured(double mbps, int w, int h) =>
+          CinemaMediaProbeResult(
+            ok: true,
+            elapsedMs: 100,
+            mbps: mbps,
+            width: w,
+            height: h,
+            qualityEvidence: CinemaQualityEvidence.videoHeader,
+          );
+      comparison.results
+        ..clear()
+        ..[hd.key] = measured(80, 1920, 1080)
+        ..[uhd.key] = measured(24, 3840, 2160);
+      expect(comparison.measuredRecommendation?.key, hd.key);
+      comparison.results[uhd.key] = measured(80, 3840, 2160);
+      expect(comparison.measuredRecommendation?.key, uhd.key);
+      comparison.results[uhd.key] = measured(double.nan, 3840, 2160);
+      expect(comparison.measuredRecommendation?.key, hd.key);
+    },
+    skip: !Platform.isMacOS,
+  );
+
   test(
     'unmeasured web sibling never hides completed source evidence',
     () async {
