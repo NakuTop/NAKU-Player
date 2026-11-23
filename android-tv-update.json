@@ -1,5 +1,38 @@
 [
   {
+    "tag_name": "android-tv-v3.2.20+148",
+    "name": "NAKU Android TV 3.2.20",
+    "body": "手机和电视现在支持差分更新。安装 3.2.20 后，下次更新会优先下载与本机版本匹配的补丁，在设备上合成并验证正式 APK，再由 Android 确认覆盖安装。\n\n3.2.19 及更早的正式客户端需要先下载一次完整 APK。发布流程为最近三个可用基础版本分别生成直达新版本的补丁。若本机安装包不匹配或补丁验证失败，会自动改用完整包。",
+    "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.20%2B148",
+    "published_at": "2026-11-23T11:49:07Z",
+    "draft": false,
+    "prerelease": false,
+    "assets": [
+      {
+        "name": "NAKU-TV-3.2.20-Android-universal.apk",
+        "state": "uploaded",
+        "size": 165781985,
+        "digest": "sha256:1709591c4f12f0e670482cffd82328f9d00a3ae1e1b7e1188e49821f4214f702",
+        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.20%2B148/NAKU-TV-3.2.20-Android-universal.apk",
+        "build": 148,
+        "deltas": [
+          {
+            "name": "NAKU-TV-147-148.gdiff.gz",
+            "state": "uploaded",
+            "size": 28712005,
+            "digest": "sha256:bd43c50845df52ee29698c84c31b8888c6a146dbf66c2a0ce7f6fd44b7b94a45",
+            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.20%2B148/NAKU-TV-147-148.gdiff.gz",
+            "format": "gdiff4-gzip",
+            "base_version": "3.2.19",
+            "base_build": 147,
+            "base_sha256": "65354d20eb3ba27c5cde3466e85b117fc096a214b92bc296d8591a0966854937",
+            "target_sha256": "1709591c4f12f0e670482cffd82328f9d00a3ae1e1b7e1188e49821f4214f702"
+          }
+        ]
+      }
+    ]
+  },
+  {
     "tag_name": "android-tv-v3.2.19+147",
     "name": "NAKU Android TV 3.2.19",
     "body": "安卓手机和电视在本机匹配并播放 4K 原画，支持边播边缓存和拖动进度条。常规片源优先选择实测速率较好的线路，原画按作品和集数匹配。手机投送原画时，电视接收作品、集数和进度，在电视本机打开。\n\n搜索会合并同一季的不同写法，区分同名电影、剧集和解说。新增默认如意源，缓存达到上限后优先清理最久未使用的内容，手动下载单独保留。保留 Home Display 和原有投屏入口。\n\n本次通用 APK 内置 arm64-v8a、armeabi-v7a 和 x86_64 三种架构的原画引擎。已在 Android 35 ARM64 模拟器覆盖升级并验证本机引擎的 3840×2160 起播、向前和向后定位、退出回收。\n",
