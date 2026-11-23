@@ -1,21 +1,21 @@
 {
-  "tag_name": "3.2.22",
-  "name": "NAKU Windows 3.2.22",
-  "body": "Windows 3.2.22\n\n在线播放优先选择同集实测 1080p，同画质比较速度。保留原有详情页和手动选择线路，自动换线会延续播放进度。低于 1080p 的线路显示实测画质。",
-  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.22-windows",
-  "published_at": "2026-11-23T14:56:38Z",
+  "tag_name": "3.2.25",
+  "name": "NAKU Windows 3.2.25",
+  "body": "Windows 3.2.25\n\n自动播放会在检测时限内比较同集实测的 1080p 线路，选择加载最快的片源。保留原有详情页和手动选择线路，自动换线会延续播放进度。低于 1080p 的线路显示实测画质。",
+  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.25-windows",
+  "published_at": "2026-11-23T22:31:12Z",
   "assets": [
     {
-      "name": "NAKUPlayer-3.2.22-Windows-x64-portable.zip",
-      "size": 190646126,
-      "digest": "sha256:c2f04e7e853f3f5e6cd66f0fd90d963f4a8adb5e7cf7ed3205f63fe02bc60f72",
-      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.22-windows/NAKUPlayer-3.2.22-Windows-x64-portable.zip"
+      "name": "NAKUPlayer-3.2.25-Windows-x64-portable.zip",
+      "size": 190646969,
+      "digest": "sha256:05c365e839351cf8c99724b60f328bbbdccbd5bf08de03feb306064a494b8cbf",
+      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.25-windows/NAKUPlayer-3.2.25-Windows-x64-portable.zip"
     },
     {
-      "name": "NAKUPlayer-3.2.22-Windows-x64-Setup.exe",
-      "size": 173161688,
-      "digest": "sha256:3c5e2c68391b2e64e8636ff1971f1d27bbf0fbb79eae932e45c0c2e92f05a661",
-      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.22-windows/NAKUPlayer-3.2.22-Windows-x64-Setup.exe"
+      "name": "NAKUPlayer-3.2.25-Windows-x64-Setup.exe",
+      "size": 173157931,
+      "digest": "sha256:b979b90955faa16c492d6a42307e833abf5c6ebc380009da5ef2a69ff13d8f48",
+      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.25-windows/NAKUPlayer-3.2.25-Windows-x64-Setup.exe"
     }
   ]
 }
