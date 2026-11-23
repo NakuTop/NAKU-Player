@@ -924,6 +924,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     int? initialPositionSeconds,
     CinemaHistory? resumeHistory,
     CinemaMediaProbeResult? measuredQuality,
+    bool regularComparisonComplete = false,
     OriginalSelection? initialOriginal,
     OriginalLookup? initialOriginalLookup,
   }) {
@@ -951,6 +952,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                             ? CinemaPlaybackQuality.fullHD
                             : null),
                     measuredQuality: measuredQuality,
+                    regularComparisonComplete: regularComparisonComplete,
                     initialOriginal: initialOriginal,
                     initialOriginalLookup: initialOriginalLookup,
                     originalEngine: widget.originalEngine,
@@ -2296,6 +2298,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             allVariants,
             manual,
             quality,
+            regularComparisonComplete,
             original,
             originalLookup,
             qualityMode,
@@ -2314,6 +2317,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               qualityMode: qualityMode,
               keepBrowseRoute: keepBrowseRoute,
               measuredQuality: quality,
+              regularComparisonComplete: regularComparisonComplete,
               initialOriginal: original,
               initialOriginalLookup: originalLookup,
             );
@@ -3485,6 +3489,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                     episode,
                     variants,
                     manual,
+                    _,
                     _,
                     _,
                     _,
@@ -5730,6 +5735,7 @@ class _TitleDetails extends StatefulWidget {
     List<CinemaTitle>,
     bool,
     CinemaMediaProbeResult?,
+    bool,
     OriginalSelection?,
     OriginalLookup?,
     CinemaPlaybackQuality?,
@@ -5930,6 +5936,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
               !NakuDevice.unifiedCinema &&
               _recommended != null),
       quality,
+      !_discovering && !_discoveryFailed && !_comparison.running,
       original,
       sameEpisode ? _originalLookup : null,
       qualityMode ??

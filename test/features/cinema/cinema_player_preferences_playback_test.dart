@@ -1783,6 +1783,109 @@ void main() {
       debugDefaultTargetPlatformOverride = null;
     },
   );
+  for (final fromOriginal in [false, true]) {
+    testWidgets(
+      'automatic full HD waits for a faster peer after a confirmed full HD (from original: $fromOriginal)',
+      (tester) async {
+        await enableMacSources(tester);
+        const slow = CinemaMediaProbeResult(
+          ok: true,
+          elapsedMs: 15,
+          firstByteMs: 8,
+          mbps: 6,
+          width: 1920,
+          height: 1080,
+          qualityEvidence: CinemaQualityEvidence.videoHeader,
+        );
+        const fast = CinemaMediaProbeResult(
+          ok: true,
+          elapsedMs: 25,
+          firstByteMs: 12,
+          mbps: 60,
+          width: 1920,
+          height: 1080,
+          qualityEvidence: CinemaQualityEvidence.videoHeader,
+        );
+        const low = CinemaMediaProbeResult(
+          ok: true,
+          elapsedMs: 2,
+          firstByteMs: 1,
+          mbps: 240,
+          width: 1280,
+          height: 720,
+          qualityEvidence: CinemaQualityEvidence.videoHeader,
+        );
+        final edition = OriginalEdition(
+          hash: 'a' * 40,
+          name: '2160p',
+          seeds: 10,
+          size: 800,
+          pack: false,
+          magnet: '',
+        );
+        final matches = OriginalMatches(
+          OriginalWork(
+            names: [juliangTitle.title],
+            years: {juliangTitle.year},
+            season: 1,
+            episode: 1,
+          ),
+          [edition],
+        );
+        final probe = _Probe();
+        addTearDown(() => probe.transport.dio.close(force: true));
+        await mount(
+          tester,
+          {},
+          selectedTitle: juliangTitle,
+          selectedSource: juliangSource,
+          variants: [fallbackTitle()],
+          autoBest: true,
+          qualityMode: fromOriginal
+              ? CinemaPlaybackQuality.ultraHD
+              : CinemaPlaybackQuality.fullHD,
+          measuredQuality: fromOriginal ? null : slow,
+          originalEngine: fromOriginal ? _OriginalFixture(failAll: true) : null,
+          originalSearch: fromOriginal ? _OriginalIndexFixture(matches) : null,
+          initialOriginal: fromOriginal
+              ? (matches: matches, edition: edition)
+              : null,
+          initialPosition: 50,
+          probe: probe,
+        );
+        for (
+          var i = 0;
+          i < 40 && !probe.requests.keys.any((url) => url.endsWith('/1.mp4'));
+          i++
+        ) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        expect(probe.requests.keys, contains('https://fixture.invalid/1.mp4'));
+        for (final entry in probe.requests.entries) {
+          if (!entry.key.endsWith('/1.mp4')) {
+            entry.value.complete(
+              entry.key.endsWith('/juliang.mp4') ? slow : low,
+            );
+          }
+        }
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(backends.where((backend) => backend.opened != null), isEmpty);
+        probe.requests['https://fixture.invalid/1.mp4']!.complete(fast);
+        for (
+          var i = 0;
+          i < 25 && (backends.isEmpty || backends.last.opened == null);
+          i++
+        ) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        expect(backends.last.opened?.uri, 'https://fixture.invalid/1.mp4');
+        expect(backends.last.opened?.start, const Duration(seconds: 50));
+        await unmount(tester);
+        debugDefaultTargetPlatformOverride = null;
+      },
+    );
+  }
+
   testWidgets(
     'failed original reselects the same episode by real 1080p instead of reopening its fast 720p anchor',
     (tester) async {

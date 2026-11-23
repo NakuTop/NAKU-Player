@@ -93,7 +93,7 @@ class Probe extends CinemaMediaProbe {
 
 void main() {
   test(
-    'later matching full HD beats a much faster 720p stream after the first four providers',
+    'the fastest measured full HD wins even if another full HD provider is in the first batch',
     () async {
       final sources = List.generate(
         6,
@@ -101,13 +101,18 @@ void main() {
       );
       final probe = Probe()
         ..respond = (url) {
-          final full = url.contains('provider-5.');
+          final late = url.contains('provider-5.');
+          final full = late || url.contains('provider-0.');
           return CinemaMediaProbeResult(
             ok: true,
             elapsedMs: 10,
             width: full ? 1920 : 1280,
             height: full ? 1080 : 720,
-            mbps: full ? 12 : 110,
+            mbps: late
+                ? 35
+                : full
+                ? 12
+                : 110,
             qualityEvidence: CinemaQualityEvidence.videoHeader,
           );
         };
@@ -134,7 +139,7 @@ void main() {
   );
   for (final succeeds in [true, false]) {
     test(
-      '1080p quick check bounds parallelism, stops at a confirmed route or exhausts regular routes and leaves UHD untouched ($succeeds)',
+      '1080p comparison bounds parallelism and measures every regular source while leaving UHD untouched ($succeeds)',
       () async {
         final sources = List.generate(
           8,
@@ -168,14 +173,13 @@ void main() {
           ),
         );
         await firstPass;
-        final expected = succeeds ? 2 : 6;
-        expect(probe.calls, hasLength(expected));
+        expect(probe.calls, hasLength(6));
         comparison.addVariants(sources.skip(6).map(movie));
         await comparison.start();
         while (comparison.running) {
           await Future<void>.delayed(Duration.zero);
         }
-        final afterDiscovery = succeeds ? expected : 8;
+        const afterDiscovery = 8;
         expect(probe.calls, hasLength(afterDiscovery));
         expect(probe.calls, everyElement(endsWith('/HD.m3u8')));
         expect(comparison.streaming4K?.episode.name, '4K');

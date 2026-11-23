@@ -335,15 +335,12 @@ class CinemaDetailComparison extends ChangeNotifier {
           fairCandidates().where((c) => !_checked.contains(c.key)),
           limit: candidates.length,
         );
-        final foundHD =
-            preferFullHD &&
-            results.values.any((r) => r.confirmedQualityTier == 1080);
         for (final next in additions) {
           final existing = targets[next.identity];
           final target = existing ?? next;
           if (existing == null && !completed.containsKey(next.identity)) {
             if (preferFullHD &&
-                (foundHD || measuring + queued.length >= _quickParallelism)) {
+                measuring + queued.length >= _quickParallelism) {
               continue;
             }
             targets[next.identity] = next;

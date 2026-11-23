@@ -264,6 +264,7 @@ class CinemaPlayerPage extends StatefulWidget {
     this.originalEngine,
     this.originalSearch,
     this.measuredQuality,
+    this.regularComparisonComplete = false,
     this.posterImage,
     this.backgroundPlaybackClock,
   });
@@ -300,6 +301,7 @@ class CinemaPlayerPage extends StatefulWidget {
   @visibleForTesting
   final CinemaOriginalSearch? originalSearch;
   final CinemaMediaProbeResult? measuredQuality;
+  final bool regularComparisonComplete;
   @visibleForTesting
   final ImageProvider? posterImage;
   @visibleForTesting
@@ -351,12 +353,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   bool _tvHlsUpgrading = false;
   late final _mediaProbe =
       widget.mediaProbe ??
-      CinemaMediaProbe(
-        quick: widget.qualityMode != null,
-        preferFullHD:
-            widget.qualityMode != null ||
-            widget.source.kind == CinemaSourceKind.maccms,
-      );
+      (widget.qualityMode != null
+          ? CinemaMediaProbe.detail(preferFullHD: true)
+          : CinemaMediaProbe(
+              preferFullHD: widget.source.kind == CinemaSourceKind.maccms,
+            ));
   CancelToken? _routeProbeToken;
   CinemaPlaybackCandidate? _routeComparisonAnchor;
   int _probeCompleted = 0, _probeTotal = 0;
@@ -1205,6 +1206,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _qualityMode == null &&
         !(_compareMacRoutes && initial && widget.measuredQuality?.ok == true);
     _probeResults.clear();
+    if (initial && widget.measuredQuality != null) {
+      _probeResults[anchor.key] = widget.measuredQuality!;
+    }
     _refusedRoutes.clear();
     final stayOriginal =
         !initial && _original != null && anchor.routeIndex == _routeIndex;
@@ -1280,7 +1284,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         isCurrent: () => _isCurrent(generation),
       );
       var next =
-          await _reachableAfterRefusal(anchor, generation) ?? await ordinary();
+          await _bestRegularRoute(anchor, generation) ?? await ordinary();
       if (next == null && _isCurrent(generation)) {
         await _discovering;
         if (_isCurrent(generation)) next = await ordinary();
@@ -1314,12 +1318,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         original == null &&
         _qualityMode == CinemaPlaybackQuality.fullHD &&
         !(initial &&
-            widget.measuredQuality?.confirmedQualityTier == 1080 &&
+            widget.regularComparisonComplete &&
+            (widget.measuredQuality?.confirmedQualityTier ?? 0) > 0 &&
+            widget.measuredQuality!.confirmedQualityTier < 2160 &&
             (!NakuDevice.isTV ||
                 CinemaTVMediaEnvironment.instance.supports(
                   widget.measuredQuality!,
                 )))) {
-      selected = await _reachableAfterRefusal(anchor, generation) ?? anchor;
+      selected = await _bestRegularRoute(anchor, generation) ?? anchor;
     }
     if (automaticSelection &&
         original == null &&
@@ -3674,7 +3680,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return;
     }
     final selection = _selection;
-    if (NakuDevice.isTV) {
+    if (NakuDevice.isTV && _original == null) {
       _mediaProbe.invalidate();
       final uri = Uri.tryParse(_playback?.mediaUrl ?? '');
       if (uri != null && uri.hasAuthority) {
@@ -3776,12 +3782,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           _manualRouteSelection ||
           cinemaCandidateQuality(candidate) < 4);
 
-  Future<CinemaPlaybackCandidate?> _reachableAfterRefusal(
+  Future<CinemaPlaybackCandidate?> _bestRegularRoute(
     CinemaPlaybackCandidate anchor,
     int generation,
   ) async {
     _recoveryProbe?.cancel('重新选择');
-    _mediaProbe.invalidate();
     final token = _recoveryProbe = CancelToken();
     final started = <String>{}, loading = <String>{};
     final watch = Stopwatch()..start();
@@ -3870,11 +3875,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                 .whenComplete(() => active--),
           );
         }
-        final selected = best();
-        if (measured[selected?.key]?.confirmedQualityTier == 1080 ||
-            active == 0 && reading == 0 && !discovering) {
-          return selected;
-        }
+        if (active == 0 && reading == 0 && !discovering) return best();
         await Future.any([
           Future<void>.delayed(const Duration(milliseconds: 100)),
           token.whenCancel,
@@ -3922,10 +3923,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final recovering4K =
         failedOriginal || _qualityMode == CinemaPlaybackQuality.ultraHD;
     if (anchor != null &&
-        (recovering4K || _refusedRoutes.isNotEmpty) &&
+        (recovering4K ||
+            _refusedRoutes.isNotEmpty ||
+            _qualityMode == CinemaPlaybackQuality.fullHD &&
+                !_manualRouteSelection) &&
         !explicit) {
-      if (!recovering4K && _refusedRoutes.isNotEmpty) {
-        final reachable = await _reachableAfterRefusal(anchor, generation);
+      if (!recovering4K) {
+        final reachable = await _bestRegularRoute(anchor, generation);
         if (!_isCurrent(generation)) return;
         if (reachable != null) {
           await _playEpisode(
@@ -3970,7 +3974,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _qualityMode = CinemaPlaybackQuality.fullHD;
         _discovering ??= _discoverRoutes();
         _manualRouteSelection = false;
-        final next = await _reachableAfterRefusal(anchor, generation);
+        final next = await _bestRegularRoute(anchor, generation);
         if (!_isCurrent(generation)) return;
         if (next != null) {
           await _playEpisode(
@@ -4375,6 +4379,16 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     CinemaRouteMeasurement best,
     CinemaPlaybackCandidate current,
   ) {
+    if (_qualityMode == CinemaPlaybackQuality.fullHD) {
+      return cinemaBestRegularCandidate(
+            [current, best.candidate],
+            results: _probeResults,
+            supported: NakuDevice.isTV
+                ? CinemaTVMediaEnvironment.instance.supports
+                : null,
+          )?.key ==
+          best.candidate.key;
+    }
     if (_compareMacRoutes) {
       return cinemaBestConfirmedCandidate(
             [current, best.candidate],

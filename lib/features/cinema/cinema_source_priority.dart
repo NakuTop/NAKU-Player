@@ -80,22 +80,38 @@ CinemaPlaybackCandidate? cinemaBestRegularCandidate(
   required Map<String, CinemaMediaProbeResult> results,
   bool Function(CinemaMediaProbeResult)? supported,
 }) {
-  final options = candidates.where((candidate) {
+  double speed(CinemaMediaProbeResult result) {
+    final value = result.mbps;
+    return value != null && value.isFinite && value > 0 ? value : 0;
+  }
+
+  CinemaPlaybackCandidate? best;
+  CinemaMediaProbeResult? fastest;
+  for (final candidate in candidates) {
     final result = results[candidate.key];
-    return result != null &&
-        result.ok &&
-        result.confirmedQualityTier < 2160 &&
-        (supported?.call(result) ?? true);
-  }).toList();
-  if (options.isEmpty) return null;
-  final tier = options
-      .map((c) => results[c.key]!.confirmedQualityTier)
-      .reduce((a, b) => a > b ? a : b);
-  return cinemaBestConfirmedCandidate(
-    options.where((c) => results[c.key]!.confirmedQualityTier == tier),
-    results: results,
-    preferSpeed: true,
-  );
+    if (result == null ||
+        !result.ok ||
+        result.confirmedQualityTier >= 2160 ||
+        !(supported?.call(result) ?? true)) {
+      continue;
+    }
+    if (fastest != null) {
+      final quality = result.confirmedQualityTier.compareTo(
+        fastest.confirmedQualityTier,
+      );
+      final rate = speed(result).compareTo(speed(fastest));
+      final latency = (result.firstByteMs ?? result.elapsedMs).compareTo(
+        fastest.firstByteMs ?? fastest.elapsedMs,
+      );
+      if (quality < 0 ||
+          quality == 0 && (rate < 0 || rate == 0 && latency >= 0)) {
+        continue;
+      }
+    }
+    best = candidate;
+    fastest = result;
+  }
+  return best;
 }
 
 /// Compare successful media reads. Exact ties retain catalogue order.
