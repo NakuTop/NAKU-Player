@@ -1139,7 +1139,16 @@ void main() {
         ratings.complete('ready-a');
         posters['ready-a']!.complete(frame);
         await tester.pumpAndSettle();
-        for (final pair in [(regularChip, '1080p'), (originalChip, '4K')]) {
+        if (!verified) {
+          expect(
+            find.descendant(of: regularChip, matching: find.text('1080p')),
+            findsNothing,
+          );
+        }
+        for (final pair in [
+          (regularChip, verified ? '1080p' : '常规'),
+          (originalChip, '4K'),
+        ]) {
           expect(
             find.descendant(of: pair.$1, matching: find.text(pair.$2)),
             findsOneWidget,

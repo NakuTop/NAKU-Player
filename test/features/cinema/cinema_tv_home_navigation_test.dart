@@ -16,6 +16,9 @@ import 'package:kazumi/features/cinema/cinema_detail_artwork.dart';
 import 'package:kazumi/features/cinema/cinema_featured_wall.dart';
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
+import 'package:kazumi/features/cinema/cinema_original_engine.dart';
+import 'package:kazumi/features/cinema/cinema_original_search.dart';
+import 'package:kazumi/features/cinema/cinema_player_page.dart';
 import 'package:kazumi/features/cinema/cinema_nas_page.dart';
 import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'package:kazumi/features/cinema/cinema_search_discovery.dart';
@@ -76,6 +79,11 @@ const _series = CinemaTitle(
     ),
   ],
 );
+
+class _TVOriginalEngine extends CinemaOriginalEngine {
+  @override
+  bool get available => true;
+}
 
 class _Repository extends CinemaRepository {
   final searches = <String>[];
@@ -373,6 +381,8 @@ void main() {
     Size size = const Size(1280, 720),
     bool enableSearchDiscovery = false,
     CinemaSearchDiscoveryRepository? searchDiscovery,
+    CinemaOriginalSearch? originalSearch,
+    Widget Function(CinemaPlayerPage)? playerPageBuilder,
   }) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = size;
@@ -395,6 +405,11 @@ void main() {
                 ratingsRepository: ratings,
                 artworkRepository: _Artwork(),
                 navigationPreferences: navigation,
+                originalSearch: originalSearch,
+                originalEngine: originalSearch == null
+                    ? null
+                    : _TVOriginalEngine(),
+                playerPageBuilder: playerPageBuilder,
                 enableWatchTogether: false,
                 enableSearchDiscovery: enableSearchDiscovery,
                 searchDiscovery: searchDiscovery,
@@ -579,6 +594,51 @@ void main() {
       await clean(tester);
     },
   );
+  testWidgets(
+    'TV original action waits for a match and opens it alongside an ordinary source',
+    (tester) async {
+      final index = Completer<Object?>();
+      CinemaPlayerPage? player;
+      await mount(
+        tester,
+        originalSearch: CinemaOriginalSearch(
+          identity: (_) async => [],
+          get: (_) => index.future,
+        ),
+        playerPageBuilder: (page) {
+          player = page;
+          return const SizedBox();
+        },
+      );
+      await tester.tap(find.byKey(const ValueKey('tv-nav-mine')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(_movie.title).first);
+      await tester.pumpAndSettle();
+      final chip = find.byKey(const ValueKey('tv-detail-original'));
+      expect(tester.widget<ActionChip>(chip).onPressed, isNull);
+      expect(find.text('正在匹配原画'), findsOneWidget);
+      index.complete({
+        'hits': [],
+        'torrents': [
+          {
+            'name': '${_movie.title}.2026.2160p.WEB',
+            'infohash': 'a' * 40,
+            'size_bytes': 900000000,
+            'seeders': 5,
+          },
+        ],
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('4K 原画'), findsOneWidget);
+      await tester.ensureVisible(chip);
+      await tester.tap(chip);
+      await tester.pumpAndSettle();
+      expect(player?.initialOriginal?.edition.hash, 'a' * 40);
+      expect(player?.qualityMode?.name, 'ultraHD');
+      await clean(tester);
+    },
+  );
+
   testWidgets('TV starts with poster rails and keeps the quiet detail layout', (
     tester,
   ) async {

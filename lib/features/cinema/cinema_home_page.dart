@@ -6299,7 +6299,11 @@ class _TitleDetailsState extends State<_TitleDetails> {
     CinemaPlaybackCandidate? regular,
     ({CinemaPlaybackCandidate route, OriginalSelection? selection})? ultraHD,
   })
-  _qualityOptions(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
+  _qualityOptions(
+    CinemaTitle title,
+    AsyncSnapshot<CinemaTitle> snapshot, {
+    bool originalRequested = false,
+  }) {
     final selection = _originalEngine.preferred(_originalLookup?.matches);
     final anchor = _originalAnchor;
     final catalogue4K = _compactQuality ? _streaming4K : null;
@@ -6338,7 +6342,8 @@ class _TitleDetailsState extends State<_TitleDetails> {
           .where((c) => !_comparison.isUltraHD(c))
           .firstOrNull;
     }
-    if (selection == null || !_compactQuality && !_onlyOriginalPlayable) {
+    if (selection == null ||
+        !originalRequested && !_compactQuality && !_onlyOriginalPlayable) {
       return (regular: regular, ultraHD: streaming);
     }
     if (!_compactQuality && _onlyOriginalPlayable) regular = null;
@@ -6837,6 +6842,10 @@ class _TitleDetailsState extends State<_TitleDetails> {
         _selectedSource;
     if (NakuDevice.isTV) {
       final road = _preferredRoad(title);
+      final lookup = _originalLookup;
+      final original = lookup == null
+          ? null
+          : _qualityOptions(title, snapshot, originalRequested: true).ultraHD;
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -6856,29 +6865,33 @@ class _TitleDetailsState extends State<_TitleDetails> {
             spacing: 8,
             runSpacing: 8,
             children: [
-              if (_originalEngine.available && _originalLookup != null)
+              if (_originalEngine.available && lookup != null)
                 ActionChip(
                   key: const ValueKey('tv-detail-original'),
                   label: Text(
-                    _originalLookup!.done || _originalAnchor != null
+                    original != null
                         ? '4K 原画'
-                        : '正在匹配原画',
+                        : !lookup.done
+                        ? '正在匹配原画'
+                        : lookup.incomplete
+                        ? '重试原画'
+                        : '暂无原画',
                   ),
-                  onPressed: _originalAnchor == null
-                      ? null
-                      : () {
-                          final choice = _qualityOptions(
-                            title,
-                            snapshot,
-                          ).ultraHD;
-                          if (choice != null) {
-                            _playQuality(
-                              choice.route,
-                              original: choice.selection,
-                              qualityMode: CinemaPlaybackQuality.ultraHD,
-                            );
-                          }
-                        },
+                  onPressed: original != null
+                      ? () => _playQuality(
+                          original.route,
+                          original: original.selection,
+                          qualityMode: CinemaPlaybackQuality.ultraHD,
+                        )
+                      : lookup.done && lookup.incomplete
+                      ? () {
+                          _originalSearch.invalidate(
+                            _originalSubject!,
+                            _originalLabel,
+                          );
+                          _matchOriginal();
+                        }
+                      : null,
                 ),
               for (final variant in _variants)
                 ChoiceChip(
