@@ -29,6 +29,7 @@ class OriginalStream {
   final OriginalFile file;
   final Future<void> Function() _release;
   bool _closed = false;
+  void Function()? _firstBytes;
   Future<void> close() async {
     if (!_closed) {
       _closed = true;
@@ -416,11 +417,11 @@ class CinemaOriginalEngine {
           budget: budget - clock.elapsed,
         );
         if (result.isCompleted || token.isCancelled) return;
+        lease._firstBytes = onFirstBytes;
         final video = await readOriginalHead(
           lease,
           token,
           budget - clock.elapsed,
-          onFirstBytes: onFirstBytes,
         );
         if (result.isCompleted || token.isCancelled) return;
         if (video != null) {
@@ -472,9 +473,8 @@ class CinemaOriginalEngine {
   Future<CinemaVideoMetadata?> readOriginalHead(
     OriginalStream stream,
     CancelToken cancel,
-    Duration remaining, {
-    void Function()? onFirstBytes,
-  }) async {
+    Duration remaining,
+  ) async {
     if (cancel.isCancelled || remaining <= Duration.zero) {
       throw const FormatException('原画首段等待结束');
     }
@@ -528,7 +528,10 @@ class CinemaOriginalEngine {
 
       await for (final bytes in await range(0, n)) {
         if (used + bytes.length > n) throw const FormatException('原画首段范围有误');
-        if (used == 0 && bytes.isNotEmpty) onFirstBytes?.call();
+        if (used == 0 && bytes.isNotEmpty) {
+          stream._firstBytes?.call();
+          stream._firstBytes = null;
+        }
         head.setAll(used, bytes);
         used += bytes.length;
         if (!inspected && used >= 16 * 1024) {
