@@ -1,43 +1,55 @@
 {
-  "tag_name": "3.2.21",
-  "name": "NAKU Android 手机版 3.2.21",
-  "body": "电影天堂已加入默认片源，老电影可以按片名和分类找回，搜索与片源匹配会过滤 AI 漫剧和无关的短剧。原画起播会试读本集视频，网络慢时尝试另一条同集线路，电视同时检查硬解能力。保留 Home Display、手机投屏和手动选线。\n\n3.2.20 可直接下载差分更新，更早的客户端可使用完整安装包覆盖升级。\n",
-  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.21-android",
-  "published_at": "2026-11-23T13:23:35Z",
+  "tag_name": "3.2.22",
+  "name": "NAKU Android 手机版 3.2.22",
+  "body": "3.2.22 · 原画起播与高清换线\n\n原画会并行准备本集开头和 MKV 索引，自动尝试可起播的同集版本。常规线路优先实测 1080p，同画质比较速度，较低画质显示测得的分辨率。手动选源保留优先权。\n",
+  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.22-android",
+  "published_at": "2026-11-23T14:41:32Z",
   "draft": false,
   "prerelease": false,
   "assets": [
     {
-      "name": "NAKUPlayer-3.2.21-Android-Mobile.apk",
+      "name": "NAKUPlayer-3.2.22-Android-Mobile.apk",
       "state": "uploaded",
-      "size": 165832727,
-      "digest": "sha256:935d402b2a9343446a97a35d4d1d7887245bd379e1b4a7844e153b771734ff19",
-      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.21-android/NAKUPlayer-3.2.21-Android-Mobile.apk",
-      "build": 149,
+      "size": 165849920,
+      "digest": "sha256:2ac4f07938e7de41bfb68329388eacf5d826cc6d6408a76a7cc081769cdb3a41",
+      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.22-android/NAKUPlayer-3.2.22-Android-Mobile.apk",
+      "build": 150,
       "deltas": [
         {
-          "name": "NAKU-Mobile-148-149.gdiff.gz",
+          "name": "NAKU-Mobile-149-150.gdiff.gz",
           "state": "uploaded",
-          "size": 26488573,
-          "digest": "sha256:3dfb628cba22f64f464c3ac42b684f92cb8557761eabcea37bc4c01763baa7e1",
-          "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.21-android/NAKU-Mobile-148-149.gdiff.gz",
+          "size": 26505178,
+          "digest": "sha256:b5ddd349885f6b32019c367de13f11dd663afc415895677a116f8def5c4d5af2",
+          "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.22-android/NAKU-Mobile-149-150.gdiff.gz",
+          "format": "gdiff4-gzip",
+          "base_version": "3.2.21",
+          "base_build": 149,
+          "base_sha256": "935d402b2a9343446a97a35d4d1d7887245bd379e1b4a7844e153b771734ff19",
+          "target_sha256": "2ac4f07938e7de41bfb68329388eacf5d826cc6d6408a76a7cc081769cdb3a41"
+        },
+        {
+          "name": "NAKU-Mobile-148-150.gdiff.gz",
+          "state": "uploaded",
+          "size": 26505169,
+          "digest": "sha256:abeb9e424a041d57facfb3509ab9f638200e8415d40888f96b2120227ecfdc3c",
+          "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.22-android/NAKU-Mobile-148-150.gdiff.gz",
           "format": "gdiff4-gzip",
           "base_version": "3.2.20",
           "base_build": 148,
           "base_sha256": "190917b28c3282fd4e72179da09b35df9c2072f1f1af5d44c074c6565d7b0790",
-          "target_sha256": "935d402b2a9343446a97a35d4d1d7887245bd379e1b4a7844e153b771734ff19"
+          "target_sha256": "2ac4f07938e7de41bfb68329388eacf5d826cc6d6408a76a7cc081769cdb3a41"
         },
         {
-          "name": "NAKU-Mobile-147-149.gdiff.gz",
+          "name": "NAKU-Mobile-147-150.gdiff.gz",
           "state": "uploaded",
-          "size": 28760667,
-          "digest": "sha256:71cf5f2b334618a839e5e23e2a2cd2a582055115098e40473400d6726e4b9ace",
-          "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.21-android/NAKU-Mobile-147-149.gdiff.gz",
+          "size": 28777353,
+          "digest": "sha256:f88703b3134317040e86417efc167e1c2eb934789c63035673cefb080fb925c0",
+          "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.22-android/NAKU-Mobile-147-150.gdiff.gz",
           "format": "gdiff4-gzip",
           "base_version": "3.2.19",
           "base_build": 147,
           "base_sha256": "29a2becd608bafa25157eb137cce712631f8506c03ea30ba8cb013009c7170b0",
-          "target_sha256": "935d402b2a9343446a97a35d4d1d7887245bd379e1b4a7844e153b771734ff19"
+          "target_sha256": "2ac4f07938e7de41bfb68329388eacf5d826cc6d6408a76a7cc081769cdb3a41"
         }
       ]
     }
