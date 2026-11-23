@@ -383,6 +383,7 @@ class CinemaOriginalEngine {
     required CancelToken cancel,
     OriginalSelection? alternate,
     Duration hedge = const Duration(seconds: 2),
+    Duration progressGrace = Duration.zero,
     Duration budget = const Duration(seconds: 18),
     bool Function(CinemaVideoMetadata)? acceptsVideo,
     void Function(OriginalSelection)? onFailure,
@@ -398,6 +399,7 @@ class CinemaOriginalEngine {
     final tokens = <CancelToken>[];
     final clock = Stopwatch()..start();
     var finished = 0;
+    var receivedPayload = false;
     void fail(Object error) {
       if (!result.isCompleted) result.completeError(error);
     }
@@ -417,11 +419,14 @@ class CinemaOriginalEngine {
           budget: budget - clock.elapsed,
         );
         if (result.isCompleted || token.isCancelled) return;
-        lease._firstBytes = onFirstBytes;
+        lease._firstBytes = () {
+          receivedPayload = true;
+          onFirstBytes?.call();
+        };
         final video = await readOriginalHead(
           lease,
           token,
-          budget - clock.elapsed,
+          budget + progressGrace - clock.elapsed,
         );
         if (result.isCompleted || token.isCancelled) return;
         if (video != null) {
@@ -449,12 +454,23 @@ class CinemaOriginalEngine {
     unawaited(
       cancel.whenCancel.then((_) => fail(const FormatException('原画准备已取消'))),
     );
-    final deadline = Timer(budget, () {
+    void expire() {
       if (!result.isCompleted) {
         for (final choice in choices.take(tokens.length)) {
           onFailure?.call(choice);
         }
         fail(const FormatException('节点尚未送达本集视频'));
+      }
+    }
+
+    Timer? extended;
+    final deadline = Timer(budget, () {
+      if (receivedPayload &&
+          progressGrace > Duration.zero &&
+          !result.isCompleted) {
+        extended = Timer(progressGrace, expire);
+      } else {
+        expire();
       }
     });
     final backup = choices.length > 1 ? Timer(hedge, tryNext) : null;
@@ -463,6 +479,7 @@ class CinemaOriginalEngine {
       return await result.future;
     } finally {
       deadline.cancel();
+      extended?.cancel();
       backup?.cancel();
       for (final token in tokens) {
         token.cancel('原画起播选择结束');

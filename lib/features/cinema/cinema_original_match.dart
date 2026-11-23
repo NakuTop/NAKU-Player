@@ -59,10 +59,10 @@ RegExpMatch? _groupedEpisode(String name) {
 }
 
 // Some encoders append "(2160p x265 10bit S95 Group)" to an episode. Its
-// encoding tag cannot contradict an explicit episode outside the technical block.
+// A season directory can carry the same encoder tag as its episode files.
 final _encoderBlock = RegExp(r'[\[(][^\])\r\n]{1,160}[\])]');
 final _encoderSetting = RegExp(
-  r'((?:8|10|12)[ ._-]*bit[ ._-]+)s[5-9]\d(?=[ ._-]+[a-z])',
+  r'((?:8|10|12)[ ._-]*bit[ ._-]+)s[5-9]\d(?=[ ._-]+[a-z])(?![ ._-]+(?:e(?:pisode|p)?|s(?:eason)?)[ ._-]*\d)',
   caseSensitive: false,
 );
 String _episodeIdentity(String text) {
@@ -71,9 +71,7 @@ String _episodeIdentity(String text) {
     final tag = block[0]!;
     if (!_quality.hasMatch(tag) ||
         !_encoderSetting.hasMatch(tag) ||
-        !_scope
-            .allMatches(text.substring(0, block.start))
-            .any((m) => _numbers(m).episode != null)) {
+        !_scope.hasMatch(text.substring(0, block.start))) {
       return tag;
     }
     return tag.replaceAllMapped(_encoderSetting, (m) => m[1]!);

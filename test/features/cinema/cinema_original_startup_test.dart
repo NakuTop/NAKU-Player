@@ -149,7 +149,11 @@ void main() {
       })!;
       expect(
         originalMainFile(work, compact, [
-          const OriginalFile(1, 'Season 1/$name', 6000),
+          const OriginalFile(
+            1,
+            'North Road Season 1 (2160p BD x265 10bit S86 Team)/$name',
+            6000,
+          ),
           const OriginalFile(
             2,
             'North Road S01E03 (2160p x265 10bit S95 Team).mkv',
@@ -157,6 +161,26 @@ void main() {
           ),
         ])?.id,
         1,
+      );
+      expect(
+        originalMainFile(work, compact, [
+          const OriginalFile(
+            1,
+            'North Road Season 2 (2160p BD x265 10bit S86 Team)/$name',
+            6000,
+          ),
+        ]),
+        isNull,
+      );
+      expect(
+        originalMainFile(work, compact, [
+          const OriginalFile(
+            1,
+            'North Road Season 1 (2160p x265 10bit S95 E12)/$name',
+            6000,
+          ),
+        ]),
+        isNull,
       );
       expect(
         work.matchRelease('North Road S01E02 (2160p x265 S02E03)'),
@@ -276,6 +300,54 @@ void main() {
       }
     },
   );
+  test(
+    'only an edition delivering playback bytes can finish its index inside the grace period',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final engine = _RangeEngine(Uri.parse('http://127.0.0.1:${server.port}'));
+      final work = OriginalWork(names: ['River'], years: {'2020'});
+      final gates = <String, Completer<void>>{};
+      server.listen((r) async {
+        try {
+          final key = r.uri.path.substring(1);
+          r.response
+            ..statusCode = 206
+            ..headers.set('Content-Range', 'bytes 0-65535/65536');
+          if (key == 'moving') {
+            r.response.add(Uint8List(32768));
+            await r.response.flush();
+          }
+          await gates[key]!.future;
+          r.response.add(Uint8List(key == 'moving' ? 32768 : 65536));
+          await r.response.close();
+        } on IOException {}
+      });
+      try {
+        for (final hash in ['moving', 'stalled']) {
+          final e = _edition(hash, 8);
+          gates[hash] = Completer<void>();
+          final opens = engine.openPlayable(
+            (matches: OriginalMatches(work, [e]), edition: e),
+            budget: const Duration(milliseconds: 180),
+            progressGrace: const Duration(milliseconds: 550),
+            cancel: CancelToken(),
+          );
+          final check = hash == 'moving'
+              ? opens.then((r) => r.stream.close())
+              : expectLater(opens, throwsFormatException);
+          await Future<void>.delayed(const Duration(milliseconds: 310));
+          gates[hash]!.complete();
+          await check;
+        }
+      } finally {
+        for (final g in gates.values) {
+          if (!g.isCompleted) g.complete();
+        }
+        await server.close(force: true);
+      }
+    },
+  );
+
   test(
     'the measured codec rejects an unlabelled HEVC edition before opening the decoder',
     () async {

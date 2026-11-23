@@ -1948,7 +1948,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                         CinemaTVMediaEnvironment.instance.supportsOriginalVideo(
                           v,
                         )),
-          budget: _originalTimeout(const Duration(seconds: 25)),
+          budget: originalStartupTimeout(
+            remaining,
+            const Duration(seconds: 25),
+          ),
+          progressGrace:
+              originalStartupTimeout(remaining, const Duration(seconds: 33)) -
+              originalStartupTimeout(remaining, const Duration(seconds: 25)),
           cancel: cancel,
           onFailure: (s) {
             if (_isCurrent(generation)) _triedOriginals.add(s.edition.hash);
