@@ -141,6 +141,46 @@ void main() {
     },
   );
 
+  for (final hasCustomRuyi in [false, true]) {
+    test(
+      'Ruyi upgrade preserves the old playlist, disabled duplicates and later removal (custom: $hasCustomRuyi)',
+      () async {
+        final current = hasCustomRuyi
+            ? customSource.copyWith(url: '${cinemaRuyiSource.url}/')
+            : customSource;
+        await writeLegacy({
+          ...legacyLibrary([current]),
+          'appliedSourcePacks': [cinema030SourcePack.id],
+        });
+        final store = CinemaStore(
+          file: file,
+          sourcePacks: [cinemaMacRuyiSourcePack],
+        );
+        addTearDown(store.dispose);
+        await store.load();
+        expect(store.history.single.positionSeconds, 123);
+        expect(store.favorites.single.key, favorite.key);
+        expect(store.sources.first.toJson(), current.toJson());
+        expect(store.sources.map((s) => s.id), [
+          current.id,
+          if (!hasCustomRuyi) cinemaRuyiSource.id,
+        ]);
+        if (!hasCustomRuyi) {
+          expect(store.sources.last.enabled, isTrue);
+          await store.removeSource(cinemaRuyiSource.id);
+        }
+        await store.flush();
+        final reopened = CinemaStore(
+          file: file,
+          sourcePacks: [cinemaMacRuyiSourcePack],
+        );
+        addTearDown(reopened.dispose);
+        await reopened.load();
+        expect(reopened.sources.single.toJson(), current.toJson());
+      },
+    );
+  }
+
   test(
     'Zuid migration deduplicates custom URLs and preserves user settings',
     () async {

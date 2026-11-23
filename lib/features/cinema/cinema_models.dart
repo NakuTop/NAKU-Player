@@ -1,4 +1,5 @@
 import 'package:html/parser.dart' as html;
+import 'cinema_media_identity.dart';
 
 enum CinemaSourceKind { maccms, kazumi, direct }
 
@@ -347,7 +348,7 @@ class CinemaTitle {
     description: textValue(json['description']),
     category: textValue(json['category']),
     categoryId: textValue(json['categoryId']),
-    year: textValue(json['year']),
+    year: cinemaCatalogYear(textValue(json['year'])),
     remarks: textValue(json['remarks']),
     actors: textValue(json['actors']),
     director: textValue(json['director']),

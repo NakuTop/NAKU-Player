@@ -12,8 +12,10 @@ class CinemaResourceBadge extends StatefulWidget {
     required this.sources,
     required this.service,
     this.compact = false,
+    this.variants = const [],
   });
   final CinemaTitle title;
+  final List<CinemaTitle> variants;
   final List<CinemaSource> sources;
   final CinemaResourceAvailabilityService service;
   final bool compact;
@@ -50,6 +52,7 @@ class _CinemaResourceBadgeState extends State<CinemaResourceBadge> {
       widget.service.check(
         widget.title,
         widget.sources,
+        known: widget.variants,
         isCurrent: () =>
             mounted &&
             identical(

@@ -21,7 +21,6 @@ import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_original_engine.dart';
 import 'package:kazumi/features/cinema/cinema_original_search.dart';
 import 'package:kazumi/features/cinema/cinema_original_match.dart';
-import 'package:kazumi/features/cinema/cinema_video_metadata.dart';
 import 'package:kazumi/features/cinema/cinema_media_transport.dart';
 import 'package:kazumi/features/cinema/cinema_neon_decode.dart';
 import 'package:kazumi/features/cinema/cinema_poster_atmosphere.dart';
@@ -161,16 +160,18 @@ class _OriginalEngine extends CinemaOriginalEngine {
   @override
   bool get available => true;
   @override
-  Future<CinemaVideoMetadata?> inspect(
+  Future<OriginalStream> open(
     OriginalMatches matches,
-    OriginalEdition edition,
-    CancelToken cancel,
-  ) async => null;
+    OriginalEdition edition, {
+    required CancelToken cancel,
+    Duration budget = const Duration(seconds: 15),
+  }) => throw StateError('Opening the detail page must not start any torrent');
 }
 
 class _DetailProbe extends CinemaMediaProbe {
   final bool fasterSecond, fasterFirst, verified;
   final measuredUrls = <String>[];
+  Completer<void>? gate;
   _DetailProbe({
     this.fasterSecond = false,
     this.fasterFirst = false,
@@ -185,6 +186,7 @@ class _DetailProbe extends CinemaMediaProbe {
     bool hls = false,
   }) async {
     measuredUrls.add(url);
+    if (gate != null) await gate!.future;
     return CinemaMediaProbeResult(
       ok: true,
       elapsedMs: 180,
@@ -194,8 +196,8 @@ class _DetailProbe extends CinemaMediaProbe {
               fasterFirst && url.contains('ready-a'))
           ? 56
           : 28,
-      width: url.contains('ready-b') ? 3840 : 1920,
-      height: url.contains('ready-b') ? 2160 : 1080,
+      width: 1920,
+      height: 1080,
       qualityEvidence: verified
           ? CinemaQualityEvidence.videoHeader
           : CinemaQualityEvidence.manifest,
@@ -495,8 +497,11 @@ void main() {
     addTearDown(() => tester.pumpWidget(const SizedBox()));
   }
 
-  bool loading(WidgetTester tester) =>
-      tester.widget<CinemaNeonDecode>(find.byType(CinemaNeonDecode)).loading;
+  bool loading(WidgetTester tester) => tester
+      .widget<CinemaNeonDecode>(
+        find.byKey(const ValueKey('cinema-detail-page-reveal')),
+      )
+      .loading;
 
   final regularChip = find.byKey(const ValueKey('detail-quality-regular'));
   final originalChip = find.byKey(const ValueKey('source-original'));
@@ -544,16 +549,30 @@ void main() {
           containsAll(['ready-a.invalid', 'ready-b.invalid']),
         );
         expect(
-          find.descendant(of: regularChip, matching: find.text('4K')),
+          find.descendant(of: regularChip, matching: find.text('1080p')),
           findsOneWidget,
         );
-        expect(originalChip, findsNothing);
+        expect(
+          find.descendant(of: originalChip, matching: find.text('4K')),
+          findsOneWidget,
+        );
+        expect(
+          tester
+              .widget<TextButton>(
+                find.descendant(
+                  of: originalChip,
+                  matching: find.byType(TextButton),
+                ),
+              )
+              .onPressed,
+          isNull,
+        );
         expect(highlighted(tester, regularChip), isTrue);
         final before = tester.getRect(regularChip);
         index.complete(originalResponse);
         await tester.pumpAndSettle();
         expect(
-          find.descendant(of: originalChip, matching: find.text('原画')),
+          find.descendant(of: originalChip, matching: find.text('4K')),
           findsOneWidget,
         );
         expect(highlighted(tester, regularChip), isTrue);
@@ -575,6 +594,12 @@ void main() {
         await tester.tap(button);
         await tester.pumpAndSettle();
         expect(opened!.autoSelectBestRoute, isTrue);
+        expect(
+          opened!.qualityMode,
+          mode == '原画'
+              ? CinemaPlaybackQuality.ultraHD
+              : CinemaPlaybackQuality.fullHD,
+        );
         expect(opened!.manualRouteSelection, isFalse);
         expect(opened!.source.id, 'ready-b');
         expect(
@@ -583,7 +608,7 @@ void main() {
         );
         expect(
           opened!.measuredQuality?.confirmedQualityTier,
-          mode == '原画' ? null : 2160,
+          mode == '原画' ? null : 1080,
         );
         expect(tester.takeException(), isNull);
       },
@@ -610,7 +635,18 @@ void main() {
       ratings.complete('ready-a');
       posters['ready-a']!.complete(frame);
       await tester.pumpAndSettle();
-      expect(regularChip, findsNothing);
+      expect(
+        tester
+            .widget<TextButton>(
+              find.descendant(
+                of: regularChip,
+                matching: find.byType(TextButton),
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
+      expect(find.widgetWithText(FilledButton, '播放 4K'), findsOneWidget);
       expect(highlighted(tester, originalChip), isTrue);
       await tester.ensureVisible(primary);
       await tester.tap(primary);
@@ -1083,40 +1119,108 @@ void main() {
     },
   );
 
-  for (final label in ['1080p', '4K', '待检测']) {
+  for (final verified in [true, false]) {
     testWidgets(
-      'only the winning measured quality appears ($label), never movie editions',
+      'Full HD and on-demand 4K stay on glass while editions remain in the background ($verified)',
       (tester) async {
         repository.editions = true;
         repository.alternateRoad = true;
-        final probe = _DetailProbe(
-          fasterFirst: label == '1080p',
-          verified: label != '待检测',
-        );
+        final probe = _DetailProbe(verified: verified);
         addTearDown(() => probe.transport.dio.close(force: true));
-        await mount(tester, detailProbe: probe);
+        CinemaPlayerPage? player;
+        await mount(
+          tester,
+          detailProbe: probe,
+          playerPageBuilder: (page) {
+            player = page;
+            return const SizedBox();
+          },
+        );
         ratings.complete('ready-a');
         posters['ready-a']!.complete(frame);
         await tester.pumpAndSettle();
+        for (final pair in [(regularChip, '1080p'), (originalChip, '4K')]) {
+          expect(
+            find.descendant(of: pair.$1, matching: find.text(pair.$2)),
+            findsOneWidget,
+          );
+          expect(
+            find.descendant(of: pair.$1, matching: find.byType(CinemaGlass)),
+            findsOneWidget,
+          );
+        }
         expect(
-          find.descendant(of: regularChip, matching: find.text(label)),
-          findsOneWidget,
-        );
-        expect(
-          find.descendant(of: qualities, matching: find.byType(ActionChip)),
-          findsOneWidget,
+          find.descendant(of: qualities, matching: find.text('待检测')),
+          findsNothing,
         );
         expect(find.text('选集'), findsNothing);
-        expect(find.byKey(const ValueKey('detail-route-menu')), findsNothing);
+        expect(probe.measuredUrls.where((u) => u.contains('/4K.')), isEmpty);
+        expect(probe.measuredUrls.length, lessThanOrEqualTo(4));
+        await tester.ensureVisible(originalChip);
+        await tester.tap(originalChip);
+        await tester.pumpAndSettle();
+        expect(player!.qualityMode, CinemaPlaybackQuality.ultraHD);
         expect(
-          find.descendant(of: qualities, matching: find.textContaining('Mbps')),
-          findsNothing,
+          player!
+              .title
+              .routes[player!.routeIndex]
+              .episodes[player!.episodeIndex]
+              .name,
+          '4K',
         );
         expect(tester.takeException(), isNull);
       },
       skip: !Platform.isMacOS,
     );
   }
+
+  testWidgets(
+    'both tiers share one animated region and the HD control is usable while 4K is pending',
+    (tester) async {
+      final search = Completer<Object?>();
+      final probe = _DetailProbe()..gate = Completer<void>();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        detailProbe: probe,
+        animateAtmosphere: true,
+        originalSearch: CinemaOriginalSearch(
+          identity: (_) async => [],
+          get: (_) => search.future,
+        ),
+      );
+      final hd = find.byKey(const ValueKey('cinema-detail-sources-region'));
+      expect(find.descendant(of: hd, matching: regularChip), findsOneWidget);
+      expect(find.descendant(of: hd, matching: originalChip), findsOneWidget);
+      bool filtered() =>
+          tester.state<CinemaNeonDecodeState>(hd).debugSnapshot.filtersEnabled;
+      expect(filtered(), true);
+      probe.gate!.complete();
+      await frames(tester, 25);
+      expect(filtered(), true);
+      expect(
+        tester
+            .widget<TextButton>(
+              find.descendant(
+                of: regularChip,
+                matching: find.byType(TextButton),
+              ),
+            )
+            .onPressed,
+        isNotNull,
+      );
+      search.complete(originalResponse);
+      ratings.complete('ready-a');
+      posters['ready-a']!.complete(frame);
+      await frames(tester, 55);
+      expect(filtered(), false);
+      expect(
+        find.descendant(of: originalChip, matching: find.text('4K')),
+        findsOneWidget,
+      );
+    },
+    skip: !Platform.isMacOS,
+  );
 
   testWidgets(
     'episode picker includes entries missing from the fastest provider',
@@ -1180,8 +1284,12 @@ void main() {
     posters['ready-a']!.complete(frame);
     await tester.pumpAndSettle();
     expect(
-      find.descendant(of: qualities, matching: find.text('暂无可播放资源')),
-      findsOneWidget,
+      tester
+          .widget<TextButton>(
+            find.descendant(of: regularChip, matching: find.byType(TextButton)),
+          )
+          .onPressed,
+      isNull,
     );
     repository.emptyRoutes = false;
     final retry = find.descendant(of: qualities, matching: find.text('重试'));

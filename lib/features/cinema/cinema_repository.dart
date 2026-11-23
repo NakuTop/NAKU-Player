@@ -106,6 +106,21 @@ class CinemaRepository {
     });
   }
 
+  /// Bypass the catalogue cache for a user-initiated connection test.
+  Future<CinemaPage> probeCatalogue(
+    CinemaSource source,
+    CancelToken cancel,
+  ) async {
+    source.validate();
+    final body = await _request(
+      source,
+      {'ac': 'detail', 'pg': '1'},
+      cancel: cancel,
+      recordHealth: false,
+    );
+    return parseMacCmsPage(source, body);
+  }
+
   Future<List<CinemaCategory>> categories(CinemaSource source) async {
     source.validate();
     if (source.kind != CinemaSourceKind.maccms) return [];
@@ -450,13 +465,20 @@ class CinemaRepository {
 
   Future<Map<String, dynamic>> _request(
     CinemaSource source,
-    Map<String, String> query,
-  ) async {
+    Map<String, String> query, {
+    CancelToken? cancel,
+    bool recordHealth = true,
+  }) async {
+    final health = recordHealth ? this.health : null;
     final uri = requireHttpUrl(source.url);
     final target = uri.replace(
       queryParameters: {...uri.queryParameters, ...query},
     );
     final token = CancelToken();
+    if (cancel?.isCancelled == true) throw cancel!.cancelError!;
+    if (cancel != null) {
+      unawaited(cancel.whenCancel.then((reason) => token.cancel(reason)));
+    }
     final watch = Stopwatch()..start();
     try {
       final response = await _dio
@@ -494,6 +516,7 @@ class CinemaRepository {
       health?.observe(source, ok: true, latencyMs: watch.elapsedMilliseconds);
       return data;
     } on DioException catch (error) {
+      if (CancelToken.isCancel(error)) rethrow;
       final status = error.response?.statusCode;
       health?.observe(
         source,
@@ -550,7 +573,7 @@ class CinemaRepository {
         ),
         category: cleanCinemaText(entry['type_name']),
         categoryId: textValue(entry['type_id']),
-        year: cleanCinemaText(entry['vod_year']),
+        year: cinemaCatalogYear(cleanCinemaText(entry['vod_year'])),
         remarks: cleanCinemaText(entry['vod_remarks']),
         actors: cleanCinemaText(entry['vod_actor']),
         director: cleanCinemaText(entry['vod_director']),

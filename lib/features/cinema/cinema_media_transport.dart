@@ -172,10 +172,12 @@ class CinemaMediaProbeResult {
     this.reason = '',
     this.codec = '',
     this.hlsVariants = const [],
+    this.hasUhdVariant = false,
     this.qualityEvidence = CinemaQualityEvidence.unknown,
   });
   final String codec;
   final List<Uri> hlsVariants;
+  final bool hasUhdVariant;
   final CinemaQualityEvidence qualityEvidence;
   final bool ok;
   final int elapsedMs;
@@ -187,8 +189,9 @@ class CinemaMediaProbeResult {
     if (!ok ||
         qualityEvidence != CinemaQualityEvidence.videoHeader ||
         w <= 0 ||
-        h <= 0)
+        h <= 0) {
       return 0;
+    }
     if (w >= 7680 || h >= 4320) return 4320;
     if (w >= 3840 || h >= 2160) return 2160;
     if (w >= 1800 || h >= 1000) return 1080;
@@ -222,18 +225,22 @@ class CinemaMediaProbe {
   CinemaMediaProbe({
     CinemaMediaTransport? transport,
     this.quick = false,
+    this.preferFullHD = false,
     CinemaMediaProbeCache? cache,
   }) : transport = transport ?? CinemaMediaTransport(),
        _results = cache ?? CinemaMediaProbeCache();
-  factory CinemaMediaProbe.detail({CinemaMediaTransport? transport}) =>
-      CinemaMediaProbe(
-        transport: transport,
-        quick: true,
-        cache: _detailResults,
-      );
+  factory CinemaMediaProbe.detail({
+    CinemaMediaTransport? transport,
+    bool preferFullHD = false,
+  }) => CinemaMediaProbe(
+    transport: transport,
+    quick: true,
+    preferFullHD: preferFullHD,
+    cache: _detailResults,
+  );
   static final _detailResults = CinemaMediaProbeCache();
   final CinemaMediaTransport transport;
-  final bool quick;
+  final bool quick, preferFullHD;
   final CinemaMediaProbeCache _results;
   Map<String, ({DateTime at, CinemaMediaProbeResult result})> get _cache =>
       _results.entries;
@@ -247,6 +254,7 @@ class CinemaMediaProbe {
               transport.router?.networkRevision.toString(),
               hls,
               quick,
+              preferFullHD,
               {for (final name in names) name: headers[name]},
             ]),
           ),
@@ -306,6 +314,7 @@ class CinemaMediaProbe {
     var evidence = CinemaQualityEvidence.unknown;
     CinemaHlsProbeResource? sampleResource, initialization;
     var codec = '';
+    var hasUhdVariant = false;
     final selectedVariants = <Uri>[];
     try {
       var target = Uri.parse(url);
@@ -331,15 +340,21 @@ class CinemaMediaProbe {
           }
           final variants = cinemaHlsVariants(manifest, target);
           if (variants.isNotEmpty) {
-            final variant = variants.reduce((a, b) {
-              final pixelsA = (a.width ?? 0) * (a.height ?? 0);
-              final pixelsB = (b.width ?? 0) * (b.height ?? 0);
-              return pixelsA != pixelsB
-                  ? (pixelsA > pixelsB ? a : b)
-                  : a.bitrate >= b.bitrate
-                  ? a
-                  : b;
-            });
+            hasUhdVariant |= variants.any(
+              (v) => (v.width ?? 0) >= 3840 || (v.height ?? 0) >= 2160,
+            );
+            final variant = cinemaPreferredHlsVariant(
+              variants,
+              fullHD: preferFullHD,
+            );
+            if (variant == null) {
+              // A UHD-only master is an on-demand option. Do not read its segments.
+              final advertised = cinemaPreferredHlsVariant(variants);
+              width = advertised?.width;
+              height = advertised?.height;
+              evidence = CinemaQualityEvidence.manifest;
+              throw const FormatException('此清单没有常规画质');
+            }
             target = variant.uri;
             selectedVariants.add(target);
             width = variant.width;
@@ -450,10 +465,15 @@ class CinemaMediaProbe {
       }
       sampleWatch.stop();
       if (count < 1024) throw const FormatException('视频数据不足');
-      metadata ??= await inspect(
-        sample.takeBytes(),
-        sampleResource?.encryption,
-      );
+      final bytes = sample.takeBytes();
+      final prefix = latin1
+          .decode(Uint8List.sublistView(bytes, 0, bytes.length.clamp(0, 96)))
+          .trimLeft()
+          .toLowerCase();
+      if (prefix.startsWith('<!doctype html') || prefix.startsWith('<html')) {
+        throw const FormatException('视频地址返回了网页或接口数据');
+      }
+      metadata ??= await inspect(bytes, sampleResource?.encryption);
       // A fast-start MP4 needs no extra request. A moov-at-end MP4 may use
       // one bounded suffix range; never download the full film to inspect it.
       final contentRange = response.headers.value('content-range') ?? '';
@@ -503,6 +523,7 @@ class CinemaMediaProbe {
         ok: true,
         elapsedMs: timer.elapsedMilliseconds,
         firstByteMs: firstByte,
+        hasUhdVariant: hasUhdVariant,
         mbps: count * 8 / sampleWatch.elapsedMicroseconds.clamp(1, 100000000),
         width: width,
         height: height,
@@ -515,13 +536,16 @@ class CinemaMediaProbe {
       return CinemaMediaProbeResult(
         ok: false,
         elapsedMs: timer.elapsedMilliseconds,
+        hasUhdVariant: hasUhdVariant,
         reason: token.isCancelled
             ? '测速超时或已取消'
             : error is FormatException
             ? error.message
             : error is DioException &&
                   [401, 403].contains(error.response?.statusCode)
-            ? '片源拒绝访问，请检查鉴权或请求头'
+            ? 'HTTP ${error.response?.statusCode} · 片源鉴权失败'
+            : error is DioException && error.response?.statusCode != null
+            ? 'HTTP ${error.response!.statusCode}'
             : '视频连接失败',
         width: width,
         height: height,
@@ -568,6 +592,39 @@ class CinemaHlsVariant {
   final int bitrate;
   final int? width, height;
   final String codec, codecs, videoRange;
+}
+
+/// In Full HD mode prefer the largest rendition up to 1080p. An unlabelled
+/// rendition is a fallback, while a known UHD-only master returns null.
+CinemaHlsVariant? cinemaPreferredHlsVariant(
+  Iterable<CinemaHlsVariant> variants, {
+  bool fullHD = false,
+}) {
+  CinemaHlsVariant? best;
+  var pixels = -1;
+  for (final variant in variants) {
+    final w = variant.width ?? 0, h = variant.height ?? 0;
+    if (fullHD &&
+        (w > 2048 ||
+            h > 1080 ||
+            w == 0 &&
+                h == 0 &&
+                variant.codec.isEmpty &&
+                RegExp(
+                  r'^(?:mp4a|ac-3|ec-3|opus)(?:[.,]|$)',
+                  caseSensitive: false,
+                ).hasMatch(variant.codecs))) {
+      continue;
+    }
+    final area = w * h;
+    if (best == null ||
+        area > pixels ||
+        area == pixels && variant.bitrate > best.bitrate) {
+      best = variant;
+      pixels = area;
+    }
+  }
+  return best;
 }
 
 List<CinemaHlsVariant> cinemaHlsVariants(String text, Uri base) {

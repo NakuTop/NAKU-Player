@@ -88,17 +88,10 @@ class _OriginalFixture extends CinemaOriginalEngine {
   _OriginalFixture({this.failAll = false, this.failHashes = const {'first'}});
   final Set<String> failHashes;
   final bool failAll;
+  Completer<void>? openGate;
   final attempts = <String>[], released = <String>[];
   @override
   bool get available => true;
-  @override
-  Future<OriginalStartupSample> sampleStartup(
-    OriginalMatches matches,
-    OriginalEdition edition,
-    OriginalStream stream,
-    Stopwatch clock,
-    CancelToken cancel,
-  ) async => OriginalStartupSample(10, 100, stream.file.length, 1024 * 1024);
   @override
   Future<OriginalStream> open(
     OriginalMatches matches,
@@ -107,6 +100,8 @@ class _OriginalFixture extends CinemaOriginalEngine {
     Duration budget = const Duration(seconds: 1),
   }) async {
     attempts.add(edition.hash);
+    if (openGate != null) await openGate!.future;
+    if (cancel.isCancelled) throw const FormatException('cancelled');
     if (failHashes.contains(edition.hash) || failAll) {
       throw const FormatException('此版本暂时无法连接');
     }
@@ -608,6 +603,7 @@ void main() {
     bool? autoBest = false,
     bool manualRouteSelection = false,
     CinemaMediaProbeResult? measuredQuality,
+    CinemaPlaybackQuality? qualityMode,
     OriginalSelection? initialOriginal,
     CinemaOriginalEngine? originalEngine,
     CinemaOriginalSearch? originalSearch,
@@ -656,6 +652,7 @@ void main() {
       resolveNASRatings: resolveNASRatings,
       autoSelectBestRoute: autoBest,
       measuredQuality: measuredQuality,
+      qualityMode: qualityMode,
       manualRouteSelection: manualRouteSelection,
       initialOriginal: initialOriginal,
       originalEngine: originalEngine,
@@ -1695,7 +1692,7 @@ void main() {
           },
         );
         await tester.pumpAndSettle();
-        expect(engine.attempts, hashes);
+        expect(engine.attempts, exhaust ? hashes : hashes.take(5).toList());
         expect(
           backends.where(
             (b) => b.opened?.uri.startsWith('http://127.') ?? false,
@@ -1859,6 +1856,66 @@ void main() {
     await unmount(tester);
     debugDefaultTargetPlatformOverride = null;
   });
+
+  testWidgets(
+    '4K click opens one subtitled swarm by seeds without parallel reads or ordinary route timing',
+    (tester) async {
+      await enableMacSources(tester);
+      OriginalEdition edition(String hash, int seeds, bool chinese) =>
+          OriginalEdition(
+            hash: hash,
+            name: hash,
+            size: 50 << 20,
+            seeds: seeds,
+            pack: false,
+            magnet: '',
+            subtitleHint: chinese,
+          );
+      final unknown = edition('unknown', 800, false);
+      final lower = edition('lower', 5, true);
+      final best = edition('best', 80, true);
+      final matches = OriginalMatches(
+        OriginalWork(names: ['Series'], years: {'2023'}, season: 1, episode: 1),
+        [unknown, lower, best],
+      );
+      final engine = _OriginalFixture(failHashes: {})
+        ..openGate = Completer<void>();
+      final probe = _Probe();
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {},
+        autoBest: true,
+        qualityMode: CinemaPlaybackQuality.ultraHD,
+        initialOriginal: (matches: matches, edition: unknown),
+        originalEngine: engine,
+        originalSearch: _OriginalIndexFixture(matches),
+        probe: probe,
+        selectedSource: juliangSource,
+        selectedTitle: juliangTitle,
+        initialPosition: 25,
+        playerFactory: (configuration) {
+          final backend = _Backend(
+            configuration,
+            videoWidth: 3840,
+            videoHeight: 2160,
+          );
+          backends.add(backend);
+          return _Player(backend);
+        },
+      );
+      await tester.pump(const Duration(seconds: 2));
+      expect(engine.attempts, ['best']);
+      expect(probe.calls, isEmpty);
+      engine.openGate!.complete();
+      await tester.pumpAndSettle();
+      expect(engine.attempts, ['best']);
+      expect(backends.single.opened!.start, const Duration(seconds: 25));
+      expect(probe.calls, isEmpty);
+      await unmount(tester);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
 
   testWidgets(
     'manual original tries the selected file first and recovers on another edition',

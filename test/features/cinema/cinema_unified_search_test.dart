@@ -228,6 +228,11 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       MaterialApp(
+        // Check navigation independently of the selected source's ongoing glow.
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(disableAnimations: true),
+          child: child!,
+        ),
         home: CinemaHomePage(
           store: store,
           repository: repository,

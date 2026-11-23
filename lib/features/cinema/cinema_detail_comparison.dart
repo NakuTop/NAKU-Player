@@ -22,6 +22,7 @@ class CinemaDetailComparison extends ChangeNotifier {
     required Iterable<CinemaSource> sources,
     required CinemaRepository repository,
     CinemaMediaProbe? probe,
+    this.preferFullHD = false,
     this.initialRoute = 0,
     this.initialEpisode = 0,
   }) : catalogue = CinemaPlaybackCatalogue(
@@ -31,13 +32,16 @@ class CinemaDetailComparison extends ChangeNotifier {
          sources: sources,
          repository: repository,
        ),
-       _probe = probe ?? CinemaMediaProbe.detail(),
+       _probe = probe ?? CinemaMediaProbe.detail(preferFullHD: preferFullHD),
        _ownsProbe = probe == null,
        _initialTitle = title;
 
   final CinemaPlaybackCatalogue catalogue;
   final CinemaMediaProbe _probe;
-  final bool _ownsProbe;
+  final bool _ownsProbe, preferFullHD;
+  static const _quickLimit = 4, _quickParallelism = 2;
+  static const _quickTimeout = Duration(milliseconds: 2400);
+  final _quickResults = <String, CinemaMediaProbeResult>{};
   final CinemaTitle _initialTitle;
   final int initialRoute, initialEpisode;
   final results = <String, CinemaMediaProbeResult>{};
@@ -53,17 +57,65 @@ class CinemaDetailComparison extends ChangeNotifier {
             .matching(_anchor!)
             .where((c) => c.source.id != 'douban-discovery')
             .toList();
-  CinemaPlaybackCandidate? get recommended => cinemaRecommendedCandidate(
-    candidates,
-    sourceOrder: catalogue.sourceOrder,
-    results: results,
-  );
-  CinemaPlaybackCandidate? get measuredRecommendation =>
-      cinemaBestConfirmedCandidate(
+  bool isUltraHD(CinemaPlaybackCandidate route) {
+    final result = results[route.key];
+    final tier = result?.confirmedQualityTier ?? 0;
+    if (tier > 0) return tier >= 2160;
+    if (result?.qualityEvidence == CinemaQualityEvidence.manifest &&
+        ((result?.width ?? 0) >= 3840 || (result?.height ?? 0) >= 2160)) {
+      return true;
+    }
+    return cinemaCandidateQuality(route) >= 4;
+  }
+
+  bool get fullHDProbeComplete =>
+      preferFullHD && _quickResults.length >= _quickLimit;
+
+  CinemaPlaybackCandidate? get streaming4K => candidates
+      .where((c) => isUltraHD(c) || results[c.key]?.hasUhdVariant == true)
+      .firstOrNull;
+
+  int _hdPriority(CinemaPlaybackCandidate c) =>
+      switch (cinemaCandidateQuality(c)) {
+        3 => 0,
+        2 || 0 => 1,
+        1 => 2,
+        _ => 3,
+      };
+
+  CinemaPlaybackCandidate? get recommended {
+    if (!preferFullHD) {
+      return cinemaRecommendedCandidate(
         candidates,
+        sourceOrder: catalogue.sourceOrder,
         results: results,
-        preferSpeed: Platform.isMacOS,
       );
+    }
+    final options = candidates.where(
+      (c) => !isUltraHD(c) && results[c.key]?.ok != false,
+    );
+    CinemaPlaybackCandidate? best;
+    for (final c in options) {
+      if (best == null || _hdPriority(c) < _hdPriority(best)) best = c;
+    }
+    return best;
+  }
+
+  CinemaPlaybackCandidate? get measuredRecommendation {
+    final options = preferFullHD
+        ? candidates.where((c) => !isUltraHD(c)).toList()
+        : candidates;
+    final hd = preferFullHD
+        ? options
+              .where((c) => results[c.key]?.confirmedQualityTier == 1080)
+              .toList()
+        : const <CinemaPlaybackCandidate>[];
+    return cinemaBestConfirmedCandidate(
+      hd.isEmpty ? options : hd,
+      results: results,
+      preferSpeed: Platform.isMacOS,
+    );
+  }
 
   CinemaPlaybackCandidate? measuredForSource(String id) =>
       cinemaBestConfirmedCandidate(
@@ -187,6 +239,7 @@ class CinemaDetailComparison extends ChangeNotifier {
       _probe.invalidate();
       results.clear();
       _checked.clear();
+      _quickResults.clear();
     }
     if (_paused) return;
     if (running) {
@@ -201,7 +254,9 @@ class CinemaDetailComparison extends ChangeNotifier {
     final requested = <String>{};
     final queued = <CinemaRouteProbeTarget>[];
     final targets = <String, CinemaRouteProbeTarget>{};
-    final completed = <String, CinemaMediaProbeResult>{};
+    final completed = preferFullHD
+        ? _quickResults
+        : <String, CinemaMediaProbeResult>{};
     var loading = 0, measuring = 0;
     void wake() {
       if (_wake?.isCompleted == false) _wake!.complete();
@@ -221,17 +276,30 @@ class CinemaDetailComparison extends ChangeNotifier {
     Iterable<CinemaPlaybackCandidate> fairCandidates() sync* {
       final groups = <String, List<CinemaPlaybackCandidate>>{};
       for (final candidate in candidates) {
+        if (preferFullHD && isUltraHD(candidate)) continue;
         groups.putIfAbsent(candidate.title.key, () => []).add(candidate);
       }
       for (final group in groups.values) {
         group.sort(
-          (a, b) =>
-              cinemaCandidateQuality(b).compareTo(cinemaCandidateQuality(a)),
+          (a, b) => preferFullHD
+              ? _hdPriority(a).compareTo(_hdPriority(b))
+              : cinemaCandidateQuality(b).compareTo(cinemaCandidateQuality(a)),
         );
       }
       for (var round = 0; groups.values.any((g) => g.length > round); round++) {
-        for (final group in groups.values) {
-          if (round < group.length) yield group[round];
+        if (preferFullHD && round > 0 && catalogue.unread.isNotEmpty) break;
+        final row = groups.values
+            .where((g) => round < g.length)
+            .map((g) => g[round]);
+        if (preferFullHD) {
+          final roundCandidates = row.indexed.toList()
+            ..sort((a, b) {
+              final order = _hdPriority(a.$2).compareTo(_hdPriority(b.$2));
+              return order == 0 ? a.$1.compareTo(b.$1) : order;
+            });
+          yield* roundCandidates.map((entry) => entry.$2);
+        } else {
+          yield* row;
         }
       }
     }
@@ -265,13 +333,23 @@ class CinemaDetailComparison extends ChangeNotifier {
           fairCandidates().where((c) => !_checked.contains(c.key)),
           limit: candidates.length,
         );
+        final foundHD =
+            preferFullHD &&
+            results.values.any((r) => r.confirmedQualityTier == 1080);
         for (final next in additions) {
           final existing = targets[next.identity];
           final target = existing ?? next;
-          if (existing == null) {
+          if (existing == null && !completed.containsKey(next.identity)) {
+            if (preferFullHD &&
+                (foundHD ||
+                    measuring + queued.length >= _quickParallelism ||
+                    completed.length + measuring + queued.length >=
+                        _quickLimit)) {
+              continue;
+            }
             targets[next.identity] = next;
             queued.add(next);
-          } else {
+          } else if (existing != null) {
             existing.candidates.addAll(next.candidates);
           }
           for (final c in next.candidates) {
@@ -292,8 +370,12 @@ class CinemaDetailComparison extends ChangeNotifier {
               await CinemaRouteProbeBatch(_probe).run(
                 [target],
                 cancel: token,
-                budget: const Duration(seconds: 10),
-                probeTimeout: const Duration(seconds: 9),
+                budget: preferFullHD
+                    ? _quickTimeout
+                    : const Duration(seconds: 10),
+                probeTimeout: preferFullHD
+                    ? _quickTimeout
+                    : const Duration(seconds: 9),
                 onResult: (_, result) {
                   if (!current()) return;
                   completed[target.identity] = result;
@@ -305,9 +387,11 @@ class CinemaDetailComparison extends ChangeNotifier {
                 },
               );
               if (current() && !completed.containsKey(target.identity)) {
-                const result = CinemaMediaProbeResult(
+                final result = CinemaMediaProbeResult(
                   ok: false,
-                  elapsedMs: 10000,
+                  elapsedMs: preferFullHD
+                      ? _quickTimeout.inMilliseconds
+                      : 10000,
                   reason: '连接超时',
                 );
                 completed[target.identity] = result;

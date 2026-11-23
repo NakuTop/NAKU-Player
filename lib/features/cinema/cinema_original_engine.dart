@@ -1,11 +1,11 @@
 import 'dart:async';
+import 'package:kazumi/services/storage/cinema_disk_cache_files.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:dio/dio.dart' show CancelToken;
 import 'cinema_original_match.dart';
-import 'cinema_original_search.dart' show OriginalLookup;
 import 'cinema_video_metadata.dart';
 
 class OriginalStream {
@@ -20,26 +20,6 @@ class OriginalStream {
       _closed = true;
       await _release();
     }
-  }
-}
-
-class OriginalStartupSample {
-  const OriginalStartupSample(
-    this.firstByteMs,
-    this.elapsedMs,
-    this.bytes,
-    this.swarmBytesPerSecond,
-  );
-  final int firstByteMs, elapsedMs, bytes;
-  final double swarmBytesPerSecond;
-
-  // Include the cost of finding peers. A cache-to-loopback burst alone does
-  // not measure the swarm. Prefer the engine's useful download rate if known.
-  double get startupEstimate {
-    final rate = swarmBytesPerSecond > 0
-        ? swarmBytesPerSecond
-        : bytes * 1000 / max(1, elapsedMs);
-    return elapsedMs + (512 * 1024 * 1000 / max(1, rate));
   }
 }
 
@@ -108,7 +88,7 @@ class CinemaOriginalEngine {
 
   Future<void> _launch() async {
     if (!available) throw const FormatException('本机原画引擎不可用');
-    final root = _dir = await Directory.systemTemp.createTemp('naku-original-');
+    final root = _dir = await CinemaDiskCacheFiles.instance.openOriginal();
     try {
       final secret = base64Url.encode(
         List.generate(32, (_) => _random.nextInt(256)),
@@ -332,304 +312,9 @@ class CinemaOriginalEngine {
     }
   }
 
-  /// Compare a bounded group. Hand the winning open cache lease to the player.
-  Future<({OriginalEdition edition, OriginalStream stream})> openFastest(
-    OriginalMatches matches,
-    OriginalEdition first, {
-    required Set<String> excluding,
-    required CancelToken cancel,
-    required void Function(String hash) onFailure,
-    OriginalLookup? lookup,
-  }) async {
-    final options = [first];
-    final considered = {...excluding, first.hash};
-    var lanes = 3;
-    const batchLimit = 6;
-    void collect(OriginalMatches latest, int limit) {
-      final expected = matches.work, other = latest.work;
-      if (expected.season != other.season ||
-          expected.episode != other.episode ||
-          expected.imdbId.isNotEmpty &&
-              other.imdbId.isNotEmpty &&
-              expected.imdbId != other.imdbId ||
-          expected.doubanId.isNotEmpty &&
-              other.doubanId.isNotEmpty &&
-              expected.doubanId != other.doubanId) {
-        return;
-      }
-      while (options.length < limit) {
-        final next = preferred(latest, excluding: considered)?.edition;
-        if (next == null) break;
-        options.add(next);
-        considered.add(next.hash);
-      }
-    }
-
-    collect(lookup?.matches ?? matches, lanes);
-    if (options.length == 1 && lookup?.done != false) {
-      try {
-        return (
-          edition: first,
-          stream: await open(matches, first, cancel: cancel),
-        );
-      } catch (_) {
-        if (!cancel.isCancelled) onFailure(first.hash);
-        rethrow;
-      }
-    }
-
-    final tokens = <CancelToken>[];
-    final firstReady = Completer<void>(), allDone = Completer<void>();
-    final ready =
-        <
-          ({
-            OriginalEdition edition,
-            OriginalStream stream,
-            OriginalStartupSample sample,
-          })
-        >[];
-    var finished = 0, accepting = true;
-    late final void Function() launchAvailable;
-    void wake() {
-      if (!firstReady.isCompleted) firstReady.complete();
-    }
-
-    void abort() {
-      for (final token in tokens) {
-        if (!token.isCancelled) token.cancel('原画比较结束');
-      }
-      wake();
-    }
-
-    unawaited(
-      cancel.whenCancel.then((_) {
-        if (accepting) abort();
-      }),
-    );
-    void checkDone() {
-      if (finished != options.length) return;
-      if (ready.isEmpty || lookup?.done != false || options.length >= lanes) {
-        if (!allDone.isCompleted) allDone.complete();
-        wake();
-      }
-    }
-
-    Future<void> probe(OriginalEdition edition, CancelToken token) async {
-      OriginalStream? lease;
-      final clock = Stopwatch()..start();
-      final deadline = Timer(
-        const Duration(seconds: 13),
-        () => token.cancel('原画采样超时'),
-      );
-      try {
-        lease = await open(
-          matches,
-          edition,
-          cancel: token,
-          budget: const Duration(seconds: 9),
-        );
-        if (!accepting) return;
-        if (token.isCancelled) throw const FormatException('原画采样已取消');
-        final sample = await sampleStartup(
-          matches,
-          edition,
-          lease,
-          clock,
-          token,
-        );
-        if (!accepting) return;
-        if (token.isCancelled) throw const FormatException('原画采样已取消');
-        ready.add((edition: edition, stream: lease, sample: sample));
-        lease = null;
-        wake();
-      } catch (_) {
-        if (accepting && !cancel.isCancelled) onFailure(edition.hash);
-      } finally {
-        deadline.cancel();
-        finished++;
-        launchAvailable();
-        await lease?.close();
-      }
-    }
-
-    launchAvailable = () {
-      if (!accepting || allDone.isCompleted || cancel.isCancelled) return;
-      // Refill failed slots promptly. Once playable data arrives, compare
-      // the in-flight reads within the short settling window.
-      final limit = ready.isEmpty
-          ? min(batchLimit, lanes + finished)
-          : max(options.length, lanes);
-      collect(lookup?.matches ?? matches, limit);
-      while (tokens.length < options.length) {
-        final edition = options[tokens.length];
-        final token = CancelToken();
-        tokens.add(token);
-        unawaited(probe(edition, token));
-      }
-      checkDone();
-    };
-    final hedge = Timer(const Duration(milliseconds: 1200), () {
-      if (ready.isEmpty && accepting) {
-        lanes = 4;
-        launchAvailable();
-      }
-    });
-    lookup?.addListener(launchAvailable);
-    launchAvailable();
-    OriginalStream? kept;
-    Timer? window;
-    try {
-      await firstReady.future;
-      if (ready.isNotEmpty && !allDone.isCompleted && !cancel.isCancelled) {
-        final settle = Completer<void>();
-        window = Timer(const Duration(milliseconds: 300), settle.complete);
-        await Future.any([settle.future, allDone.future, cancel.whenCancel]);
-      }
-      if (cancel.isCancelled) throw const FormatException('原画准备已取消');
-      if (ready.isEmpty) throw const FormatException('这些原画版本暂未读到视频');
-      ready.sort((a, b) {
-        final speed = a.sample.startupEstimate.compareTo(
-          b.sample.startupEstimate,
-        );
-        if (speed != 0) return speed;
-        final firstByte = a.sample.firstByteMs.compareTo(b.sample.firstByteMs);
-        if (firstByte != 0) return firstByte;
-        if (a.edition.chineseSubtitles != b.edition.chineseSubtitles) {
-          return a.edition.chineseSubtitles ? -1 : 1;
-        }
-        return a.edition.compareAvailability(b.edition);
-      });
-      final best = ready.first;
-      kept = best.stream;
-      return (edition: best.edition, stream: best.stream);
-    } finally {
-      accepting = false;
-      hedge.cancel();
-      lookup?.removeListener(launchAvailable);
-      window?.cancel();
-      abort();
-      for (final row in ready) {
-        if (!identical(row.stream, kept)) unawaited(row.stream.close());
-      }
-    }
-  }
-
-  Future<OriginalStartupSample> sampleStartup(
-    OriginalMatches matches,
-    OriginalEdition edition,
-    OriginalStream stream,
-    Stopwatch clock,
-    CancelToken cancel,
-  ) async {
-    final client = HttpClient()..findProxy = (_) => 'DIRECT';
-    unawaited(cancel.whenCancel.then((_) => client.close(force: true)));
-    try {
-      if (cancel.isCancelled) throw const FormatException('原画采样已取消');
-      final limit = min(512 * 1024, stream.file.length);
-      if (limit <= 0) throw const FormatException('原画文件为空');
-      final req = await client.getUrl(stream.url);
-      req.followRedirects = false;
-      stream.headers.forEach(req.headers.set);
-      req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-${limit - 1}');
-      final response = await req.close();
-      if (response.statusCode != 206 && response.statusCode != 200) {
-        throw const FormatException('原画未返回视频数据');
-      }
-      final data = BytesBuilder(copy: false);
-      int? firstByte;
-      await for (final chunk in response) {
-        if (chunk.isEmpty) continue;
-        firstByte ??= clock.elapsedMilliseconds;
-        final needed = limit - data.length;
-        data.add(chunk.length > needed ? chunk.sublist(0, needed) : chunk);
-        if (data.length == limit) break;
-      }
-      final elapsed = clock.elapsedMilliseconds;
-      if (data.length != limit || firstByte == null) {
-        throw const FormatException('原画视频数据不完整');
-      }
-      final metadata = cinemaVideoMetadata(data.takeBytes());
-      if (metadata != null) {
-        record(matches, edition, metadata);
-        if (metadata.width < 3840 && metadata.height < 2160) {
-          throw const FormatException('此版本实测低于 4K');
-        }
-      }
-      var swarm = 0.0;
-      if (_client != null) {
-        try {
-          final status = await _post('/torrents', {
-            'action': 'get',
-            'hash': edition.hash,
-          }).timeout(const Duration(milliseconds: 150));
-          final speed = status is Map ? status['download_speed'] : null;
-          if (speed is num && speed.isFinite && speed > 0) {
-            swarm = speed.toDouble();
-          }
-        } catch (_) {
-          /* The sampled prefix is still usable. */
-        }
-      }
-      return OriginalStartupSample(firstByte, elapsed, limit, swarm);
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  Future<CinemaVideoMetadata?> inspect(
-    OriginalMatches matches,
-    OriginalEdition edition,
-    CancelToken cancel,
-  ) async {
-    final known = measured(matches, edition);
-    if (known != null) return known;
-    OriginalStream? stream;
-    HttpClient? client;
-    final timeout = Timer(
-      const Duration(seconds: 15),
-      () => cancel.cancel('原画检测结束'),
-    );
-    try {
-      stream = await open(
-        matches,
-        edition,
-        cancel: cancel,
-        budget: const Duration(seconds: 7),
-      );
-      client = HttpClient()..findProxy = (_) => 'DIRECT';
-      final c = client;
-      unawaited(
-        cancel.whenCancel.then((_) {
-          c.close(force: true);
-        }),
-      );
-      final req = await c.getUrl(stream.url);
-      req.followRedirects = false;
-      stream.headers.forEach(req.headers.set);
-      req.headers.set('Range', 'bytes=0-393215');
-      final resp = await req.close();
-      if (resp.statusCode != 206 && resp.statusCode != 200) return null;
-      final bytes = BytesBuilder(copy: false);
-      await for (final chunk in resp) {
-        final left = 393216 - bytes.length;
-        bytes.add(chunk.length > left ? chunk.sublist(0, left) : chunk);
-        if (bytes.length >= 393216) break;
-      }
-      final v = cinemaVideoMetadata(bytes.takeBytes());
-      if (v != null && !cancel.isCancelled) record(matches, edition, v);
-      return v;
-    } catch (_) {
-      return null;
-    } finally {
-      timeout.cancel();
-      client?.close(force: true);
-      await stream?.close();
-    }
-  }
-
   static Future<void> _remove(Directory d) async {
     try {
-      await d.delete(recursive: true);
+      await CinemaDiskCacheFiles.instance.closeOriginal(d);
     } catch (_) {}
   }
 

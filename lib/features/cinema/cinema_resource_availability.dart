@@ -106,6 +106,10 @@ class CinemaResourceAvailabilityService {
             stored['state'] as String,
           );
           if (state != CinemaResourceState.found &&
+              stored['matchingVersion'] != 2) {
+            return entry;
+          }
+          if (state != CinemaResourceState.found &&
               state != CinemaResourceState.missing &&
               state != CinemaResourceState.incomplete &&
               state != CinemaResourceState.noSources) {
@@ -172,23 +176,61 @@ class CinemaResourceAvailabilityService {
     Iterable<CinemaSource> sources, {
     bool Function()? isCurrent,
     bool force = false,
+    List<CinemaTitle> known = const [],
   }) {
     if (_disposed) return Future.value(const CinemaResourceAvailability());
     final selected = _sources(sources);
     final target = entry(title, selected);
+    bool playable(CinemaTitle item) =>
+        item.routes.any((r) => r.episodes.any((e) => e.url.isNotEmpty));
+    final sourceIds = selected.map((s) => s.id).toSet();
+    final evidence = [
+      title,
+      ...known,
+    ].where((v) => sourceIds.contains(v.sourceId) && playable(v)).toList();
+    List<CinemaTitle> matchingEvidence() {
+      if (evidence.isEmpty || known.isEmpty) return evidence;
+      final members = groupCinemaTitles([title, ...evidence]).first.variants;
+      final keys = members.map((v) => v.key).toSet();
+      return orderCinemaVariants(
+        {
+          for (final v in evidence)
+            if (keys.contains(v.key)) v.key: v,
+        }.values,
+        sourceIds,
+      );
+    }
+
+    late final matched = matchingEvidence();
+    final freshMatch =
+        target.value.state != CinemaResourceState.found && matched.isNotEmpty;
     final ttl = target.value.state == CinemaResourceState.incomplete
         ? const Duration(seconds: 30)
         : target.value.state == CinemaResourceState.found
         ? const Duration(hours: 6)
         : const Duration(minutes: 10);
     if (!force &&
+        !freshMatch &&
         ((target.retryAfter?.isAfter(_now()) ?? false) ||
             target.completedAt != null &&
                 _now().difference(target.completedAt!) < ttl)) {
       return Future.value(target.value);
     }
     target.consumers.add(isCurrent ?? () => true);
-    if (target.pending != null) return target.pending!;
+    final pending = target.pending;
+    if (pending != null) {
+      if (!freshMatch) return pending;
+      // An earlier metadata-only check may still finish empty. The next
+      // check uses the catalogue response that arrived in the meantime.
+      return pending.then(
+        (value) =>
+            value.state == CinemaResourceState.found ||
+                _disposed ||
+                isCurrent?.call() == false
+            ? value
+            : check(title, selected, known: known, isCurrent: isCurrent),
+      );
+    }
     final done = Completer<CinemaResourceAvailability>();
     target.pending = done.future;
     bool current() => !_disposed && target.consumers.any((f) => f());
@@ -233,10 +275,15 @@ class CinemaResourceAvailabilityService {
           target.completedAt = _now();
           return;
         }
+        if (matched.isNotEmpty) {
+          variants = matched;
+          checked = variants.map((v) => v.sourceId).toSet().length;
+          publish(CinemaResourceState.found);
+          target.completedAt = _now();
+          target.retryAfter = null;
+          return;
+        }
         publish(CinemaResourceState.checking);
-        bool playable(CinemaTitle item) => item.routes.any(
-          (route) => route.episodes.any((episode) => episode.url.isNotEmpty),
-        );
         final ownSource = selected
             .where((source) => source.id == title.sourceId)
             .firstOrNull;
@@ -276,7 +323,8 @@ class CinemaResourceAvailabilityService {
         }
         await for (final found in discoverCinemaWorkSources(
           anchor: title,
-          known: const [],
+          known: known,
+          fillAvailableSlots: true,
           sources: selected,
           repository: repository,
           isCurrent: current,
@@ -370,6 +418,7 @@ class CinemaResourceAvailabilityService {
       } finally {
         if (!_disposed && target.completedAt != null) {
           await _cache?.put('resource', _key(title, selected), {
+            'matchingVersion': 2,
             'at': target.completedAt!.toIso8601String(),
             'retryAfter': target.retryAfter?.toIso8601String(),
             'state': target.value.state.name,

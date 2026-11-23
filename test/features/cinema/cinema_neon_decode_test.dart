@@ -36,6 +36,41 @@ void main() {
     ),
   );
 
+  testWidgets(
+    'a cached source region reveals once on entry without delaying interaction',
+    (tester) async {
+      var clicks = 0;
+      final key = GlobalKey<CinemaNeonDecodeState>();
+      Widget view(bool reduced) => MaterialApp(
+        home: Scaffold(
+          body: CinemaNeonDecode(
+            key: key,
+            loading: false,
+            revealOnEntry: true,
+            reduceMotion: reduced,
+            child: TextButton(
+              onPressed: () => clicks++,
+              child: const Text('1080p'),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpWidget(view(false));
+      expect(key.currentState!.debugSnapshot.pixelSize, greaterThan(16));
+      await tester.tap(find.text('1080p'));
+      expect(clicks, 1);
+      await tester.pump(const Duration(milliseconds: 240));
+      expect(key.currentState!.debugSnapshot.filtersEnabled, isTrue);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(key.currentState!.debugSnapshot.visible, isFalse);
+      await tester.pumpWidget(view(false));
+      expect(key.currentState!.debugSnapshot.visible, isFalse);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpWidget(view(true));
+      expect(key.currentState!.debugSnapshot.visible, isFalse);
+    },
+  );
+
   setUp(() {
     loading = false;
     reduceMotion = false;

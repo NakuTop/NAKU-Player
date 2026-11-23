@@ -263,14 +263,11 @@ class OriginalEdition {
   final bool pack;
   final bool subtitleHint;
   bool get chineseSubtitles => subtitleHint || originalChineseSubtitles(name);
-  // Swarm counts guide sampling; the player then compares actual media reads.
   int compareAvailability(OriginalEdition other) {
-    final bySeeds = other.seeds.compareTo(seeds);
-    if (bySeeds != 0) return bySeeds;
     if (chineseSubtitles != other.chineseSubtitles) {
       return chineseSubtitles ? -1 : 1;
     }
-    return 0;
+    return other.seeds.compareTo(seeds);
   }
 
   OriginalEdition mergeIndexEvidence(OriginalEdition other) {

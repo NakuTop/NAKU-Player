@@ -1,4 +1,5 @@
 import 'dart:io';
+import '../storage/cinema_disk_cache_files.dart';
 
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:http/io_client.dart';
@@ -48,6 +49,26 @@ class ProxyAwareImageCacheManager extends CacheManager with ImageCacheManager {
        );
 
   final ImageFileService _fileService;
+
+  @override
+  Stream<FileResponse> getFileStream(
+    String url, {
+    String? key,
+    Map<String, String>? headers,
+    bool withProgress = false,
+  }) => super
+      .getFileStream(
+        url,
+        key: key,
+        headers: headers,
+        withProgress: withProgress,
+      )
+      .map((response) {
+        if (response is FileInfo && response.source == FileSource.Online) {
+          CinemaDiskCacheFiles.instance.onWrite?.call();
+        }
+        return response;
+      });
 
   void resetNetworkClients() => _fileService.resetNetworkClients();
 

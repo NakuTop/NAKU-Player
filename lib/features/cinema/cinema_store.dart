@@ -49,14 +49,7 @@ class CinemaStore extends ChangeNotifier {
     List<CinemaSource>? defaults,
     List<CinemaSourcePack>? sourcePacks,
   }) : _file = file,
-       _defaults = List.unmodifiable(
-         defaults ??
-             (PersonalDefaults.current.sources.isEmpty
-                 ? bundledCinemaSources
-                 : PersonalDefaults.current.sources
-                       .map(CinemaSource.fromJson)
-                       .toList()),
-       ),
+       _defaults = List.unmodifiable(defaults ?? _initialCinemaSources()),
        _sourcePacks = List.unmodifiable(
          sourcePacks ??
              (defaults == null ? bundledCinemaSourcePacks : const []),
@@ -1215,6 +1208,32 @@ String _canonicalUrl(String value) {
   ).toString();
 }
 
+const cinemaRuyiSource = CinemaSource(
+  id: 'maccms-ruyi',
+  name: '如意影视',
+  kind: CinemaSourceKind.maccms,
+  url: 'https://cj.rycjapi.com/api.php/provide/vod',
+  description: '电影 / 剧集',
+);
+
+List<CinemaSource> _initialCinemaSources() {
+  final profile = PersonalDefaults.current.sources;
+  if (profile.isEmpty) return bundledCinemaSources;
+  final sources = profile.map(CinemaSource.fromJson).toList();
+  if (Platform.isMacOS &&
+      !sources.any(
+        (s) =>
+            s.id == cinemaRuyiSource.id ||
+            _canonicalUrl(s.url) == _canonicalUrl(cinemaRuyiSource.url),
+      )) {
+    sources.insert(
+      sources.lastIndexWhere((s) => s.kind == CinemaSourceKind.maccms) + 1,
+      cinemaRuyiSource,
+    );
+  }
+  return sources;
+}
+
 const cinema030SourcePack = CinemaSourcePack(
   id: 'cinema-sources-0.3.0',
   sources: [
@@ -1225,13 +1244,7 @@ const cinema030SourcePack = CinemaSourcePack(
       url: 'https://jszyapi.com/api.php/provide/vod/',
       description: '第三方目录 · 电影短样本 1920×808，非全片验证',
     ),
-    CinemaSource(
-      id: 'maccms-ruyi',
-      name: '如意影视',
-      kind: CinemaSourceKind.maccms,
-      url: 'https://cj.rycjapi.com/api.php/provide/vod',
-      description: '第三方目录 · 电影短样本 1920×808，非全片验证',
-    ),
+    cinemaRuyiSource,
     CinemaSource(
       id: 'maccms-360',
       name: '360影视',
@@ -1287,12 +1300,19 @@ const cinemaWithdrawFourkAVSourcePack = CinemaSourcePack(
   sources: [],
 );
 
-const bundledCinemaSourcePacks = [
+const cinemaMacRuyiSourcePack = CinemaSourcePack(
+  id: 'cinema-macos-ruyi-3.2.17',
+  backupVersion: '3.2.17',
+  sources: [cinemaRuyiSource],
+);
+
+final bundledCinemaSourcePacks = List<CinemaSourcePack>.unmodifiable([
   cinema030SourcePack,
   cinema110SourcePack,
   cinemaZuidSourcePack,
   cinemaWithdrawFourkAVSourcePack,
-];
+  if (Platform.isMacOS) cinemaMacRuyiSourcePack,
+]);
 
 /// Public third-party catalogues verified on 2026-10-08. Availability and quality
 /// are claims of each provider; these are not Netflix or studio endpoints.

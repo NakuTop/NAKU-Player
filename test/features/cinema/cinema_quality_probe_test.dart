@@ -56,6 +56,17 @@ void main() {
           request.response.statusCode = 403;
           return;
         }
+        if (path == '/mixed.m3u8' || path == '/only-uhd.m3u8') {
+          request.response.write(
+            '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=15000000,RESOLUTION=3840x2160\nuhd.m3u8\n',
+          );
+          if (path == '/mixed.m3u8') {
+            request.response.write(
+              '#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\nhd.m3u8\n',
+            );
+          }
+          return;
+        }
         if (path == '/aes.key') {
           request.response.add(aesKey);
           return;
@@ -141,6 +152,28 @@ void main() {
     await server.close(force: true);
   });
   const headers = {'X-Session': 'local-fixture'};
+  test(
+    '1080p detail reads only the HD rendition and leaves UHD-only masters for an explicit click',
+    () async {
+      final probe = CinemaMediaProbe.detail(
+        transport: CinemaMediaTransport(dio: dio),
+        preferFullHD: true,
+      );
+      final mixed = await probe.measure(url('/mixed.m3u8'), headers);
+      expect(mixed.ok, isTrue);
+      expect(mixed.confirmedQualityTier, 720);
+      expect(mixed.hasUhdVariant, isTrue);
+      expect(hits['/hd.m3u8'], 1);
+      final only = await probe.measure(url('/only-uhd.m3u8'), headers);
+      expect(only.ok, isFalse);
+      expect((only.width, only.height), (3840, 2160));
+      expect(only.confirmedQualityTier, 0);
+      expect(only.hasUhdVariant, isTrue);
+      expect(hits['/uhd.m3u8'], isNull);
+      expect(hits['/segment.ts'], 1);
+    },
+  );
+
   test(
     'an initialization video header remains visible if the media segment fails',
     () async {

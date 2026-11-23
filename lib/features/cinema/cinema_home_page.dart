@@ -5,6 +5,7 @@ import 'cinema_original_match.dart';
 import 'cinema_original_search.dart';
 import 'cinema_detail_comparison.dart';
 import 'cinema_media_transport.dart';
+import 'cinema_source_connections.dart';
 import 'cinema_playback_candidates.dart';
 import 'cinema_mobile_scaffold.dart';
 import 'cinema_movie_versions.dart';
@@ -120,8 +121,18 @@ class _CatalogState {
   final search = TextEditingController();
   List<CinemaTitle> items = [];
   final viewCache = CinemaCatalogViewCache();
-  (CinemaCatalogView, CinemaSearchDiscovery, String, int, List<CinemaTitle>)?
-  rankedResults;
+  CinemaSearchDiscovery? _metadataFor;
+  List<CinemaTitle> _metadata = const [];
+  List<CinemaTitle> get metadata {
+    if (!identical(discovery, _metadataFor)) {
+      _metadataFor = discovery;
+      _metadata = discovery.titles
+          .map((t) => t.metadata)
+          .toList(growable: false);
+    }
+    return _metadata;
+  }
+
   List<CinemaCategory> categories = [];
   final sourceStatus = <String, String>{};
   final searchPages = <String, int>{};
@@ -641,7 +652,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       // Keep all scores, including changes that preserve the current order.
       for (final title in view.representatives)
         [title.key, _ratings.scoreFor(title, _scoreProvider)],
-      if (_searching)
+      if (_searching && !Platform.isMacOS)
         [
           for (final title in _visibleDiscoveryTitles(_catalog, _section))
             [
@@ -702,16 +713,27 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       return;
     }
     final provider = _scoreProviders[section] ?? '豆瓣';
-    final works = [
-      ...groupCinemaTitles(
-        state.items.where(state.filters.matches).toList(),
-      ).map((group) => group.catalogTitle),
-      if (state.searching)
-        ..._visibleDiscoveryTitles(
-          state,
-          section,
-        ).map((title) => title.metadata),
-    ];
+    final works = state.searching && Platform.isMacOS
+        ? state.viewCache
+              .resolve(
+                items: state.items,
+                discovery: state.metadata,
+                search: state.activeKeyword,
+                filters: state.filters,
+                grouped: true,
+                sourcePriority: _store.enabledSources.map((s) => s.id).toList(),
+              )
+              .representatives
+        : [
+            ...groupCinemaTitles(
+              state.items.where(state.filters.matches).toList(),
+            ).map((group) => group.catalogTitle),
+            if (state.searching)
+              ..._visibleDiscoveryTitles(
+                state,
+                section,
+              ).map((title) => title.metadata),
+          ];
     int priority(CinemaTitle title) {
       final directId = switch (provider) {
         'IMDb' => title.imdbId,
@@ -894,6 +916,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     bool keepBrowseRoute = false,
     bool manualRouteSelection = false,
     bool? autoSelectBestRoute,
+    CinemaPlaybackQuality? qualityMode,
     Map<String, String>? offlinePaths,
     int? initialPositionSeconds,
     CinemaHistory? resumeHistory,
@@ -917,6 +940,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                     offlinePaths: offlinePaths,
                     manualRouteSelection: manualRouteSelection,
                     autoSelectBestRoute: autoSelectBestRoute,
+                    qualityMode: qualityMode,
                     measuredQuality: measuredQuality,
                     initialOriginal: initialOriginal,
                     initialOriginalLookup: initialOriginalLookup,
@@ -1165,7 +1189,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     if (_currentCatalogSort == CinemaCatalogSort.rating) {
       final works = [
         ..._catalogView.representatives,
-        if (_searching)
+        if (_searching && !Platform.isMacOS)
           ..._visibleDiscoveryTitles(
             _catalog,
             _section,
@@ -1505,11 +1529,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                           _searchCategoryMatches(t.category, section)),
                 )
                 .toList();
-            final existing = state.items.map((item) => item.key).toSet();
-            state.items = [
-              ...state.items,
-              ...items.where((item) => existing.add(item.key)),
-            ];
+            state.items = mergeCinemaSearchPage(state.items, items);
             state.searchPages[source.id] = result.page;
             if (result.hasMore) {
               state.searchMore.add(source.id);
@@ -2267,6 +2287,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             quality,
             original,
             originalLookup,
+            qualityMode,
           ) {
             Navigator.pop(context);
             _playTitle(
@@ -2277,6 +2298,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               allVariants,
               manualRouteSelection: manual,
               autoSelectBestRoute: Platform.isMacOS && !manual ? true : null,
+              qualityMode: qualityMode,
               keepBrowseRoute: keepBrowseRoute,
               measuredQuality: quality,
               initialOriginal: original,
@@ -3443,7 +3465,18 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               artworkRepository: widget.artworkRepository,
               onRecommendationSelected: (_) {},
               onPlay:
-                  (detail, source, road, episode, variants, manual, _, _, _) {
+                  (
+                    detail,
+                    source,
+                    road,
+                    episode,
+                    variants,
+                    manual,
+                    _,
+                    _,
+                    _,
+                    _,
+                  ) {
                     Navigator.of(detailsContext).pop();
                     _playTitle(
                       detail,
@@ -4210,7 +4243,13 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   CinemaCatalogView get _catalogView => _catalog.viewCache.resolve(
     items: _items,
+    discovery: _searching && Platform.isMacOS ? _catalog.metadata : const [],
     search: _searching ? _catalog.activeKeyword : '',
+    preferredKind: _searching && Platform.isMacOS && _aggregates(_section)
+        ? (_section == _Section.movies
+              ? CinemaAggregateKind.movies
+              : CinemaAggregateKind.series)
+        : null,
     filters: _catalog.filters,
     grouped: _searching || _aggregates(_section),
     sourcePriority: _store.enabledSources.map((s) => s.id).toList(),
@@ -4223,38 +4262,6 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     ratingRevision: _ratingRevision,
     scoreOf: (title) => _ratings.scoreFor(title, _scoreProvider),
   );
-
-  List<CinemaTitle> _rankedMacSearch(CinemaCatalogView view) {
-    final state = _catalog, cached = state.rankedResults;
-    if (cached != null &&
-        identical(cached.$1, view) &&
-        identical(cached.$2, state.discovery) &&
-        cached.$3 == state.activeKeyword &&
-        cached.$4 == _ratingRevision) {
-      return cached.$5;
-    }
-    final extra = _visibleDiscoveryTitles(state, _section);
-    if (extra.isEmpty) return view.visible;
-    final items = [...view.visible, for (final it in extra) it.metadata];
-    final prior = sortCinemaTitles(
-      items,
-      _currentCatalogSort,
-      scoreOf: (t) => _ratings.scoreFor(t, _scoreProvider),
-    );
-    final ranked = rankCinemaSearch(
-      prior,
-      state.activeKeyword,
-      variants: view.variants,
-    );
-    state.rankedResults = (
-      view,
-      state.discovery,
-      state.activeKeyword,
-      _ratingRevision,
-      ranked,
-    );
-    return ranked;
-  }
 
   Widget _content(bool wide, {double topInset = 0}) {
     if (topInset > 0 && !_isCatalog) {
@@ -4309,7 +4316,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     final searchGroups = view.groups;
     final representatives = view.representatives;
     final unified = searching && Platform.isMacOS;
-    final visibleItems = unified ? _rankedMacSearch(view) : view.visible;
+    final visibleItems = view.visible;
     final variantsByKey = view.variants;
     final immersive = wide && (Platform.isMacOS || NakuDevice.isTV);
     final compactCatalog = immersive || _usesMobileLayout || Platform.isMacOS;
@@ -4369,6 +4376,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               child: CinemaResourceBadge(
                 title: title,
                 sources: _activeSources,
+                variants: variantsByKey[title.key] ?? const [],
                 service: _resources,
                 compact: Platform.isMacOS && !NakuDevice.isTV,
               ),
@@ -5041,6 +5049,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                             child: CinemaResourceBadge(
                               title: title,
                               sources: _activeSources,
+                              variants: variants,
                               service: _resources,
                               compact: desktop,
                             ),
@@ -5194,14 +5203,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               OutlinedButton.icon(
                 onPressed: _health.probing
                     ? _health.cancelProbes
-                    : () {
-                        unawaited(
-                          _health.probeAll(sources, (source) async {
-                            final probe = CinemaRepository();
-                            await probe.categories(source);
-                          }),
-                        );
-                      },
+                    : () => checkCinemaSourceConnections(
+                        _health,
+                        _repository,
+                        sources,
+                      ),
                 icon: Icon(
                   _health.probing
                       ? Icons.stop_circle_outlined
@@ -5209,7 +5215,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 ),
                 label: Text(
                   _health.probing
-                      ? '停止探活 ${_health.completed}/${_health.total}'
+                      ? '停止检测 ${_health.completed}/${_health.total}'
                       : '检测全部片源',
                 ),
               ),
@@ -5223,7 +5229,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           if (_health.probing) const LinearProgressIndicator(),
           const SizedBox(height: 12),
           const Text(
-            '拖动左侧手柄调整优先级，越靠前越优先播放，失效时依次换源。动漫规则在动漫 → 更多 → 规则管理中维护。',
+            '检测会分别连接目录、读取视频样片。拖动手柄可调整片源顺序。',
             style: TextStyle(
               fontSize: 12,
               height: 1.8,
@@ -5333,25 +5339,25 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         ),
                         const SizedBox(height: 5),
                         Text(
-                          '接口：${_health.record(source)?.label ?? '未检测'}${_health.cooling(source) ? ' · 临时冷却' : ''}',
+                          '目录  ${_health.connectionLabel(source)}${_health.cooling(source) ? ' · 稍后重试' : ''}',
                           style: const TextStyle(
                             fontSize: 11,
                             color: CinemaTheme.muted,
                           ),
                         ),
-                        if (_health.record(source, media: true)
-                            case final media?)
-                          Text(
-                            '视频：${media.label}',
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: CinemaTheme.muted,
-                            ),
+                        Text(
+                          '视频  ${_health.connectionLabel(source, media: true)}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: CinemaTheme.muted,
                           ),
+                        ),
 
                         Text(
                           source.kind == CinemaSourceKind.maccms
-                              ? '影视接口 · ${source.url}'
+                              ? (_health.probeStage(source) ??
+                                    Uri.tryParse(source.url)?.host ??
+                                    '')
                               : 'Kazumi 动漫规则 · ${source.url}',
                           style: const TextStyle(
                             fontSize: 11,
@@ -5362,6 +5368,17 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         ),
                       ],
                     ),
+                  ),
+                  IconButton(
+                    tooltip: '检测此片源',
+                    icon: const Icon(Icons.network_check_outlined, size: 18),
+                    onPressed: _health.probing
+                        ? null
+                        : () => checkCinemaSourceConnections(
+                            _health,
+                            _repository,
+                            [source],
+                          ),
                   ),
                   IconButton(
                     tooltip: '健康记录',
@@ -5699,6 +5716,7 @@ class _TitleDetails extends StatefulWidget {
     CinemaMediaProbeResult?,
     OriginalSelection?,
     OriginalLookup?,
+    CinemaPlaybackQuality?,
   )
   onPlay;
   @override
@@ -5713,11 +5731,11 @@ class _TitleDetailsState extends State<_TitleDetails> {
     sources: widget.store.enabledSources,
     repository: widget.repository,
     probe: widget.mediaProbe,
+    preferFullHD: _compactQuality,
     initialRoute: widget.resume?.routeIndex ?? 0,
     initialEpisode: widget.resume?.episodeIndex ?? 0,
   );
   OriginalLookup? _originalLookup;
-  CancelToken? _originalProbe;
   CinemaTitle? _originalAnchor;
   CinemaTitle? _originalSubject;
   String _originalLabel = '';
@@ -5726,7 +5744,6 @@ class _TitleDetailsState extends State<_TitleDetails> {
   late final _originalSearch =
       widget.originalSearch ?? CinemaOriginalSearch.instance;
   int _originalRoad = 0, _originalEpisode = 0;
-  String? _inspectedHash;
 
   void _retryOriginalOnNetworkChange() {
     if (mounted && !_disposing && _originalLookup?.matches == null) {
@@ -5770,8 +5787,6 @@ class _TitleDetailsState extends State<_TitleDetails> {
       final lookup = _originalSearch.find(subject, _originalLabel);
       if (!identical(lookup, _originalLookup)) {
         _originalLookup?.removeListener(_originalChanged);
-        _originalProbe?.cancel('原画匹配已变化');
-        _inspectedHash = null;
         _originalLookup = lookup..addListener(_originalChanged);
       }
       _originalChanged();
@@ -5795,28 +5810,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
       _originalRoad = 0;
       _originalEpisode = matches.work.series ? matches.work.episode! - 1 : 0;
     }
-    _inspectOriginalWhenIdle();
     setState(() {});
-  }
-
-  void _inspectOriginalWhenIdle() {
-    if (_discovering || _comparison.running) return;
-    final matches = _originalLookup?.matches;
-    final edition = _originalEngine.preferred(matches)?.edition;
-    if (matches != null &&
-        edition != null &&
-        _inspectedHash != edition.hash &&
-        !_variantChosen &&
-        !_routeChosen) {
-      _originalProbe?.cancel('检测新的原画版本');
-      _inspectedHash = edition.hash;
-      final cancel = _originalProbe = CancelToken();
-      unawaited(
-        _originalEngine.inspect(matches, edition, cancel).then((_) {
-          if (mounted && !_disposing && !cancel.isCancelled) _originalChanged();
-        }),
-      );
-    }
   }
 
   bool get _compactQuality =>
@@ -5824,7 +5818,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
       !NakuDevice.isTV &&
       widget.source.id != cinemaNASSource.id;
 
-  CinemaPlaybackCandidate? _recommended;
+  CinemaPlaybackCandidate? _recommended, _streaming4K;
   bool get _onlyOriginalPlayable =>
       !_variantChosen &&
       !_routeChosen &&
@@ -5836,7 +5830,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
   void _comparisonChanged() {
     if (!mounted || _disposing) return;
     if (widget.source.id == cinemaNASSource.id) return;
-    _inspectOriginalWhenIdle();
+    if (_compactQuality) _streaming4K = _comparison.streaming4K;
     final measured = _comparison.measuredRecommendation;
     final tier = _comparison.results.values.fold<int>(
       0,
@@ -5864,6 +5858,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
     List<CinemaTitle> variants,
     bool manual, {
     OriginalSelection? original,
+    CinemaPlaybackQuality? qualityMode,
   }) {
     _comparison.pause();
     source = title.sourceId == originalCatalogSource.id
@@ -5875,6 +5870,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
     final recommendation = _recommended;
     final quality =
         original == null &&
+            qualityMode != CinemaPlaybackQuality.ultraHD &&
             !manual &&
             recommendation?.title.key == title.key &&
             recommendation?.routeIndex == route &&
@@ -5914,6 +5910,12 @@ class _TitleDetailsState extends State<_TitleDetails> {
       quality,
       original,
       sameEpisode ? _originalLookup : null,
+      qualityMode ??
+          (_compactQuality
+              ? (original == null
+                    ? CinemaPlaybackQuality.fullHD
+                    : CinemaPlaybackQuality.ultraHD)
+              : null),
     );
   }
 
@@ -5974,6 +5976,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
         discoverCinemaWorkSources(
           anchor: widget.title,
           known: _variants,
+          fillAvailableSlots: true,
           sources: widget.store.enabledSources,
           repository: widget.repository,
           isCurrent: () => mounted && !_disposing,
@@ -6006,7 +6009,6 @@ class _TitleDetailsState extends State<_TitleDetails> {
           onDone: () {
             if (!mounted || _disposing) return;
             setState(() => _discovering = false);
-            _inspectOriginalWhenIdle();
           },
           onError: (Object error, StackTrace stack) {
             if (mounted && !_disposing) {
@@ -6014,7 +6016,6 @@ class _TitleDetailsState extends State<_TitleDetails> {
                 _discovering = false;
                 _discoveryFailed = true;
               });
-              _inspectOriginalWhenIdle();
             }
           },
         );
@@ -6182,7 +6183,6 @@ class _TitleDetailsState extends State<_TitleDetails> {
     _disposing = true;
     MacOSSystemProxy.changes.removeListener(_retryOriginalOnNetworkChange);
     _originalLookup?.removeListener(_originalChanged);
-    _originalProbe?.cancel('离开详情');
     _comparison.removeListener(_comparisonChanged);
     _comparison.dispose();
     _artworkRatings.changes.removeListener(_onArtworkIdentityChanged);
@@ -6275,11 +6275,15 @@ class _TitleDetailsState extends State<_TitleDetails> {
 
   ({
     CinemaPlaybackCandidate? regular,
-    ({CinemaPlaybackCandidate route, OriginalSelection selection})? original,
+    ({CinemaPlaybackCandidate route, OriginalSelection? selection})? ultraHD,
   })
   _qualityOptions(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
     final selection = _originalEngine.preferred(_originalLookup?.matches);
     final anchor = _originalAnchor;
+    final catalogue4K = _compactQuality ? _streaming4K : null;
+    final streaming = catalogue4K == null
+        ? null
+        : (route: catalogue4K, selection: null);
     CinemaPlaybackCandidate? regular = !_variantChosen && !_routeChosen
         ? _recommended
         : null;
@@ -6295,9 +6299,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
           episodeIndex: _preferredEpisode(title, road),
         );
         if (!_compactQuality ||
-            selection == null ||
-            anchor == null ||
-            _comparison.results[candidate.key]?.ok != false) {
+            !_comparison.isUltraHD(candidate) &&
+                (selection == null && streaming == null ||
+                    _comparison.results[candidate.key]?.ok != false)) {
           regular = candidate;
         }
       }
@@ -6306,21 +6310,24 @@ class _TitleDetailsState extends State<_TitleDetails> {
     // the short media probe. Keep a real route available for a direct attempt.
     if (_compactQuality &&
         regular == null &&
+        streaming == null &&
         (selection == null || anchor == null)) {
-      regular = _comparison.candidates.firstOrNull;
+      regular = _comparison.candidates
+          .where((c) => !_comparison.isUltraHD(c))
+          .firstOrNull;
     }
     if (selection == null || !_compactQuality && !_onlyOriginalPlayable) {
-      return (regular: regular, original: null);
+      return (regular: regular, ultraHD: streaming);
     }
     if (!_compactQuality && _onlyOriginalPlayable) regular = null;
     if (regular != null &&
         selection.matches.acceptsEpisode(regular.episode.name)) {
       return (
         regular: regular,
-        original: (route: regular, selection: selection),
+        ultraHD: (route: regular, selection: selection),
       );
     }
-    if (anchor == null) return (regular: regular, original: null);
+    if (anchor == null) return (regular: regular, ultraHD: streaming);
     final route = CinemaPlaybackCandidate(
       title: anchor,
       source: anchor.sourceId == originalCatalogSource.id
@@ -6329,12 +6336,13 @@ class _TitleDetailsState extends State<_TitleDetails> {
       routeIndex: _originalRoad,
       episodeIndex: _originalEpisode,
     );
-    return (regular: regular, original: (route: route, selection: selection));
+    return (regular: regular, ultraHD: (route: route, selection: selection));
   }
 
   void _playQuality(
     CinemaPlaybackCandidate route, {
     OriginalSelection? original,
+    CinemaPlaybackQuality? qualityMode,
   }) {
     _playCompared(
       route.title,
@@ -6344,12 +6352,13 @@ class _TitleDetailsState extends State<_TitleDetails> {
       _variants,
       _variantChosen || _routeChosen,
       original: original,
+      qualityMode: qualityMode,
     );
   }
 
   Widget _actions(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
     final options = _qualityOptions(title, snapshot);
-    final original = options.regular == null ? options.original : null;
+    final original = options.regular == null ? options.ultraHD : null;
     final target = options.regular ?? original?.route;
     final playable = target != null;
     title = target?.title ?? title;
@@ -6384,10 +6393,19 @@ class _TitleDetailsState extends State<_TitleDetails> {
                   _variants,
                   _variantChosen || _routeChosen,
                   original: original?.selection,
+                  qualityMode: _compactQuality && original != null
+                      ? CinemaPlaybackQuality.ultraHD
+                      : null,
                 )
               : null,
           icon: const Icon(Icons.play_arrow_rounded, size: 25),
-          label: Text(tvResume != null ? '继续观看' : '开始观看'),
+          label: Text(
+            tvResume != null
+                ? '继续观看'
+                : _compactQuality && original != null
+                ? '播放 4K'
+                : '开始观看',
+          ),
         ),
         if (NakuDevice.canDownload && playable)
           IconButton(
@@ -6403,7 +6421,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
                   ? originalCatalogSource
                   : source,
               routeIndex: route,
-              preferOriginal: original != null,
+              preferOriginal: original?.selection != null,
               originalEngine: _originalEngine,
             ),
             icon: const Icon(Icons.download_rounded, size: 21),
@@ -6499,11 +6517,28 @@ class _TitleDetailsState extends State<_TitleDetails> {
     _ => '${tier}p',
   };
 
+  bool _catalogueSettled(AsyncSnapshot<CinemaTitle> snapshot) =>
+      snapshot.connectionState == ConnectionState.done &&
+      !_discovering &&
+      !_comparison.running;
+
+  bool _hdReady(AsyncSnapshot<CinemaTitle> snapshot) =>
+      _comparison.results[_recommended?.key]?.ok == true ||
+      _comparison.fullHDProbeComplete ||
+      _catalogueSettled(snapshot);
+
+  bool _uhdReady(AsyncSnapshot<CinemaTitle> snapshot) =>
+      _originalEngine.preferred(_originalLookup?.matches) != null ||
+      _streaming4K != null ||
+      (_originalLookup?.done ?? !_originalEngine.available) &&
+          _catalogueSettled(snapshot);
+
   Widget _qualityChip(
     String label, {
     required Key key,
+    required String hint,
     required bool highlighted,
-    required VoidCallback onPlay,
+    required VoidCallback? onPlay,
   }) {
     final tint = _posterPalette.firstOrNull ?? const Color(0xFFB5C9D0);
     return CinemaSourceGlow(
@@ -6517,33 +6552,49 @@ class _TitleDetailsState extends State<_TitleDetails> {
       reduceMotion:
           CinemaAppearanceScope.of(context).reduceMotion ||
           MediaQuery.disableAnimationsOf(context),
-      child: Semantics(
-        selected: highlighted,
-        child: ActionChip(
-          tooltip: label == '待检测' ? '自动播放' : '播放$label',
-          onPressed: onPlay,
-          avatar: highlighted
-              ? const Icon(Icons.check_rounded, size: 16, color: Colors.white)
-              : null,
-          label: Text(label),
-          labelStyle: CinemaTheme.of(context).textTheme.labelLarge?.copyWith(
-            color: highlighted ? Colors.white : CinemaTheme.muted,
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
+      child: CinemaGlass(
+        radius: 22,
+        interactive: onPlay != null,
+        child: Tooltip(
+          message: hint,
+          child: Semantics(
+            selected: highlighted,
+            child: TextButton(
+              onPressed: onPlay,
+              style: TextButton.styleFrom(
+                minimumSize: const Size(92, 40),
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                foregroundColor: highlighted ? Colors.white : CinemaTheme.text,
+                disabledForegroundColor: CinemaTheme.muted.withValues(
+                  alpha: .62,
+                ),
+                shape: const StadiumBorder(),
+                side: highlighted
+                    ? BorderSide(
+                        color: Color.lerp(
+                          Colors.white,
+                          tint,
+                          .38,
+                        )!.withValues(alpha: .5),
+                      )
+                    : null,
+                textStyle: CinemaTheme.of(
+                  context,
+                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (highlighted) ...[
+                    const Icon(Icons.check_rounded, size: 15),
+                    const SizedBox(width: 6),
+                  ],
+                  Text(label),
+                ],
+              ),
+            ),
           ),
-          shape: const StadiumBorder(),
-          side: BorderSide(
-            color: highlighted
-                ? tint.withValues(alpha: .65)
-                : Colors.white.withValues(alpha: .2),
-          ),
-          backgroundColor: highlighted
-              ? Color.alphaBlend(
-                  tint.withValues(alpha: .15),
-                  const Color(0xFF222328),
-                )
-              : const Color(0xCC232429),
-          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
       ),
     );
@@ -6607,7 +6658,14 @@ class _TitleDetailsState extends State<_TitleDetails> {
             best.episodeIndex) {
       _playQuality(best);
     } else {
-      _playQuality(choice);
+      _playQuality(
+        choice,
+        qualityMode:
+            choice.source.id == originalCatalogSource.id ||
+                _comparison.isUltraHD(choice)
+            ? CinemaPlaybackQuality.ultraHD
+            : CinemaPlaybackQuality.fullHD,
+      );
     }
   }
 
@@ -6616,51 +6674,46 @@ class _TitleDetailsState extends State<_TitleDetails> {
     AsyncSnapshot<CinemaTitle> snapshot,
   ) {
     final options = _qualityOptions(title, snapshot);
-    final regular = options.regular, original = options.original;
+    final regular = options.regular, original = options.ultraHD;
     final sample = regular == null ? null : _comparison.results[regular.key];
     final episodes = _comparison.episodeChoices(original: original?.route);
-    final working =
-        _discovering ||
-        _comparison.running ||
-        _originalLookup?.done == false ||
-        snapshot.connectionState == ConnectionState.waiting;
+    final hdReady = _hdReady(snapshot), uhdReady = _uhdReady(snapshot);
     return Wrap(
       key: const ValueKey('cinema-detail-qualities'),
       spacing: 12,
       runSpacing: 10,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        if (regular != null)
-          _qualityChip(
-            _qualityLabel(sample?.confirmedQualityTier ?? 0),
-            key: const ValueKey('detail-quality-regular'),
-            highlighted: sample?.ok == true,
-            onPlay: () => _playQuality(regular),
-          ),
-        if (original != null)
-          _qualityChip(
-            '原画',
-            key: const ValueKey('source-original'),
-            highlighted: regular == null,
-            onPlay: () =>
-                _playQuality(original.route, original: original.selection),
-          ),
-        if (regular == null && original == null)
-          if (working)
-            const Text(
-              '查找中…',
-              style: TextStyle(color: CinemaTheme.muted, fontSize: 13),
-            )
-          else ...[
-            const Text(
-              '暂无可播放资源',
-              style: TextStyle(color: CinemaTheme.muted, fontSize: 13),
-            ),
-            TextButton(
-              onPressed: _retryQualityOptions,
-              child: const Text('重试'),
-            ),
-          ],
+        _qualityChip(
+          '1080p',
+          key: const ValueKey('detail-quality-regular'),
+          highlighted: regular != null,
+          hint: regular == null
+              ? (hdReady ? '暂无常规线路' : '正在查找常规线路')
+              : (sample?.confirmedQualityTier ?? 0) > 0
+              ? '优先 1080p · 线路实测 ${_qualityLabel(sample!.confirmedQualityTier)}'
+              : '优先播放 1080p',
+          onPlay: regular == null ? null : () => _playQuality(regular),
+        ),
+        _qualityChip(
+          '4K',
+          key: const ValueKey('source-original'),
+          highlighted: regular == null && original != null,
+          hint: original == null
+              ? (uhdReady ? '暂无匹配的 4K 资源' : '正在查找 4K 资源')
+              : original.selection?.edition.chineseSubtitles == true
+              ? '播放 4K · 中文字幕'
+              : '播放 4K',
+          onPlay: original == null
+              ? null
+              : () => _playQuality(
+                  original.route,
+                  original: original.selection,
+                  qualityMode: CinemaPlaybackQuality.ultraHD,
+                ),
+        ),
+        if (regular == null && original == null && hdReady && uhdReady)
+          TextButton(onPressed: _retryQualityOptions, child: const Text('重试')),
         if (episodes.isNotEmpty)
           TextButton.icon(
             key: const ValueKey('detail-quality-episodes'),
@@ -7247,16 +7300,23 @@ class _TitleDetailsState extends State<_TitleDetails> {
             child: ratings,
           ),
           const SizedBox(height: 24),
-          CinemaNeonRegion(
-            key: const ValueKey('cinema-detail-sources-region'),
-            ready:
-                _compactQuality &&
-                    (_recommended != null || _originalAnchor != null) ||
-                _originalLookup != null ||
-                snapshot.connectionState == ConnectionState.done &&
-                    !_discovering,
-            child: _sourceControls(title, snapshot),
-          ),
+          if (_compactQuality)
+            CinemaNeonDecode(
+              key: const ValueKey('cinema-detail-sources-region'),
+              loading: !(_hdReady(snapshot) && _uhdReady(snapshot)),
+              revealOnEntry: true,
+              reduceMotion: CinemaAppearanceScope.of(context).reduceMotion,
+              child: _sourceControls(title, snapshot),
+            )
+          else
+            CinemaNeonRegion(
+              key: const ValueKey('cinema-detail-sources-region'),
+              ready:
+                  _originalLookup != null ||
+                  snapshot.connectionState == ConnectionState.done &&
+                      !_discovering,
+              child: _sourceControls(title, snapshot),
+            ),
         ],
       );
       final right = CinemaNeonRegion(
@@ -7527,18 +7587,20 @@ class _TitleDetailsState extends State<_TitleDetails> {
           final ratingTicket = _ratingTicket;
           final sourceTerminal =
               snapshot.connectionState == ConnectionState.done;
-          final completed = [
+          final readiness = [
             sourceTerminal,
             !_discovering,
             _ratingsTerminal,
             _posterTerminal,
-          ].where((value) => value).length;
+          ];
+          final completed = readiness.where((value) => value).length;
           // Readiness belongs to the current requests and decoded frame. A
           // prior source/identity finishing cannot latch later work as ready.
-          _presentationReady = completed == 4;
+          _presentationReady = completed == readiness.length;
           return CinemaNeonDecode(
+            key: const ValueKey('cinema-detail-page-reveal'),
             loading: !_presentationReady,
-            progress: completed / 4,
+            progress: completed / readiness.length,
             regional: true,
             child: ClipRRect(
               borderRadius: BorderRadius.circular(24),

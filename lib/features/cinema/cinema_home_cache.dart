@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:kazumi/services/storage/cinema_disk_cache_files.dart';
 import 'dart:isolate';
 
 import 'package:crypto/crypto.dart';
@@ -132,6 +133,7 @@ class CinemaHomeCache {
         });
       }
       await _prune(path);
+      CinemaDiskCacheFiles.instance.onWrite?.call();
     } catch (error) {
       lastError = error.toString();
       _pending.clear();

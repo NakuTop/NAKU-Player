@@ -56,13 +56,14 @@ class CinemaDiscoveryTitle {
     actors: actors,
     genres: genres,
     area: area,
-    doubanId: id,
+    doubanId: parseCinemaDoubanId(id),
     sourceDoubanScore: score,
     category: kind == 'tv' ? '电视剧' : (kind == 'movie' ? '电影' : ''),
   );
   static CinemaDiscoveryTitle? parse(
     Map<String, dynamic> json, {
     bool verifyIdentity = false,
+    bool subjectSuggestion = false,
   }) {
     final id = parseCinemaDoubanId(json['id']);
     final title = cleanCinemaText(json['title']);
@@ -79,11 +80,24 @@ class CinemaDiscoveryTitle {
         : (subtitle.isNotEmpty && RegExp(r'^\d{4}$').hasMatch(subtitle.first)
               ? subtitle.first
               : '');
-    final kind = textValue(json['subtype'] ?? json['type']);
+    final subtype = textValue(json['subtype']);
+    final type = textValue(json['type']);
+    final episodes = intValue(
+      json['episode'] ?? json['episodes_count'],
+      0,
+    ).clamp(0, 999);
+    // On /subject_suggest, type=movie also covers TV. Explicit subject
+    // subtypes take precedence over abbreviated suggestion records.
+    final kind = subtype.isNotEmpty
+        ? subtype
+        : subjectSuggestion && (episodes > 0 || cinemaSeasonName(title) != null)
+        ? 'tv'
+        : type;
     return CinemaDiscoveryTitle(
       id: id,
       title: title,
       originalTitle: textValue(json['sub_title'] ?? json['original_title']),
+      episodeCount: episodes,
       aliases: json['aka'] is List
           ? (json['aka'] as List)
                 .map(textValue)
@@ -318,7 +332,10 @@ class CinemaSearchDiscoveryRepository {
         if (raw is! List) throw const FormatException('作品检索暂时不可用');
         for (final item in jsonMaps(raw)) {
           if (item['type'] == 'movie' || item['type'] == 'tv') {
-            final title = CinemaDiscoveryTitle.parse(item);
+            final title = CinemaDiscoveryTitle.parse(
+              item,
+              subjectSuggestion: true,
+            );
             if (title != null) titles.add(title);
           } else if (item['type'] == 'celebrity' &&
               RegExp(r'^[1-9][0-9]*$').hasMatch(textValue(item['id']))) {

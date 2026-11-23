@@ -2,6 +2,7 @@ import 'dart:async';
 import 'cinema_theme.dart';
 import 'dart:convert';
 import 'dart:io';
+import 'package:kazumi/services/storage/cinema_disk_cache_files.dart';
 import 'dart:typed_data' show BytesBuilder;
 import 'package:canvas_danmaku/canvas_danmaku.dart' as canvas;
 import 'package:crypto/crypto.dart';
@@ -704,6 +705,7 @@ class CinemaDanmakuController extends ChangeNotifier {
       final tmp = File('${file.path}.tmp');
       await tmp.writeAsString(text, flush: true);
       await tmp.rename(file.path);
+      CinemaDiskCacheFiles.instance.onWrite?.call();
       final files = await file.parent
           .list()
           .where((f) => f is File && f.path.endsWith('.json'))
@@ -750,13 +752,15 @@ class CinemaDanmakuController extends ChangeNotifier {
         query == null ||
         _closed ||
         _offlineCapture != null ||
-        (_offlineAttempted && !force))
+        (_offlineAttempted && !force)) {
       return;
+    }
     final token = _offlineCapture = CancelToken();
     var attempted = false;
     try {
-      if (await CinemaOfflineDanmaku.open(directory, _mediaIdentity) != null)
+      if (await CinemaOfflineDanmaku.open(directory, _mediaIdentity) != null) {
         return;
+      }
       final online =
           await (checkOfflineConnectivity?.call() ??
               Connectivity().checkConnectivity().then(
@@ -776,7 +780,7 @@ class CinemaDanmakuController extends ChangeNotifier {
         episodeDirectory: directory,
         identity: _mediaIdentity,
         query: query,
-        client: client as CinemaMultiSourceDanmakuMatcher,
+        client: client,
         cancelToken: token,
         isCurrent: () => !_closed && !token.isCancelled,
         retryUnavailable: true,

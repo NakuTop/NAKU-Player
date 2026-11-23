@@ -227,6 +227,8 @@ class CinemaPlaybackWatchdog {
 }
 
 /// A separate player identity and history namespace from upstream Bangumi.
+enum CinemaPlaybackQuality { fullHD, ultraHD }
+
 class CinemaPlayerPage extends StatefulWidget {
   const CinemaPlayerPage({
     super.key,
@@ -255,6 +257,7 @@ class CinemaPlayerPage extends StatefulWidget {
     this.mediaProbe,
     this.mediaCache,
     this.autoSelectBestRoute,
+    this.qualityMode,
     this.manualRouteSelection = false,
     this.initialOriginal,
     this.initialOriginalLookup,
@@ -286,6 +289,7 @@ class CinemaPlayerPage extends StatefulWidget {
   final CinemaMediaCache? mediaCache;
   @visibleForTesting
   final bool? autoSelectBestRoute;
+  final CinemaPlaybackQuality? qualityMode;
 
   /// An explicit source/route choice takes precedence over automatic startup.
   final bool manualRouteSelection;
@@ -345,7 +349,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   String? _tvHlsSelectionKey, _tvHlsLastVariant, _tvHlsPreferred;
   int _tvHlsDowngrades = 0, _tvHlsUpgradeProbes = 0;
   bool _tvHlsUpgrading = false;
-  late final _mediaProbe = widget.mediaProbe ?? CinemaMediaProbe();
+  late final _mediaProbe =
+      widget.mediaProbe ??
+      CinemaMediaProbe(
+        quick: widget.qualityMode != null,
+        preferFullHD: widget.qualityMode != null,
+      );
   CancelToken? _routeProbeToken;
   CinemaPlaybackCandidate? _routeComparisonAnchor;
   int _probeCompleted = 0, _probeTotal = 0;
@@ -356,6 +365,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   OriginalSelection? _original;
   OriginalMatches? _selectionOriginals;
   bool _pinnedOriginalVersion = false;
+  late CinemaPlaybackQuality? _qualityMode = widget.qualityMode;
   OriginalLookup? _originalLookup;
   OriginalStream? _originalLease;
   CancelToken? _originalCancel;
@@ -1154,6 +1164,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final generation = ++_generation;
     _automaticProbePending =
         automaticSelection &&
+        _qualityMode == null &&
         !(_compareMacRoutes && initial && widget.measuredQuality?.ok == true);
     _probeResults.clear();
     _refusedRoutes.clear();
@@ -1174,6 +1185,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     final lookup = _originalLookup;
     final requestedOriginal = initial ? widget.initialOriginal : null;
     if (onlyOriginal &&
+        _qualityMode == null &&
         requestedOriginal == null &&
         !stayOriginal &&
         automaticSelection) {
@@ -1204,6 +1216,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         !lookup.done) {
       setState(() => _phase = '正在匹配原画');
       await lookup.ready;
+    }
+    if (wantsOriginal &&
+        !_pinnedOriginalVersion &&
+        lookup != null &&
+        !lookup.done &&
+        _nextOriginal()?.edition.chineseSubtitles != true &&
+        requestedOriginal?.edition.chineseSubtitles != true) {
+      await lookup.waitForChinese(budget: const Duration(milliseconds: 800));
     }
     if (!_isCurrent(generation)) return;
     final original = wantsOriginal
@@ -1253,6 +1273,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     var selected = anchor;
     if (automaticSelection &&
         original == null &&
+        _qualityMode == null &&
         !(initial && widget.measuredQuality?.ok == true)) {
       selected =
           (_compareMacRoutes
@@ -1682,8 +1703,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _closeOriginal();
     _original = original;
     if (original != null) {
+      _automaticProbePending = false;
+      _qualityMode = CinemaPlaybackQuality.ultraHD;
       _selectionOriginals = original.matches;
-      if (_pinnedOriginalVersion) _triedOriginals.add(original.edition.hash);
     } else {
       _pinnedOriginalVersion = false;
     }
@@ -1836,41 +1858,27 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               : '正在连接原画 · ${request.edition.label}',
         );
         final cancel = _originalCancel = CancelToken();
-        final opened = _pinnedOriginalVersion
-            ? (
-                edition: request.edition,
-                stream: await _originalEngine.open(
-                  request.matches,
-                  request.edition,
-                  cancel: cancel,
-                ),
-              )
-            : await _originalEngine.openFastest(
-                request.matches,
-                request.edition,
-                excluding: _triedOriginals,
-                cancel: cancel,
-                lookup: _originalLookup,
-                onFailure: (hash) {
-                  if (_isCurrent(generation)) _triedOriginals.add(hash);
-                },
-              );
+        // Attempt just this release. A failed open advances the existing
+        // same-episode failover ledger, including failures before the first byte.
+        _triedOriginals.add(request.edition.hash);
+        final stream = await _originalEngine.open(
+          request.matches,
+          request.edition,
+          cancel: cancel,
+        );
         if (!_isCurrent(generation) || cancel.isCancelled) {
-          await opened.stream.close();
+          await stream.close();
           return;
         }
-        original = (matches: request.matches, edition: opened.edition);
-        _original = original;
-        _triedOriginals.add(opened.edition.hash);
         selectedTitle = originalLibraryTitle(
           selectedTitle,
           request.matches,
-          edition: opened.edition,
+          edition: request.edition,
         );
         _title = selectedTitle;
-        _originalLease = opened.stream;
-        mediaUrl = opened.stream.url.toString();
-        mediaHeaders = opened.stream.headers;
+        _originalLease = stream;
+        mediaUrl = stream.url.toString();
+        mediaHeaders = stream.headers;
       } else if (nas) {
         _nasConnectionTimer = Timer.periodic(
           const Duration(seconds: 15),
@@ -2085,6 +2093,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             mediaHeaders,
           );
           final measured = widget.measuredQuality;
+          final mode = _manualRouteSelection ? null : _qualityMode;
           final preferredVariants =
               Platform.isMacOS &&
                   initial &&
@@ -2108,6 +2117,34 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                       generation,
                     ),
                   )
+                : mode != null
+                ? (text, base) async {
+                    final variants = cinemaHlsVariants(text, base);
+                    final selected = cinemaPreferredHlsVariant(
+                      variants,
+                      fullHD: mode == CinemaPlaybackQuality.fullHD,
+                    );
+                    if (selected == null &&
+                        variants.isNotEmpty &&
+                        mode == CinemaPlaybackQuality.fullHD &&
+                        variants.every(
+                          (v) =>
+                              (v.width ?? 0) > 2048 || (v.height ?? 0) > 1080,
+                        )) {
+                      if (_isCurrent(generation)) {
+                        _refusedRoutes.add(_mediaRouteKey(selection));
+                        _fail(
+                          generation,
+                          '这条线路没有 1080p 档位',
+                          failure: CinemaPlaybackFailure.unavailable,
+                        );
+                      }
+                      throw const FormatException('线路没有常规画质');
+                    }
+                    return selected == null
+                        ? text
+                        : cinemaTVSelectHlsVariant(text, base, selected.uri);
+                  }
                 : preferredVariants.isEmpty
                 ? null
                 : (text, base) async {
@@ -3471,7 +3508,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     } else {
       _warmTimer = Timer(const Duration(seconds: 12), () {
         if (_isCurrent(generation) && !playback.player.state.buffering) {
-          unawaited(_probeCurrent(playback, generation));
+          if (_original == null &&
+              _qualityMode != CinemaPlaybackQuality.ultraHD) {
+            unawaited(_probeCurrent(playback, generation));
+          }
           if (!playback.warmedNext) unawaited(_warmNext(playback, generation));
         }
       });
@@ -3624,6 +3664,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
   }
 
+  bool _allowsOrdinaryFallback(CinemaPlaybackCandidate candidate) =>
+      candidate.source.id != originalCatalogSource.id &&
+      (_qualityMode != CinemaPlaybackQuality.fullHD ||
+          _manualRouteSelection ||
+          cinemaCandidateQuality(candidate) < 4);
+
   Future<CinemaPlaybackCandidate?> _reachableAfterRefusal(
     CinemaPlaybackCandidate anchor,
     int generation,
@@ -3656,6 +3702,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             .matching(anchor)
             .where(
               (c) =>
+                  _allowsOrdinaryFallback(c) &&
                   !_attempts.contains(c) &&
                   !_refusedRoutes.contains(_mediaRouteKey(c)),
             );
@@ -3663,7 +3710,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           candidates,
           limit: 24,
         )) {
-          if (active >= 4 || started.length >= 20) break;
+          if (active >=
+                  (_qualityMode == CinemaPlaybackQuality.fullHD ? 2 : 4) ||
+              started.length >= 20) {
+            break;
+          }
           if (!started.add(target.identity)) continue;
           active++;
           unawaited(
@@ -3737,10 +3788,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _playbackNotice = null;
       _phase = '当前线路未能继续，正在查找同集的其他线路';
     });
+    final recovering4K =
+        failedOriginal || _qualityMode == CinemaPlaybackQuality.ultraHD;
     if (anchor != null &&
-        (_original != null || _refusedRoutes.isNotEmpty) &&
+        (recovering4K || _refusedRoutes.isNotEmpty) &&
         !explicit) {
-      if (_original == null && _refusedRoutes.isNotEmpty) {
+      if (!recovering4K && _refusedRoutes.isNotEmpty) {
         final reachable = await _reachableAfterRefusal(anchor, generation);
         if (!_isCurrent(generation)) return;
         if (reachable != null) {
@@ -3755,7 +3808,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           return;
         }
       }
-      var next = failedOriginal ? _nextOriginal() : null;
+      var next = recovering4K ? _nextOriginal() : null;
       if (failedOriginal && next == null && _originalLookup != null) {
         next = await _originalLookup!.nextAvailable(_chooseOriginal);
       }
@@ -3774,10 +3827,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         );
         return;
       }
-      if (failedOriginal) {
+      if (recovering4K) {
+        _qualityMode = CinemaPlaybackQuality.fullHD;
         _discovering ??= _discoverRoutes();
         _manualRouteSelection = false;
-        if (anchor.source.id != originalCatalogSource.id &&
+        if (_allowsOrdinaryFallback(anchor) &&
             !_attempts.contains(anchor) &&
             !_refusedRoutes.contains(_mediaRouteKey(anchor))) {
           await _playEpisode(
@@ -3836,7 +3890,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       final next = await _catalogue.firstMatching(
         anchor,
         accept: (candidate) =>
-            candidate.source.id != originalCatalogSource.id &&
+            _allowsOrdinaryFallback(candidate) &&
             !_attempts.contains(candidate) &&
             !_refusedRoutes.contains(_mediaRouteKey(candidate)),
         isCurrent: () => _isCurrent(generation),
@@ -3880,7 +3934,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       setState(() {});
     }
     if (!_isCurrent(generation)) return;
-    if (!explicit && anchor != null && _originalLookup != null) {
+    if (!explicit &&
+        anchor != null &&
+        _originalLookup != null &&
+        _qualityMode != CinemaPlaybackQuality.fullHD) {
       await _originalLookup!.ready.timeout(
         const Duration(seconds: 3),
         onTimeout: () {},
@@ -4017,6 +4074,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _source,
         ok: result.ok,
         media: true,
+        confirmedVideo: result.confirmedQualityTier > 0,
         mbps: result.mbps,
         latencyMs: result.firstByteMs,
         reason: result.reason,
@@ -4303,6 +4361,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                 candidate.source,
                 ok: result.ok,
                 media: true,
+                confirmedVideo: result.confirmedQualityTier > 0,
                 mbps: result.mbps,
                 latencyMs: result.firstByteMs,
                 reason: result.reason,

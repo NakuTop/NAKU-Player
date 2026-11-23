@@ -9,6 +9,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'package:kazumi/services/storage/cinema_disk_cache_files.dart';
 import 'cinema_media_transport.dart';
 import 'cinema_hls_ads.dart';
 import 'cinema_playback_buffer.dart';
@@ -183,12 +184,50 @@ class CinemaCacheSession {
 class CinemaMediaCache extends ChangeNotifier {
   CinemaMediaCache({
     Directory? directory,
+    this.diskFiles,
     CinemaMediaTransport? transport,
     this.preferences = const CinemaCachePreferences(),
     this.prefetchAdoptionTimeout = const Duration(seconds: 20),
   }) : _directory = directory,
        transport = transport ?? CinemaMediaTransport();
-  static final instance = CinemaMediaCache();
+  static final instance = CinemaMediaCache(
+    diskFiles: Platform.isMacOS ? CinemaDiskCacheFiles.instance : null,
+  );
+  final CinemaDiskCacheFiles? diskFiles;
+  final _externalFiles = <String, CinemaCacheFile>{};
+  int otherBytes = 0;
+  int get totalCacheBytes => bytesUsed + otherBytes;
+  bool get canSetTotalLimit => diskFiles != null && _historyStore != null;
+  Future<void> setTotalLimit(int mb) async {
+    final store = _historyStore;
+    if (store == null) return;
+    final next = CinemaCachePreferences.parse({
+      ...preferences.toJson(),
+      'quotaMB': mb,
+    });
+    await store.setExtra('mediaCache', next.toJson());
+    await configure(next);
+  }
+
+  Future<void> refreshTotals() async {
+    await initialize();
+    if (diskFiles != null) await _prune();
+  }
+
+  Timer? _scheduledSweep, _periodicSweep;
+  Future<void>? _backgroundSweep;
+  void _queueSweep() {
+    if (_disposed || _scheduledSweep != null || _backgroundSweep != null) {
+      return;
+    }
+    _scheduledSweep = Timer(const Duration(seconds: 2), () {
+      _scheduledSweep = null;
+      _backgroundSweep = _prune()
+          .catchError((Object _) {})
+          .whenComplete(() => _backgroundSweep = null);
+    });
+  }
+
   Directory? _directory;
   final CinemaMediaTransport transport;
   CinemaCachePreferences preferences;
@@ -302,6 +341,13 @@ class CinemaMediaCache extends ChangeNotifier {
       // A damaged index must never classify unknown fragments as orphaned.
     }
     await _prune();
+    if (diskFiles != null) {
+      diskFiles!.onWrite = _queueSweep;
+      _periodicSweep ??= Timer.periodic(
+        const Duration(minutes: 1),
+        (_) => _queueSweep(),
+      );
+    }
     _server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     _server!.listen((request) {
       unawaited(_serve(request));
@@ -457,8 +503,8 @@ class CinemaMediaCache extends ChangeNotifier {
       _rememberOwner(key, session);
       bytesUsed += data.length - oldBytes;
       await _saveOwners();
-      if (bytesUsed > preferences.quotaMB * 1024 * 1024) {
-        await _pruneUnlocked();
+      if (totalCacheBytes > preferences.quotaMB * 1024 * 1024) {
+        await _pruneUnlocked(refreshExternal: false);
       } else {
         _notify();
       }
@@ -647,8 +693,8 @@ class CinemaMediaCache extends ChangeNotifier {
         }
       } finally {
         _release(_pinned, key);
-        if (bytesUsed > preferences.quotaMB * 1024 * 1024) {
-          await _prune();
+        if (totalCacheBytes > preferences.quotaMB * 1024 * 1024) {
+          await _serialized(() => _pruneUnlocked(refreshExternal: false));
         }
       }
     } catch (error) {
@@ -943,9 +989,10 @@ class CinemaMediaCache extends ChangeNotifier {
   Future<void> _pruneUnlocked({
     Set<String> preserve = const {},
     bool protectActive = false,
+    bool refreshExternal = true,
   }) async {
     if (_directory == null || !await _directory!.exists()) return;
-    final files = <({File file, FileStat stat})>[];
+    final files = <CinemaCacheFile>[];
     await for (final entity in _directory!.list(followLinks: false)) {
       if (entity is! File) continue;
       final stat = await entity.stat();
@@ -958,12 +1005,49 @@ class CinemaMediaCache extends ChangeNotifier {
         } catch (_) {}
       }
     }
-    files.sort((a, b) => a.stat.modified.compareTo(b.stat.modified));
     bytesUsed = files.fold(0, (sum, f) => sum + f.stat.size);
+    final videoPaths = {for (final f in files) f.file.path};
+    // Artwork writes are coalesced. A video segment can reuse this inventory
+    // without walking thousands of posters on its playback path.
+    if (refreshExternal && diskFiles != null) {
+      final entries = await diskFiles!.entries();
+      _externalFiles
+        ..clear()
+        ..addEntries(entries.map((entry) => MapEntry(entry.file.path, entry)));
+    }
+    final external = _externalFiles.values;
+    otherBytes =
+        (diskFiles?.originalBytes ?? 0) +
+        external.fold<int>(0, (n, f) => n + f.stat.size);
+    DateTime lastUsed(FileStat stat) =>
+        stat.accessed.isAfter(stat.modified) ? stat.accessed : stat.modified;
+    files.addAll(external);
+    files.sort((a, b) => lastUsed(a.stat).compareTo(lastUsed(b.stat)));
     final quota = preferences.quotaMB * 1024 * 1024;
     var revision = -1;
     var liveProtection = <String>{};
     for (final item in files) {
+      if (!videoPaths.contains(item.file.path)) {
+        if (totalCacheBytes <= quota) continue;
+        try {
+          if (await FileSystemEntity.type(item.file.path, followLinks: false) !=
+              FileSystemEntityType.file) {
+            continue;
+          }
+          final fresh = await item.file.stat();
+          if (fresh.changed != item.stat.changed ||
+              fresh.size != item.stat.size ||
+              lastUsed(fresh).isAfter(lastUsed(item.stat))) {
+            continue;
+          }
+          await item.file.delete();
+          _externalFiles.remove(item.file.path);
+          otherBytes -= item.stat.size;
+        } on FileSystemException {
+          /* Another cache user retired or replaced this entry. */
+        }
+        continue;
+      }
       final name = item.file.uri.pathSegments.last.replaceFirst('.bin', '');
       final owners = _owners[name];
       final active = _sessions.values.any(
@@ -976,7 +1060,7 @@ class CinemaMediaCache extends ChangeNotifier {
           _historyKeys != null &&
           owners != null &&
           !owners.any(_historyKeys!.contains);
-      if (bytesUsed <= quota && !orphan) continue;
+      if (totalCacheBytes <= quota && !orphan) continue;
       if (protectActive && revision != _protectionRevision) {
         liveProtection = _protectedKeys();
         revision = _protectionRevision;
@@ -984,7 +1068,7 @@ class CinemaMediaCache extends ChangeNotifier {
       if (_pinned.containsKey(name) ||
           preserve.contains(name) ||
           liveProtection.contains(name) ||
-          (orphan && active)) {
+          (orphan && active && totalCacheBytes <= quota)) {
         continue;
       }
       try {
@@ -993,8 +1077,10 @@ class CinemaMediaCache extends ChangeNotifier {
         _owners.remove(name);
       } catch (_) {}
     }
-    final existing = files
-        .map((f) => f.file.uri.pathSegments.last.replaceFirst('.bin', ''))
+    final existing = videoPaths
+        .map(
+          (path) => File(path).uri.pathSegments.last.replaceFirst('.bin', ''),
+        )
         .toSet();
     _owners.removeWhere((key, _) => !existing.contains(key));
     await _saveOwners();
@@ -1098,10 +1184,15 @@ class CinemaMediaCache extends ChangeNotifier {
   }
 
   Future<void> shutdown() async {
+    _scheduledSweep?.cancel();
+    _periodicSweep?.cancel();
+    _scheduledSweep = _periodicSweep = null;
+    if (diskFiles?.onWrite == _queueSweep) diskFiles?.onWrite = null;
     for (final session in _sessions.values.toList()) {
       await session.close();
     }
     await _server?.close(force: true);
+    await _backgroundSweep;
     _server = null;
     _starting = null;
   }

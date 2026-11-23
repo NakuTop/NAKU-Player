@@ -48,7 +48,7 @@ final _seasonAtEnd = RegExp(
   caseSensitive: false,
 );
 
-int? _seasonNumber(String value) {
+int? cinemaSeasonNumber(String value) {
   final text = value
       .replaceAll('两', '二')
       .replaceAll('兩', '二')
@@ -80,7 +80,7 @@ CinemaSeasonName? cinemaSeasonName(String value) {
   final name = cinemaMediaBaseTitle(value);
   final match = _seasonAtEnd.firstMatch(name);
   if (match == null) return null;
-  final number = _seasonNumber(match[1] ?? match[2]!);
+  final number = cinemaSeasonNumber(match[1] ?? match[2]!);
   final work = name
       .substring(0, match.start)
       .replaceFirst(RegExp(r'[\s,:：，_–—-]+$'), '')
@@ -95,7 +95,7 @@ String cinemaSeasonTitleKey(String value) {
       ? name.replaceAllMapped(RegExp(r'第\s*([0-9０-９一二两兩三四五六七八九十]+)\s*季'), (
           match,
         ) {
-          final number = _seasonNumber(match[1]!);
+          final number = cinemaSeasonNumber(match[1]!);
           return number == null ? match[0]! : '第$number季';
         })
       : '${season.work}第${season.number}季';
@@ -133,11 +133,21 @@ bool cinemaExplicitSubtitleEpisode(String value) => RegExp(
   caseSensitive: false,
 ).hasMatch(value);
 
+/// MacCMS feeds may append a release territory or date to the year.
+final _catalogYear = RegExp(
+  r'^(\d{4})(?:年|[-/.]\d{1,2}[-/.]\d{1,2})?\s*(?:\([\p{L} ·.,、/–-]{1,48}\))?$',
+  unicode: true,
+);
+String cinemaCatalogYear(String value) {
+  final raw = cinemaIdentityTypography(value).trim();
+  return _catalogYear.firstMatch(raw)?[1] ?? value.trim();
+}
+
 /// Strip year labels only when they agree with the source's release year.
 /// Preserve sequel numbers, unknown years and substantive edition labels.
 String cinemaCleanWorkTitle(String title, String releaseYear) {
   var name = cinemaMediaBaseTitle(title);
-  final year = cinemaIdentityTypography(releaseYear).trim();
+  final year = cinemaCatalogYear(releaseYear);
   if (!RegExp(r'^(19|20)\d{2}$').hasMatch(year)) return name;
   final suffix = RegExp(
     r'(?:[\s._·—–-]*[（(\[【]?' + year + r'(?:年)?(?:版)?[）)\]】]?)$',
@@ -192,7 +202,7 @@ String cinemaRegionalTitle(String title, String year) {
   final embedded = RegExp(
     r'((?:19|20)\d{2})[)\]】]?$',
   ).firstMatch(cinemaIdentityTypography(title))?[1];
-  final local = int.tryParse(year);
+  final local = int.tryParse(cinemaCatalogYear(year));
   if (embedded == null ||
       local == null ||
       (int.parse(embedded) - local).abs() != 1) {

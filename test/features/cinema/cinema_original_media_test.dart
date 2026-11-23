@@ -24,7 +24,7 @@ const pack = OriginalEdition(
 );
 void main() {
   test(
-    'seed counts seed the playback comparison; subtitle hints survive index aggregation',
+    'Chinese subtitle hints outrank a larger audio-only swarm and survive aggregation',
     () async {
       const movie = CinemaTitle(
         id: '7',
@@ -62,7 +62,7 @@ void main() {
       await lookup.finished;
       final m = lookup.matches!, engine = CinemaOriginalEngine();
       expect(queries.any((q) => q.contains('CHS')), isTrue);
-      final audio = m.editions.first, sub = m.editions.last;
+      final sub = m.editions.first, audio = m.editions.last;
       expect(sub.hash, 'b' * 40);
       expect(originalChineseSubtitles('国语配音 MULTI Chinese Audio 无中字'), isFalse);
       expect(originalChineseSubtitles('雙語 中文字幕'), isTrue);
@@ -80,7 +80,7 @@ void main() {
         isFalse,
       );
       engine.record(m, audio, const CinemaVideoMetadata(3840, 2160, 'hevc'));
-      expect(engine.preferred(m)?.edition, same(audio));
+      expect(engine.preferred(m)?.edition, same(sub));
       expect(engine.preferred(m, preferredHash: sub.hash)?.edition, same(sub));
       expect(
         engine.preferred(m, preferredHash: audio.hash)?.edition,

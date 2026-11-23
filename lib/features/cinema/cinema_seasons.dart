@@ -12,7 +12,7 @@ String cinemaSourceQuery(String title) => title.trim().replaceAll(
 
 final _seasonId = RegExp(r'^(\d+)~s([1-9][0-9]?)$');
 final _episode = RegExp(
-  r'^(?:第\s*(\d{1,2})\s*季\s*第\s*(\d{1,4})\s*集|s(\d{1,2})\s*e(\d{1,4}))$',
+  r'^(?:第\s*([0-9一二两兩三四五六七八九十]{1,4})\s*季[\s._-]*第\s*([0-9一二两兩三四五六七八九十]{1,4})\s*[集话話]|s(\d{1,2})[\s._-]*e(\d{1,4}))$',
   caseSensitive: false,
 );
 
@@ -63,7 +63,7 @@ List<String> cinemaSeasonQueries(CinemaSeasonName season) {
 /// Virtual IDs retain the original API ID losslessly (including 64-bit IDs).
 List<CinemaTitle> cinemaSplitSeasons(CinemaTitle title) {
   if (!RegExp(r'^\d+$').hasMatch(title.id) ||
-      !title.category.contains('剧') ||
+      !RegExp('剧|劇|动漫|動漫|動畫|动画').hasMatch(title.category) ||
       cinemaSeasonName(title.title) != null ||
       title.routes.isEmpty) {
     return [title];
@@ -72,12 +72,17 @@ List<CinemaTitle> cinemaSplitSeasons(CinemaTitle title) {
   for (final route in title.routes) {
     final groups = <int, List<CinemaEpisode>>{};
     for (final episode in route.episodes) {
-      final match = _episode.firstMatch(episode.name.trim());
+      final match = _episode.firstMatch(
+        cinemaIdentityTypography(episode.name).trim(),
+      );
       // Unknown specials or ambiguous labels keep the original bundle intact.
       if (match == null) return [title];
-      final season = int.parse(match[1] ?? match[3]!);
-      final number = int.parse(match[2] ?? match[4]!);
-      if (season < 1 || number < 1) return [title];
+      final season = cinemaSeasonNumber(match[1] ?? match[3]!);
+      final digits = match[2] ?? match[4]!;
+      final number = int.tryParse(digits) ?? cinemaSeasonNumber(digits);
+      if (season == null || season < 1 || number == null || number < 1) {
+        return [title];
+      }
       groups
           .putIfAbsent(season, () => [])
           .add(
@@ -102,8 +107,8 @@ List<CinemaTitle> cinemaSplitSeasons(CinemaTitle title) {
         'id': '${title.id}~s$season',
         'title': '${title.title} 第$season季',
         'routes': seasons[season]!.map((r) => r.toJson()).toList(),
-        // A bundle's premiere year and ratings cannot describe later seasons.
-        if (season != 1) ...{
+        // Providers often attach the latest season's metadata to the whole box set.
+        if (seasons.length > 1 || season != 1) ...{
           'year': '',
           'releaseDateText': '',
           'doubanId': '',

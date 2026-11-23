@@ -150,6 +150,56 @@ void main() {
     },
   );
 
+  for (final inFlight in [false, true]) {
+    test(
+      'fresh confirmed variants supersede a negative badge, inFlight=$inFlight',
+      () async {
+        final native = _edition('native', '泰坦尼克号', routes: false);
+        final repo = _NativeRepository()..empty = true;
+        if (inFlight) repo.detailGate = Completer<CinemaTitle>();
+        final service = CinemaResourceAvailabilityService(repo);
+        addTearDown(service.dispose);
+        final first = service.check(native, [_source]);
+        if (!inFlight) expect((await first).state, CinemaResourceState.missing);
+        final next = service.check(
+          native,
+          [_source],
+          known: [
+            _edition('native', '泰坦尼克号'),
+            _edition('other', '泰坦尼克号', year: '2012'),
+            _edition('unrelated', '另一个电影'),
+            _edition('hidden', '泰坦尼克号', source: 'disabled'),
+          ],
+        );
+        if (inFlight) repo.detailGate!.complete(native);
+        expect((await first).state, CinemaResourceState.missing);
+        final result = await next;
+        expect(result.state, CinemaResourceState.found);
+        expect(result.variants.map((v) => v.key), [native.key]);
+        expect(result.variants.single.routes, isNotEmpty);
+        expect(repo.details, 1);
+      },
+    );
+  }
+  test(
+    'a playable alternate corroborates a native card without refetching its empty anchor',
+    () async {
+      final service = CinemaResourceAvailabilityService(_NativeRepository());
+      addTearDown(service.dispose);
+      final result = await service.check(
+        _edition('native', '泰坦尼克号', routes: false),
+        [_source, _source.copyWith(id: 'two')],
+        known: [
+          _edition('another', '泰坦尼克号', source: 'two'),
+          _edition('wrong', '泰坦尼克号', year: '2012'),
+        ],
+      );
+      expect(result.state, CinemaResourceState.found);
+      expect(result.variants.single.sourceId, 'two');
+      expect((result.checked, result.total), (1, 2));
+    },
+  );
+
   for (final fails in [false, true]) {
     test(
       'an ${fails ? 'failed' : 'empty'} native detail falls back without a false positive',

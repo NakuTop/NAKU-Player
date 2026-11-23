@@ -184,6 +184,10 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
       MaterialApp(
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(disableAnimations: true),
+          child: child!,
+        ),
         home: CinemaHomePage(
           playerPageBuilder: playerPageBuilder,
           enableSearchDiscovery: false,

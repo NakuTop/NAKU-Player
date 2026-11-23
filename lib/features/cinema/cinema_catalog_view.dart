@@ -1,3 +1,5 @@
+import 'cinema_aggregate_catalog.dart'
+    show CinemaAggregateKind, cinemaMatchesAggregateKind;
 import 'cinema_filters.dart';
 import 'cinema_grouping.dart';
 import 'cinema_media_identity.dart';
@@ -6,9 +8,9 @@ import 'cinema_models.dart';
 /// One destination's derived catalogue. Callers replace the input list when
 /// its contents change. Score updates only re-sort; they never re-group works.
 class CinemaCatalogViewCache {
-  List<CinemaTitle>? _items;
-  (String, String, String, bool, String)? _filterKey;
-  (CinemaCatalogSort?, String, int, String)? _sortKey;
+  List<CinemaTitle>? _items, _discovery;
+  (String, String, String, bool, bool, String)? _filterKey;
+  (CinemaCatalogSort?, String, int, String, CinemaAggregateKind?)? _sortKey;
   List<CinemaTitle> _representatives = const [];
   List<CinemaTitleGroup> _groups = const [];
   Map<String, List<CinemaTitle>> _variants = const {};
@@ -16,11 +18,13 @@ class CinemaCatalogViewCache {
 
   CinemaCatalogView resolve({
     required List<CinemaTitle> items,
+    List<CinemaTitle> discovery = const [],
     required CinemaFilters filters,
     required bool grouped,
     CinemaCatalogSort? sort,
     String provider = '',
     String search = '',
+    CinemaAggregateKind? preferredKind,
     List<String> sourcePriority = const [],
     int ratingRevision = 0,
     double? Function(CinemaTitle)? scoreOf,
@@ -30,15 +34,32 @@ class CinemaCatalogViewCache {
       filters.region,
       filters.genre,
       grouped,
+      search.trim().isNotEmpty,
       sourcePriority.join('|'),
     );
-    if (!identical(_items, items) || _filterKey != filterKey) {
+    if (!identical(_items, items) ||
+        !identical(_discovery, discovery) ||
+        _filterKey != filterKey) {
       _items = items;
+      _discovery = discovery;
       _filterKey = filterKey;
-      final filtered = items.where(filters.matches).toList();
-      _groups = grouped
+      // Fresh public metadata replaces the same subject suggested by a
+      // previous search or kept in the local library.
+      final all = discovery.isEmpty
+          ? items
+          : mergeCinemaSearchPage(items, discovery);
+      final filtered = all.where(filters.matches).toList();
+      _groups = !grouped
+          ? const []
+          : search.trim().isEmpty
           ? groupCinemaTitles(filtered, sourcePriority: sourcePriority)
-          : const [];
+          : groupCinemaTitles(all, sourcePriority: sourcePriority)
+                .where(
+                  (g) =>
+                      filters.matches(g.catalogTitle) ||
+                      g.variants.any(filters.matches),
+                )
+                .toList();
       _representatives = grouped
           ? _groups.map((group) => group.catalogTitle).toList()
           : filtered;
@@ -52,6 +73,7 @@ class CinemaCatalogViewCache {
       sort == CinemaCatalogSort.rating ? provider : '',
       sort == CinemaCatalogSort.rating ? ratingRevision : 0,
       search,
+      preferredKind,
     );
     if (_sortKey == sortKey && _view != null) return _view!;
     _sortKey = sortKey;
@@ -59,7 +81,12 @@ class CinemaCatalogViewCache {
         ? _representatives
         : sortCinemaTitles(_representatives, sort, scoreOf: scoreOf);
     if (search.trim().isNotEmpty) {
-      visible = rankCinemaSearch(visible, search, variants: _variants);
+      visible = rankCinemaSearch(
+        visible,
+        search,
+        variants: _variants,
+        preferredKind: preferredKind,
+      );
     }
     return _view = CinemaCatalogView(
       groups: _groups,
@@ -71,12 +98,21 @@ class CinemaCatalogViewCache {
   }
 }
 
+List<CinemaTitle> mergeCinemaSearchPage(
+  Iterable<CinemaTitle> known,
+  Iterable<CinemaTitle> updates,
+) => {
+  for (final item in known) item.key: item,
+  for (final item in updates) item.key: item,
+}.values.toList();
+
 /// Relevance belongs to a work. The existing catalogue order breaks ties
 /// between families, while numbered seasons within a family stay together.
 List<CinemaTitle> rankCinemaSearch(
   List<CinemaTitle> titles,
   String query, {
   Map<String, List<CinemaTitle>> variants = const {},
+  CinemaAggregateKind? preferredKind,
 }) {
   final requested = cinemaSeasonName(query);
   final needle = cinemaSearchKey(requested?.work ?? query);
@@ -131,6 +167,9 @@ List<CinemaTitle> rankCinemaSearch(
       title: title,
       tier: tier,
       gap: distance,
+      preferred:
+          preferredKind != null &&
+          cinemaMatchesAggregateKind(title, preferredKind),
       family: order,
       season: season,
       index: index,
@@ -139,6 +178,7 @@ List<CinemaTitle> rankCinemaSearch(
   rows.sort((a, b) {
     if (a.tier != b.tier) return a.tier.compareTo(b.tier);
     if (a.gap != b.gap) return a.gap.compareTo(b.gap);
+    if (a.preferred != b.preferred) return a.preferred ? -1 : 1;
     if (a.family != b.family) return a.family.compareTo(b.family);
     if (a.season != b.season) return a.season.compareTo(b.season);
     return a.index.compareTo(b.index);

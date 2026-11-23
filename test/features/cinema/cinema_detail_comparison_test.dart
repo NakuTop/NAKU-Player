@@ -59,6 +59,7 @@ class Probe extends CinemaMediaProbe {
   Probe() : super(transport: CinemaMediaTransport(dio: Dio()));
   final calls = <String>[];
   Completer<CinemaMediaProbeResult>? blocker;
+  CinemaMediaProbeResult Function(String)? respond;
   @override
   Future<CinemaMediaProbeResult> measure(
     String url,
@@ -69,6 +70,7 @@ class Probe extends CinemaMediaProbe {
   }) async {
     calls.add(url);
     if (blocker != null) return blocker!.future;
+    if (respond != null) return respond!(url);
     return CinemaMediaProbeResult(
       ok: true,
       elapsedMs: 30,
@@ -90,6 +92,139 @@ class Probe extends CinemaMediaProbe {
 }
 
 void main() {
+  for (final succeeds in [true, false]) {
+    test(
+      '1080p quick check bounds parallelism, stops at a confirmed route or four failures and leaves UHD untouched ($succeeds)',
+      () async {
+        final sources = List.generate(
+          8,
+          (i) => first.copyWith(id: 'source-$i'),
+        );
+        final probe = Probe()..blocker = Completer<CinemaMediaProbeResult>();
+        final comparison = CinemaDetailComparison(
+          title: movie(sources.first),
+          source: sources.first,
+          variants: sources.take(6).map(movie),
+          sources: sources,
+          repository: Repository(),
+          probe: probe,
+          preferFullHD: true,
+        );
+        addTearDown(comparison.dispose);
+        addTearDown(() => probe.transport.dio.close(force: true));
+        final firstPass = comparison.start();
+        await Future<void>.delayed(Duration.zero);
+        expect(probe.calls, hasLength(2));
+        expect(probe.calls, everyElement(endsWith('/HD.m3u8')));
+        probe.blocker!.complete(
+          CinemaMediaProbeResult(
+            ok: succeeds,
+            elapsedMs: 10,
+            width: succeeds ? 1920 : null,
+            height: succeeds ? 1080 : null,
+            qualityEvidence: succeeds
+                ? CinemaQualityEvidence.videoHeader
+                : CinemaQualityEvidence.unknown,
+          ),
+        );
+        await firstPass;
+        final expected = succeeds ? 2 : 4;
+        expect(probe.calls, hasLength(expected));
+        comparison.addVariants(sources.skip(6).map(movie));
+        await Future<void>.delayed(Duration.zero);
+        expect(probe.calls, hasLength(expected));
+        expect(probe.calls, everyElement(endsWith('/HD.m3u8')));
+        expect(comparison.streaming4K?.episode.name, '4K');
+        expect(comparison.measuredRecommendation != null, succeeds);
+        await comparison.start(refresh: true);
+        expect(probe.calls.length, 2 * expected);
+      },
+    );
+  }
+
+  test(
+    'one mixed HLS route offers both buttons after a single HD sample',
+    () async {
+      final probe = Probe()..blocker = Completer<CinemaMediaProbeResult>();
+      final title = movie(first).copyWith(
+        routes: [
+          const CinemaRoute(
+            name: 'HLS',
+            episodes: [
+              CinemaEpisode(
+                name: '正片',
+                url: 'https://film.example/master.m3u8',
+              ),
+            ],
+          ),
+        ],
+      );
+      final comparison = CinemaDetailComparison(
+        title: title,
+        source: first,
+        variants: [],
+        sources: [first],
+        repository: Repository(),
+        probe: probe,
+        preferFullHD: true,
+      );
+      addTearDown(comparison.dispose);
+      addTearDown(() => probe.transport.dio.close(force: true));
+      probe.blocker!.complete(
+        const CinemaMediaProbeResult(
+          ok: true,
+          elapsedMs: 20,
+          width: 1920,
+          height: 1080,
+          hasUhdVariant: true,
+          qualityEvidence: CinemaQualityEvidence.videoHeader,
+        ),
+      );
+      await comparison.start();
+      final hd = comparison.measuredRecommendation!;
+      expect(comparison.isUltraHD(hd), isFalse);
+      expect(comparison.streaming4K?.key, hd.key);
+      expect(probe.calls, ['https://film.example/master.m3u8']);
+    },
+  );
+
+  test(
+    'when the first two HD servers refuse media, a playable Ruyi result becomes the default',
+    () async {
+      final ruyi = first.copyWith(id: 'maccms-ruyi', name: '如意影视');
+      final sources = [first, second, ruyi];
+      final probe = Probe()
+        ..respond = (url) => url.contains(ruyi.id)
+            ? const CinemaMediaProbeResult(
+                ok: true,
+                elapsedMs: 16,
+                width: 1920,
+                height: 1080,
+                qualityEvidence: CinemaQualityEvidence.videoHeader,
+              )
+            : const CinemaMediaProbeResult(
+                ok: false,
+                elapsedMs: 18,
+                reason: 'HTTP 403',
+              );
+      final comparison = CinemaDetailComparison(
+        title: movie(first),
+        source: first,
+        variants: sources.map(movie),
+        sources: sources,
+        repository: Repository(),
+        probe: probe,
+        preferFullHD: true,
+      );
+      addTearDown(comparison.dispose);
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await comparison.start();
+      expect(comparison.measuredRecommendation?.source.id, ruyi.id);
+      expect(probe.calls, hasLength(lessThanOrEqualTo(4)));
+      expect(probe.calls.any((url) => url.contains('/4K.')), isFalse);
+    },
+  );
+
   test(
     'measured startup uses speed first and never promotes a manifest hint to proven 4K',
     () async {

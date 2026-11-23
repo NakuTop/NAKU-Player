@@ -20,6 +20,8 @@ class CinemaNeonDecode extends StatefulWidget {
     required this.child,
     this.progress,
     this.regional = false,
+    this.revealOnEntry = false,
+    this.reduceMotion = false,
     this.snapshotRendering = false,
     this.rasterSnapshot,
   });
@@ -30,6 +32,9 @@ class CinemaNeonDecode extends StatefulWidget {
   /// When true, only descendant [CinemaNeonRegion] widgets still awaiting their
   /// own resource are filtered. Already available controls stay sharp.
   final bool regional;
+
+  /// Give a whole region one coarse-to-fine entrance even on a cache hit.
+  final bool revealOnEntry, reduceMotion;
 
   /// Opt-in path for native web-view previews. A single fragment pass samples
   /// this caller-owned image; the live detail/region path remains unchanged.
@@ -59,8 +64,9 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
   bool _visible = false;
   bool _motionAllowed = true;
   bool _foreground = true;
-  bool _hasRevealSession = false;
-  static const _settleDuration = Duration(milliseconds: 520);
+  bool _hasRevealSession = false, _entered = false;
+  Duration get _settleDuration =>
+      Duration(milliseconds: widget.revealOnEntry ? 740 : 520);
   double _settleElapsed = 0;
   int _generation = 0;
 
@@ -86,6 +92,8 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
   @override
   void didUpdateWidget(CinemaNeonDecode oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.reduceMotion != oldWidget.reduceMotion) _syncEnvironment();
+    if (widget.reduceMotion) return;
     if (widget.snapshotRendering && widget.rasterSnapshot == null) {
       // There are no page pixels to reveal yet. Show the caller's actual
       // surface unchanged instead of inventing a decorative placeholder grid.
@@ -122,11 +130,15 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
 
   void _syncEnvironment() {
     if (!_motionAllowed ||
+        widget.reduceMotion ||
         !_foreground ||
         (widget.snapshotRendering && widget.rasterSnapshot == null)) {
       _stop();
-    } else if (widget.loading && !_visible) {
+    } else if (!_visible &&
+        (widget.loading || widget.revealOnEntry && !_entered)) {
+      _entered = true;
       _begin();
+      if (!widget.loading) _finish();
     }
   }
 
@@ -254,8 +266,11 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
     _signal.clock += dt;
     if (_signal.settling) {
       _settleElapsed += dt;
-      final t = (_settleElapsed / (_settleDuration.inMicroseconds / 1000000))
-          .clamp(0.0, 1.0);
+      final lead = widget.revealOnEntry ? .10 : 0.0;
+      final t =
+          ((_settleElapsed - lead) /
+                  (_settleDuration.inMicroseconds / 1000000 - lead))
+              .clamp(0.0, 1.0);
       _signal.assembly = t;
       _signal.opacity = 1 - t * t * (3 - 2 * t);
     } else {
@@ -268,7 +283,7 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
 
   void _finish() {
     // Only the parent's real resource gate permits the last pixels to assemble.
-    // The data is already usable: this non-blocking 520 ms material finish never
+    // The data is already usable: this non-blocking material finish never
     // extends the underlying request, disables controls, or replays the wait.
     _settleElapsed = 0;
     _signal
@@ -320,7 +335,10 @@ class CinemaNeonDecodeState extends State<CinemaNeonDecode>
             animation: _signal,
             child: widget.regional
                 ? widget.child
-                : CinemaNeonRegion(ready: !widget.loading, child: widget.child),
+                : CinemaNeonRegion(
+                    ready: !widget.loading && !widget.revealOnEntry,
+                    child: widget.child,
+                  ),
             builder: (context, child) => _ContentAssemblyGlow(
               gain: _visible && _signal.settling
                   ? 1 + .045 * math.sin(_signal.assembly * math.pi)

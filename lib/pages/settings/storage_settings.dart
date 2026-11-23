@@ -40,6 +40,7 @@ class _StorageSettingsPageState extends State<StorageSettingsPage> {
   String? _clearing;
 
   Future<_CacheUsage> _readUsage() async {
+    if (_showVideo && _video.diskFiles != null) await _video.refreshTotals();
     final results = await Future.wait<Object?>([
       _images.sizeInBytes(),
       if (_showVideo) _video.usage(),
@@ -48,6 +49,37 @@ class _StorageSettingsPageState extends State<StorageSettingsPage> {
       imageBytes: results[0] as int,
       video: _showVideo ? results[1] as _VideoUsage : null,
     );
+  }
+
+  Future<void> _pickTotalLimit() async {
+    final current = _video.preferences.quotaMB;
+    final limits = {128, 256, 512, 1024, 2048, 4096, 8192, current}.toList()
+      ..sort();
+    final chosen = await showDialog<int>(
+      context: context,
+      builder: (dialog) => SimpleDialog(
+        title: const Text('总缓存上限'),
+        children: [
+          for (final limit in limits)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(dialog, limit),
+              child: Row(
+                children: [
+                  Expanded(child: Text(_bytes(limit * 1048576))),
+                  if (limit == current) const Icon(Icons.check, size: 18),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    try {
+      await _video.setTotalLimit(chosen);
+      if (mounted) _refreshSize();
+    } catch (_) {
+      if (mounted) _message('缓存上限未能保存');
+    }
   }
 
   void _refreshSize() => setState(() => _cacheSize = _readUsage());
@@ -130,10 +162,21 @@ class _StorageSettingsPageState extends State<StorageSettingsPage> {
             SettingsSection(
               title: Text(
                 snapshot.hasData
-                    ? '缓存 · 共 ${_bytes(snapshot.requireData.imageBytes + (snapshot.requireData.video?.totalBytes ?? 0))}'
+                    ? '缓存 · 共 ${_bytes(_showVideo && _video.diskFiles != null ? _video.totalCacheBytes : snapshot.requireData.imageBytes + (snapshot.requireData.video?.totalBytes ?? 0))}'
                     : '缓存',
               ),
               tiles: [
+                if (_showVideo && _video.diskFiles != null)
+                  SettingsTile(
+                    leading: Icons.storage_outlined,
+                    title: const Text('总缓存上限'),
+                    description: const Text('按最近使用时间清理，下载内容单独保存'),
+                    trailing: Text(
+                      _bytes(_video.preferences.quotaMB * 1048576),
+                    ),
+                    enabled: ready && _video.canSetTotalLimit,
+                    onPressed: (_) => _pickTotalLimit(),
+                  ),
                 SettingsTile(
                   leading: Icons.image_outlined,
                   title: const Text('图片缓存'),

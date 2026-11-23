@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'cinema_models.dart';
+import 'cinema_media_transport.dart' show CinemaMediaProbeResult;
 
 class CinemaHealthRecord {
   const CinemaHealthRecord({
@@ -15,10 +16,11 @@ class CinemaHealthRecord {
     this.firstFrameMs,
     this.mbps,
     this.reason = '',
+    this.confirmedVideo = false,
     this.retryAt,
   });
   final DateTime checkedAt;
-  final bool ok;
+  final bool ok, confirmedVideo;
   final int failures;
   final int? latencyMs, firstFrameMs;
   final double? mbps;
@@ -27,6 +29,7 @@ class CinemaHealthRecord {
   Map<String, dynamic> toJson() => {
     'at': checkedAt.toIso8601String(),
     'ok': ok,
+    'confirmedVideo': confirmedVideo,
     'failures': failures,
     'latencyMs': latencyMs,
     'firstFrameMs': firstFrameMs,
@@ -44,6 +47,7 @@ class CinemaHealthRecord {
     return CinemaHealthRecord(
       checkedAt: at,
       ok: value['ok'],
+      confirmedVideo: value['confirmedVideo'] == true,
       failures: integer('failures') ?? 0,
       latencyMs: integer('latencyMs'),
       firstFrameMs: integer('firstFrameMs'),
@@ -85,6 +89,9 @@ class CinemaSourceHealth extends ChangeNotifier {
   Timer? _saveTimer;
   bool _loaded = false, _disposed = false;
   String? saveError;
+  final _stages = <String, String>{}, _sampleNotes = <String, String>{};
+  void Function()? _cancelRequests;
+  String? probeStage(CinemaSource source) => _stages[source.id];
   bool probing = false;
   int completed = 0, total = 0, _probeGeneration = 0;
   String _key(CinemaSource source, bool media) =>
@@ -139,6 +146,7 @@ class CinemaSourceHealth extends ChangeNotifier {
     CinemaSource source, {
     required bool ok,
     bool media = false,
+    bool confirmedVideo = false,
     int? latencyMs,
     int? firstFrameMs,
     double? mbps,
@@ -146,6 +154,7 @@ class CinemaSourceHealth extends ChangeNotifier {
   }) {
     if (_disposed) return;
     final key = _key(source, media), old = _records[_key(source, media)];
+    if (media) _sampleNotes.remove(key);
     final failures = ok ? 0 : (old?.failures ?? 0) + 1;
     final delay = failures < 2
         ? 0
@@ -155,18 +164,20 @@ class CinemaSourceHealth extends ChangeNotifier {
         ? 10
         : 60;
     _records[key] = CinemaHealthRecord(
+      confirmedVideo: confirmedVideo,
       checkedAt: _now(),
       ok: ok,
       failures: failures,
-      latencyMs: latencyMs ?? old?.latencyMs,
-      firstFrameMs: firstFrameMs ?? old?.firstFrameMs,
-      mbps: mbps ?? old?.mbps,
+      latencyMs: latencyMs,
+      firstFrameMs: firstFrameMs,
+      mbps: mbps,
       reason: ok ? '' : reason,
       retryAt: !media && delay > 0
           ? _now().add(Duration(minutes: delay))
           : null,
     );
     final event = CinemaHealthRecord(
+      confirmedVideo: confirmedVideo,
       checkedAt: _now(),
       ok: ok,
       failures: failures,
@@ -190,6 +201,55 @@ class CinemaSourceHealth extends ChangeNotifier {
     }
   }
 
+  static String _failure(Object error) {
+    final message = error.toString();
+    final status = RegExp(r'HTTP\s+([1-5]\d\d)').firstMatch(message);
+    if (status != null) return 'HTTP ${status[1]}';
+    if (error is TimeoutException ||
+        message.contains('超时') ||
+        message.toLowerCase().contains('timeout')) {
+      return '连接超时';
+    }
+    if (error is FormatException || message.contains('格式')) return '目录格式异常';
+    if (message.contains('返回错误')) return '服务返回错误';
+    return '连接失败';
+  }
+
+  String connectionLabel(CinemaSource source, {bool media = false}) {
+    final item = record(source, media: media);
+    final note = media ? _sampleNotes[_key(source, true)] : null;
+    if (item == null) return note ?? '未检测';
+    final at = item.checkedAt.toLocal(),
+        elapsed = _now().difference(item.checkedAt);
+    final time = elapsed.inMinutes < 1
+        ? '刚刚'
+        : elapsed.inHours < 1
+        ? '${elapsed.inMinutes} 分钟前'
+        : elapsed.inDays < 1
+        ? '${elapsed.inHours} 小时前'
+        : '${at.month}/${at.day}';
+    final status = item.ok
+        ? (media
+              ? item.firstFrameMs != null
+                    ? '已起播'
+                    : item.confirmedVideo
+                    ? '样片可读'
+                    : '样片有响应'
+              : '已连接')
+        : (item.reason.isEmpty ? '连接失败' : item.reason);
+    final metric = !item.ok
+        ? ''
+        : item.firstFrameMs != null
+        ? ' · 首帧 ${(item.firstFrameMs! / 1000).toStringAsFixed(1)} 秒'
+        : media && item.mbps != null
+        ? ' · ${item.mbps!.toStringAsFixed(1)} Mbps'
+        : item.latencyMs != null
+        ? ' · ${item.latencyMs} ms'
+        : '';
+    final reading = '$status$metric · $time';
+    return note == null ? reading : '$note · 上次检测 $reading';
+  }
+
   void restore(CinemaSource source) {
     _records.remove(_key(source, false));
     _notify();
@@ -197,6 +257,9 @@ class CinemaSourceHealth extends ChangeNotifier {
   }
 
   void cancelProbes() {
+    _cancelRequests?.call();
+    _cancelRequests = null;
+    _stages.clear();
     ++_probeGeneration;
     probing = false;
     _notify();
@@ -204,10 +267,13 @@ class CinemaSourceHealth extends ChangeNotifier {
 
   Future<void> probeAll(
     List<CinemaSource> sources,
-    Future<void> Function(CinemaSource) probe,
-  ) async {
+    Future<void> Function(CinemaSource) probe, {
+    Future<CinemaMediaProbeResult?> Function(CinemaSource)? sample,
+    void Function()? onCancel,
+  }) async {
     if (probing) return;
     final gen = ++_probeGeneration;
+    _cancelRequests = onCancel;
     probing = true;
     completed = 0;
     total = sources.length;
@@ -216,17 +282,56 @@ class CinemaSourceHealth extends ChangeNotifier {
     Future<void> worker() async {
       while (!_disposed && gen == _probeGeneration && index < sources.length) {
         final source = sources[index++], watch = Stopwatch()..start();
+        _stages[source.id] = '正在连接目录';
+        _notify();
+        var reached = false;
         try {
           await probe(source).timeout(const Duration(seconds: 16));
           if (gen == _probeGeneration) {
             observe(source, ok: true, latencyMs: watch.elapsedMilliseconds);
+            reached = true;
           }
-        } catch (_) {
+        } catch (error) {
           if (gen == _probeGeneration) {
-            observe(source, ok: false, reason: '探活失败');
+            observe(source, ok: false, reason: _failure(error));
+            _sampleNotes[_key(source, true)] = '本次未检测';
+          }
+        }
+        if (reached && sample != null && gen == _probeGeneration) {
+          _stages[source.id] = '正在读取视频样片';
+          _notify();
+          try {
+            final result = await sample(
+              source,
+            ).timeout(const Duration(seconds: 8));
+            if (gen == _probeGeneration) {
+              if (result == null ||
+                  !result.ok &&
+                      result.hasUhdVariant &&
+                      result.reason == '此清单没有常规画质') {
+                _sampleNotes[_key(source, true)] = result == null
+                    ? '目录未提供可测样片'
+                    : '样片仅提供 4K';
+              } else {
+                observe(
+                  source,
+                  ok: result.ok,
+                  media: true,
+                  confirmedVideo: result.confirmedQualityTier > 0,
+                  latencyMs: result.firstByteMs,
+                  mbps: result.mbps,
+                  reason: result.reason.isEmpty ? '样片未能读取' : result.reason,
+                );
+              }
+            }
+          } catch (error) {
+            if (gen == _probeGeneration) {
+              observe(source, ok: false, media: true, reason: _failure(error));
+            }
           }
         }
         if (gen == _probeGeneration) {
+          _stages.remove(source.id);
           completed++;
           _notify();
         }
@@ -235,6 +340,7 @@ class CinemaSourceHealth extends ChangeNotifier {
 
     await Future.wait([worker(), worker(), worker()]);
     if (gen == _probeGeneration) {
+      _cancelRequests = null;
       probing = false;
       _notify();
       await flush();
@@ -272,6 +378,7 @@ class CinemaSourceHealth extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _cancelRequests?.call();
     _saveTimer?.cancel();
     ++_probeGeneration;
     super.dispose();

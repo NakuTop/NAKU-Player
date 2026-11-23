@@ -37,8 +37,29 @@ class CinemaTitleGroup {
   late final CinemaTitle catalogTitle = _catalogTitle();
 
   CinemaTitle _catalogTitle({CinemaTitle? primary}) {
-    final base = primary ?? representative;
-    Set<String> identities(String Function(CinemaTitle) read) => variants
+    final selected = primary ?? representative;
+    final concrete = variants
+        .where((t) => !cinemaIsSeasonProjection(t))
+        .toList();
+    // Old stored projections may still carry the box set's last-season IDs.
+    final base = cinemaIsSeasonProjection(selected)
+        ? CinemaTitle.fromJson({
+            ...selected.toJson(),
+            'doubanId': '',
+            'imdbId': '',
+            'rottenTomatoesId': '',
+            'sourceDoubanScore': null,
+            'year': '',
+            'releaseDateText': '',
+            'poster':
+                concrete
+                    .map((t) => t.poster)
+                    .where((p) => p.isNotEmpty)
+                    .firstOrNull ??
+                selected.poster,
+          })
+        : selected;
+    Set<String> identities(String Function(CinemaTitle) read) => concrete
         .map(read)
         .map((id) => id.trim())
         .where((id) => id.isNotEmpty)
@@ -52,7 +73,7 @@ class CinemaTitleGroup {
     final doubanId = douban.firstOrNull ?? '';
     double? score = base.sourceDoubanScore;
     if (score == null && doubanId.isNotEmpty) {
-      final scores = variants
+      final scores = concrete
           .where((title) => title.doubanId.trim() == doubanId)
           .map((title) => title.sourceDoubanScore)
           .whereType<double>()
@@ -130,7 +151,12 @@ List<CinemaTitleGroup> groupCinemaTitles(
       final year = (_year(b.year, _kind(b.category)) != null ? 1 : 0).compareTo(
         _year(a.year, _kind(a.category)) != null ? 1 : 0,
       );
-      return year != 0 ? year : order[a.key]!.compareTo(order[b.key]!);
+      if (year != 0) return year;
+      // Resolve source editions before attaching an older public suggestion.
+      final metadata = (a.sourceId == 'douban-discovery' ? 1 : 0).compareTo(
+        b.sourceId == 'douban-discovery' ? 1 : 0,
+      );
+      return metadata != 0 ? metadata : order[a.key]!.compareTo(order[b.key]!);
     });
   for (final title in prioritized) {
     final candidate = _Candidate(title);
@@ -205,14 +231,15 @@ Set<String> _credits(String value) => value
 class _Candidate {
   _Candidate(this.title)
     : name = cinemaGroupedWorkTitleKey(title.title, title.year),
-      doubanId = title.doubanId.trim(),
+      doubanId = cinemaIsSeasonProjection(title) ? '' : title.doubanId.trim(),
       kind = _kind(title.category),
-      year =
-          _year(title.year, _kind(title.category)) ??
-          (_kind(title.category) == _Kind.anime &&
-                  cinemaIsEdgerunnersTitle(title.title, title.year)
-              ? 2022
-              : null);
+      year = cinemaIsSeasonProjection(title)
+          ? null
+          : _year(title.year, _kind(title.category)) ??
+                (_kind(title.category) == _Kind.anime &&
+                        cinemaIsEdgerunnersTitle(title.title, title.year)
+                    ? 2022
+                    : null);
 
   final CinemaTitle title;
   final String name;
@@ -291,14 +318,42 @@ class _Group {
                     candidate.title.releaseDateText.contains('${known.year}-'));
       });
     }
+    final season = cinemaSeasonName(candidate.title.title)?.number;
+    final sameSeason = cinemaSeasonName(variants.first.title)?.number == season;
+    final exactSeason =
+        season != null &&
+        sameSeason &&
+        name.isNotEmpty &&
+        name == candidate.name;
     if (kind != _Kind.unknown &&
         candidate.kind != _Kind.unknown &&
         kind != candidate.kind) {
-      return false;
+      // Older subject suggestions stored every TV series as a movie.
+      // Repair those rows only with a corroborating, same-season native entry.
+      if (candidate.title.sourceId == 'douban-discovery' &&
+          candidate.kind == _Kind.movie &&
+          (kind == _Kind.series || kind == _Kind.anime) &&
+          sameSeason &&
+          name.isNotEmpty &&
+          name == candidate.name &&
+          year != null &&
+          year == candidate.year &&
+          doubanId.isNotEmpty &&
+          doubanId == candidate.doubanId &&
+          variants.any(
+            (v) =>
+                v.sourceId != 'douban-discovery' &&
+                (exactSeason || v.routes.any((r) => r.episodes.length > 1)),
+          )) {
+        return true;
+      }
+      // Some catalogues file a TV anime under series. A shared season subject
+      // resolves that disagreement without merging films or adaptations.
+      return exactSeason &&
+          {kind, candidate.kind}.containsAll({_Kind.series, _Kind.anime}) &&
+          (doubanId.isNotEmpty && doubanId == candidate.doubanId ||
+              variants.any((v) => _kind(v.category) == candidate.kind));
     }
-    final sameSeason =
-        cinemaSeasonName(variants.first.title)?.number ==
-        cinemaSeasonName(candidate.title.title)?.number;
     if (name.isEmpty || name != candidate.name) {
       return sameSeason &&
           kind == candidate.kind &&
@@ -313,11 +368,14 @@ class _Group {
               ));
     }
     if (doubanId.isNotEmpty && doubanId == candidate.doubanId) return true;
-    if (kind == _Kind.series &&
-        candidate.kind == _Kind.series &&
-        (cinemaIsSeasonProjection(candidate.title) ||
-            variants.any(cinemaIsSeasonProjection)) &&
-        RegExp(r'第[0-9]+季$').hasMatch(name)) {
+    if (exactSeason &&
+        (kind == _Kind.series || kind == _Kind.anime) &&
+        candidate.kind == kind) {
+      return true;
+    }
+    if (exactSeason &&
+        (kind == _Kind.unknown || candidate.kind == _Kind.unknown) &&
+        variants.any((v) => v.sourceId == candidate.title.sourceId)) {
       return true;
     }
     return year != null &&
@@ -335,10 +393,30 @@ class _Group {
 }
 
 _Kind _kind(String value) {
-  final name = value.trim();
-  if (RegExp('解说|影评|说电影').hasMatch(name)) return _Kind.commentary;
+  final name = value
+      .trim()
+      .replaceAll('劇', '剧')
+      .replaceAll('國', '国')
+      .replaceAll('歐', '欧')
+      .replaceAll('電', '电');
+  if (RegExp('解说|解說|影评|影評|说电影|說电影').hasMatch(name)) return _Kind.commentary;
   if (RegExp('纪录|记录片').hasMatch(name)) return _Kind.documentary;
-  if (RegExp('动漫|动画').hasMatch(name)) return _Kind.anime;
+  if (RegExp('动漫|动画|動漫|動畫').hasMatch(name)) return _Kind.anime;
+  if (const {
+    '现代都市',
+    '現代都市',
+    '年代穿越',
+    '反转爽剧',
+    '反轉爽劇',
+    '古装仙侠',
+    '古裝仙俠',
+    '女频恋爱',
+    '女頻戀愛',
+    '脑洞悬疑',
+    '腦洞懸疑',
+  }.contains(name)) {
+    return _Kind.series;
+  }
   if (RegExp(
     '电视剧|连续剧|剧集|国产剧|大陆剧|内地剧|欧美剧|美国剧|英国剧|美剧|日剧|韩剧|日本剧|韩国剧|香港剧|港澳剧|台湾剧|海外剧|泰国剧|泰剧|Netflix自制剧|短剧',
     caseSensitive: false,
@@ -354,7 +432,7 @@ _Kind _kind(String value) {
 }
 
 int? _year(String text, _Kind kind) {
-  final value = cinemaIdentityTypography(text).trim();
+  final value = cinemaIdentityTypography(cinemaCatalogYear(text)).trim();
   if (RegExp(r'^[1-9][0-9]{3}$').hasMatch(value)) return int.parse(value);
   if (kind != _Kind.series && kind != _Kind.anime) return null;
   final range = RegExp(

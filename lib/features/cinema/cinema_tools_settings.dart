@@ -368,7 +368,16 @@ class _CinemaToolsSettingsPageState extends State<CinemaToolsSettingsPage> {
                                     ),
                                   ),
                           ),
-                        Text('磁盘上限 ${prefs.quotaMB} MB'),
+                        Text(
+                          Platform.isMacOS
+                              ? '总缓存上限 ${prefs.quotaMB} MB'
+                              : '磁盘上限 ${prefs.quotaMB} MB',
+                        ),
+                        if (Platform.isMacOS)
+                          Text(
+                            '已用 ${(_cache.totalCacheBytes / 1048576).toStringAsFixed(0)} MB · 自动清理最久未使用的缓存，保留下载内容',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
                         CinemaSwipeExclusion(
                           child: Slider(
                             value: prefs.quotaMB.toDouble(),
