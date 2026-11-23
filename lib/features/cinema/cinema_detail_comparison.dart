@@ -105,8 +105,9 @@ class CinemaDetailComparison extends ChangeNotifier {
     final options = preferFullHD
         ? candidates.where((c) => !isUltraHD(c)).toList()
         : candidates;
-    if (preferFullHD) {
-      return cinemaBestRegularCandidate(options, results: results);
+    if (preferFullHD || Platform.isWindows) {
+      final regular = cinemaBestRegularCandidate(options, results: results);
+      if (regular != null || preferFullHD) return regular;
     }
     return cinemaBestConfirmedCandidate(
       options,

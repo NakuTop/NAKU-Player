@@ -5832,7 +5832,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
   }
 
   bool get _compactQuality =>
-      (NakuDevice.unifiedCinema || Platform.isWindows) &&
+      NakuDevice.unifiedCinema &&
       !NakuDevice.isTV &&
       widget.source.id != cinemaNASSource.id;
 
@@ -5926,6 +5926,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
       ],
       manual ||
           (!_compactQuality &&
+              !Platform.isWindows &&
               !NakuDevice.unifiedCinema &&
               _recommended != null),
       quality,

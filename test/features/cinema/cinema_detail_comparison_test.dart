@@ -297,7 +297,15 @@ void main() {
         qualityEvidence: CinemaQualityEvidence.manifest,
       );
       expect(comparison.results[faster4k.key]!.qualityLabel, '待检测');
-      expect(comparison.measuredRecommendation?.key, faster4k.key);
+      if (Platform.isWindows) {
+        final recommended = comparison.measuredRecommendation!;
+        expect(
+          comparison.results[recommended.key]!.qualityEvidence,
+          CinemaQualityEvidence.videoHeader,
+        );
+      } else {
+        expect(comparison.measuredRecommendation?.key, faster4k.key);
+      }
       for (final candidate in comparison.candidates.where(
         (c) => c.source.id == second.id,
       )) {
