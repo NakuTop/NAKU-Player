@@ -1,5 +1,62 @@
 [
   {
+    "tag_name": "android-tv-v3.2.23+151",
+    "name": "NAKU Android TV 3.2.23",
+    "body": "3.2.23 · 原画起播与高清换线\n\n修复季包目录内编码参数误判季号，识别同一季的正确分集。原画并行准备视频开头与 MKV 索引，节点已传输视频时给索引补齐时间。原画不可用时保留进度，优先切到同集实测 1080p，再比较同画质线路速度。",
+    "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.23%2B151",
+    "published_at": "2026-11-23T14:52:22Z",
+    "draft": false,
+    "prerelease": false,
+    "assets": [
+      {
+        "name": "NAKU-TV-3.2.23-Android-universal.apk",
+        "state": "uploaded",
+        "size": 165852485,
+        "digest": "sha256:55999b9c62982fd3f5563895a00bf3e73992026fb01df9ce7760f7728feca4d8",
+        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.23%2B151/NAKU-TV-3.2.23-Android-universal.apk",
+        "build": 151,
+        "deltas": [
+          {
+            "name": "NAKU-TV-150-151.gdiff.gz",
+            "state": "uploaded",
+            "size": 26508533,
+            "digest": "sha256:09557a54677f27c1143da9726e13abd7cc5bf346328ee5f7dfcdeef37c72fb31",
+            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.23%2B151/NAKU-TV-150-151.gdiff.gz",
+            "format": "gdiff4-gzip",
+            "base_version": "3.2.22",
+            "base_build": 150,
+            "base_sha256": "5f9d2ca25d669885ba5a14bfcb5be33983a3cbe5dabe11bd4e7fbf4d3c7087ee",
+            "target_sha256": "55999b9c62982fd3f5563895a00bf3e73992026fb01df9ce7760f7728feca4d8"
+          },
+          {
+            "name": "NAKU-TV-149-151.gdiff.gz",
+            "state": "uploaded",
+            "size": 26508522,
+            "digest": "sha256:a4e6b2929a13dcf957e3684176a7a77305015ff040075ced0cb23cb57684d149",
+            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.23%2B151/NAKU-TV-149-151.gdiff.gz",
+            "format": "gdiff4-gzip",
+            "base_version": "3.2.21",
+            "base_build": 149,
+            "base_sha256": "ba47e6eaec5caf44c5a5ce6e5c5050161c413c822a8647546fd58781c91a25e3",
+            "target_sha256": "55999b9c62982fd3f5563895a00bf3e73992026fb01df9ce7760f7728feca4d8"
+          },
+          {
+            "name": "NAKU-TV-148-151.gdiff.gz",
+            "state": "uploaded",
+            "size": 26508532,
+            "digest": "sha256:8dec83de0bb08751b00f74ea53007f57c19874091322f9089fa48233f1cd9075",
+            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.23%2B151/NAKU-TV-148-151.gdiff.gz",
+            "format": "gdiff4-gzip",
+            "base_version": "3.2.20",
+            "base_build": 148,
+            "base_sha256": "1709591c4f12f0e670482cffd82328f9d00a3ae1e1b7e1188e49821f4214f702",
+            "target_sha256": "55999b9c62982fd3f5563895a00bf3e73992026fb01df9ce7760f7728feca4d8"
+          }
+        ]
+      }
+    ]
+  },
+  {
     "tag_name": "android-tv-v3.2.22+150",
     "name": "NAKU Android TV 3.2.22",
     "body": "3.2.22 · 原画起播与高清换线\n\n原画会并行准备本集开头和 MKV 索引，自动尝试可起播的同集版本。常规线路优先实测 1080p，同画质比较速度，较低画质显示测得的分辨率。手动选源保留优先权。\n",
