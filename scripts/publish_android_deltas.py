@@ -96,7 +96,11 @@ def inspect_apk(path, tools, kind, version, build):
             (kind == 'TV' and 'leanback-launchable-activity:' not in badging)):
         raise ValueError(f'Wrong APK package, version or launcher: {path.name}')
     signatures = run(tools/'apksigner','verify','--verbose','--print-certs','--min-sdk-version','23',path)
-    if (re.findall(r'Signer #\d+ certificate SHA-256 digest: ([a-f0-9]+)', signatures) != [CERT]
+    # Build Tools 37 labels the signer by scheme; older versions number it.
+    certs = re.findall(
+        r'^(?:Signer #\d+|V\d+(?:\.\d+)? Signer(?: #\d+)?:) certificate SHA-256 digest: ([a-f0-9]{64})$',
+        signatures, re.M)
+    if (set(certs) != {CERT} or 'Number of signers: 1' not in signatures.splitlines()
             or 'Verified using v1 scheme (JAR signing): true' not in signatures
             or 'Verified using v2 scheme (APK Signature Scheme v2): true' not in signatures):
         raise ValueError(f'Invalid official Android signature: {path.name}')
