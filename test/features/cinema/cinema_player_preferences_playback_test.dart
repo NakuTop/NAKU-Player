@@ -370,6 +370,7 @@ class _Ratings extends CinemaRatingsRepository {
 
 class _Probe extends CinemaMediaProbe {
   _Probe() : super(transport: CinemaMediaTransport(dio: Dio()));
+  CinemaMediaProbeResult Function(String)? immediate;
   final requests = <String, Completer<CinemaMediaProbeResult>>{};
   final tokens = <CancelToken>[];
   final calls = <String>[];
@@ -383,6 +384,7 @@ class _Probe extends CinemaMediaProbe {
   }) {
     calls.add(url);
     if (cancel != null) tokens.add(cancel);
+    if (immediate != null) return Future.value(immediate!(url));
     return requests
         .putIfAbsent(url, Completer<CinemaMediaProbeResult>.new)
         .future;
@@ -1776,6 +1778,75 @@ void main() {
       );
       expect(engine.attempts, [edition.hash]);
       expect(backends.last.opened?.uri, 'https://a.invalid/2.mp4');
+      expect(backends.last.opened?.start, const Duration(seconds: 88));
+      await unmount(tester);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+  testWidgets(
+    'failed original reselects the same episode by real 1080p instead of reopening its fast 720p anchor',
+    (tester) async {
+      await enableMacSources(tester);
+      final hd = fallbackTitle();
+      final edition = OriginalEdition(
+        hash: 'e' * 40,
+        name: '2160p',
+        seeds: 5,
+        size: 500,
+        pack: false,
+        magnet: '',
+      );
+      final matches = OriginalMatches(
+        OriginalWork(
+          names: [juliangTitle.title],
+          years: {juliangTitle.year},
+          season: 1,
+          episode: 1,
+        ),
+        [edition],
+      );
+      final engine = _OriginalFixture(failAll: true);
+      final probe = _Probe()
+        ..immediate = (url) {
+          final regular = !url.contains('juliang');
+          return CinemaMediaProbeResult(
+            ok: true,
+            elapsedMs: 12,
+            mbps: regular ? 10 : 160,
+            width: regular ? 1920 : 1280,
+            height: regular ? 1080 : 720,
+            qualityEvidence: CinemaQualityEvidence.videoHeader,
+          );
+        };
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await mount(
+        tester,
+        {},
+        selectedTitle: juliangTitle,
+        selectedSource: juliangSource,
+        variants: [hd],
+        initialOriginal: (matches: matches, edition: edition),
+        originalSearch: _OriginalIndexFixture(matches),
+        originalEngine: engine,
+        qualityMode: CinemaPlaybackQuality.ultraHD,
+        initialPosition: 88,
+        probe: probe,
+      );
+      for (
+        var i = 0;
+        i < 80 && !(backends.isNotEmpty && backends.last.opened != null);
+        i++
+      ) {
+        await tester.pump(const Duration(milliseconds: 150));
+      }
+      expect(engine.attempts, contains(edition.hash));
+      expect(
+        backends.last.opened?.uri,
+        anyOf(
+          'https://fixture.invalid/1.mp4',
+          'https://fixture.invalid/backup.mp4',
+        ),
+      );
       expect(backends.last.opened?.start, const Duration(seconds: 88));
       await unmount(tester);
       debugDefaultTargetPlatformOverride = null;

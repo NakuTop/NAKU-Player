@@ -943,7 +943,13 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                     offlinePaths: offlinePaths,
                     manualRouteSelection: manualRouteSelection,
                     autoSelectBestRoute: autoSelectBestRoute,
-                    qualityMode: qualityMode,
+                    qualityMode:
+                        qualityMode ??
+                        (!manualRouteSelection &&
+                                source.kind == CinemaSourceKind.maccms &&
+                                initialOriginal == null
+                            ? CinemaPlaybackQuality.fullHD
+                            : null),
                     measuredQuality: measuredQuality,
                     initialOriginal: initialOriginal,
                     initialOriginalLookup: initialOriginalLookup,

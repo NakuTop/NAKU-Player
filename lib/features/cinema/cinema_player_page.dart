@@ -367,12 +367,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   OriginalSelection? _original;
   OriginalMatches? _selectionOriginals;
   bool _pinnedOriginalVersion = false;
-  late CinemaPlaybackQuality? _qualityMode =
-      widget.qualityMode ??
-      (widget.source.kind == CinemaSourceKind.maccms &&
-              widget.initialOriginal == null
-          ? CinemaPlaybackQuality.fullHD
-          : null);
+  late CinemaPlaybackQuality? _qualityMode = widget.qualityMode;
   OriginalLookup? _originalLookup;
   OriginalStream? _originalLease;
   CancelToken? _originalCancel;
@@ -4307,7 +4302,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   CinemaRouteMeasurement? _bestSourcePriority(
     Iterable<CinemaRouteMeasurement> values,
   ) {
-    if (_qualityMode == CinemaPlaybackQuality.fullHD || !_compareMacRoutes) {
+    if (_qualityMode == CinemaPlaybackQuality.fullHD) {
       final measured = values.toList();
       final best = cinemaBestRegularCandidate(
         measured.map((r) => r.candidate),
