@@ -1,5 +1,62 @@
 [
   {
+    "tag_name": "android-tv-v3.2.25+153",
+    "name": "NAKU Android TV 3.2.25",
+    "body": "3.2.25 · 自动选择最快的 1080p 线路\n\n自动播放与原画回退会比较同一集可用的常规线路。优先实测 1080p，在相同画质中选择实测加载最快的线路。已完成的检测直接沿用，手动选择片源和线路仍优先。\n",
+    "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.25%2B153",
+    "published_at": "2026-11-23T22:22:30Z",
+    "draft": false,
+    "prerelease": false,
+    "assets": [
+      {
+        "name": "NAKU-TV-3.2.25-Android-universal.apk",
+        "state": "uploaded",
+        "size": 165875324,
+        "digest": "sha256:0a6366ecad57b2217294d576cdacc15f8d224f8e895b625758e6d2eea7f39883",
+        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.25%2B153/NAKU-TV-3.2.25-Android-universal.apk",
+        "build": 153,
+        "deltas": [
+          {
+            "name": "NAKU-TV-152-153.gdiff.gz",
+            "state": "uploaded",
+            "size": 26529906,
+            "digest": "sha256:fb35cde88442fd448a247f8886d540da03f983a3fa2a38861223344bf048b18a",
+            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.25%2B153/NAKU-TV-152-153.gdiff.gz",
+            "format": "gdiff4-gzip",
+            "base_version": "3.2.24",
+            "base_build": 152,
+            "base_sha256": "e660885e2aa4961f1f5e81d1ab44e96525ab7b8f51e83a575a319fdc17ef396f",
+            "target_sha256": "0a6366ecad57b2217294d576cdacc15f8d224f8e895b625758e6d2eea7f39883"
+          },
+          {
+            "name": "NAKU-TV-151-153.gdiff.gz",
+            "state": "uploaded",
+            "size": 26529904,
+            "digest": "sha256:145a445ff07f6a8c492d392ca364756d01d6fd308ec794f09dcc152c946842e3",
+            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.25%2B153/NAKU-TV-151-153.gdiff.gz",
+            "format": "gdiff4-gzip",
+            "base_version": "3.2.23",
+            "base_build": 151,
+            "base_sha256": "55999b9c62982fd3f5563895a00bf3e73992026fb01df9ce7760f7728feca4d8",
+            "target_sha256": "0a6366ecad57b2217294d576cdacc15f8d224f8e895b625758e6d2eea7f39883"
+          },
+          {
+            "name": "NAKU-TV-150-153.gdiff.gz",
+            "state": "uploaded",
+            "size": 26529917,
+            "digest": "sha256:4fe356baaa30035d6e94e068248528593c427c0e268347a828a2bb0c8dec0b0d",
+            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.25%2B153/NAKU-TV-150-153.gdiff.gz",
+            "format": "gdiff4-gzip",
+            "base_version": "3.2.22",
+            "base_build": 150,
+            "base_sha256": "5f9d2ca25d669885ba5a14bfcb5be33983a3cbe5dabe11bd4e7fbf4d3c7087ee",
+            "target_sha256": "0a6366ecad57b2217294d576cdacc15f8d224f8e895b625758e6d2eea7f39883"
+          }
+        ]
+      }
+    ]
+  },
+  {
     "tag_name": "android-tv-v3.2.24+152",
     "name": "NAKU Android TV 3.2.24",
     "body": "Android TV 3.2.24\n\n修复《西部世界》等剧集有常规片源时，「4K 原画」按下无响应。匹配到当前分集后，按钮直接打开对应原画，索引准备和同集 1080p 自动回退继续生效。电视详情会显示正在匹配、重试或暂无原画。\n",
