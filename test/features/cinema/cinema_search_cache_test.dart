@@ -59,7 +59,11 @@ ResponseBody _response(
   },
 );
 CinemaRepository _repository(_Adapter adapter, {DateTime Function()? now}) =>
-    CinemaRepository(dio: Dio()..httpClientAdapter = adapter, now: now);
+    CinemaRepository(
+      dio: Dio()..httpClientAdapter = adapter,
+      now: now,
+      hideShortDramas: false,
+    );
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

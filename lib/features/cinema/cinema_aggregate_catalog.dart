@@ -19,7 +19,7 @@ enum CinemaAggregateKind { movies, series, ultraHd }
 
 bool cinemaOrdinaryCategory(String value) =>
     !RegExp('伦理|福利|情色|成人|里番|写真|三级|擦边').hasMatch(value) &&
-    (!Platform.isAndroid || !cinemaAiDramaLabel(value));
+    (!(Platform.isAndroid || Platform.isMacOS) || !cinemaAiDramaLabel(value));
 
 bool cinemaMatchesAggregateKind(CinemaTitle title, CinemaAggregateKind kind) =>
     cinemaOrdinaryCategory('${title.category} ${title.genres}') &&

@@ -469,7 +469,7 @@ class CinemaOriginalEngine {
     }
   }
 
-  static Future<CinemaVideoMetadata?> readOriginalHead(
+  Future<CinemaVideoMetadata?> readOriginalHead(
     OriginalStream stream,
     CancelToken cancel,
     Duration remaining,

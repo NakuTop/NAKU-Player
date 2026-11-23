@@ -375,7 +375,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   Duration get _originalTimeLeft =>
       _originalConnectionBudget - _originalConnectionTime.elapsed;
   Duration _originalTimeout(Duration limit, {bool decoding = false}) {
-    if (!Platform.isAndroid || !_originalConnectionTime.isRunning) return limit;
+    if (!_originalConnectionTime.isRunning) return limit;
     return originalStartupTimeout(_originalTimeLeft, limit, decoding: decoding);
   }
 
@@ -1894,73 +1894,62 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               : '正在连接原画 · ${request.edition.label}',
         );
         final cancel = _originalCancel = CancelToken();
-        // Attempt just this release. A failed open advances the existing
-        // same-episode failover ledger, including failures before the first byte.
-        late final OriginalStream stream;
-        if (Platform.isAndroid) {
-          if (NakuDevice.isTV) {
-            await CinemaTVMediaEnvironment.instance.refresh();
-          }
-          if (!_isCurrent(generation) || cancel.isCancelled) return;
-          _originalConnectionTime.start();
-          final remaining = _originalTimeLeft;
-          if (remaining <= Duration.zero) {
-            throw const FormatException('原画节点暂未就绪');
-          }
-          final compatible = NakuDevice.isTV
-              ? CinemaTVMediaEnvironment.instance.originalCompatibility
-              : null;
-          final matches = _originalLookup?.matches ?? request.matches;
-          if (!_pinnedOriginalVersion) {
-            final best = _originalEngine.preferred(
-              matches,
-              excluding: _triedOriginals,
-              compatibility: compatible,
-            );
-            if (best == null) throw const FormatException('本机没有匹配的原画解码格式');
-            request = best;
-          }
-          final backup = _pinnedOriginalVersion
+        if (NakuDevice.isTV) {
+          await CinemaTVMediaEnvironment.instance.refresh();
+        }
+        if (!_isCurrent(generation) || cancel.isCancelled) return;
+        _originalConnectionTime.start();
+        final remaining = _originalTimeLeft;
+        if (remaining <= Duration.zero) {
+          throw const FormatException('原画节点暂未就绪');
+        }
+        final compatible = NakuDevice.isTV
+            ? CinemaTVMediaEnvironment.instance.originalCompatibility
+            : null;
+        final matches = _originalLookup?.matches ?? request.matches;
+        if (!_pinnedOriginalVersion) {
+          final best = _originalEngine.preferred(
+            matches,
+            excluding: _triedOriginals,
+            compatibility: compatible,
+          );
+          if (best == null) throw const FormatException('本机没有匹配的原画解码格式');
+          request = best;
+        }
+        final backup = _pinnedOriginalVersion
+            ? null
+            : _originalEngine.alternate(
+                request,
+                excluding: _triedOriginals,
+                compatibility: compatible,
+              );
+        final ready = await _originalEngine.openPlayable(
+          request,
+          alternate: backup,
+          acceptsVideo: _pinnedOriginalVersion
               ? null
-              : _originalEngine.alternate(
-                  request,
-                  excluding: _triedOriginals,
-                  compatibility: compatible,
-                );
-          final ready = await _originalEngine.openPlayable(
-            request,
-            alternate: backup,
-            acceptsVideo: _pinnedOriginalVersion
-                ? null
-                : (v) =>
-                      (v.width >= 3840 || v.height >= 2160) &&
-                      (!NakuDevice.isTV ||
-                          CinemaTVMediaEnvironment.instance
-                              .supportsOriginalVideo(v)),
-            budget: _originalTimeout(const Duration(seconds: 18)),
-            cancel: cancel,
-            onFailure: (s) {
-              if (_isCurrent(generation)) _triedOriginals.add(s.edition.hash);
-            },
-            onFirstBytes: () {
-              if (_isCurrent(generation) && _phase != '正在缓冲本集首段') {
-                setState(() => _phase = '正在缓冲本集首段');
-              }
-            },
-          );
-          request = ready.selection;
-          stream = ready.stream;
-          if (_isCurrent(generation)) {
-            _original = request;
-            original = request;
-          }
-        } else {
-          _triedOriginals.add(request.edition.hash);
-          stream = await _originalEngine.open(
-            request.matches,
-            request.edition,
-            cancel: cancel,
-          );
+              : (v) =>
+                    (v.width >= 3840 || v.height >= 2160) &&
+                    (!NakuDevice.isTV ||
+                        CinemaTVMediaEnvironment.instance.supportsOriginalVideo(
+                          v,
+                        )),
+          budget: _originalTimeout(const Duration(seconds: 18)),
+          cancel: cancel,
+          onFailure: (s) {
+            if (_isCurrent(generation)) _triedOriginals.add(s.edition.hash);
+          },
+          onFirstBytes: () {
+            if (_isCurrent(generation) && _phase != '正在缓冲本集首段') {
+              setState(() => _phase = '正在缓冲本集首段');
+            }
+          },
+        );
+        request = ready.selection;
+        final stream = ready.stream;
+        if (_isCurrent(generation)) {
+          _original = request;
+          original = request;
         }
         if (!_isCurrent(generation) || cancel.isCancelled) {
           await stream.close();
@@ -3557,8 +3546,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }
     }
     playback.ready = true;
-    if (!Platform.isAndroid ||
-        original == null ||
+    if (original == null ||
         playback.firstFrameRendered ||
         widget.videoSurfaceBuilder != null) {
       _finishOriginalStartup();
@@ -3907,7 +3895,6 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         }
       }
       final canTryOriginal =
-          !Platform.isAndroid ||
           _originalConnectionTime.elapsed < _originalConnectionBudget;
       var next = recovering4K && canTryOriginal ? _nextOriginal() : null;
       if (failedOriginal &&
@@ -3916,7 +3903,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           _originalLookup != null) {
         next = await _originalLookup!.nextAvailable(
           _chooseOriginal,
-          budget: Platform.isAndroid ? _originalTimeLeft : null,
+          budget: _originalTimeLeft,
         );
       }
       if (!_isCurrent(generation)) return;

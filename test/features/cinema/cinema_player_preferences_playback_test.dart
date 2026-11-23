@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:kazumi/features/cinema/cinema_original_match.dart';
 import 'package:kazumi/features/cinema/cinema_original_engine.dart';
+import 'package:kazumi/features/cinema/cinema_video_metadata.dart';
 import 'package:kazumi/features/cinema/cinema_original_search.dart';
 import 'package:kazumi/features/cinema/cinema_nas_media.dart';
 import 'package:kazumi/features/cinema/cinema_nas_playback.dart';
@@ -85,6 +86,12 @@ class _PopObserver extends NavigatorObserver {
 }
 
 class _OriginalFixture extends CinemaOriginalEngine {
+  @override
+  Future<CinemaVideoMetadata?> readOriginalHead(
+    OriginalStream stream,
+    CancelToken cancel,
+    Duration remaining,
+  ) async => null;
   _OriginalFixture({this.failAll = false, this.failHashes = const {'first'}});
   final Set<String> failHashes;
   final bool failAll;
@@ -1858,7 +1865,7 @@ void main() {
   });
 
   testWidgets(
-    '4K click opens one subtitled swarm by seeds without parallel reads or ordinary route timing',
+    '4K prefers the best subtitled swarm and hedges a slow start with a subtitled alternate',
     (tester) async {
       await enableMacSources(tester);
       OriginalEdition edition(String hash, int seeds, bool chinese) =>
@@ -1904,12 +1911,14 @@ void main() {
           return _Player(backend);
         },
       );
-      await tester.pump(const Duration(seconds: 2));
+      await tester.pump(const Duration(seconds: 1));
       expect(engine.attempts, ['best']);
+      await tester.pump(const Duration(seconds: 1));
+      expect(engine.attempts, ['best', 'lower']);
       expect(probe.calls, isEmpty);
       engine.openGate!.complete();
       await tester.pumpAndSettle();
-      expect(engine.attempts, ['best']);
+      expect(engine.attempts, ['best', 'lower']);
       expect(backends.single.opened!.start, const Duration(seconds: 25));
       expect(probe.calls, isEmpty);
       await unmount(tester);

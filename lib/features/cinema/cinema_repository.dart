@@ -26,7 +26,8 @@ class CinemaRepository {
     DateTime Function()? now,
     this.health,
     bool? hideShortDramas,
-  }) : hideShortDramas = hideShortDramas ?? Platform.isAndroid,
+  }) : hideShortDramas =
+           hideShortDramas ?? (Platform.isAndroid || Platform.isMacOS),
        _dio = dio ?? _createDefaultDio(),
        _categories = _CatalogueCache(
          lifetime: const Duration(minutes: 30),

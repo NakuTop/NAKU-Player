@@ -225,7 +225,9 @@ void main() {
 
   test('1.10 presets add Feifan and Juliang and remove Modu and 360', () {
     final sources = bundledCinemaSources;
-    expect(sources.take(8).map((source) => source.id), [
+    final filmLibrary = Platform.isMacOS || Platform.isAndroid;
+    final presetCount = filmLibrary ? 9 : 8;
+    expect(sources.take(presetCount).map((source) => source.id), [
       'maccms-feifan',
       'maccms-juliang',
       'maccms-guangsu',
@@ -234,9 +236,10 @@ void main() {
       'maccms-jisu',
       'maccms-ruyi',
       'maccms-zuid',
+      if (filmLibrary) cinemaFilmLibrarySource.id,
     ]);
     expect(
-      sources.skip(8).every((s) => s.kind == CinemaSourceKind.kazumi),
+      sources.skip(presetCount).every((s) => s.kind == CinemaSourceKind.kazumi),
       true,
     );
     expect(cinema030SourcePack.sources.map((source) => source.url), [
