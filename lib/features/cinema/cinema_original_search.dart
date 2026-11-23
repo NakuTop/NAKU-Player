@@ -204,7 +204,8 @@ class OriginalLookup extends ChangeNotifier {
       (matches) => matches?.editions
           .where((edition) => edition.chineseSubtitles)
           .firstOrNull,
-    ).timeout(budget, onTimeout: () => null);
+      budget: budget,
+    );
   }
 
   Future<void> waitForEdition(String hash) async {
@@ -214,9 +215,13 @@ class OriginalLookup extends ChangeNotifier {
     );
   }
 
-  Future<T?> nextAvailable<T>(T? Function(OriginalMatches?) select) async {
+  Future<T?> nextAvailable<T>(
+    T? Function(OriginalMatches?) select, {
+    Duration? budget,
+  }) async {
     final current = select(matches);
     if (current != null || done) return current;
+    if (budget != null && budget <= Duration.zero) return null;
     final result = Completer<T?>();
     void changed() {
       final next = select(matches);
@@ -225,7 +230,9 @@ class OriginalLookup extends ChangeNotifier {
 
     addListener(changed);
     try {
-      return await result.future;
+      return budget == null
+          ? await result.future
+          : await result.future.timeout(budget, onTimeout: () => null);
     } finally {
       removeListener(changed);
     }

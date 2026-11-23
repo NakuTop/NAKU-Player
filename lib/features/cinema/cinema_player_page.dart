@@ -370,6 +370,15 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   OriginalStream? _originalLease;
   CancelToken? _originalCancel;
   final _triedOriginals = <String>{};
+  final _originalConnectionTime = Stopwatch();
+  static const _originalConnectionBudget = Duration(seconds: 36);
+  Duration get _originalTimeLeft =>
+      _originalConnectionBudget - _originalConnectionTime.elapsed;
+  Duration _originalTimeout(Duration limit, {bool decoding = false}) {
+    if (!Platform.isAndroid || !_originalConnectionTime.isRunning) return limit;
+    return originalStartupTimeout(_originalTimeLeft, limit, decoding: decoding);
+  }
+
   final _refusedRoutes = <String>{};
   CancelToken? _recoveryProbe;
 
@@ -403,6 +412,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }) {
     _originalLookup?.removeListener(_originalChanged);
     _originalLookup = null;
+    _originalConnectionTime
+      ..stop()
+      ..reset();
     _triedOriginals.clear();
     if (widget.offlinePaths != null ||
         anchor.source.id == cinemaNASSource.id ||
@@ -419,7 +431,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   OriginalSelection? _chooseOriginal(OriginalMatches? matches) =>
-      _originalEngine.preferred(matches, excluding: _triedOriginals);
+      _originalEngine.preferred(
+        matches,
+        excluding: _triedOriginals,
+        compatibility: NakuDevice.isTV
+            ? CinemaTVMediaEnvironment.instance.originalCompatibility
+            : null,
+      );
 
   OriginalSelection? _nextOriginal() =>
       _chooseOriginal(_originalLookup?.matches ?? _selectionOriginals);
@@ -1863,7 +1881,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       Map<String, String> mediaHeaders = const {};
       final nas = localFile == null && isNASMediaReference(episode.url);
       if (original != null) {
-        final request = original;
+        var request = original;
         final count =
             _originalLookup?.matches?.editions.length ??
             original.matches.editions.length;
@@ -1878,16 +1896,77 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         final cancel = _originalCancel = CancelToken();
         // Attempt just this release. A failed open advances the existing
         // same-episode failover ledger, including failures before the first byte.
-        _triedOriginals.add(request.edition.hash);
-        final stream = await _originalEngine.open(
-          request.matches,
-          request.edition,
-          cancel: cancel,
-        );
+        late final OriginalStream stream;
+        if (Platform.isAndroid) {
+          if (NakuDevice.isTV) {
+            await CinemaTVMediaEnvironment.instance.refresh();
+          }
+          if (!_isCurrent(generation) || cancel.isCancelled) return;
+          _originalConnectionTime.start();
+          final remaining = _originalTimeLeft;
+          if (remaining <= Duration.zero) {
+            throw const FormatException('原画节点暂未就绪');
+          }
+          final compatible = NakuDevice.isTV
+              ? CinemaTVMediaEnvironment.instance.originalCompatibility
+              : null;
+          final matches = _originalLookup?.matches ?? request.matches;
+          if (!_pinnedOriginalVersion) {
+            final best = _originalEngine.preferred(
+              matches,
+              excluding: _triedOriginals,
+              compatibility: compatible,
+            );
+            if (best == null) throw const FormatException('本机没有匹配的原画解码格式');
+            request = best;
+          }
+          final backup = _pinnedOriginalVersion
+              ? null
+              : _originalEngine.alternate(
+                  request,
+                  excluding: _triedOriginals,
+                  compatibility: compatible,
+                );
+          final ready = await _originalEngine.openPlayable(
+            request,
+            alternate: backup,
+            acceptsVideo: _pinnedOriginalVersion
+                ? null
+                : (v) =>
+                      (v.width >= 3840 || v.height >= 2160) &&
+                      (!NakuDevice.isTV ||
+                          CinemaTVMediaEnvironment.instance
+                              .supportsOriginalVideo(v)),
+            budget: _originalTimeout(const Duration(seconds: 18)),
+            cancel: cancel,
+            onFailure: (s) {
+              if (_isCurrent(generation)) _triedOriginals.add(s.edition.hash);
+            },
+            onFirstBytes: () {
+              if (_isCurrent(generation) && _phase != '正在缓冲本集首段') {
+                setState(() => _phase = '正在缓冲本集首段');
+              }
+            },
+          );
+          request = ready.selection;
+          stream = ready.stream;
+          if (_isCurrent(generation)) {
+            _original = request;
+            original = request;
+          }
+        } else {
+          _triedOriginals.add(request.edition.hash);
+          stream = await _originalEngine.open(
+            request.matches,
+            request.edition,
+            cancel: cancel,
+          );
+        }
         if (!_isCurrent(generation) || cancel.isCancelled) {
           await stream.close();
           return;
         }
+        _triedOriginals.add(request.edition.hash);
         selectedTitle = originalLibraryTitle(
           selectedTitle,
           request.matches,
@@ -2215,7 +2294,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             ? '正在恢复到 ${_time(Duration(seconds: offset))}'
             : '正在加载视频',
       );
-      _loadTimer = Timer(Duration(seconds: original == null ? 35 : 22), () {
+      final loadLimit = original == null
+          ? const Duration(seconds: 35)
+          : _originalTimeout(const Duration(seconds: 22), decoding: true);
+      _loadTimer = Timer(loadLimit, () {
         if (_isCurrent(generation) && !candidate.ready) {
           candidate.logStage('timeout(lastStage=${candidate.lastStage})');
           _fail(
@@ -2284,7 +2366,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         television.mediaMimeType = mediaFormat == VideoSourceFormat.hls
             ? 'application/x-mpegURL'
             : null;
-        television.httpProxy = nas || localFile != null
+        television.httpProxy = original != null || nas || localFile != null
             ? null
             : (await CinemaMediaRouter.instance.select(
                 Uri.parse(mediaUrl),
@@ -3410,6 +3492,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               }
               playback.firstFrameTimer?.cancel();
               setState(() => playback.firstFrameRendered = true);
+              if (_original != null && playback.ready) _finishOriginalStartup();
               playback.logStage('first-frame-rendered');
             },
             onError: (Object error, StackTrace _) {
@@ -3446,6 +3529,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     if (playback != null) _syncPauseCache(playback);
   }
 
+  void _finishOriginalStartup() {
+    _originalConnectionTime
+      ..stop()
+      ..reset();
+  }
+
   void _updateReady(_CinemaPlayback playback, int generation) {
     if (!_isCurrent(generation) ||
         playback.ready ||
@@ -3468,11 +3557,22 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }
     }
     playback.ready = true;
+    if (!Platform.isAndroid ||
+        original == null ||
+        playback.firstFrameRendered ||
+        widget.videoSurfaceBuilder != null) {
+      _finishOriginalStartup();
+    }
     _syncPauseCache(playback);
-    if ((_usesMacCinemaLayout || NakuDevice.isTV) &&
+    if ((_usesMacCinemaLayout ||
+            NakuDevice.isTV ||
+            Platform.isAndroid && original != null) &&
         widget.videoSurfaceBuilder == null &&
         !playback.firstFrameRendered) {
-      playback.firstFrameTimer = Timer(const Duration(seconds: 30), () {
+      final frameLimit = original == null
+          ? const Duration(seconds: 30)
+          : _originalTimeout(const Duration(seconds: 30), decoding: true);
+      playback.firstFrameTimer = Timer(frameLimit, () {
         if (_isCurrent(generation) &&
             identical(_playback, playback) &&
             !playback.firstFrameRendered) {
@@ -3806,9 +3906,18 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           return;
         }
       }
-      var next = recovering4K ? _nextOriginal() : null;
-      if (failedOriginal && next == null && _originalLookup != null) {
-        next = await _originalLookup!.nextAvailable(_chooseOriginal);
+      final canTryOriginal =
+          !Platform.isAndroid ||
+          _originalConnectionTime.elapsed < _originalConnectionBudget;
+      var next = recovering4K && canTryOriginal ? _nextOriginal() : null;
+      if (failedOriginal &&
+          canTryOriginal &&
+          next == null &&
+          _originalLookup != null) {
+        next = await _originalLookup!.nextAvailable(
+          _chooseOriginal,
+          budget: Platform.isAndroid ? _originalTimeLeft : null,
+        );
       }
       if (!_isCurrent(generation)) return;
       if (next != null) {
@@ -5540,7 +5649,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       final mobile = _usesMobileControls;
       final playback = _playback;
       final entranceGeneration = _generation;
-      if (nativeCinema && playback != null) _observeNativeFirstFrame(playback);
+      if (playback != null &&
+          (nativeCinema || Platform.isAndroid && _original != null)) {
+        _observeNativeFirstFrame(playback);
+      }
       final waitingForFirstFrame =
           nativeCinema &&
           playback?.ready == true &&
@@ -6816,6 +6928,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   ),
                   onTap: () {
                     _triedOriginals.clear();
+                    _originalConnectionTime
+                      ..stop()
+                      ..reset();
                     _pinnedOriginalVersion = true;
                     _manualRouteSelection = true;
                     _automaticProbePending = false;

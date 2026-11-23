@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
+import 'dart:io' show Platform;
+import 'cinema_catalog_categories.dart';
 import 'cinema_filters.dart';
 import 'cinema_grouping.dart';
 import 'cinema_home_cache.dart';
@@ -16,7 +18,8 @@ import 'douban/douban_repository.dart';
 enum CinemaAggregateKind { movies, series, ultraHd }
 
 bool cinemaOrdinaryCategory(String value) =>
-    !RegExp('伦理|福利|情色|成人|里番|写真|三级|擦边').hasMatch(value);
+    !RegExp('伦理|福利|情色|成人|里番|写真|三级|擦边').hasMatch(value) &&
+    (!Platform.isAndroid || !cinemaAiDramaLabel(value));
 
 bool cinemaMatchesAggregateKind(CinemaTitle title, CinemaAggregateKind kind) =>
     cinemaOrdinaryCategory('${title.category} ${title.genres}') &&
@@ -116,6 +119,7 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
         )
         .toList();
     final key = jsonEncode([
+      if (_repository.hideShortDramas) 'catalog-ai-drama-filter-v1',
       kind.name,
       // An older 20-card snapshot is not a complete 40-card head page.
       discoveryPageSize,

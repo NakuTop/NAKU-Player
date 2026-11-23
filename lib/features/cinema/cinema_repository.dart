@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
+import 'cinema_catalog_categories.dart';
 
 import 'package:dio/dio.dart';
 import 'package:kazumi/request/core/network_config.dart';
@@ -19,23 +21,30 @@ class CinemaSourceException implements Exception {
 
 /// MacCMS is a catalogue of its own. No Bangumi title matching is involved.
 class CinemaRepository {
-  CinemaRepository({Dio? dio, DateTime Function()? now, this.health})
-    : _dio = dio ?? _createDefaultDio(),
-      _categories = _CatalogueCache(
-        lifetime: const Duration(minutes: 30),
-        capacity: 24,
-        now: now ?? DateTime.now,
-      ),
-      _pages = _CatalogueCache(
-        lifetime: const Duration(minutes: 5),
-        capacity: 48,
-        now: now ?? DateTime.now,
-      ),
-      _searches = _CatalogueCache(
-        lifetime: const Duration(minutes: 3),
-        capacity: 96,
-        now: now ?? DateTime.now,
-      );
+  CinemaRepository({
+    Dio? dio,
+    DateTime Function()? now,
+    this.health,
+    bool? hideShortDramas,
+  }) : hideShortDramas = hideShortDramas ?? Platform.isAndroid,
+       _dio = dio ?? _createDefaultDio(),
+       _categories = _CatalogueCache(
+         lifetime: const Duration(minutes: 30),
+         capacity: 24,
+         now: now ?? DateTime.now,
+       ),
+       _pages = _CatalogueCache(
+         lifetime: const Duration(minutes: 5),
+         capacity: 48,
+         now: now ?? DateTime.now,
+       ),
+       _searches = _CatalogueCache(
+         lifetime: const Duration(minutes: 3),
+         capacity: 96,
+         now: now ?? DateTime.now,
+       );
+
+  final bool hideShortDramas;
 
   static Dio _createDefaultDio() {
     final dio = Dio(
@@ -102,6 +111,7 @@ class CinemaRepository {
         source,
         responses[1] as Map<String, dynamic>,
         categories: responses[0] as List<CinemaCategory>,
+        hideShortDramas: hideShortDramas,
       );
     });
   }
@@ -178,6 +188,7 @@ class CinemaRepository {
         source,
         results[1] as Map<String, dynamic>,
         categories: results[0] as List<CinemaCategory>,
+        hideShortDramas: hideShortDramas,
       );
     });
   }
@@ -233,6 +244,11 @@ class CinemaRepository {
     );
     final pages = results.whereType<CinemaPage>().toList();
     bool exact(CinemaTitle title) => cinemaMatchesWorkQuery(title, query);
+    bool film(CinemaTitle t) =>
+        exact(t) &&
+        (t.category.endsWith('片') ||
+            const {'电影', '電影', '电影片', '電影片'}.contains(t.category)) &&
+        !const {'短片', '预告片', '預告片'}.contains(t.category);
 
     final items = <String, CinemaTitle>{};
     var pageCount = 1;
@@ -246,6 +262,71 @@ class CinemaRepository {
         items.putIfAbsent(title.key, () => title);
       }
     }
+    // Broad searches can have dozens of pages of recent shorts before an older
+    // exact film, even when a series with the same name appears on page one.
+    if (page == 1 &&
+        pageCount > 1 &&
+        hideShortDramas &&
+        !items.values.any(film)) {
+      final classes = await categories(source)
+          .timeout(
+            const Duration(seconds: 3),
+            onTimeout: () => const <CinemaCategory>[],
+          )
+          .catchError((Object _) => const <CinemaCategory>[]);
+      final hidden = cinemaShortDramaIds(classes);
+      final ids = <String>{};
+      for (final name in const [
+        '剧情片',
+        '劇情片',
+        '电影片',
+        '电影',
+        '電影',
+        '国产剧',
+        '内地剧',
+        '连续剧',
+        '动漫',
+      ]) {
+        final category = classes
+            .where((c) => c.name == name && !hidden.contains(c.id))
+            .firstOrNull;
+        if (category != null) ids.add(category.id);
+        if (ids.length == 4) break;
+      }
+      await Future.wait(
+        ids.map((id) async {
+          try {
+            final scoped = await _search(
+              source,
+              query,
+              1,
+              categoryId: id,
+            ).timeout(const Duration(seconds: 3));
+            for (final title in scoped.items.where(exact)) {
+              items.putIfAbsent(title.key, () => title);
+            }
+          } on Exception {
+            // Some providers implement keyword search only in the full catalogue.
+          }
+        }),
+      );
+      if (!items.values.any(film)) {
+        // The oldest entries are frequently at the end of date-sorted feeds.
+        // Read a single extra page when the category index is slow or incomplete.
+        try {
+          final tail = await _search(
+            source,
+            query,
+            pageCount,
+          ).timeout(const Duration(seconds: 3));
+          for (final t in tail.items.where(exact)) {
+            items.putIfAbsent(t.key, () => t);
+          }
+        } on Exception {
+          /* Earlier pages remain useful. */
+        }
+      }
+    }
     final fragmentPage = page == 1 && !items.values.any(exact)
         ? await _searchFragments(source, query, exact)
         : null;
@@ -255,7 +336,8 @@ class CinemaRepository {
     if (pages.isEmpty && fragmentPage == null) throw failure!;
     if (pages.length == 1 &&
         queries.length == 1 &&
-        items.length == pages.single.items.length) {
+        items.length == pages.single.items.length &&
+        pages.single.items.map((t) => t.key).toSet().length == items.length) {
       return pages.single;
     }
     return CinemaPage(
@@ -341,19 +423,29 @@ class CinemaRepository {
   Future<CinemaPage> _search(
     CinemaSource source,
     String keyword,
-    int page,
-  ) async {
+    int page, {
+    String? categoryId,
+  }) async {
     if (source.kind == CinemaSourceKind.maccms) {
+      final key = (source.id, _sourceIdentity(source));
+      final cached = _categories.peek(key);
+      final taxonomy = cached != null || !hideShortDramas
+          ? Future.value(cached ?? const <CinemaCategory>[])
+          : categories(source)
+                .timeout(const Duration(seconds: 2))
+                .catchError((Object _) => const <CinemaCategory>[]);
       final body = await _request(source, {
         'ac': 'detail',
         'wd': keyword,
         'pg': '$page',
+        't': ?categoryId,
       });
       return parseMacCmsPage(
         source,
         body,
-        categories:
-            _categories.peek((source.id, _sourceIdentity(source))) ?? [],
+        categories: await taxonomy,
+        hideShortDramas: hideShortDramas,
+        searchQuery: keyword,
       );
     }
     final plugin = Plugin.fromJson(source.rule!);
@@ -542,68 +634,88 @@ class CinemaRepository {
     Map<String, dynamic> data, {
     List<CinemaCategory> categories = const [],
     bool splitSeasons = true,
+    bool hideShortDramas = false,
+    String searchQuery = '',
   }) {
     if (data['list'] is! List) throw const FormatException('缺少 MacCMS list 数组');
     if ((data['list'] as List).any((entry) => entry is! Map)) {
       throw const FormatException('MacCMS 影片条目不是 JSON 对象');
     }
-    final items = jsonMaps(data['list']).map((entry) {
-      if (textValue(entry['vod_id']).isEmpty ||
-          cleanCinemaText(entry['vod_name']).isEmpty) {
-        throw const FormatException('MacCMS 影片缺少 vod_id 或 vod_name');
-      }
-      final poster = textValue(entry['vod_pic']).trim();
-      final posterUri = Uri.tryParse(poster);
-      final resolvedPoster = poster.isEmpty
-          ? ''
-          : requireHttpUrl(
-              source.url,
-            ).resolveUri(posterUri ?? Uri()).toString();
-      return CinemaTitle(
-        id: textValue(entry['vod_id']),
-        sourceId: source.id,
-        title: cleanCinemaText(entry['vod_name']),
-        poster:
-            Uri.tryParse(resolvedPoster)?.isScheme('https') == true ||
-                Uri.tryParse(resolvedPoster)?.isScheme('http') == true
-            ? resolvedPoster
-            : '',
-        description: cleanCinemaText(
-          entry['vod_content'] ?? entry['vod_blurb'],
-        ),
-        category: cleanCinemaText(entry['type_name']),
-        categoryId: textValue(entry['type_id']),
-        year: cinemaCatalogYear(cleanCinemaText(entry['vod_year'])),
-        remarks: cleanCinemaText(entry['vod_remarks']),
-        actors: cleanCinemaText(entry['vod_actor']),
-        director: cleanCinemaText(entry['vod_director']),
-        area: cleanCinemaText(entry['vod_area']),
-        language: cleanCinemaText(entry['vod_lang']),
-        aliases: cleanCinemaText(entry['vod_sub']),
-        durationText: cleanCinemaText(entry['vod_duration']),
-        genres: cleanCinemaText(entry['vod_class']),
-        sourceHits: parseCinemaSourceHits(entry['vod_hits']),
-        sourceUpdatedAt: parseCinemaSourceUpdatedAt(entry['vod_time']),
-        releaseDateText: textValue(entry['vod_pubdate']),
-        doubanId: parseCinemaDoubanId(entry['vod_douban_id']),
-        sourceDoubanScore: parseCinemaSourceDoubanScore(
-          entry['vod_douban_score'],
-        ),
-        // These optional IDs require an explicitly named provider field.
-        // Never infer them from a title, description, score or arbitrary URL.
-        imdbId: parseCinemaImdbId(entry['vod_imdb_id'] ?? entry['imdb_id']),
-        rottenTomatoesId: parseCinemaRottenTomatoesId(
-          entry['vod_rotten_tomatoes_id'] ?? entry['rotten_tomatoes_id'],
-        ),
-        routes: parseMacCmsRoutes(
-          textValue(entry['vod_play_from']),
-          textValue(entry['vod_play_url']),
-        ),
-      );
-    }).toList();
+    final hidden = hideShortDramas
+        ? cinemaShortDramaIds(categories, onlyAi: true)
+        : const <String>{};
+    final filterLooseShorts = hideShortDramas && searchQuery.isNotEmpty;
+    final shortIds = filterLooseShorts
+        ? cinemaShortDramaIds(categories)
+        : const <String>{};
+    final items = jsonMaps(data['list'])
+        .map((entry) {
+          if (textValue(entry['vod_id']).isEmpty ||
+              cleanCinemaText(entry['vod_name']).isEmpty) {
+            throw const FormatException('MacCMS 影片缺少 vod_id 或 vod_name');
+          }
+          final poster = textValue(entry['vod_pic']).trim();
+          final posterUri = Uri.tryParse(poster);
+          final resolvedPoster = poster.isEmpty
+              ? ''
+              : requireHttpUrl(
+                  source.url,
+                ).resolveUri(posterUri ?? Uri()).toString();
+          return CinemaTitle(
+            id: textValue(entry['vod_id']),
+            sourceId: source.id,
+            title: cleanCinemaText(entry['vod_name']),
+            poster:
+                Uri.tryParse(resolvedPoster)?.isScheme('https') == true ||
+                    Uri.tryParse(resolvedPoster)?.isScheme('http') == true
+                ? resolvedPoster
+                : '',
+            description: cleanCinemaText(
+              entry['vod_content'] ?? entry['vod_blurb'],
+            ),
+            category: cleanCinemaText(entry['type_name']),
+            categoryId: textValue(entry['type_id']),
+            year: cinemaCatalogYear(cleanCinemaText(entry['vod_year'])),
+            remarks: cleanCinemaText(entry['vod_remarks']),
+            actors: cleanCinemaText(entry['vod_actor']),
+            director: cleanCinemaText(entry['vod_director']),
+            area: cleanCinemaText(entry['vod_area']),
+            language: cleanCinemaText(entry['vod_lang']),
+            aliases: cleanCinemaText(entry['vod_sub']),
+            durationText: cleanCinemaText(entry['vod_duration']),
+            genres: cleanCinemaText(entry['vod_class']),
+            sourceHits: parseCinemaSourceHits(entry['vod_hits']),
+            sourceUpdatedAt: parseCinemaSourceUpdatedAt(entry['vod_time']),
+            releaseDateText: textValue(entry['vod_pubdate']),
+            doubanId: parseCinemaDoubanId(entry['vod_douban_id']),
+            sourceDoubanScore: parseCinemaSourceDoubanScore(
+              entry['vod_douban_score'],
+            ),
+            // These optional IDs require an explicitly named provider field.
+            // Never infer them from a title, description, score or arbitrary URL.
+            imdbId: parseCinemaImdbId(entry['vod_imdb_id'] ?? entry['imdb_id']),
+            rottenTomatoesId: parseCinemaRottenTomatoesId(
+              entry['vod_rotten_tomatoes_id'] ?? entry['rotten_tomatoes_id'],
+            ),
+            routes: parseMacCmsRoutes(
+              textValue(entry['vod_play_from']),
+              textValue(entry['vod_play_url']),
+            ),
+          );
+        })
+        .where((t) => !hideShortDramas || !cinemaIsAiDrama(t, hidden))
+        .where(
+          (t) =>
+              !filterLooseShorts ||
+              !cinemaIsShortDrama(t, shortIds) ||
+              cinemaMatchesWorkQuery(t, searchQuery),
+        )
+        .toList();
     return CinemaPage(
       items: splitSeasons ? items.expand(cinemaSplitSeasons).toList() : items,
-      categories: categories,
+      categories: hideShortDramas
+          ? categories.where((c) => !hidden.contains(c.id)).toList()
+          : categories,
       page: intValue(data['page'], 1),
       pageCount: intValue(data['pagecount'], 1),
       total: intValue(data['total'], items.length),

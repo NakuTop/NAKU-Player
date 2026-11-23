@@ -78,6 +78,7 @@ class CinemaResourceAvailabilityService {
       .toList();
 
   String _key(CinemaTitle title, Iterable<CinemaSource> sources) => jsonEncode([
+    if (repository.hideShortDramas) 'catalog-ai-drama-filter-v1',
     cinemaMediaTitleKey(title.title),
     title.year,
     title.doubanId,

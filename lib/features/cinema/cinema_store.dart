@@ -1231,8 +1231,32 @@ List<CinemaSource> _initialCinemaSources() {
       cinemaRuyiSource,
     );
   }
+  if (Platform.isAndroid &&
+      !sources.any(
+        (s) =>
+            s.id == cinemaFilmLibrarySource.id ||
+            _canonicalUrl(s.url) == _canonicalUrl(cinemaFilmLibrarySource.url),
+      )) {
+    sources.insert(
+      sources.lastIndexWhere((s) => s.kind == CinemaSourceKind.maccms) + 1,
+      cinemaFilmLibrarySource,
+    );
+  }
   return sources;
 }
+
+const cinemaFilmLibrarySource = CinemaSource(
+  id: 'maccms-dytt',
+  name: '电影天堂',
+  kind: CinemaSourceKind.maccms,
+  url: 'https://api.dyttcj.com/api.php/provide/vod/',
+  description: '电影 / 剧集',
+);
+const cinemaAndroidFilmLibraryPack = CinemaSourcePack(
+  id: 'cinema-android-film-library-3.2.21',
+  backupVersion: '3.2.21',
+  sources: [cinemaFilmLibrarySource],
+);
 
 const cinema030SourcePack = CinemaSourcePack(
   id: 'cinema-sources-0.3.0',
@@ -1312,6 +1336,7 @@ final bundledCinemaSourcePacks = List<CinemaSourcePack>.unmodifiable([
   cinemaZuidSourcePack,
   cinemaWithdrawFourkAVSourcePack,
   if (Platform.isMacOS || Platform.isAndroid) cinemaMacRuyiSourcePack,
+  if (Platform.isAndroid) cinemaAndroidFilmLibraryPack,
 ]);
 
 /// Public third-party catalogues verified on 2026-10-08. Availability and quality
@@ -1341,6 +1366,7 @@ final List<CinemaSource> bundledCinemaSources = [
   ),
   ...cinema030SourcePack.sources.where((s) => s.id != 'maccms-360'),
   ...cinemaZuidSourcePack.sources,
+  if (Platform.isAndroid) cinemaFilmLibrarySource,
   CinemaSource(
     id: 'kazumi-dm84',
     name: 'DM84',

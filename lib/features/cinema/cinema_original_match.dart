@@ -58,6 +58,28 @@ RegExpMatch? _groupedEpisode(String name) {
   return found.length == 1 ? found.first : null;
 }
 
+// Some encoders append "(2160p x265 10bit S95 Group)" to an episode. Its
+// encoding tag cannot contradict an explicit episode outside the technical block.
+final _encoderBlock = RegExp(r'[\[(][^\])\r\n]{1,160}[\])]');
+final _encoderSetting = RegExp(
+  r'((?:8|10|12)[ ._-]*bit[ ._-]+)s[5-9]\d(?=[ ._-]+[a-z])',
+  caseSensitive: false,
+);
+String _episodeIdentity(String text) {
+  if (!text.contains('(') && !text.contains('[')) return text;
+  return text.replaceAllMapped(_encoderBlock, (block) {
+    final tag = block[0]!;
+    if (!_quality.hasMatch(tag) ||
+        !_encoderSetting.hasMatch(tag) ||
+        !_scope
+            .allMatches(text.substring(0, block.start))
+            .any((m) => _numbers(m).episode != null)) {
+      return tag;
+    }
+    return tag.replaceAllMapped(_encoderSetting, (m) => m[1]!);
+  });
+}
+
 bool originalVideoFilename(String name) => _video.hasMatch(name);
 bool originalExcludedRelease(String name) => _unsuitable.hasMatch(name);
 bool originalLowerResolution(String name) => _lowerResolution.hasMatch(name);
@@ -86,7 +108,7 @@ int? originalNumber(String? s) {
 );
 
 ({int? season, int? episode}) originalEpisode(String text) {
-  text = cinemaIdentityTypography(text.trim());
+  text = _episodeIdentity(cinemaIdentityTypography(text.trim()));
   if (_multiple.hasMatch(text) || _unsuitable.hasMatch(text)) {
     return (season: null, episode: null);
   }
@@ -139,7 +161,7 @@ class OriginalWork {
   /// Match work identity before ranking. A season pack still needs a unique
   /// member from its real manifest before it can be played.
   bool? matchRelease(String name) {
-    name = cinemaIdentityTypography(name);
+    name = _episodeIdentity(cinemaIdentityTypography(name));
     final range = _seasonRange.firstMatch(name);
     if (range != null) {
       if (!series ||
@@ -371,7 +393,11 @@ OriginalFile? originalMainFile(
     final parts = f.path.replaceAll('\\', '/').split('/');
     if (_multiple.hasMatch(parts.last)) continue;
     final scopes = parts
-        .expand((part) => _scope.allMatches(part.replaceAll(_seasonRange, ' ')))
+        .expand(
+          (part) => _scope.allMatches(
+            _episodeIdentity(part).replaceAll(_seasonRange, ' '),
+          ),
+        )
         .map(_numbers)
         .toList();
     if (_seasonRange.hasMatch(edition.name) &&

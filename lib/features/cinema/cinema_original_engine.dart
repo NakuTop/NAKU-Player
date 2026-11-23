@@ -9,6 +9,19 @@ import 'package:dio/dio.dart' show CancelToken;
 import 'cinema_original_match.dart';
 import 'cinema_video_metadata.dart';
 
+/// Once real bytes arrive, give the demuxer and decoder time to produce a frame,
+/// even when the peer connected near the end of the discovery window.
+Duration originalStartupTimeout(
+  Duration remaining,
+  Duration limit, {
+  bool decoding = false,
+}) {
+  final available =
+      remaining + (decoding ? const Duration(seconds: 10) : Duration.zero);
+  if (available <= Duration.zero) return Duration.zero;
+  return available < limit ? available : limit;
+}
+
 class OriginalStream {
   OriginalStream(this.url, this.headers, this.file, this._release);
   final Uri url;
@@ -60,6 +73,7 @@ class CinemaOriginalEngine {
     OriginalMatches? matches, {
     Set<String> excluding = const {},
     String preferredHash = '',
+    int Function(OriginalEdition)? compatibility,
   }) {
     if (matches == null) return null;
     OriginalEdition? best;
@@ -70,14 +84,57 @@ class CinemaOriginalEngine {
       if (preferredHash.isNotEmpty && edition.hash == preferredHash) {
         return (matches: matches, edition: edition);
       }
+      final rank = compatibility?.call(edition) ?? 0;
+      if (rank < 0) continue;
       if (best == null) {
         best = edition;
         continue;
       }
-      final order = edition.compareAvailability(best);
-      if (order < 0) best = edition;
+      final bestRank = compatibility?.call(best) ?? 0;
+      var comparison = rank.compareTo(bestRank);
+      if (comparison == 0 && compatibility != null) {
+        comparison = (edition.seeds == 0 ? 1 : 0).compareTo(
+          best.seeds == 0 ? 1 : 0,
+        );
+      }
+      if (comparison == 0) comparison = edition.compareAvailability(best);
+      if (comparison < 0) best = edition;
     }
     return best == null ? null : (matches: matches, edition: best);
+  }
+
+  OriginalSelection? alternate(
+    OriginalSelection primary, {
+    Set<String> excluding = const {},
+    int Function(OriginalEdition)? compatibility,
+  }) {
+    final first = primary.edition;
+    final skipped = {...excluding, first.hash};
+    // A compact, well-seeded encode can sustain playback when a large remux
+    // has delivered its header but stalls. Never compare season-pack sizes.
+    if (!first.pack && first.size > 0) {
+      final preferredRank = compatibility?.call(first) ?? 0;
+      final compact = preferred(
+        primary.matches,
+        compatibility: compatibility,
+        excluding: {
+          ...skipped,
+          for (final e in primary.matches.editions)
+            if (e.pack ||
+                e.size <= 0 ||
+                e.size * 2 > first.size ||
+                e.seeds < max(1, (first.seeds + 1) ~/ 2) ||
+                (compatibility?.call(e) ?? 0) > preferredRank)
+              e.hash,
+        },
+      );
+      if (compact != null) return compact;
+    }
+    return preferred(
+      primary.matches,
+      excluding: skipped,
+      compatibility: compatibility,
+    );
   }
 
   void record(OriginalMatches m, OriginalEdition e, CinemaVideoMetadata v) {
@@ -315,6 +372,138 @@ class CinemaOriginalEngine {
     } catch (_) {
       await release();
       rethrow;
+    }
+  }
+
+  /// Metadata and seed counts cannot establish that a peer has the selected
+  /// episode's first piece. Keep its lease alive when handing it to the player.
+  Future<({OriginalSelection selection, OriginalStream stream})> openPlayable(
+    OriginalSelection first, {
+    required CancelToken cancel,
+    OriginalSelection? alternate,
+    Duration hedge = const Duration(seconds: 2),
+    Duration budget = const Duration(seconds: 18),
+    bool Function(CinemaVideoMetadata)? acceptsVideo,
+    void Function(OriginalSelection)? onFailure,
+    void Function()? onFirstBytes,
+  }) async {
+    final choices = [
+      first,
+      if (alternate != null && alternate.edition.hash != first.edition.hash)
+        alternate,
+    ];
+    final result =
+        Completer<({OriginalSelection selection, OriginalStream stream})>();
+    final tokens = <CancelToken>[];
+    final clock = Stopwatch()..start();
+    var finished = 0;
+    void fail(Object error) {
+      if (!result.isCompleted) result.completeError(error);
+    }
+
+    Future<void> tryNext() async {
+      if (result.isCompleted || tokens.length >= choices.length) return;
+      final choice = choices[tokens.length];
+      final token = CancelToken();
+      tokens.add(token);
+      OriginalStream? lease;
+      var keep = false;
+      try {
+        lease = await open(
+          choice.matches,
+          choice.edition,
+          cancel: token,
+          budget: budget - clock.elapsed,
+        );
+        if (result.isCompleted || token.isCancelled) return;
+        onFirstBytes?.call();
+        final video = await readOriginalHead(
+          lease,
+          token,
+          budget - clock.elapsed,
+        );
+        if (result.isCompleted || token.isCancelled) return;
+        if (video != null) {
+          record(choice.matches, choice.edition, video);
+          if (acceptsVideo != null && !acceptsVideo(video)) {
+            throw const FormatException('本机无法播放此版本的实测格式');
+          }
+        }
+        keep = true;
+        result.complete((selection: choice, stream: lease));
+      } catch (error) {
+        if (!result.isCompleted && !token.isCancelled) onFailure?.call(choice);
+        finished++;
+        if (finished == choices.length) {
+          fail(error);
+        } else if (!result.isCompleted) {
+          unawaited(tryNext());
+        }
+      } finally {
+        if (!keep) await lease?.close();
+      }
+    }
+
+    if (cancel.isCancelled) throw const FormatException('原画准备已取消');
+    unawaited(
+      cancel.whenCancel.then((_) => fail(const FormatException('原画准备已取消'))),
+    );
+    final deadline = Timer(budget, () {
+      if (!result.isCompleted) {
+        for (final choice in choices.take(tokens.length)) {
+          onFailure?.call(choice);
+        }
+        fail(const FormatException('节点尚未送达本集视频'));
+      }
+    });
+    final backup = choices.length > 1 ? Timer(hedge, tryNext) : null;
+    unawaited(tryNext());
+    try {
+      return await result.future;
+    } finally {
+      deadline.cancel();
+      backup?.cancel();
+      for (final token in tokens) {
+        token.cancel('原画起播选择结束');
+      }
+    }
+  }
+
+  static Future<CinemaVideoMetadata?> readOriginalHead(
+    OriginalStream stream,
+    CancelToken cancel,
+    Duration remaining,
+  ) async {
+    if (cancel.isCancelled || remaining <= Duration.zero) {
+      throw const FormatException('原画首段等待结束');
+    }
+    final client = HttpClient()..findProxy = (_) => 'DIRECT';
+    final timer = Timer(remaining, () => client.close(force: true));
+    unawaited(cancel.whenCancel.then((_) => client.close(force: true)));
+    try {
+      final n = min(128 * 1024, stream.file.length);
+      if (n < 1) throw const FormatException('原画文件为空');
+      final request = await client.getUrl(stream.url);
+      request.followRedirects = false;
+      request.headers.set(HttpHeaders.rangeHeader, 'bytes=0-${n - 1}');
+      final response = await request.close();
+      if (response.statusCode != HttpStatus.partialContent ||
+          response.headers.value(HttpHeaders.contentRangeHeader) !=
+              'bytes 0-${n - 1}/${stream.file.length}') {
+        throw const FormatException('原画首段不可读');
+      }
+      final head = BytesBuilder(copy: false);
+      await for (final bytes in response) {
+        if (head.length + bytes.length > n) {
+          throw const FormatException('原画首段范围有误');
+        }
+        head.add(bytes);
+        if (head.length == n) return cinemaVideoMetadata(head.takeBytes());
+      }
+      throw const FormatException('节点未送达完整首段');
+    } finally {
+      timer.cancel();
+      client.close(force: true);
     }
   }
 

@@ -63,6 +63,120 @@ CinemaRepository _repository(_Adapter adapter, {DateTime Function()? now}) =>
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test(
+    'an incomplete category index still finds older exact films on the oldest search page',
+    () async {
+      final adapter = _Adapter((options, _) {
+        final q = options.uri.queryParameters;
+        final tail = q['pg'] == '9';
+        return ResponseBody.fromString(
+          jsonEncode({
+            'page': tail ? 9 : 1,
+            'pagecount': 9,
+            if (q['ac'] == 'list') 'class': [],
+            'list': q['ac'] == 'list'
+                ? []
+                : [
+                    {
+                      'vod_id': tail ? '1992' : '2025',
+                      'vod_name': tail ? '离婚' : '离婚喜剧',
+                      'vod_year': tail ? '1992' : '2025',
+                      'type_name': '剧情片',
+                    },
+                  ],
+          }),
+          200,
+        );
+      });
+      final repo = CinemaRepository(
+        dio: Dio()..httpClientAdapter = adapter,
+        hideShortDramas: true,
+      );
+      final page = await repo.search(_source, '离婚');
+      expect(page.items.map((t) => t.id), contains('1992'));
+      expect(
+        adapter.requests.where((r) => r.uri.queryParameters['pg'] == '9'),
+        hasLength(1),
+      );
+    },
+  );
+  test(
+    'a film crowded out by shorts and a namesake series is recovered by category',
+    () async {
+      final adapter = _Adapter((options, _) {
+        final q = options.uri.queryParameters;
+        Map<String, dynamic> item(
+          int id,
+          String name,
+          String cat,
+          int type,
+          String year,
+        ) => {
+          'vod_id': id,
+          'vod_name': name,
+          'type_name': cat,
+          'type_id': type,
+          'vod_year': year,
+        };
+        final classes = [
+          {'type_id': 1, 'type_name': '电影'},
+          {'type_id': 11, 'type_pid': 1, 'type_name': '剧情片'},
+          {'type_id': 2, 'type_name': '连续剧'},
+          {'type_id': 15, 'type_pid': 2, 'type_name': '国产剧'},
+          {'type_id': 8, 'type_name': '短剧'},
+          {'type_id': 81, 'type_pid': 8, 'type_name': '现代都市'},
+          {'type_id': 812, 'type_pid': 81, 'type_name': '专题'},
+          {'type_id': 7, 'type_pid': 0, 'type_name': 'AI制作'},
+          {'type_id': 98, 'type_pid': 7, 'type_name': 'AI动画短剧'},
+          {'type_id': 981, 'type_pid': 98, 'type_name': '都市'},
+        ];
+        return ResponseBody.fromString(
+          jsonEncode({
+            'code': 1,
+            'page': 1,
+            'pagecount': 9,
+            if (q['ac'] == 'list') 'class': classes,
+            'list': [
+              if (q['ac'] == 'detail' && q['t'] == null) ...[
+                item(1, '离婚那一天', '专题', 812, '2026'),
+                item(2, '离婚', 'AI漫剧', 999, '2025'),
+                item(3, '离婚', '国产剧', 15, '1999'),
+                item(4, 'AI短剧制作手记', '纪录片', 18, '2020'),
+                item(5, '离婚之前', '短片', 10, '1993'),
+                item(7, '离婚', '都市', 981, '2025'),
+                item(8, '离婚', '短剧', 8, '2024'),
+              ],
+              if (q['t'] == '11') item(6, '离婚', '剧情片', 11, '1992'),
+              if (q['t'] == '15') item(9, '另一个名字', '国产剧', 15, '1992'),
+            ],
+          }),
+          200,
+          headers: {
+            'content-type': ['application/json'],
+          },
+        );
+      });
+      final repo = CinemaRepository(
+        dio: Dio()..httpClientAdapter = adapter,
+        hideShortDramas: true,
+      );
+      final page = await repo.search(_source, '离婚');
+      expect(
+        page.items.map((t) => t.id),
+        unorderedEquals(['3', '4', '5', '6', '8']),
+      );
+      expect(page.categories.map((c) => c.id), contains('812'));
+      expect(page.categories.map((c) => c.id), isNot(contains('981')));
+      expect(page.categories.map((c) => c.id), isNot(contains('7')));
+      expect(page.hasMore, isTrue);
+      expect(
+        adapter.requests
+            .where((r) => r.uri.queryParameters.containsKey('t'))
+            .length,
+        lessThanOrEqualTo(4),
+      );
+    },
+  );
   test('compact series fallback retains the requested season only', () async {
     final adapter = _Adapter(
       (o, _) => ResponseBody.fromString(

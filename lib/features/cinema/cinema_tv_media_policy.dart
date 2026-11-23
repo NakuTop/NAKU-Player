@@ -5,7 +5,9 @@ import 'package:kazumi/request/core/network_config.dart';
 import 'package:kazumi/services/platform/logvar_credential_store.dart';
 import 'package:kazumi/services/platform/naku_device.dart';
 import 'cinema_media_transport.dart';
+import 'cinema_original_match.dart';
 import 'cinema_route_probe.dart';
+import 'cinema_video_metadata.dart';
 
 /// TV reads the network's existing proxy; it never creates a proxy service.
 class CinemaTVMediaEnvironment {
@@ -120,6 +122,70 @@ class CinemaTVMediaEnvironment {
     return size != null &&
         result.width! <= size.width &&
         result.height! <= size.height;
+  }
+
+  bool supportsOriginalVideo(CinemaVideoMetadata video) {
+    final codecs = _snapshot['decoderCapabilities'];
+    if (!available ||
+        codecs is! List ||
+        codecs.isEmpty ||
+        !const {
+          'AVC',
+          'H.264',
+          'HEVC',
+          'H.265',
+          'AV1',
+          'VP9',
+        }.contains(video.codec.toUpperCase())) {
+      return true;
+    }
+    return supports(
+      CinemaMediaProbeResult(
+        ok: true,
+        elapsedMs: 0,
+        width: video.width,
+        height: video.height,
+        codec: video.codec,
+      ),
+    );
+  }
+
+  /// Release names describe the encode only provisionally. A missing hardware
+  /// snapshot cannot rule out a release, and hybrid DV/HDR10 remains playable.
+  int originalCompatibility(OriginalEdition edition) {
+    if (!available) return 0;
+    final name = edition.name.toLowerCase();
+    final codecs = _snapshot['decoderCapabilities'];
+    final codec = RegExp(r'\b(?:av1|av01)\b').hasMatch(name)
+        ? 'AV1'
+        : RegExp(r'(?:x265|h[ .]?265|hevc)').hasMatch(name)
+        ? 'HEVC'
+        : RegExp(r'(?:x264|h[ .]?264|avc)').hasMatch(name)
+        ? 'AVC'
+        : '';
+    if (codecs is List && codecs.isNotEmpty && codec.isNotEmpty) {
+      final size = sizeFor(codec);
+      if (size == null || (size.width < 3840 && size.height < 2160)) return -1;
+    }
+    final display = _snapshot['displayCapabilities'];
+    final dv = RegExp(r'(?:\bdv\b|dovi|dolby[ ._-]*vision)').hasMatch(name);
+    if (dv &&
+        display is Map &&
+        display['known'] == true &&
+        display['dolbyVision'] != true) {
+      if (RegExp(
+        r'(?:profile|prof|p)[ ._-]*0?5\b|dv[ ._-]*only|dvhe\.05',
+      ).hasMatch(name)) {
+        return -1;
+      }
+      // Unknown DV profile ranks after an explicitly compatible encode.
+      if (!RegExp(
+        r'hdr10|hdr[ ._-]*10|hybrid|hdr[ ._-]+dv|dv[ ._-]+hdr',
+      ).hasMatch(name)) {
+        return 1;
+      }
+    }
+    return 0;
   }
 
   /// Manifest hints eliminate unsupported DV-only variants before a speed
