@@ -418,6 +418,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         // immediately; probing first would delay LAN handoff.
                         autoSelectBestRoute: false,
                         manualRouteSelection: true,
+                        qualityMode: source.id == originalCatalogSource.id
+                            ? CinemaPlaybackQuality.ultraHD
+                            : null,
                       ),
                     ),
                   ),
@@ -652,7 +655,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       // Keep all scores, including changes that preserve the current order.
       for (final title in view.representatives)
         [title.key, _ratings.scoreFor(title, _scoreProvider)],
-      if (_searching && !Platform.isMacOS)
+      if (_searching && !NakuDevice.unifiedCinema)
         [
           for (final title in _visibleDiscoveryTitles(_catalog, _section))
             [
@@ -713,7 +716,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       return;
     }
     final provider = _scoreProviders[section] ?? '豆瓣';
-    final works = state.searching && Platform.isMacOS
+    final works = state.searching && NakuDevice.unifiedCinema
         ? state.viewCache
               .resolve(
                 items: state.items,
@@ -1182,14 +1185,16 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       _catalogSort[_section] ?? CinemaCatalogSort.latest;
 
   String get _catalogSortExplanation {
-    if (_searching && Platform.isMacOS) return '按片名和别名的匹配程度排列，同一剧集按季序展示。';
+    if (_searching && NakuDevice.unifiedCinema) {
+      return '按片名和别名的匹配程度排列，同一剧集按季序展示。';
+    }
     if (_currentCatalogSort == CinemaCatalogSort.popular && !_searching) {
       return '按豆瓣近期热门顺序展示，打开详情可检测画质。';
     }
     if (_currentCatalogSort == CinemaCatalogSort.rating) {
       final works = [
         ..._catalogView.representatives,
-        if (_searching && !Platform.isMacOS)
+        if (_searching && !NakuDevice.unifiedCinema)
           ..._visibleDiscoveryTitles(
             _catalog,
             _section,
@@ -1238,7 +1243,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   bool _ordinaryCategory(String name) => cinemaOrdinaryCategory(name);
 
   bool _unifiedSearchSection(_Section section) =>
-      (((Platform.isMacOS || Platform.isWindows || _usesMobileLayout) &&
+      (((NakuDevice.unifiedCinema || Platform.isWindows || _usesMobileLayout) &&
               !NakuDevice.isTV) ||
           (NakuDevice.isTV && _tvDestination == _TVDestination.search)) &&
       (section == _Section.movies || section == _Section.series);
@@ -2297,7 +2302,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               episode,
               allVariants,
               manualRouteSelection: manual,
-              autoSelectBestRoute: Platform.isMacOS && !manual ? true : null,
+              autoSelectBestRoute: NakuDevice.unifiedCinema && !manual
+                  ? true
+                  : null,
               qualityMode: qualityMode,
               keepBrowseRoute: keepBrowseRoute,
               measuredQuality: quality,
@@ -4243,9 +4250,12 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   CinemaCatalogView get _catalogView => _catalog.viewCache.resolve(
     items: _items,
-    discovery: _searching && Platform.isMacOS ? _catalog.metadata : const [],
+    discovery: _searching && NakuDevice.unifiedCinema
+        ? _catalog.metadata
+        : const [],
     search: _searching ? _catalog.activeKeyword : '',
-    preferredKind: _searching && Platform.isMacOS && _aggregates(_section)
+    preferredKind:
+        _searching && NakuDevice.unifiedCinema && _aggregates(_section)
         ? (_section == _Section.movies
               ? CinemaAggregateKind.movies
               : CinemaAggregateKind.series)
@@ -4315,7 +4325,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     final view = _catalogView;
     final searchGroups = view.groups;
     final representatives = view.representatives;
-    final unified = searching && Platform.isMacOS;
+    final unified = searching && NakuDevice.unifiedCinema;
     final visibleItems = view.visible;
     final variantsByKey = view.variants;
     final immersive = wide && (Platform.isMacOS || NakuDevice.isTV);
@@ -5814,7 +5824,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
   }
 
   bool get _compactQuality =>
-      Platform.isMacOS &&
+      NakuDevice.unifiedCinema &&
       !NakuDevice.isTV &&
       widget.source.id != cinemaNASSource.id;
 
@@ -5906,7 +5916,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
         for (final variant in variants)
           _comparison.catalogue.loaded(variant) ?? variant,
       ],
-      manual || (!Platform.isMacOS && _recommended != null),
+      manual || (!NakuDevice.unifiedCinema && _recommended != null),
       quality,
       original,
       sameEpisode ? _originalLookup : null,
@@ -6832,6 +6842,30 @@ class _TitleDetailsState extends State<_TitleDetails> {
             spacing: 8,
             runSpacing: 8,
             children: [
+              if (_originalEngine.available && _originalLookup != null)
+                ActionChip(
+                  key: const ValueKey('tv-detail-original'),
+                  label: Text(
+                    _originalLookup!.done || _originalAnchor != null
+                        ? '4K 原画'
+                        : '正在匹配原画',
+                  ),
+                  onPressed: _originalAnchor == null
+                      ? null
+                      : () {
+                          final choice = _qualityOptions(
+                            title,
+                            snapshot,
+                          ).ultraHD;
+                          if (choice != null) {
+                            _playQuality(
+                              choice.route,
+                              original: choice.selection,
+                              qualityMode: CinemaPlaybackQuality.ultraHD,
+                            );
+                          }
+                        },
+                ),
               for (final variant in _variants)
                 ChoiceChip(
                   key: ValueKey('source-variant:${variant.key}'),

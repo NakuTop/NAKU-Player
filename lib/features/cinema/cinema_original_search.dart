@@ -136,6 +136,54 @@ CinemaTitle originalLibraryTitle(
   );
 }
 
+/// Only send the identity of the selected film or episode. The TV opens its
+/// own engine and independently resolves the edition from its catalogue.
+({CinemaTitle title, CinemaSource source, int road, int episode})
+originalCastTarget(
+  CinemaTitle title,
+  CinemaSource source,
+  int road,
+  int episode,
+  OriginalSelection? selection,
+) {
+  if (selection == null) {
+    return (title: title, source: source, road: road, episode: episode);
+  }
+  final work = selection.matches.work;
+  final chosen = originalLibraryTitle(
+    title,
+    selection.matches,
+    edition: selection.edition,
+  );
+  final anchor = originalCatalogAnchor(chosen, selection.matches);
+  if (anchor != null) {
+    return (
+      title: anchor,
+      source: originalCatalogSource,
+      road: 0,
+      episode: (work.episode ?? 1) - 1,
+    );
+  }
+  // Some providers have an IMDb identity and no Douban subject. Retain their
+  // work metadata and episode coordinate without transmitting the local URL.
+  final identity = chosen.copyWith(
+    sourceId: originalCatalogSource.id,
+    id: chosen.key,
+    routes: [
+      CinemaRoute(
+        name: '原画',
+        episodes: [
+          CinemaEpisode(
+            name: work.series ? '第${work.episode}集' : '正片',
+            url: originalCatalogSource.url,
+          ),
+        ],
+      ),
+    ],
+  );
+  return (title: identity, source: originalCatalogSource, road: 0, episode: 0);
+}
+
 class OriginalLookup extends ChangeNotifier {
   final _ready = Completer<void>();
   final _finished = Completer<void>();

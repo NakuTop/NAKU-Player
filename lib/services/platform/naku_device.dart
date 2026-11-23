@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 /// Hardware classification, never inferred from the screen width.
 class NakuDevice {
   static bool isTV = false;
+  static String? originalHost;
+  static bool get unifiedCinema => Platform.isMacOS || Platform.isAndroid;
   static const personalNASAddress = String.fromEnvironment('NAKU_NAS_ADDRESS');
   static bool get canDownload => !isTV;
   static bool get hasNAS =>
@@ -13,6 +15,7 @@ class NakuDevice {
     final info = await const MethodChannel(
       'naku/device',
     ).invokeMapMethod<String, dynamic>('info');
+    originalHost = info?['originalHost'] as String?;
     isTV = const bool.fromEnvironment('NAKU_TV') || info?['television'] == true;
     if (isTV) {
       await SystemChrome.setPreferredOrientations([

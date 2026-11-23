@@ -129,7 +129,8 @@ class MainActivity: AudioServiceActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "naku/device").setMethodCallHandler { call, result ->
             if (call.method == "info") {
                 val television = (resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK) == Configuration.UI_MODE_TYPE_TELEVISION || packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
-                result.success(mapOf("television" to television))
+                result.success(mapOf("television" to television,
+                    "originalHost" to java.io.File(applicationInfo.nativeLibraryDir, "libnaku_original_host.so").absolutePath))
             } else if (call.method == "mediaNetwork") {
                 result.success(NakuTVCapabilities.read(this))
             } else result.notImplemented()

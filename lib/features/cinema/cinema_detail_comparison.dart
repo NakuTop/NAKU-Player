@@ -113,7 +113,7 @@ class CinemaDetailComparison extends ChangeNotifier {
     return cinemaBestConfirmedCandidate(
       hd.isEmpty ? options : hd,
       results: results,
-      preferSpeed: Platform.isMacOS,
+      preferSpeed: Platform.isMacOS || Platform.isAndroid,
     );
   }
 
@@ -121,7 +121,7 @@ class CinemaDetailComparison extends ChangeNotifier {
       cinemaBestConfirmedCandidate(
         candidates.where((candidate) => candidate.source.id == id),
         results: results,
-        preferSpeed: Platform.isMacOS,
+        preferSpeed: Platform.isMacOS || Platform.isAndroid,
       );
 
   CinemaPlaybackCandidate? forVariant(CinemaTitle title) {
@@ -129,7 +129,7 @@ class CinemaDetailComparison extends ChangeNotifier {
     return cinemaBestConfirmedCandidate(
           options,
           results: results,
-          preferSpeed: Platform.isMacOS,
+          preferSpeed: Platform.isMacOS || Platform.isAndroid,
         ) ??
         options.where((c) => results.containsKey(c.key)).firstOrNull ??
         cinemaRecommendedCandidate(options, sourceOrder: catalogue.sourceOrder);

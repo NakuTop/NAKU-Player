@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:kazumi/services/platform/naku_device.dart';
 import 'package:kazumi/services/storage/cinema_disk_cache_files.dart';
 import 'dart:convert';
 import 'dart:io';
@@ -24,15 +25,20 @@ class OriginalStream {
 }
 
 class CinemaOriginalEngine {
-  CinemaOriginalEngine({String? host})
-    : helper =
-          host ??
-          File(
-            Platform.resolvedExecutable,
-          ).parent.parent.uri.resolve('Helpers/NakuOriginalHost').toFilePath();
+  CinemaOriginalEngine({String? host}) : _overrideHost = host;
   static final instance = CinemaOriginalEngine();
-  final String helper;
-  late final available = Platform.isMacOS && File(helper).existsSync();
+  final String? _overrideHost;
+  String get helper =>
+      _overrideHost ??
+      (Platform.isAndroid
+          ? NakuDevice.originalHost ?? ''
+          : File(Platform.resolvedExecutable).parent.parent.uri
+                .resolve('Helpers/NakuOriginalHost')
+                .toFilePath());
+  bool get available =>
+      (Platform.isMacOS || Platform.isAndroid) &&
+      helper.isNotEmpty &&
+      File(helper).existsSync();
   final _refs = <String, int>{};
   final _changes = <String, Future<void>>{};
   final _tracks = <String, CinemaVideoMetadata>{};

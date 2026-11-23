@@ -424,6 +424,24 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   OriginalSelection? _nextOriginal() =>
       _chooseOriginal(_originalLookup?.matches ?? _selectionOriginals);
 
+  Future<void> _castCurrent() {
+    final selection = originalCastTarget(
+      _title,
+      _source,
+      _routeIndex,
+      _episodeIndex,
+      _original,
+    );
+    return showCinemaCast(
+      context,
+      title: selection.title,
+      source: selection.source,
+      road: selection.road,
+      episode: selection.episode,
+      position: _playback?.position.inSeconds ?? 0,
+    );
+  }
+
   void _closeOriginal() {
     _originalCancel?.cancel('播放选择已变化');
     _originalCancel = null;
@@ -2945,16 +2963,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       '播放倍速': _showSpeedOptions,
       '线路 / 选集': _showEpisodes,
       if (Platform.isAndroid && !NakuDevice.isTV && widget.offlinePaths == null)
-        '发送到电视': () => unawaited(
-          showCinemaCast(
-            context,
-            title: _title,
-            source: _source,
-            road: _routeIndex,
-            episode: _episodeIndex,
-            position: _playback?.position.inSeconds ?? 0,
-          ),
-        ),
+        '发送到电视': () => unawaited(_castCurrent()),
       if (_hasNext) '下一集': () => _changeEpisode(1),
       if (_adjacentEpisode(-1) != null) '上一集': () => _changeEpisode(-1),
       '画中画': () => unawaited(_togglePip()),
@@ -3071,18 +3080,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                 playback?.danmaku == null ? null : _showDanmaku,
               ),
               if (Platform.isAndroid && !NakuDevice.isTV)
-                action(
-                  '发送到电视',
-                  Icons.cast,
-                  () => showCinemaCast(
-                    context,
-                    title: _title,
-                    source: _source,
-                    road: _routeIndex,
-                    episode: _episodeIndex,
-                    position: _playback?.position.inSeconds ?? 0,
-                  ),
-                ),
+                action('发送到电视', Icons.cast, _castCurrent),
               action(
                 widget.store.isFavorite(_title) ? '已收藏' : '收藏',
                 Icons.bookmark_border,

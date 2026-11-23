@@ -35,7 +35,8 @@ class StorageSettingsPage extends StatefulWidget {
 class _StorageSettingsPageState extends State<StorageSettingsPage> {
   late final _images = widget.imageCache ?? ImageCacheService();
   late final _video = widget.videoCache ?? CinemaMediaCache.instance;
-  late final _showVideo = widget.showVideoCache ?? Platform.isMacOS;
+  late final _showVideo =
+      widget.showVideoCache ?? (Platform.isMacOS || Platform.isAndroid);
   late Future<_CacheUsage> _cacheSize = _readUsage();
   String? _clearing;
 

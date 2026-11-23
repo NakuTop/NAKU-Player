@@ -1220,7 +1220,7 @@ List<CinemaSource> _initialCinemaSources() {
   final profile = PersonalDefaults.current.sources;
   if (profile.isEmpty) return bundledCinemaSources;
   final sources = profile.map(CinemaSource.fromJson).toList();
-  if (Platform.isMacOS &&
+  if ((Platform.isMacOS || Platform.isAndroid) &&
       !sources.any(
         (s) =>
             s.id == cinemaRuyiSource.id ||
@@ -1311,7 +1311,7 @@ final bundledCinemaSourcePacks = List<CinemaSourcePack>.unmodifiable([
   cinema110SourcePack,
   cinemaZuidSourcePack,
   cinemaWithdrawFourkAVSourcePack,
-  if (Platform.isMacOS) cinemaMacRuyiSourcePack,
+  if (Platform.isMacOS || Platform.isAndroid) cinemaMacRuyiSourcePack,
 ]);
 
 /// Public third-party catalogues verified on 2026-10-08. Availability and quality

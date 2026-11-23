@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_nas_media.dart';
+import 'package:kazumi/features/cinema/cinema_original_match.dart';
+import 'package:kazumi/features/cinema/cinema_original_search.dart';
 import 'package:kazumi/features/cinema/cinema_tv_cast_receiver.dart';
 
 final _accountA = 'a' * 64, _accountB = 'b' * 64;
@@ -44,6 +46,66 @@ class _NAS extends CinemaNASClient {
 }
 
 void main() {
+  test(
+    'original cast preserves the exact movie or episode across the wire',
+    () async {
+      final data = _title(url: 'http://127.0.0.1:25816/play/private/1');
+      final ordinary = originalCastTarget(data, _source, 0, 0, null);
+      expect(ordinary.title, same(data));
+      for (final series in [false, true]) {
+        for (final subject in ['', '3141592']) {
+          final edition = OriginalEdition(
+            name: 'Fixture.2160p.CHS',
+            hash: 'e' * 40,
+            size: 9000,
+            seeds: 8,
+            pack: series,
+            magnet: '',
+          );
+          final work = OriginalWork(
+            names: ['Fixture'],
+            years: {'2022'},
+            doubanId: subject,
+            imdbId: 'tt1234567',
+            season: series ? 2 : null,
+            episode: series ? 3 : null,
+          );
+          final matches = OriginalMatches(work, [edition]);
+          final target = originalCastTarget(data, _source, 0, 0, (
+            matches: matches,
+            edition: edition,
+          ));
+          final wire = target.title.toJson();
+          expect(wire.toString(), isNot(contains('127.0.0.1')));
+          expect(wire.toString(), isNot(contains('/play/private')));
+          final received = CinemaTitle.fromJson(wire);
+          var played = false;
+          final receiver = CinemaTVCastReceiver(
+            client: _NAS(),
+            play: (title, source, route, episode, position) {
+              expect(source.id, originalCatalogSource.id);
+              expect(title.originalReference?.hash, edition.hash);
+              expect(title.originalReference?.imdbId, work.imdbId);
+              expect(
+                title.routes[route].episodes[episode].name,
+                series ? '第3集' : '正片',
+              );
+              expect(position, 72);
+              played = true;
+            },
+          );
+          await receiver.receive(
+            received,
+            target.source,
+            target.road,
+            target.episode,
+            72,
+          );
+          expect(played, isTrue);
+        }
+      }
+    },
+  );
   test(
     'authenticated direct dispatch wakes and starts without a remote confirmation',
     () async {

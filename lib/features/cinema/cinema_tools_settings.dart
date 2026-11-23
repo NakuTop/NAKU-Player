@@ -349,7 +349,7 @@ class _CinemaToolsSettingsPageState extends State<CinemaToolsSettingsPage> {
                                   ),
                                 ),
                         ),
-                        if (Platform.isMacOS)
+                        if (_cache.diskFiles != null)
                           SwitchListTile.adaptive(
                             title: const Text('暂停时节省流量与耗电'),
                             subtitle: const Text(
@@ -369,11 +369,11 @@ class _CinemaToolsSettingsPageState extends State<CinemaToolsSettingsPage> {
                                   ),
                           ),
                         Text(
-                          Platform.isMacOS
+                          _cache.diskFiles != null
                               ? '总缓存上限 ${prefs.quotaMB} MB'
                               : '磁盘上限 ${prefs.quotaMB} MB',
                         ),
-                        if (Platform.isMacOS)
+                        if (_cache.diskFiles != null)
                           Text(
                             '已用 ${(_cache.totalCacheBytes / 1048576).toStringAsFixed(0)} MB · 自动清理最久未使用的缓存，保留下载内容',
                             style: Theme.of(context).textTheme.bodySmall,

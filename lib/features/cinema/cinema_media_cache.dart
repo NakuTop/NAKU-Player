@@ -191,7 +191,9 @@ class CinemaMediaCache extends ChangeNotifier {
   }) : _directory = directory,
        transport = transport ?? CinemaMediaTransport();
   static final instance = CinemaMediaCache(
-    diskFiles: Platform.isMacOS ? CinemaDiskCacheFiles.instance : null,
+    diskFiles: Platform.isMacOS || Platform.isAndroid
+        ? CinemaDiskCacheFiles.instance
+        : null,
   );
   final CinemaDiskCacheFiles? diskFiles;
   final _externalFiles = <String, CinemaCacheFile>{};

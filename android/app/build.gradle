@@ -28,7 +28,7 @@ def nakuDartDefines = (project.findProperty('dart-defines') ?: '').toString()
 def nakuTvBuild = nakuDartDefines.contains('NAKU_TV=true')
 
 def nakuSigning = new Properties()
-def nakuSigningFile = rootProject.file('key.properties')
+def nakuSigningFile = rootProject.file(System.getenv('NAKU_ANDROID_SIGNING_PROPERTIES') ?: 'key.properties')
 if (nakuSigningFile.exists()) {
     nakuSigningFile.withInputStream { nakuSigning.load(it) }
 }
@@ -39,6 +39,15 @@ android {
     // Use the highest NDK required by the native plugins. Newer NDKs remain
     // backward compatible with plugins that declare an older version.
     ndkVersion "28.2.13676358"
+
+    sourceSets.main.jniLibs.srcDir(new File(buildDir, 'generated/original-media/jniLibs'))
+    sourceSets.main.assets.srcDir(new File(buildDir, 'generated/original-media/assets'))
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging true
+            keepDebugSymbols += ['**/libnaku_torrserver.so', '**/libnaku_original_host.so']
+        }
+    }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -85,6 +94,20 @@ android {
         }
     }
 }
+
+def prepareOriginalMedia = tasks.register('prepareOriginalMedia', Exec) {
+    def root = rootProject.projectDir.parentFile
+    def script = new File(root, 'scripts/prepare_android_original.py')
+    inputs.files(script, new File(projectDir, 'src/main/cpp/naku_original_host.c'),
+                 new File(root, 'macos/OriginalMedia/LICENSE-TorrServer'))
+    inputs.property('ndkVersion', android.ndkVersion)
+    def output = new File(buildDir, 'generated/original-media')
+    outputs.dir(output)
+    commandLine(System.getenv('PYTHON') ?: 'python3', script, '--out', output,
+                '--cache', new File(root, 'build/original-android-cache'),
+                '--ndk', new File(android.sdkDirectory, 'ndk/' + android.ndkVersion))
+}
+tasks.named('preBuild').configure { dependsOn prepareOriginalMedia }
 
 flutter {
     source '../..'
