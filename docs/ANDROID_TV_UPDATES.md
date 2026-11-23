@@ -24,6 +24,6 @@ python3 scripts/prepare_android_tv_update.py \
 
 该脚本验证签名、TV 包名/启动入口和版本，生成正确命名的 APK、SHA256SUMS 和 android-tv-update.json，**不会上传或发布**。
 
-在用户完成手动验收并明确同意发布后，创建对应正式 GitHub Release，将生成的 APK 和 SHA256SUMS 上传到严格匹配的 TV 标签；再将生成的 `android-tv-update.json` 更新到官方仓库 main 根目录。先确认公开 APK 可下载，再启用静态发布记录。GitHub API 的资产 digest 可作为静态记录外的第二读取路径。
+自 3.2.20 起，正式发布后由 [安卓差分工作流](ANDROID_DELTAS.md) 生成补丁并更新此清单。上面的脚本继续用于本地检查完整 APK。
 
-当前正式版本为 `1.1.3+5`，对应标签 `android-tv-v1.1.3+5`。正式安装包、源码快照和校验记录可在 [GitHub Release](https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v1.1.3%2B5) 获取；main 根目录的独立 TV 更新记录用于“我的 → 软件更新”。实际电视的系统安装授权与覆盖安装仍需真机验收。
+早期完整包示例为 `1.1.3+5`，对应标签 `android-tv-v1.1.3+5`。正式安装包、源码快照和校验记录可在 [GitHub Release](https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v1.1.3%2B5) 获取；main 根目录的独立 TV 更新记录用于“我的 → 软件更新”。实际电视的系统安装授权与覆盖安装仍需真机验收。

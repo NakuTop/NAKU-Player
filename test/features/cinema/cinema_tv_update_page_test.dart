@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kazumi/services/update/android_apk_delta.dart';
 import 'package:kazumi/features/cinema/cinema_tv_update_page.dart';
 import 'package:kazumi/features/cinema/cinema_tv_update_service.dart';
 
@@ -38,6 +39,7 @@ class _Service extends CinemaTVUpdateService {
     CinemaTVUpdateRelease release, {
     required CancelToken cancel,
     required void Function(int, int) onProgress,
+    void Function(ApkUpdateStage)? onStage,
   }) async {
     downloads++;
     onProgress(100, 100);

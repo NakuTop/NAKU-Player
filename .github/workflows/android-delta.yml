@@ -1,0 +1,30 @@
+name: Publish Android differential updates
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published Android release tag
+        required: true
+        type: string
+permissions:
+  contents: write
+jobs:
+  release:
+    if: github.repository == 'NakuTop/NAKU-Player' && (github.event_name == 'workflow_dispatch' || (!github.event.release.prerelease && (endsWith(github.event.release.tag_name, '-android') || startsWith(github.event.release.tag_name, 'android-tv-v'))))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: android-delta-${{ startsWith(inputs.tag || github.event.release.tag_name, 'android-tv-v') && 'tv' || 'phone' }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Build verified patch assets and publish the update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: python3 scripts/publish_android_deltas.py --tag "$RELEASE_TAG"

@@ -126,11 +126,18 @@ class _CinemaTVUpdatePageState extends State<CinemaTVUpdatePage>
         current,
         release,
         cancel: cancel,
+        onStage: (stage) {
+          if (mounted && !cancel.isCancelled) {
+            setState(() {
+              _progress = null;
+              _status = stage.label;
+            });
+          }
+        },
         onProgress: (received, total) {
           if (!mounted || cancel.isCancelled) return;
           setState(() {
             _progress = received / total;
-            _status = received == total ? '正在校验安装包…' : '正在下载安装包…';
           });
         },
       );

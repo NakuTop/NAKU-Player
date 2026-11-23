@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
+import 'package:kazumi/services/update/android_apk_delta.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
 
@@ -10,7 +10,7 @@ const cinemaTVFeedUrl =
     'https://raw.githubusercontent.com/NakuTop/NAKU-Player/main/android-tv-update.json';
 const cinemaTVReleasesUrl =
     'https://api.github.com/repos/NakuTop/NAKU-Player/releases?per_page=100';
-const cinemaTVMaxUpdateBytes = 500 * 1024 * 1024;
+const cinemaTVMaxUpdateBytes = maxAndroidApkBytes;
 
 class CinemaTVInstalledVersion {
   const CinemaTVInstalledVersion({
@@ -33,9 +33,11 @@ class CinemaTVUpdateRelease {
     required this.url,
     required this.sha256,
     required this.bytes,
+    this.deltas = const [],
   });
   final String version, notes, url, sha256;
   final int build, bytes;
+  final List<dynamic> deltas;
 }
 
 List<int>? _versionParts(String value) {
@@ -125,6 +127,7 @@ CinemaTVUpdateRelease? cinemaTVSelectUpdate(
         url: url,
         sha256: digest.substring(7).toLowerCase(),
         bytes: size,
+        deltas: asset['deltas'] is List ? asset['deltas'] as List : const [],
       ),
     );
   }
@@ -149,7 +152,7 @@ class CinemaTVUpdateService {
               },
             ),
           ),
-      _channel = channel ?? const MethodChannel('naku/tv-updater');
+      _channel = channel ?? androidUpdateChannel;
   final Dio _dio;
   final MethodChannel _channel;
 
@@ -198,57 +201,25 @@ class CinemaTVUpdateService {
     CinemaTVUpdateRelease release, {
     required CancelToken cancel,
     required void Function(int received, int total) onProgress,
-  }) async {
-    final directory = Directory(current.directory);
-    await directory.create(recursive: true);
-    final basename =
-        'naku-tv-${release.version}-${release.build}-${DateTime.now().microsecondsSinceEpoch}';
-    final partial = File('${directory.path}/$basename.part');
-    final result = File('${directory.path}/$basename.apk');
-    IOSink? sink;
-    try {
-      if (await result.exists()) await result.delete();
-      final response = await _dio.get<ResponseBody>(
-        release.url,
-        options: Options(
-          responseType: ResponseType.stream,
-          headers: {'Accept': 'application/octet-stream'},
-        ),
-        cancelToken: cancel,
-      );
-      final body = response.data;
-      if (body == null) throw const FormatException('下载内容为空');
-      sink = partial.openWrite();
-      var received = 0;
-      await for (final chunk in body.stream) {
-        if (cancel.isCancelled) throw cancel.cancelError!;
-        received += chunk.length;
-        if (received > release.bytes || received > cinemaTVMaxUpdateBytes) {
-          throw const FormatException('安装包大小与更新信息不一致');
-        }
-        sink.add(chunk);
-        await sink.flush();
-        onProgress(received, release.bytes);
-      }
-      await sink.close();
-      sink = null;
-      if (cancel.isCancelled) throw cancel.cancelError!;
-      if (received != release.bytes ||
-          (await sha256.bind(partial.openRead()).first).toString() !=
-              release.sha256) {
-        throw const FormatException('安装包校验失败，请重新下载');
-      }
-      await partial.rename(result.path);
-      await _channel.invokeMethod<void>('verify', _arguments(result, release));
-      if (cancel.isCancelled) throw cancel.cancelError!;
-      return result;
-    } catch (_) {
-      await sink?.close();
-      if (await partial.exists()) await partial.delete();
-      if (await result.exists()) await result.delete();
-      rethrow;
-    }
-  }
+    void Function(ApkUpdateStage)? onStage,
+  }) => downloadAndroidApk(
+    target: AndroidApkTarget(
+      tv: true,
+      version: release.version,
+      build: release.build,
+      url: release.url,
+      hash: release.sha256,
+      bytes: release.bytes,
+      deltas: release.deltas,
+    ),
+    directory: current.directory,
+    installedBuild: current.build,
+    dio: _dio,
+    channel: _channel,
+    cancel: cancel,
+    onProgress: onProgress,
+    onStage: onStage,
+  );
 
   Map<String, Object> _arguments(File file, CinemaTVUpdateRelease release) => {
     'path': file.path,

@@ -43,9 +43,7 @@ class _NakuAndroidUpdatePageState extends State<NakuAndroidUpdatePage> {
           const SizedBox(height: 12),
           const Text('当前版本 ${ApiEndpoints.version}'),
           const SizedBox(height: 20),
-          const Text(
-            '使用 NAKU 独立安卓更新源，自动匹配手机或电视安装包。检查后由你确认下载，安装时由 Android 系统确认。',
-          ),
+          const Text('优先下载差分包，准备好后即可安装。'),
           const SizedBox(height: 20),
           FilledButton.icon(
             onPressed: _busy ? null : _check,

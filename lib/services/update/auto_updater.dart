@@ -4,6 +4,8 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/request/clients/download_http_client.dart';
+import 'package:kazumi/request/core/dio_factory.dart';
+import 'package:kazumi/services/update/android_apk_delta.dart';
 import 'package:kazumi/request/config/api_endpoints.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/storage/storage.dart';
@@ -69,7 +71,8 @@ Map<String, dynamic>? getUpdateAssetForType(
       if (!patterns.every((pattern) => name.contains(pattern))) return false;
       if (type == InstallationType.androidApk) {
         final isTV = RegExp(r'(^|[-_])tv([-_.]|$)').hasMatch(name);
-        return isTV == (television ?? NakuDevice.isTV) &&
+        return name.endsWith('.apk') &&
+            isTV == (television ?? NakuDevice.isTV) &&
             !name.contains('personal');
       }
       return true;
@@ -78,6 +81,30 @@ Map<String, dynamic>? getUpdateAssetForType(
   } catch (_) {
     return null;
   }
+}
+
+AndroidApkTarget? phoneApkTarget(UpdateInfo update) {
+  final asset = getUpdateAssetForType(
+    update.assets,
+    InstallationType.androidApk,
+    television: false,
+  );
+  if (asset == null || asset['build'] == null) return null;
+  final build = asset['build'],
+      bytes = asset['size'],
+      url = asset['browser_download_url'];
+  if (build is! int || bytes is! int || url is! String) {
+    throw const FormatException('安装包信息不完整');
+  }
+  return AndroidApkTarget(
+    tv: false,
+    version: update.version,
+    build: build,
+    bytes: bytes,
+    url: url,
+    hash: getUpdateFileHashFromAsset(asset),
+    deltas: asset['deltas'] is List ? asset['deltas'] as List : const [],
+  );
 }
 
 String getUpdateDownloadUrlFromAsset(Map<String, dynamic>? asset) {
@@ -465,28 +492,36 @@ class AutoUpdater {
       (task) async {
         _downloadProgress.value = 0;
         final cancelToken = CancelToken();
+        _downloadTitle.value = '正在下载更新';
+        final android = Platform.isAndroid ? phoneApkTarget(updateInfo) : null;
         final downloadPath = await task.loading(
-          action: () => _downloadFile(
-            updateInfo.downloadUrl,
-            updateInfo.version,
-            expectedHash,
-            cancelToken,
-          ),
+          action: () => android != null
+              ? _downloadPhoneApk(android, cancelToken)
+              : _downloadFile(
+                  updateInfo.downloadUrl,
+                  updateInfo.version,
+                  expectedHash,
+                  cancelToken,
+                ),
           onCancel: cancelToken.cancel,
           builder: (context) {
             return AlertDialog(
-              title: const Text('正在下载更新'),
+              title: ValueListenableBuilder<String>(
+                valueListenable: _downloadTitle,
+                builder: (_, label, _) => Text(label),
+              ),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  ValueListenableBuilder<double>(
+                  ValueListenableBuilder<double?>(
                     valueListenable: _downloadProgress,
                     builder: (context, value, child) {
                       return Column(
                         children: [
                           LinearProgressIndicator(value: value),
                           const SizedBox(height: 8),
-                          Text('${(value * 100).toStringAsFixed(1)}%'),
+                          if (value != null)
+                            Text('${(value * 100).toStringAsFixed(1)}%'),
                         ],
                       );
                     },
@@ -556,7 +591,37 @@ class AutoUpdater {
     );
   }
 
-  final ValueNotifier<double> _downloadProgress = ValueNotifier(0.0);
+  final ValueNotifier<double?> _downloadProgress = ValueNotifier(0.0);
+  final ValueNotifier<String> _downloadTitle = ValueNotifier('正在下载更新');
+  Future<String> _downloadPhoneApk(
+    AndroidApkTarget target,
+    CancelToken cancel,
+  ) async {
+    final state = await androidUpdateChannel.invokeMapMethod<String, dynamic>(
+      'state',
+    );
+    if (state?['package'] != 'com.nakutop.nakuplayer' ||
+        state?['directory'] is! String ||
+        state?['build'] is! int) {
+      throw const FormatException('无法读取已安装版本');
+    }
+    final file = await downloadAndroidApk(
+      target: target,
+      directory: state!['directory'],
+      installedBuild: state['build'],
+      dio: DioFactory.downloadDio,
+      channel: androidUpdateChannel,
+      cancel: cancel,
+      onStage: (stage) {
+        _downloadTitle.value = stage.label;
+        _downloadProgress.value = null;
+      },
+      onProgress: (received, total) =>
+          _downloadProgress.value = received / total,
+    );
+    return file.path;
+  }
+
   final _downloadDialogs = KazumiDialogController();
 
   void _showDownloadCompleteDialog(String filePath, UpdateInfo updateInfo) {
@@ -635,6 +700,7 @@ class AutoUpdater {
                 _installUpdate(
                   filePath,
                   updateInfo.recommendedInstallationType,
+                  updateInfo,
                 );
               },
               child: const Text('立即安装'),
@@ -716,6 +782,7 @@ class AutoUpdater {
   void _installUpdate(
     String filePath,
     InstallationType installationType,
+    UpdateInfo updateInfo,
   ) async {
     try {
       KazumiDialog.showToast(message: '准备安装更新，应用即将退出...');
@@ -743,6 +810,13 @@ class AutoUpdater {
           exit(0);
         }
       } else if (Platform.isAndroid) {
+        final target = phoneApkTarget(updateInfo);
+        if (target != null) {
+          await androidUpdateChannel.invokeMethod<void>(
+            'verify',
+            target.arguments(File(filePath)),
+          );
+        }
         final result = await OpenFilex.open(filePath);
         if (result.type != ResultType.done) {
           KazumiDialog.showToast(message: '无法打开安装文件: ${result.message}');
