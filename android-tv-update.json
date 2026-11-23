@@ -1,5 +1,23 @@
 [
   {
+    "tag_name": "android-tv-v3.2.19+147",
+    "name": "NAKU Android TV 3.2.19",
+    "body": "安卓手机和电视在本机匹配并播放 4K 原画，支持边播边缓存和拖动进度条。常规片源优先选择实测速率较好的线路，原画按作品和集数匹配。手机投送原画时，电视接收作品、集数和进度，在电视本机打开。\n\n搜索会合并同一季的不同写法，区分同名电影、剧集和解说。新增默认如意源，缓存达到上限后优先清理最久未使用的内容，手动下载单独保留。保留 Home Display 和原有投屏入口。\n\n本次通用 APK 内置 arm64-v8a、armeabi-v7a 和 x86_64 三种架构的原画引擎。已在 Android 35 ARM64 模拟器覆盖升级并验证本机引擎的 3840×2160 起播、向前和向后定位、退出回收。\n",
+    "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.19%2B147",
+    "published_at": "2026-11-23T11:09:33Z",
+    "draft": false,
+    "prerelease": false,
+    "assets": [
+      {
+        "name": "NAKU-TV-3.2.19-Android-universal.apk",
+        "state": "uploaded",
+        "size": 165755880,
+        "digest": "sha256:65354d20eb3ba27c5cde3466e85b117fc096a214b92bc296d8591a0966854937",
+        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.19%2B147/NAKU-TV-3.2.19-Android-universal.apk"
+      }
+    ]
+  },
+  {
     "tag_name": "android-tv-v3.2.13+133",
     "name": "NAKU Android TV 3.2.13",
     "body": "同步通用异译搜索、实测画质选择、明确标记广告跳过、旧下载补存弹幕和新版豆瓣榜单。保留 Home Display、手机投屏到电视及遥控器操作。相关 316 项自动测试通过，2 项条件测试跳过。",
