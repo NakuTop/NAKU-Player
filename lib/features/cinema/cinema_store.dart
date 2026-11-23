@@ -1231,7 +1231,7 @@ List<CinemaSource> _initialCinemaSources() {
       cinemaRuyiSource,
     );
   }
-  if ((Platform.isAndroid || Platform.isMacOS) &&
+  if ((Platform.isAndroid || Platform.isMacOS || Platform.isWindows) &&
       !sources.any(
         (s) =>
             s.id == cinemaFilmLibrarySource.id ||
@@ -1336,7 +1336,8 @@ final bundledCinemaSourcePacks = List<CinemaSourcePack>.unmodifiable([
   cinemaZuidSourcePack,
   cinemaWithdrawFourkAVSourcePack,
   if (Platform.isMacOS || Platform.isAndroid) cinemaMacRuyiSourcePack,
-  if (Platform.isAndroid || Platform.isMacOS) cinemaFilmLibraryPack,
+  if (Platform.isAndroid || Platform.isMacOS || Platform.isWindows)
+    cinemaFilmLibraryPack,
 ]);
 
 /// Public third-party catalogues verified on 2026-10-08. Availability and quality
@@ -1366,7 +1367,8 @@ final List<CinemaSource> bundledCinemaSources = [
   ),
   ...cinema030SourcePack.sources.where((s) => s.id != 'maccms-360'),
   ...cinemaZuidSourcePack.sources,
-  if (Platform.isAndroid || Platform.isMacOS) cinemaFilmLibrarySource,
+  if (Platform.isAndroid || Platform.isMacOS || Platform.isWindows)
+    cinemaFilmLibrarySource,
   CinemaSource(
     id: 'kazumi-dm84',
     name: 'DM84',

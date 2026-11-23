@@ -73,6 +73,31 @@ CinemaRouteMeasurement? cinemaBestSourcePriorityRoute(
   return usable.where((m) => m.candidate.key == best?.key).firstOrNull;
 }
 
+/// Select a regular stream by the measured video first. A master-playlist label
+/// or a fast first byte cannot promote a lower resolution to full HD.
+CinemaPlaybackCandidate? cinemaBestRegularCandidate(
+  Iterable<CinemaPlaybackCandidate> candidates, {
+  required Map<String, CinemaMediaProbeResult> results,
+  bool Function(CinemaMediaProbeResult)? supported,
+}) {
+  final options = candidates.where((candidate) {
+    final result = results[candidate.key];
+    return result != null &&
+        result.ok &&
+        result.confirmedQualityTier < 2160 &&
+        (supported?.call(result) ?? true);
+  }).toList();
+  if (options.isEmpty) return null;
+  final tier = options
+      .map((c) => results[c.key]!.confirmedQualityTier)
+      .reduce((a, b) => a > b ? a : b);
+  return cinemaBestConfirmedCandidate(
+    options.where((c) => results[c.key]!.confirmedQualityTier == tier),
+    results: results,
+    preferSpeed: true,
+  );
+}
+
 /// Compare successful media reads. Exact ties retain catalogue order.
 CinemaPlaybackCandidate? cinemaBestConfirmedCandidate(
   Iterable<CinemaPlaybackCandidate> candidates, {

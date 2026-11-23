@@ -5741,7 +5741,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
     sources: widget.store.enabledSources,
     repository: widget.repository,
     probe: widget.mediaProbe,
-    preferFullHD: _compactQuality,
+    preferFullHD:
+        _compactQuality ||
+        (NakuDevice.isTV && widget.source.kind == CinemaSourceKind.maccms),
     initialRoute: widget.resume?.routeIndex ?? 0,
     initialEpisode: widget.resume?.episodeIndex ?? 0,
   );
@@ -5824,7 +5826,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
   }
 
   bool get _compactQuality =>
-      NakuDevice.unifiedCinema &&
+      (NakuDevice.unifiedCinema || Platform.isWindows) &&
       !NakuDevice.isTV &&
       widget.source.id != cinemaNASSource.id;
 
@@ -5916,7 +5918,10 @@ class _TitleDetailsState extends State<_TitleDetails> {
         for (final variant in variants)
           _comparison.catalogue.loaded(variant) ?? variant,
       ],
-      manual || (!NakuDevice.unifiedCinema && _recommended != null),
+      manual ||
+          (!_compactQuality &&
+              !NakuDevice.unifiedCinema &&
+              _recommended != null),
       quality,
       original,
       sameEpisode ? _originalLookup : null,
@@ -6695,7 +6700,9 @@ class _TitleDetailsState extends State<_TitleDetails> {
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
         _qualityChip(
-          '1080p',
+          (sample?.confirmedQualityTier ?? 0) > 0
+              ? _qualityLabel(sample!.confirmedQualityTier)
+              : '常规',
           key: const ValueKey('detail-quality-regular'),
           highlighted: regular != null,
           hint: regular == null

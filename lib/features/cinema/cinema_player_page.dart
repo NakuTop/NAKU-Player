@@ -353,7 +353,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       widget.mediaProbe ??
       CinemaMediaProbe(
         quick: widget.qualityMode != null,
-        preferFullHD: widget.qualityMode != null,
+        preferFullHD:
+            widget.qualityMode != null ||
+            widget.source.kind == CinemaSourceKind.maccms,
       );
   CancelToken? _routeProbeToken;
   CinemaPlaybackCandidate? _routeComparisonAnchor;
@@ -365,7 +367,12 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   OriginalSelection? _original;
   OriginalMatches? _selectionOriginals;
   bool _pinnedOriginalVersion = false;
-  late CinemaPlaybackQuality? _qualityMode = widget.qualityMode;
+  late CinemaPlaybackQuality? _qualityMode =
+      widget.qualityMode ??
+      (widget.source.kind == CinemaSourceKind.maccms &&
+              widget.initialOriginal == null
+          ? CinemaPlaybackQuality.fullHD
+          : null);
   OriginalLookup? _originalLookup;
   OriginalStream? _originalLease;
   CancelToken? _originalCancel;
@@ -1277,7 +1284,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         accept: (c) => c.source.id != originalCatalogSource.id,
         isCurrent: () => _isCurrent(generation),
       );
-      var next = await ordinary();
+      var next =
+          await _reachableAfterRefusal(anchor, generation) ?? await ordinary();
       if (next == null && _isCurrent(generation)) {
         await _discovering;
         if (_isCurrent(generation)) next = await ordinary();
@@ -1307,6 +1315,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       return;
     }
     var selected = anchor;
+    if (automaticSelection &&
+        original == null &&
+        _qualityMode == CinemaPlaybackQuality.fullHD &&
+        !(initial &&
+            widget.measuredQuality?.confirmedQualityTier == 1080 &&
+            (!NakuDevice.isTV ||
+                CinemaTVMediaEnvironment.instance.supports(
+                  widget.measuredQuality!,
+                )))) {
+      selected = await _reachableAfterRefusal(anchor, generation) ?? anchor;
+    }
     if (automaticSelection &&
         original == null &&
         _qualityMode == null &&
@@ -1934,7 +1953,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                         CinemaTVMediaEnvironment.instance.supportsOriginalVideo(
                           v,
                         )),
-          budget: _originalTimeout(const Duration(seconds: 18)),
+          budget: _originalTimeout(const Duration(seconds: 25)),
           cancel: cancel,
           onFailure: (s) {
             if (_isCurrent(generation)) _triedOriginals.add(s.edition.hash);
@@ -3764,17 +3783,38 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     _mediaProbe.invalidate();
     final token = _recoveryProbe = CancelToken();
     final started = <String>{}, loading = <String>{};
-    final ready = Completer<CinemaPlaybackCandidate?>();
     final watch = Stopwatch()..start();
     int active = 0, reading = 0;
-    // Discovery and probing keep running together, so a slow first catalogue
-    // cannot hide a playable alternate that has already returned.
+    bool discovering = _discovering != null;
+    _discovering?.then<void>(
+      (_) => discovering = false,
+      onError: (Object _, StackTrace _) {
+        discovering = false;
+      },
+    );
+    final measured = <String, CinemaMediaProbeResult>{};
+    List<CinemaPlaybackCandidate> options() => _catalogue
+        .matching(anchor)
+        .where(
+          (c) =>
+              _allowsOrdinaryFallback(c) &&
+              !_attempts.contains(c) &&
+              !_refusedRoutes.contains(_mediaRouteKey(c)),
+        )
+        .toList();
+    CinemaPlaybackCandidate? best() => cinemaBestRegularCandidate(
+      options(),
+      results: measured,
+      supported: NakuDevice.isTV
+          ? CinemaTVMediaEnvironment.instance.supports
+          : null,
+    );
     try {
       while (_isCurrent(generation) &&
           !token.isCancelled &&
           watch.elapsed < const Duration(seconds: 8)) {
         for (final variant in _catalogue.unread.toList()) {
-          if (reading >= 3) break;
+          if (reading >= 4) break;
           if (!loading.add(variant.key)) continue;
           reading++;
           unawaited(
@@ -3784,24 +3824,31 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                 .whenComplete(() => reading--),
           );
         }
-        final candidates = _catalogue
-            .matching(anchor)
-            .where(
-              (c) =>
-                  _allowsOrdinaryFallback(c) &&
-                  !_attempts.contains(c) &&
-                  !_refusedRoutes.contains(_mediaRouteKey(c)),
-            );
+        final candidates = options();
+        final groups = <String, List<CinemaPlaybackCandidate>>{};
+        for (final c in candidates) {
+          groups.putIfAbsent(c.source.id, () => []).add(c);
+          final known = _probeResults[c.key];
+          if (known?.ok == true) measured.putIfAbsent(c.key, () => known!);
+        }
+        final fair = [
+          for (
+            var round = 0;
+            groups.values.any((g) => g.length > round);
+            round++
+          )
+            for (final group in groups.values)
+              if (group.length > round) group[round],
+        ];
         for (final target in CinemaRouteProbeBatch.plan(
-          candidates,
-          limit: 24,
+          fair,
+          limit: fair.length,
         )) {
-          if (active >=
-                  (_qualityMode == CinemaPlaybackQuality.fullHD ? 2 : 4) ||
-              started.length >= 20) {
-            break;
+          if (active >= 4) break;
+          if (target.candidates.every((c) => measured.containsKey(c.key)) ||
+              !started.add(target.identity)) {
+            continue;
           }
-          if (!started.add(target.identity)) continue;
           active++;
           unawaited(
             _mediaProbe
@@ -3810,34 +3857,31 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   target.headers,
                   hls: target.hls,
                   cancel: token,
-                  timeout: const Duration(seconds: 5),
+                  timeout: const Duration(seconds: 4),
                 )
                 .then<void>((result) {
                   if (token.isCancelled || !_isCurrent(generation)) return;
                   for (final c in target.candidates) {
+                    measured[c.key] = result;
                     _probeResults[c.key] = result;
-                  }
-                  if (result.ok && !ready.isCompleted) {
-                    ready.complete(target.candidates.first);
                   }
                 }, onError: (_) {})
                 .whenComplete(() => active--),
           );
         }
-        if (active == 0 && reading == 0 && _discovering == null) break;
-        final first = await Future.any<CinemaPlaybackCandidate?>([
-          ready.future,
-          Future<CinemaPlaybackCandidate?>.delayed(
-            const Duration(milliseconds: 140),
-            () => null,
-          ),
+        final selected = best();
+        if (measured[selected?.key]?.confirmedQualityTier == 1080 ||
+            active == 0 && reading == 0 && !discovering) {
+          return selected;
+        }
+        await Future.any([
+          Future<void>.delayed(const Duration(milliseconds: 100)),
+          token.whenCancel,
         ]);
-        if (first != null) return first;
       }
-      return null;
+      return _isCurrent(generation) && !token.isCancelled ? best() : null;
     } finally {
       token.cancel('线路比较结束');
-      if (!ready.isCompleted) ready.complete(null);
     }
   }
 
@@ -3925,17 +3969,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         _qualityMode = CinemaPlaybackQuality.fullHD;
         _discovering ??= _discoverRoutes();
         _manualRouteSelection = false;
-        if (_allowsOrdinaryFallback(anchor) &&
-            !_attempts.contains(anchor) &&
-            !_refusedRoutes.contains(_mediaRouteKey(anchor))) {
+        final next = await _reachableAfterRefusal(anchor, generation);
+        if (!_isCurrent(generation)) return;
+        if (next != null) {
           await _playEpisode(
-            anchor.routeIndex,
-            anchor.episodeIndex,
-            title: anchor.title,
-            source: anchor.source,
+            next.routeIndex,
+            next.episodeIndex,
+            title: next.title,
+            source: next.source,
             resumeAt: position,
             automatic: true,
-            selectionNotice: '正在切换到${anchor.source.name}',
+            selectionNotice: '正在切换到${next.source.name}',
           );
           return;
         }
@@ -4263,6 +4307,19 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   CinemaRouteMeasurement? _bestSourcePriority(
     Iterable<CinemaRouteMeasurement> values,
   ) {
+    if (_qualityMode == CinemaPlaybackQuality.fullHD || !_compareMacRoutes) {
+      final measured = values.toList();
+      final best = cinemaBestRegularCandidate(
+        measured.map((r) => r.candidate),
+        results: {for (final r in measured) r.candidate.key: r.result},
+        supported: NakuDevice.isTV
+            ? CinemaTVMediaEnvironment.instance.supports
+            : null,
+      );
+      if (best != null) {
+        return measured.firstWhere((r) => r.candidate.key == best.key);
+      }
+    }
     if (_compareMacRoutes) {
       final usable = values.where((value) => value.usable).toList();
       final best = cinemaBestConfirmedCandidate(

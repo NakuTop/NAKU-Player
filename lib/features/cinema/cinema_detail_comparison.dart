@@ -39,7 +39,7 @@ class CinemaDetailComparison extends ChangeNotifier {
   final CinemaPlaybackCatalogue catalogue;
   final CinemaMediaProbe _probe;
   final bool _ownsProbe, preferFullHD;
-  static const _quickLimit = 4, _quickParallelism = 2;
+  static const _quickParallelism = 2;
   static const _quickTimeout = Duration(milliseconds: 2400);
   final _quickResults = <String, CinemaMediaProbeResult>{};
   final CinemaTitle _initialTitle;
@@ -69,7 +69,7 @@ class CinemaDetailComparison extends ChangeNotifier {
   }
 
   bool get fullHDProbeComplete =>
-      preferFullHD && _quickResults.length >= _quickLimit;
+      preferFullHD && !running && _quickResults.isNotEmpty;
 
   CinemaPlaybackCandidate? get streaming4K => candidates
       .where((c) => isUltraHD(c) || results[c.key]?.hasUhdVariant == true)
@@ -105,13 +105,11 @@ class CinemaDetailComparison extends ChangeNotifier {
     final options = preferFullHD
         ? candidates.where((c) => !isUltraHD(c)).toList()
         : candidates;
-    final hd = preferFullHD
-        ? options
-              .where((c) => results[c.key]?.confirmedQualityTier == 1080)
-              .toList()
-        : const <CinemaPlaybackCandidate>[];
+    if (preferFullHD) {
+      return cinemaBestRegularCandidate(options, results: results);
+    }
     return cinemaBestConfirmedCandidate(
-      hd.isEmpty ? options : hd,
+      options,
       results: results,
       preferSpeed: Platform.isMacOS || Platform.isAndroid,
     );
@@ -276,7 +274,10 @@ class CinemaDetailComparison extends ChangeNotifier {
     Iterable<CinemaPlaybackCandidate> fairCandidates() sync* {
       final groups = <String, List<CinemaPlaybackCandidate>>{};
       for (final candidate in candidates) {
-        if (preferFullHD && isUltraHD(candidate)) continue;
+        if (preferFullHD &&
+            (isUltraHD(candidate) || cinemaCandidateQuality(candidate) < 0)) {
+          continue;
+        }
         groups.putIfAbsent(candidate.title.key, () => []).add(candidate);
       }
       for (final group in groups.values) {
@@ -341,10 +342,7 @@ class CinemaDetailComparison extends ChangeNotifier {
           final target = existing ?? next;
           if (existing == null && !completed.containsKey(next.identity)) {
             if (preferFullHD &&
-                (foundHD ||
-                    measuring + queued.length >= _quickParallelism ||
-                    completed.length + measuring + queued.length >=
-                        _quickLimit)) {
+                (foundHD || measuring + queued.length >= _quickParallelism)) {
               continue;
             }
             targets[next.identity] = next;

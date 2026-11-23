@@ -47,10 +47,11 @@ CinemaVideoMetadata? cinemaVideoMetadata(
   }
 }
 
-/// Read the first enabled video track. Segment sizes can span the whole movie,
-/// while everything needed for this decision is in its completed Tracks header.
-CinemaVideoMetadata? _matroska(Uint8List bytes) {
-  final data = ByteData.sublistView(bytes);
+Iterable<({int id, int start, int end})> _ebmlChildren(
+  Uint8List bytes,
+  int start,
+  int end,
+) sync* {
   int cursor = 0;
   int vint(int end, {required bool id}) {
     if (cursor >= end || bytes[cursor] == 0) throw const FormatException();
@@ -73,22 +74,101 @@ CinemaVideoMetadata? _matroska(Uint8List bytes) {
     return unknown ? -1 : value;
   }
 
-  Iterable<({int id, int start, int end})> children(int start, int end) sync* {
-    for (var at = start, n = 0; at < end && n++ < 8192;) {
-      cursor = at;
-      final id = vint(end, id: true),
-          size = vint(end, id: false),
-          content = cursor;
-      if (id == 0x18538067 && (size < 0 || size > end - content)) {
-        yield (id: id, start: content, end: end);
-        return;
-      }
-      if (size < 0 || size > end - content) return;
-      at = content + size;
-      yield (id: id, start: content, end: at);
+  for (var at = start, n = 0; at < end && n++ < 8192;) {
+    cursor = at;
+    final id = vint(end, id: true),
+        size = vint(end, id: false),
+        content = cursor;
+    if (id == 0x18538067 && (size < 0 || size > end - content)) {
+      yield (id: id, start: content, end: end);
+      return;
     }
+    if (size < 0 || size > end - content) return;
+    at = content + size;
+    yield (id: id, start: content, end: at);
+  }
+}
+
+/// Matroska stores chapter, tag and seek tables at offsets relative to the
+/// Segment payload. libmpv may request these before it presents frame one.
+/// Only warm explicitly indexed metadata outside the prefix already in flight.
+List<({int start, int end})> cinemaMatroskaStartupRanges(
+  Uint8List bytes,
+  int fileLength,
+  int prefixLength,
+) {
+  final ranges = <({int start, int end})>[];
+  if (bytes.length < 12 ||
+      ByteData.sublistView(bytes).getUint32(0) != 0x1a45dfa3) {
+    return ranges;
+  }
+  int number(int a, int b) {
+    if (b <= a || b - a > 8) return -1;
+    int v = 0;
+    for (var i = a; i < b; i++) {
+      v = (v << 8) | bytes[i];
+    }
+    return v;
   }
 
+  try {
+    final segment = _ebmlChildren(
+      bytes,
+      0,
+      bytes.length,
+    ).where((e) => e.id == 0x18538067).firstOrNull;
+    if (segment == null) return ranges;
+    final offsets = <int>{};
+    for (final head in _ebmlChildren(
+      bytes,
+      segment.start,
+      segment.end,
+    ).where((e) => e.id == 0x114d9b74)) {
+      for (final seek in _ebmlChildren(
+        bytes,
+        head.start,
+        head.end,
+      ).where((e) => e.id == 0x4dbb)) {
+        int id = -1, relative = -1;
+        for (final field in _ebmlChildren(bytes, seek.start, seek.end)) {
+          if (field.id == 0x53ab) id = number(field.start, field.end);
+          if (field.id == 0x53ac) relative = number(field.start, field.end);
+        }
+        if (!const {
+          0x1c53bb6b,
+          0x1254c367,
+          0x1043a770,
+          0x1654ae6b,
+          0x1549a966,
+        }.contains(id)) {
+          continue;
+        }
+        if (relative < 0 || relative >= fileLength - segment.start) continue;
+        final start = segment.start + relative;
+        if (start >= prefixLength) offsets.add(start);
+      }
+      if (offsets.isNotEmpty) break;
+    }
+    for (final start in offsets.toList()..sort()) {
+      final end = (start + 128 * 1024).clamp(start, fileLength);
+      if (ranges.isNotEmpty && start - ranges.last.start < 1024 * 1024) {
+        final prior = ranges.removeLast();
+        ranges.add((start: prior.start, end: end));
+      } else {
+        ranges.add((start: start, end: end));
+      }
+    }
+  } on FormatException {
+    return [];
+  } on RangeError {
+    return [];
+  }
+  return ranges;
+}
+
+/// Read the first enabled video track from the Tracks header.
+CinemaVideoMetadata? _matroska(Uint8List bytes) {
+  final data = ByteData.sublistView(bytes);
   int number(int start, int end) {
     if (end == start || end - start > 4) return -1;
     int n = 0;
@@ -98,28 +178,31 @@ CinemaVideoMetadata? _matroska(Uint8List bytes) {
     return n;
   }
 
-  for (final segment in children(
+  for (final segment in _ebmlChildren(
+    bytes,
     0,
     bytes.length,
   ).where((e) => e.id == 0x18538067)) {
-    for (final tracks in children(
+    for (final tracks in _ebmlChildren(
+      bytes,
       segment.start,
       segment.end,
     ).where((e) => e.id == 0x1654ae6b)) {
-      for (final entry in children(
+      for (final entry in _ebmlChildren(
+        bytes,
         tracks.start,
         tracks.end,
       ).where((e) => e.id == 0xae)) {
         int type = 0, enabled = 1, width = 0, height = 0;
         String codec = '';
-        for (final field in children(entry.start, entry.end)) {
+        for (final field in _ebmlChildren(bytes, entry.start, entry.end)) {
           if (field.id == 0x83) type = number(field.start, field.end);
           if (field.id == 0xb9) enabled = number(field.start, field.end);
           if (field.id == 0x86 && field.end - field.start <= 64) {
             codec = String.fromCharCodes(bytes, field.start, field.end);
           }
           if (field.id == 0xe0) {
-            for (final p in children(field.start, field.end)) {
+            for (final p in _ebmlChildren(bytes, field.start, field.end)) {
               if (p.id == 0xb0) width = number(p.start, p.end);
               if (p.id == 0xba) height = number(p.start, p.end);
             }

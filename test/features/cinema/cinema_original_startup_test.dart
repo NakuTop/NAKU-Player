@@ -46,6 +46,93 @@ class _RangeEngine extends CinemaOriginalEngine {
 
 void main() {
   test(
+    'a Matroska stream primes its remote Cues and Tags without reading the intervening film',
+    () async {
+      final fileSize = 3 << 20;
+      final indexStart = 2 << 20;
+      final header = <int>[
+        0x1a,
+        0x45,
+        0xdf,
+        0xa3,
+        0x80,
+        0x18,
+        0x53,
+        0x80,
+        0x67,
+        0xff,
+      ];
+      List<int> seek(List<int> id, int at) => [
+        0x4d,
+        0xbb,
+        0x8d,
+        0x53,
+        0xab,
+        0x84,
+        ...id,
+        0x53,
+        0xac,
+        0x83,
+        (at >> 16) & 255,
+        (at >> 8) & 255,
+        at & 255,
+      ];
+      final head = Uint8List(384 * 1024)
+        ..setAll(0, [
+          ...header,
+          0x11,
+          0x4d,
+          0x9b,
+          0x74,
+          0xa0,
+          ...seek([0x1c, 0x53, 0xbb, 0x6b], indexStart - header.length),
+          ...seek([0x12, 0x54, 0xc3, 0x67], indexStart + 2048 - header.length),
+        ]);
+      final indexRead = Completer<void>(), ranges = <String>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((r) async {
+        final range = r.headers.value('Range')!;
+        ranges.add(range);
+        final match = RegExp(r'bytes=(\d+)-(\d+)').firstMatch(range)!;
+        final a = int.parse(match[1]!), b = int.parse(match[2]!);
+        r.response
+          ..statusCode = 206
+          ..headers.set('Content-Range', 'bytes $a-$b/$fileSize');
+        if (a == 0) {
+          r.response.add(head.sublist(0, 32768));
+          await r.response.flush();
+          await indexRead.future.timeout(const Duration(seconds: 2));
+          r.response.add(head.sublist(32768));
+        } else {
+          r.response.add(Uint8List(b - a + 1));
+          indexRead.complete();
+        }
+        await r.response.close();
+      });
+      try {
+        final url = Uri.parse('http://127.0.0.1:${server.port}/episode.mkv');
+        final lease = OriginalStream(
+          url,
+          const {},
+          OriginalFile(1, 'S01E01.mkv', fileSize),
+          () async {},
+        );
+        await CinemaOriginalEngine().readOriginalHead(
+          lease,
+          CancelToken(),
+          const Duration(seconds: 5),
+        );
+        expect(ranges, [
+          'bytes=0-393215',
+          'bytes=$indexStart-${indexStart + 2048 + 128 * 1024 - 1}',
+        ]);
+      } finally {
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
     'a widely seeded compact encode with an encoder setting matches only its own episode',
     () {
       final work = OriginalWork(

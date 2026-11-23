@@ -194,8 +194,7 @@ class CinemaMediaProbeResult {
     }
     if (w >= 7680 || h >= 4320) return 4320;
     if (w >= 3840 || h >= 2160) return 2160;
-    if (w >= 1800 || h >= 1000) return 1080;
-    if (w >= 1200 || h >= 700) return 720;
+    if (h >= 1080) return 1080;
     return h;
   }
 

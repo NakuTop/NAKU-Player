@@ -416,11 +416,11 @@ class CinemaOriginalEngine {
           budget: budget - clock.elapsed,
         );
         if (result.isCompleted || token.isCancelled) return;
-        onFirstBytes?.call();
         final video = await readOriginalHead(
           lease,
           token,
           budget - clock.elapsed,
+          onFirstBytes: onFirstBytes,
         );
         if (result.isCompleted || token.isCancelled) return;
         if (video != null) {
@@ -472,8 +472,9 @@ class CinemaOriginalEngine {
   Future<CinemaVideoMetadata?> readOriginalHead(
     OriginalStream stream,
     CancelToken cancel,
-    Duration remaining,
-  ) async {
+    Duration remaining, {
+    void Function()? onFirstBytes,
+  }) async {
     if (cancel.isCancelled || remaining <= Duration.zero) {
       throw const FormatException('原画首段等待结束');
     }
@@ -481,26 +482,65 @@ class CinemaOriginalEngine {
     final timer = Timer(remaining, () => client.close(force: true));
     unawaited(cancel.whenCancel.then((_) => client.close(force: true)));
     try {
-      final n = min(128 * 1024, stream.file.length);
+      // Keep the alternate live while the winner starts delivering consecutive
+      // media data. A Matroska tracks header alone does not feed the decoder.
+      final n = min(384 * 1024, stream.file.length);
       if (n < 1) throw const FormatException('原画文件为空');
-      final request = await client.getUrl(stream.url);
-      request.followRedirects = false;
-      request.headers.set(HttpHeaders.rangeHeader, 'bytes=0-${n - 1}');
-      final response = await request.close();
-      if (response.statusCode != HttpStatus.partialContent ||
-          response.headers.value(HttpHeaders.contentRangeHeader) !=
-              'bytes 0-${n - 1}/${stream.file.length}') {
-        throw const FormatException('原画首段不可读');
-      }
-      final head = BytesBuilder(copy: false);
-      await for (final bytes in response) {
-        if (head.length + bytes.length > n) {
-          throw const FormatException('原画首段范围有误');
+      Future<HttpClientResponse> range(int start, int end) async {
+        final request = await client.getUrl(stream.url);
+        request.followRedirects = false;
+        request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-${end - 1}');
+        final response = await request.close();
+        if (response.statusCode != HttpStatus.partialContent ||
+            response.headers.value(HttpHeaders.contentRangeHeader) !=
+                'bytes $start-${end - 1}/${stream.file.length}') {
+          throw const FormatException('原画分段不可读');
         }
-        head.add(bytes);
-        if (head.length == n) return cinemaVideoMetadata(head.takeBytes());
+        return response;
       }
-      throw const FormatException('节点未送达完整首段');
+
+      Future<void> warm(int start, int end) async {
+        final response = await range(start, end);
+        int count = 0;
+        await for (final bytes in response) {
+          count += bytes.length;
+          if (count > end - start) throw const FormatException('原画索引范围有误');
+        }
+        if (count != end - start) throw const FormatException('节点未送达原画索引');
+      }
+
+      final head = Uint8List(n);
+      int used = 0;
+      bool inspected = false;
+      Future<Object?>? index;
+      void warmIndex() {
+        final spans = cinemaMatroskaStartupRanges(
+          Uint8List.sublistView(head, 0, used),
+          stream.file.length,
+          n,
+        );
+        if (spans.isNotEmpty) {
+          index = Future.wait([
+            for (final span in spans) warm(span.start, span.end),
+          ]).then<Object?>((_) => null, onError: (Object e) => e);
+        }
+      }
+
+      await for (final bytes in await range(0, n)) {
+        if (used + bytes.length > n) throw const FormatException('原画首段范围有误');
+        if (used == 0 && bytes.isNotEmpty) onFirstBytes?.call();
+        head.setAll(used, bytes);
+        used += bytes.length;
+        if (!inspected && used >= 16 * 1024) {
+          inspected = true;
+          warmIndex();
+        }
+      }
+      if (used != n) throw const FormatException('节点未送达完整首段');
+      if (index == null) warmIndex();
+      final failure = await index;
+      if (failure != null) throw failure;
+      return cinemaVideoMetadata(head);
     } finally {
       timer.cancel();
       client.close(force: true);

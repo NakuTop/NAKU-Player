@@ -92,9 +92,49 @@ class Probe extends CinemaMediaProbe {
 }
 
 void main() {
+  test(
+    'later matching full HD beats a much faster 720p stream after the first four providers',
+    () async {
+      final sources = List.generate(
+        6,
+        (n) => first.copyWith(id: 'provider-$n'),
+      );
+      final probe = Probe()
+        ..respond = (url) {
+          final full = url.contains('provider-5.');
+          return CinemaMediaProbeResult(
+            ok: true,
+            elapsedMs: 10,
+            width: full ? 1920 : 1280,
+            height: full ? 1080 : 720,
+            mbps: full ? 12 : 110,
+            qualityEvidence: CinemaQualityEvidence.videoHeader,
+          );
+        };
+      final compare = CinemaDetailComparison(
+        title: movie(sources.first),
+        source: sources.first,
+        variants: sources.map(movie),
+        sources: sources,
+        repository: Repository(),
+        probe: probe,
+        preferFullHD: true,
+      );
+      addTearDown(compare.dispose);
+      addTearDown(() => probe.transport.dio.close(force: true));
+      await compare.start();
+      expect(compare.measuredRecommendation?.source.id, 'provider-5');
+      expect(
+        compare
+            .results[compare.measuredRecommendation!.key]!
+            .confirmedQualityTier,
+        1080,
+      );
+    },
+  );
   for (final succeeds in [true, false]) {
     test(
-      '1080p quick check bounds parallelism, stops at a confirmed route or four failures and leaves UHD untouched ($succeeds)',
+      '1080p quick check bounds parallelism, stops at a confirmed route or exhausts regular routes and leaves UHD untouched ($succeeds)',
       () async {
         final sources = List.generate(
           8,
@@ -128,16 +168,20 @@ void main() {
           ),
         );
         await firstPass;
-        final expected = succeeds ? 2 : 4;
+        final expected = succeeds ? 2 : 6;
         expect(probe.calls, hasLength(expected));
         comparison.addVariants(sources.skip(6).map(movie));
-        await Future<void>.delayed(Duration.zero);
-        expect(probe.calls, hasLength(expected));
+        await comparison.start();
+        while (comparison.running) {
+          await Future<void>.delayed(Duration.zero);
+        }
+        final afterDiscovery = succeeds ? expected : 8;
+        expect(probe.calls, hasLength(afterDiscovery));
         expect(probe.calls, everyElement(endsWith('/HD.m3u8')));
         expect(comparison.streaming4K?.episode.name, '4K');
         expect(comparison.measuredRecommendation != null, succeeds);
         await comparison.start(refresh: true);
-        expect(probe.calls.length, 2 * expected);
+        expect(probe.calls.length, 2 * afterDiscovery);
       },
     );
   }

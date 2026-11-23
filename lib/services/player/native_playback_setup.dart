@@ -56,6 +56,9 @@ Future<void> configureNativePlayback(
 Future<void> configureLocalOriginalPlayback(NativePlayer player) async {
   await player.setProperty('http-proxy', '');
   await player.setProperty('network-timeout', '90');
+  // The engine has primed a contiguous range. Present a first frame while
+  // read-ahead continues; normal underrun buffering resumes during playback.
+  await player.setProperty('cache-pause-initial', 'no');
   await player.setProperty('cache-pause-wait', '1');
   await player.setProperty('slang', 'zh-Hans,zh-CN,zh,chi,zho,zh-Hant,zh-TW');
 }
