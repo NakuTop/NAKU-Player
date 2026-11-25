@@ -1,5 +1,62 @@
 [
   {
+    "tag_name": "android-tv-v3.2.26+154",
+    "name": "NAKU Android TV 3.2.26",
+    "body": "安卓 3.2.26\n\n电视播放控制栏显示实际分辨率，支持用遥控器换源和重新测速。手机详情页和播放器增加换源入口，次要工具收进播放设置。观看历史记录已发现的其他片源，恢复同一集时可继续换线。优化高密度屏幕的弹幕绘制和弹幕缓存写入。\n",
+    "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.26%2B154",
+    "published_at": "2026-11-25T14:21:30Z",
+    "draft": false,
+    "prerelease": false,
+    "assets": [
+      {
+        "name": "NAKU-TV-3.2.26-Android-universal.apk",
+        "state": "uploaded",
+        "size": 165877219,
+        "digest": "sha256:e1dc30a3bf4477484644566f23ae970458139d694713e1764eaaba6ee4efbfa6",
+        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.26%2B154/NAKU-TV-3.2.26-Android-universal.apk",
+        "build": 154,
+        "deltas": [
+          {
+            "name": "NAKU-TV-153-154.gdiff.gz",
+            "state": "uploaded",
+            "size": 26561364,
+            "digest": "sha256:cbf683e0cc516201b454725b70784a16fc99c561b5989a8a9abc6f0d9ee98ddc",
+            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.26%2B154/NAKU-TV-153-154.gdiff.gz",
+            "format": "gdiff4-gzip",
+            "base_version": "3.2.25",
+            "base_build": 153,
+            "base_sha256": "0a6366ecad57b2217294d576cdacc15f8d224f8e895b625758e6d2eea7f39883",
+            "target_sha256": "e1dc30a3bf4477484644566f23ae970458139d694713e1764eaaba6ee4efbfa6"
+          },
+          {
+            "name": "NAKU-TV-152-154.gdiff.gz",
+            "state": "uploaded",
+            "size": 26561352,
+            "digest": "sha256:63e0cd75ca3ed09eaa663e43c4dfd916b8149214aaa138e2dd40a8ed2087472b",
+            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.26%2B154/NAKU-TV-152-154.gdiff.gz",
+            "format": "gdiff4-gzip",
+            "base_version": "3.2.24",
+            "base_build": 152,
+            "base_sha256": "e660885e2aa4961f1f5e81d1ab44e96525ab7b8f51e83a575a319fdc17ef396f",
+            "target_sha256": "e1dc30a3bf4477484644566f23ae970458139d694713e1764eaaba6ee4efbfa6"
+          },
+          {
+            "name": "NAKU-TV-151-154.gdiff.gz",
+            "state": "uploaded",
+            "size": 26561353,
+            "digest": "sha256:400a65bb9066222bdc584622974db4d39610ebf49f0c010cb2b12d869b1f223f",
+            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.26%2B154/NAKU-TV-151-154.gdiff.gz",
+            "format": "gdiff4-gzip",
+            "base_version": "3.2.23",
+            "base_build": 151,
+            "base_sha256": "55999b9c62982fd3f5563895a00bf3e73992026fb01df9ce7760f7728feca4d8",
+            "target_sha256": "e1dc30a3bf4477484644566f23ae970458139d694713e1764eaaba6ee4efbfa6"
+          }
+        ]
+      }
+    ]
+  },
+  {
     "tag_name": "android-tv-v3.2.25+153",
     "name": "NAKU Android TV 3.2.25",
     "body": "3.2.25 · 自动选择最快的 1080p 线路\n\n自动播放与原画回退会比较同一集可用的常规线路。优先实测 1080p，在相同画质中选择实测加载最快的线路。已完成的检测直接沿用，手动选择片源和线路仍优先。\n",
@@ -320,24 +377,6 @@
         "size": 165755880,
         "digest": "sha256:65354d20eb3ba27c5cde3466e85b117fc096a214b92bc296d8591a0966854937",
         "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.19%2B147/NAKU-TV-3.2.19-Android-universal.apk"
-      }
-    ]
-  },
-  {
-    "tag_name": "android-tv-v3.2.13+133",
-    "name": "NAKU Android TV 3.2.13",
-    "body": "同步通用异译搜索、实测画质选择、明确标记广告跳过、旧下载补存弹幕和新版豆瓣榜单。保留 Home Display、手机投屏到电视及遥控器操作。相关 316 项自动测试通过，2 项条件测试跳过。",
-    "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.13%2B133",
-    "published_at": "2026-11-16T14:05:52.289482+00:00",
-    "draft": false,
-    "prerelease": false,
-    "assets": [
-      {
-        "name": "NAKU-TV-3.2.13-Android-universal.apk",
-        "state": "uploaded",
-        "size": 92158404,
-        "digest": "sha256:01b4358f01b5f195308495fbc368709a4b8cc138982d1f1f4850caae83f79890",
-        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.13%2B133/NAKU-TV-3.2.13-Android-universal.apk"
       }
     ]
   }
