@@ -185,6 +185,16 @@ class CinemaDanmakuClock {
   }
 }
 
+List<int> _encodeDanmakuCache(Map<String, Object?> snapshot) {
+  final comments = snapshot['comments'] as List<DanmakuEntry>;
+  return utf8.encode(
+    jsonEncode({
+      ...snapshot,
+      'comments': [for (final entry in comments) entry.toJson()],
+    }),
+  );
+}
+
 class CinemaDanmakuController extends ChangeNotifier {
   CinemaDanmakuController(
     this.player,
@@ -690,20 +700,23 @@ class CinemaDanmakuController extends ChangeNotifier {
 
   Future<void> _save() {
     if (offlineDirectory != null) return Future.value();
-    final text = jsonEncode({
+    final snapshot = <String, Object?>{
       'source': source,
       'enabled': enabled,
       'offset': offset,
-      'comments': entries.map((e) => e.toJson()).toList(),
+      'comments': List<DanmakuEntry>.of(entries),
       'windowed': _windowed,
       'multiSource': _multiSourceData,
-    });
+    };
     _writes = _writes.catchError((Object _) {}).then((_) async {
-      if (utf8.encode(text).length > maxDanmakuImportBytes) return;
+      final bytes = (snapshot['comments'] as List).length >= 256
+          ? await compute(_encodeDanmakuCache, snapshot)
+          : _encodeDanmakuCache(snapshot);
+      if (bytes.length > maxDanmakuImportBytes) return;
       final file = await _file();
       await file.parent.create(recursive: true);
       final tmp = File('${file.path}.tmp');
-      await tmp.writeAsString(text, flush: true);
+      await tmp.writeAsBytes(bytes, flush: true);
       await tmp.rename(file.path);
       CinemaDiskCacheFiles.instance.onWrite?.call();
       final files = await file.parent
@@ -1077,10 +1090,19 @@ class CinemaDanmakuOverlay extends StatelessWidget {
             controller.enabled &&
             (!NakuDevice.isTV || controller.entries.isNotEmpty),
         maintainState: true,
-        child: canvas.DanmakuScreen(
-          key: ObjectKey(controller),
-          option: controller.option,
-          createdController: controller.attach,
+        child: MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+            devicePixelRatio: Platform.isAndroid
+                ? MediaQuery.devicePixelRatioOf(
+                    context,
+                  ).clamp(1.0, 1.5).toDouble()
+                : MediaQuery.devicePixelRatioOf(context),
+          ),
+          child: canvas.DanmakuScreen(
+            key: ObjectKey(controller),
+            option: controller.option,
+            createdController: controller.attach,
+          ),
         ),
       ),
     ),

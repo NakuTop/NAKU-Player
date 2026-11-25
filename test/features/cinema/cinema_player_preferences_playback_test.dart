@@ -4092,6 +4092,15 @@ void main() {
         await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
         await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
         await tester.pump();
+        expect(FocusManager.instance.primaryFocus?.debugLabel, 'TV sources');
+        await tester.sendKeyEvent(LogicalKeyboardKey.select);
+        await tester.pumpAndSettle();
+        expect(find.text('重新测速'), findsOneWidget);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(FocusManager.instance.primaryFocus?.debugLabel, 'TV sources');
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.pump();
         expect(FocusManager.instance.primaryFocus?.debugLabel, 'TV subtitles');
         await tester.sendKeyEvent(LogicalKeyboardKey.select);
         await tester.pumpAndSettle();

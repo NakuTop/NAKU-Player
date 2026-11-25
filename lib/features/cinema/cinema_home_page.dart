@@ -963,7 +963,14 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         ? _together
                         : null,
                     store: _store,
-                    variants: variants,
+                    variants: [
+                      ...variants,
+                      ...?resumeHistory?.variants,
+                      if (resumeHistory != null && offlinePaths == null)
+                        ...?_resources
+                            .peek(resumeHistory.title, _activeSources)
+                            ?.variants,
+                    ],
                     repository: _repository,
                     ratingsRepository: _ratings,
                     onRecommendationSelected: (recommendation) async {
@@ -6834,7 +6841,37 @@ class _TitleDetailsState extends State<_TitleDetails> {
     CinemaTitle title,
     AsyncSnapshot<CinemaTitle> snapshot,
   ) {
-    if (_compactQuality) return _qualityControls(title, snapshot);
+    if (_compactQuality) {
+      final quality = _qualityControls(title, snapshot);
+      if (!Platform.isAndroid || _variants.length < 2) return quality;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          quality,
+          PopupMenuButton<CinemaTitle>(
+            tooltip: '换源',
+            onSelected: _selectAndPlayVariant,
+            itemBuilder: (_) => [
+              for (final v in _variants.where(
+                (v) => v.sourceId != originalCatalogSource.id,
+              ))
+                PopupMenuItem(value: v, child: _variantLabel(v)),
+            ],
+            child: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.swap_horiz, size: 20),
+                  SizedBox(width: 6),
+                  Text('换源'),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    }
     if (_onlyOriginalPlayable) title = _originalAnchor!;
     final recommendedKey = _variantChosen || _routeChosen
         ? null

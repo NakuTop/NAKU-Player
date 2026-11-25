@@ -69,6 +69,33 @@ void main() {
   }
 
   test(
+    'season history restores discovered providers after restart without saving their URLs',
+    () async {
+      final a = _title('a', name: '流人第一季', category: '欧美剧');
+      final b = _title('b', name: '流人第1季', category: '欧美剧');
+      final storage = store();
+      await storage.recordProgress(
+        title: a,
+        routeIndex: 0,
+        episodeIndex: 0,
+        positionSeconds: 37,
+        variants: [a, b],
+      );
+      await storage.recordProgress(
+        title: a,
+        routeIndex: 0,
+        episodeIndex: 0,
+        positionSeconds: 42,
+      );
+      final restored = store();
+      await restored.load();
+      final row = restored.historyFor(a)!;
+      expect(row.positionSeconds, 42);
+      expect(row.variants.single.key, b.key);
+      expect(row.variants.single.routes, isEmpty);
+    },
+  );
+  test(
     'favorites and history keep the original reference through export and restore',
     () async {
       final a = store();

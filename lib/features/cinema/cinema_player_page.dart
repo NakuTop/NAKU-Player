@@ -736,6 +736,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   _tvDeferredFailure;
   final _tvTimeline = CinemaTVSeekPreview();
   final _tvTimelineFocus = FocusNode(debugLabel: 'TV timeline');
+  final _tvSourceFocus = FocusNode(debugLabel: 'TV sources');
   final _tvPlayFocus = FocusNode(debugLabel: 'TV play');
   final _tvEpisodeFocus = FocusNode(debugLabel: 'TV episodes');
   final _tvSubtitleFocus = FocusNode(debugLabel: 'TV subtitles');
@@ -822,6 +823,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
     final controlNodes = [
       _tvPlayFocus,
+      _tvSourceFocus,
       _tvEpisodeFocus,
       _tvSubtitleFocus,
       _tvDanmakuFocus,
@@ -1007,6 +1009,23 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   @override
   void onWindowLeaveFullScreen() => _fullscreenChanged(false);
+
+  bool get _canChooseSource => widget.offlinePaths == null && !_usesNASPlayback;
+  Future<void> _showSourcePicker() {
+    _discovering ??= _discoverRoutes();
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      constraints: const BoxConstraints(maxWidth: 820),
+      builder: (sheet) => SizedBox(
+        height: MediaQuery.sizeOf(sheet).height * .8,
+        child: ValueListenableBuilder<int>(
+          valueListenable: _panelRevision,
+          builder: (_, _, _) => _episodePanel(),
+        ),
+      ),
+    );
+  }
 
   Future<void> _showEpisodes() {
     if (_original != null) _discovering ??= _discoverRoutes();
@@ -1699,6 +1718,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     try {
       await widget.store.recordProgress(
         title: current.title,
+        variants: _catalogue.variants,
         routeIndex: current.routeIndex,
         episodeIndex: current.episodeIndex,
         positionSeconds: progress.position,
@@ -3058,7 +3078,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       if (_playback != null) '在线搜索字幕': () => unawaited(_showOnlineSubtitles()),
       '弹幕': () => unawaited(_showDanmaku()),
       '播放倍速': _showSpeedOptions,
-      '线路 / 选集': _showEpisodes,
+      '换源 / 选集': _showEpisodes,
+      widget.store.isFavorite(_title) ? '取消收藏' : '收藏': _toggleFavorite,
+      if (_playback != null) '保存截图': _screenshot,
       if (Platform.isAndroid && !NakuDevice.isTV && widget.offlinePaths == null)
         '发送到电视': () => unawaited(_castCurrent()),
       if (_hasNext) '下一集': () => _changeEpisode(1),
@@ -3152,7 +3174,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   Icons.fullscreen,
                   _toggleFullscreen,
                 ),
-              action('线路 / 选集', Icons.playlist_play, _showEpisodes),
+              action('换源 / 选集', Icons.swap_horiz, _showEpisodes),
             ],
           ),
         if (!overlay) ...[
@@ -4352,7 +4374,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     bool automatic = false,
   }) async {
     if (_closing || _selection?.key == best.candidate.key) return;
-    if (NakuDevice.isTV && _tvSheetOpen) return;
+    if (automatic && NakuDevice.isTV && _tvSheetOpen) return;
     if (!automatic) _manualRouteSelection = true;
     final position = _positionForEpisode(_routeIndex, _episodeIndex);
     final play = NakuDevice.isTV && _playback?.player.state.buffering == true
@@ -4423,8 +4445,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Future<void> _probeRoutes({bool automatic = false}) async {
-    if (_original != null || _probingRoutes || _selection == null) return;
-    if (NakuDevice.isTV &&
+    if ((automatic && _original != null) ||
+        _probingRoutes ||
+        _selection == null) {
+      return;
+    }
+    if (automatic &&
+        NakuDevice.isTV &&
         (_playback == null || !_tvBackgroundAllowed(_playback!))) {
       if (automatic) _automaticProbePending = _autoBestRoute;
       return;
@@ -4436,7 +4463,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
     _probeTokens.clear();
     final token = _routeProbeToken = CancelToken();
-    _ownOptionalProbe(token);
+    if (automatic) {
+      _ownOptionalProbe(token);
+    } else {
+      _probeTokens.add(token);
+    }
     _updateProbeDisplay(() {
       _probingRoutes = true;
       _probingAutomatic = automatic;
@@ -4460,7 +4491,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }
       if (!_isCurrent(generation) ||
           token.isCancelled ||
-          (NakuDevice.isTV &&
+          (automatic &&
+              NakuDevice.isTV &&
               (_playback == null || !_tvBackgroundAllowed(_playback!)))) {
         return;
       }
@@ -4489,7 +4521,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         );
       }
       final targets = CinemaRouteProbeBatch.plan([
-        current,
+        if (_original == null) current,
         ..._catalogue
             .matching(current)
             .where(
@@ -4510,7 +4542,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         onResult: (target, result) {
           if (!_isCurrent(generation) ||
               token.isCancelled ||
-              (NakuDevice.isTV &&
+              (automatic &&
+                  NakuDevice.isTV &&
                   (_playback == null || !_tvBackgroundAllowed(_playback!)))) {
             return;
           }
@@ -4539,7 +4572,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       final measurements = await measure(targets);
       if (!_isCurrent(generation) ||
           token.isCancelled ||
-          (NakuDevice.isTV &&
+          (automatic &&
+              NakuDevice.isTV &&
               (_playback == null || !_tvBackgroundAllowed(_playback!)))) {
         return;
       }
@@ -4998,6 +5032,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     for (final node in [
       _tvTimelineFocus,
       _tvPlayFocus,
+      _tvSourceFocus,
       _tvEpisodeFocus,
       _tvSubtitleFocus,
       _tvDanmakuFocus,
@@ -5319,7 +5354,24 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         ),
         const SizedBox(height: 12),
       ],
-      if (includeVideo)
+      if (includeVideo && Platform.isAndroid && !NakuDevice.isTV)
+        Wrap(
+          spacing: 8,
+          children: [
+            FilledButton.tonalIcon(
+              onPressed: _showEpisodes,
+              icon: const Icon(Icons.swap_horiz),
+              label: Text(_canChooseSource ? '换源 / 选集' : '选集'),
+            ),
+            TextButton.icon(
+              onPressed: _showMobilePlaybackTools,
+              icon: const Icon(Icons.tune),
+              label: const Text('播放设置'),
+            ),
+            if (_usesNASPlayback) _playbackTools(),
+          ],
+        )
+      else if (includeVideo)
         _playbackTools()
       else
         TextButton.icon(
@@ -5372,7 +5424,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           if (widget.offlinePaths != null) _tag('离线播放'),
           if (_title.year.isNotEmpty) _tag(_title.year),
           if (_title.category.isNotEmpty) _tag(_title.category),
-          if (_title.remarks.isNotEmpty) _tag('片源标注 · ${_title.remarks}'),
+          if (!Platform.isAndroid && _title.remarks.isNotEmpty)
+            _tag('片源标注 · ${_title.remarks}'),
           if ((_playback?.width ?? 0) > 0 && (_playback?.height ?? 0) > 0)
             _tag(
               '媒体尺寸 · ${_playback!.width} × ${_playback!.height}',
@@ -5460,6 +5513,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       actions: [
         _tvPlayFocus,
         if ((_route?.episodes.length ?? 0) > 1) _tvEpisodeFocus,
+        if (_canChooseSource) _tvSourceFocus,
         _tvSubtitleFocus,
         _tvDanmakuFocus,
       ],
@@ -5481,6 +5535,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              Flexible(
+                child: Text(
+                  [
+                    _original == null ? _source.name : '原画',
+                    if (playback.width > 0 && playback.height > 0)
+                      '${playback.width} × ${playback.height}',
+                  ].join(' · '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 2),
@@ -5498,7 +5563,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             ),
           ),
           const SizedBox(height: 6),
-          Row(
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               StreamBuilder<bool>(
                 stream: playback.player.stream.playing,
@@ -5521,7 +5589,6 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                 ),
               ),
               if ((_route?.episodes.length ?? 0) > 1) ...[
-                const SizedBox(width: 14),
                 OutlinedButton.icon(
                   focusNode: _tvEpisodeFocus,
                   style: _tvButtonStyle(),
@@ -5531,7 +5598,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   label: const Text('选集', style: TextStyle(fontSize: 17)),
                 ),
               ],
-              const Spacer(),
+              if (_canChooseSource) ...[
+                OutlinedButton.icon(
+                  focusNode: _tvSourceFocus,
+                  style: _tvButtonStyle(),
+                  onPressed: () =>
+                      _showTVAction(_showSourcePicker, _tvSourceFocus),
+                  icon: const Icon(Icons.swap_horiz),
+                  label: const Text('换源 / 测速'),
+                ),
+              ],
+
               OutlinedButton.icon(
                 focusNode: _tvSubtitleFocus,
                 style: _tvButtonStyle(),
@@ -5621,8 +5698,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                           style: TextStyle(fontSize: 19),
                         ),
                       ),
-                    if (_error != null && _episode != null)
-                      const SizedBox(width: 16),
+                    if (_error != null && _episode != null && _canChooseSource)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: OutlinedButton(
+                          onPressed: _showSourcePicker,
+                          child: const Text('换源'),
+                        ),
+                      ),
                     OutlinedButton(
                       style: _tvButtonStyle(),
                       autofocus: _loading || _episode == null,
@@ -5778,10 +5861,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                   ),
                 ),
                 if (mobile) ...[
-                  IconButton(
-                    tooltip: '线路与选集',
+                  TextButton.icon(
                     onPressed: _showEpisodes,
-                    icon: const Icon(Icons.video_library_outlined, size: 21),
+                    icon: const Icon(Icons.swap_horiz, size: 19),
+                    label: const Text('换源'),
                   ),
                   IconButton(
                     tooltip: '弹幕',
@@ -5795,15 +5878,16 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                     onPressed: _showMobilePlaybackTools,
                     icon: const Icon(Icons.more_vert),
                   ),
-                IconButton(
-                  tooltip: widget.store.isFavorite(_title) ? '已收藏' : '收藏',
-                  onPressed: _toggleFavorite,
-                  icon: Icon(
-                    widget.store.isFavorite(_title)
-                        ? Icons.bookmark
-                        : Icons.bookmark_border,
+                if (!mobile)
+                  IconButton(
+                    tooltip: widget.store.isFavorite(_title) ? '已收藏' : '收藏',
+                    onPressed: _toggleFavorite,
+                    icon: Icon(
+                      widget.store.isFavorite(_title)
+                          ? Icons.bookmark
+                          : Icons.bookmark_border,
+                    ),
                   ),
-                ),
               ],
         bottomButtonBar: mobile && !_pip
             ? [
@@ -6922,7 +7006,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           children: [
             const Text('播放线路', style: TextStyle(color: _muted, fontSize: 12)),
             const Spacer(),
-            if (NakuDevice.canDownload && widget.offlinePaths == null)
+            if (_canChooseSource)
               TextButton.icon(
                 onPressed: _probingRoutes ? null : _probeRoutes,
                 icon: const Icon(Icons.speed, size: 18),

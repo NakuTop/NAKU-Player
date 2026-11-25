@@ -622,6 +622,7 @@ class CinemaStore extends ChangeNotifier {
     required int episodeIndex,
     required int positionSeconds,
     int durationSeconds = 0,
+    Iterable<CinemaTitle> variants = const [],
   }) async {
     await _ready();
     if (routeIndex < 0 ||
@@ -640,7 +641,16 @@ class CinemaStore extends ChangeNotifier {
         previous.length != 1 ||
         _identitySignature(_recordTitle(previous.single, history: true)) !=
             _identitySignature(title);
+    final known = <String, CinemaTitle>{
+      for (final record in _history.where((h) => matches.contains(h.title.key)))
+        for (final v in [record.title, ...record.variants]) v.key: v,
+      for (final v in variants) v.key: v,
+    }..remove(title.key);
     final item = CinemaHistory(
+      variants: known.values
+          .take(32)
+          .map((v) => v.copyWith(routes: const []))
+          .toList(),
       title: title,
       routeIndex: routeIndex,
       episodeIndex: episodeIndex,

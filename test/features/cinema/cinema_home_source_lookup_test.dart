@@ -67,7 +67,9 @@ void main() {
       ).last;
       final selected = results.singleWhere((r) => r.sourceId == _source.id);
       expect(
-        adapter.requests.map((r) => r.uri.queryParameters['wd']),
+        adapter.requests
+            .map((r) => r.uri.queryParameters['wd'])
+            .whereType<String>(),
         unorderedEquals(['绝望写手第3季', '绝望写手第三季', '绝望写手']),
       );
       expect(selected.id, '629306141028909058~s3');

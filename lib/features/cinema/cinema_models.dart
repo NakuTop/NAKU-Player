@@ -528,6 +528,7 @@ class CinemaHistory {
     required this.episodeIndex,
     required this.positionSeconds,
     this.durationSeconds = 0,
+    this.variants = const [],
     required this.updatedAt,
   });
   final CinemaTitle title;
@@ -535,9 +536,22 @@ class CinemaHistory {
   final int episodeIndex;
   final int positionSeconds;
   final int durationSeconds;
+  final List<CinemaTitle> variants;
   final DateTime updatedAt;
   Map<String, dynamic> toJson() => {
     'title': title.toJson(),
+    if (variants.isNotEmpty)
+      'variants': [
+        for (final v in variants)
+          {
+            'sourceId': v.sourceId,
+            'id': v.id,
+            'title': v.title,
+            'year': v.year,
+            'category': v.category,
+            'doubanId': v.doubanId,
+          },
+      ],
     'routeIndex': routeIndex,
     'episodeIndex': episodeIndex,
     'positionSeconds': positionSeconds,
@@ -548,6 +562,14 @@ class CinemaHistory {
     title: CinemaTitle.fromJson(
       Map<String, dynamic>.from(json['title'] as Map),
     ),
+    variants: [
+      if (json['variants'] case final List rows)
+        for (final row in rows.whereType<Map>().take(32))
+          if (row['sourceId'] is String &&
+              row['id'] is String &&
+              row['title'] is String)
+            CinemaTitle.fromJson(Map<String, dynamic>.from(row)),
+    ],
     routeIndex: intValue(json['routeIndex']),
     episodeIndex: intValue(json['episodeIndex']),
     positionSeconds: intValue(json['positionSeconds']),
