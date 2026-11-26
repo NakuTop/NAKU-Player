@@ -1464,6 +1464,27 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  testWidgets('a stalled variety clip switches to the same segment before retrying the stalled route', (tester) async {
+    await enableMacSources(tester);
+    final show=CinemaTitle(id:'s4',sourceId:_source.id,title:'旅行节目第四季',category:'大陆综艺',routes:const [
+      CinemaRoute(name:'首选',episodes:[CinemaEpisode(name:'20261121第7期上纯享·辨方向',url:'https://fixture.invalid/stall.mp4')]),
+      CinemaRoute(name:'备用',episodes:[
+        CinemaEpisode(name:'20261121上纯享·猜地名',url:'https://fixture.invalid/wrong.mp4'),
+        CinemaEpisode(name:'20261121上纯享·辨方向',url:'https://fixture.invalid/right.mp4')]),
+    ]);
+    final probe=_Probe()..immediate=(url)=>CinemaMediaProbeResult(ok:true,elapsedMs:10,mbps:url.contains('stall')?80:40,width:1920,height:1080);
+    addTearDown(()=>probe.transport.dio.close(force:true));
+    await mount(tester,{},selectedTitle:show,autoBest:true,probe:probe,stallFirst:true,
+      measuredQuality:const CinemaMediaProbeResult(ok:true,elapsedMs:10,mbps:80,width:1920,height:1080));
+    await tester.pump(const Duration(milliseconds:300));
+    expect(backends.single.opened?.uri,endsWith('/stall.mp4'));
+    await tester.pump(const Duration(seconds:12));
+    for(var i=0;i<15 && backends.length<2;i++){await tester.pump(const Duration(milliseconds:150));}
+    expect(backends.map((b)=>b.opened?.uri),['https://fixture.invalid/stall.mp4','https://fixture.invalid/right.mp4']);
+    expect(probe.calls.any((url)=>url.endsWith('wrong.mp4')),false);
+    await unmount(tester);
+    debugDefaultTargetPlatformOverride=null;
+  });
   testWidgets('Mac compares every known line on entry and starts the fastest', (
     tester,
   ) async {

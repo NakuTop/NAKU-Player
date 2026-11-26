@@ -71,6 +71,7 @@ import 'package:kazumi/services/network/macos_system_proxy.dart';
 import 'package:kazumi/services/network/proxy_aware_image_cache_manager.dart';
 
 import 'cinema_catalog_categories.dart';
+import 'cinema_show_picker.dart';
 import 'cinema_models.dart';
 import 'cinema_follow_resolver.dart';
 import 'cinema_sync_session.dart';
@@ -6751,7 +6752,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
   }
 
   bool _episodesExpanded = false;
-  bool _showExtraEpisodes = false;
+  final _showGuide = CinemaShowGuide();
   void _toggleEpisodes() =>
       setState(() => _episodesExpanded = !_episodesExpanded);
   Widget _episodeList(
@@ -6781,7 +6782,7 @@ class _TitleDetailsState extends State<_TitleDetails> {
   }
 
   void _playChosenEpisode(CinemaPlaybackCandidate choice) {
-    final best = _recommended;
+    final best = _variantChosen || _routeChosen ? null : _recommended;
     // Preserve a known measurement for this episode only.
     if (best != null &&
         cinemaMatchPlaybackEpisode(
@@ -6810,10 +6811,21 @@ class _TitleDetailsState extends State<_TitleDetails> {
     final options = _qualityOptions(title, snapshot);
     final regular = options.regular, original = options.ultraHD;
     final sample = regular == null ? null : _comparison.results[regular.key];
-    final episodes = _comparison.episodeChoices(
-      original: original?.route,
-      extras: _showExtraEpisodes,
+    final showChoices = _showGuide.build(
+      [
+        for (final v in _comparison.catalogue.variants)
+          if (v.sourceId != 'douban-discovery' &&
+              (!_variantChosen && !_routeChosen || v.key == _selectedTitle.key))
+            if (_comparison.catalogue.loaded(v) case final detail?
+                when cinemaVarietyCategory(detail.category))
+              detail,
+      ],
+      _comparison.catalogue.sourceFor,
+      road: _routeChosen ? _road : null,
     );
+    final episodes = showChoices.isEmpty
+        ? _comparison.episodeChoices(original: original?.route)
+        : const <CinemaPlaybackCandidate>[];
     final hdReady = _hdReady(snapshot), uhdReady = _uhdReady(snapshot);
     return Wrap(
       key: const ValueKey('cinema-detail-qualities'),
@@ -6853,22 +6865,20 @@ class _TitleDetailsState extends State<_TitleDetails> {
         ),
         if (regular == null && original == null && hdReady && uhdReady)
           TextButton(onPressed: _retryQualityOptions, child: const Text('重试')),
-        if (episodes.isNotEmpty)
+        if (episodes.isNotEmpty || showChoices.isNotEmpty)
           TextButton.icon(
             key: const ValueKey('detail-quality-episodes'),
             onPressed: _toggleEpisodes,
             icon: const Icon(Icons.playlist_play_rounded, size: 19),
             label: Text(_episodesExpanded ? '收起选集' : '选集'),
           ),
-        if (_episodesExpanded && _comparison.hasBothVarietyEditions)
-          SegmentedButton<bool>(
-            segments: const [
-              ButtonSegment(value: false, label: Text('正片')),
-              ButtonSegment(value: true, label: Text('加更')),
-            ],
-            selected: {_showExtraEpisodes},
-            onSelectionChanged: (v) =>
-                setState(() => _showExtraEpisodes = v.single),
+        if (_episodesExpanded && showChoices.isNotEmpty)
+          CinemaShowPicker(
+            choices: showChoices,
+            select: (choice) {
+              setState(() => _episodesExpanded = false);
+              _playChosenEpisode(choice);
+            },
           ),
         if (_episodesExpanded && episodes.isNotEmpty)
           _episodeList(

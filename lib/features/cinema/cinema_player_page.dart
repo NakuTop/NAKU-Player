@@ -84,7 +84,10 @@ import 'package:kazumi/services/shaders/shader_asset_service.dart';
 import 'package:kazumi/pages/player/controller/player_super_resolution.dart';
 import 'package:kazumi/utils/constants.dart';
 import 'package:kazumi/utils/media.dart';
+
 import 'cinema_playback_candidates.dart';
+import 'cinema_catalog_categories.dart';
+import 'cinema_show_picker.dart';
 import 'cinema_repository.dart';
 import 'cinema_store.dart';
 import 'cinema_player_preferences.dart';
@@ -1229,6 +1232,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       _probeResults[anchor.key] = widget.measuredQuality!;
     }
     _refusedRoutes.clear();
+    _attempts = CinemaFailoverAttempts();
     final stayOriginal =
         !initial && _original != null && anchor.routeIndex == _routeIndex;
     final repeatOriginal = stayOriginal && _selection?.key == anchor.key
@@ -1892,6 +1896,19 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       positionSeconds: offset,
     );
 
+    // Count setup, including URL resolution and cache setup, in the startup budget.
+    final showDeadline = original == null && _hasShowAlternative(selection);
+    if (showDeadline) {
+      _loadTimer = Timer(const Duration(seconds: 12), () {
+        if (_isCurrent(generation) && _playback?.ready != true) {
+          _fail(
+            generation,
+            '视频连接超时，请重试或更换线路。',
+            failure: CinemaPlaybackFailure.transientNetwork,
+          );
+        }
+      });
+    }
     CinemaNASPlaybackSession? pendingNAS;
     try {
       if (Platform.isMacOS &&
@@ -2332,16 +2349,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       final loadLimit = original == null
           ? const Duration(seconds: 35)
           : _originalTimeout(const Duration(seconds: 22), decoding: true);
-      _loadTimer = Timer(loadLimit, () {
-        if (_isCurrent(generation) && !candidate.ready) {
-          candidate.logStage('timeout(lastStage=${candidate.lastStage})');
-          _fail(
-            generation,
-            '视频连接超时，请重试或更换线路。',
-            failure: CinemaPlaybackFailure.transientNetwork,
-          );
-        }
-      });
+      if (!showDeadline)
+        _loadTimer = Timer(loadLimit, () {
+          if (_isCurrent(generation) && !candidate.ready) {
+            candidate.logStage('timeout(lastStage=${candidate.lastStage})');
+            _fail(
+              generation,
+              '视频连接超时，请重试或更换线路。',
+              failure: CinemaPlaybackFailure.transientNetwork,
+            );
+          }
+        });
       await candidate.player.setVolume(_volume);
       if (!_isCurrent(generation)) return;
       candidate.logStage('volume-ready');
@@ -3606,7 +3624,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         widget.videoSurfaceBuilder == null &&
         !playback.firstFrameRendered) {
       final frameLimit = original == null
-          ? const Duration(seconds: 30)
+          ? Duration(seconds: _hasShowAlternative(_selection) ? 12 : 30)
           : _originalTimeout(const Duration(seconds: 30), decoding: true);
       playback.firstFrameTimer = Timer(frameLimit, () {
         if (_isCurrent(generation) &&
@@ -3686,6 +3704,26 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     }
   }
 
+  bool _hasShowAlternative(CinemaPlaybackCandidate? selection) {
+    if (!Platform.isMacOS ||
+        selection == null ||
+        !_autoBestRoute ||
+        _manualRouteSelection ||
+        _attempts.exhausted ||
+        widget.offlinePaths != null ||
+        !cinemaVarietyCategory(selection.title.category))
+      return false;
+    return _catalogue
+        .matching(selection)
+        .any(
+          (c) =>
+              c.episode.url != selection.episode.url &&
+              !_attempts.contains(c) &&
+              !_refusedRoutes.contains(_mediaRouteKey(c)) &&
+              _allowsOrdinaryFallback(c),
+        );
+  }
+
   void _fail(
     int generation,
     String message, {
@@ -3710,6 +3748,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       }
     }
     if (_original != null) {
+      unawaited(_advanceAfterFailure(message));
+      return;
+    }
+    if ((_playback?.ready != true ||
+            widget.videoSurfaceBuilder == null &&
+                _playback?.firstFrameRendered != true) &&
+        _hasShowAlternative(selection)) {
+      _refusedRoutes.add(_mediaRouteKey(selection!));
       unawaited(_advanceAfterFailure(message));
       return;
     }
@@ -6954,7 +7000,23 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   bool _isSelectedEpisode(int index) =>
       !_requiresEpisodeSelection && index == _episodeIndex;
 
+  final _playerShowGuide = CinemaShowGuide();
+
   Widget _episodePanel({bool embedded = false}) {
+    final choices = _playerShowGuide.build(
+      [
+        if (widget.offlinePaths == null &&
+            cinemaVarietyCategory(_title.category)) ...[
+          _title,
+          if (!_manualRouteSelection)
+            for (final v in _catalogue.variants)
+              if (v.key != _title.key && v.sourceId != 'douban-discovery')
+                ?_catalogue.loaded(v),
+        ],
+      ],
+      _catalogue.sourceFor,
+      road: _manualRouteSelection ? _routeIndex : null,
+    );
     final route = _route;
     final best = _probingRoutes ? null : _bestMeasuredRoute;
     final currentEpisodeKey = GlobalKey();
@@ -6969,22 +7031,23 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
             ),
             const Spacer(),
-            IconButton(
-              tooltip: '定位当前集',
-              icon: const Icon(Icons.my_location, size: 19),
-              onPressed: () {
-                final current = currentEpisodeKey.currentContext;
-                if (current != null) {
-                  Scrollable.ensureVisible(
-                    current,
-                    duration: _preferences.disableAnimations
-                        ? Duration.zero
-                        : const Duration(milliseconds: 180),
-                    alignment: .35,
-                  );
-                }
-              },
-            ),
+            if (choices.isEmpty)
+              IconButton(
+                tooltip: '定位当前集',
+                icon: const Icon(Icons.my_location, size: 19),
+                onPressed: () {
+                  final current = currentEpisodeKey.currentContext;
+                  if (current != null) {
+                    Scrollable.ensureVisible(
+                      current,
+                      duration: _preferences.disableAnimations
+                          ? Duration.zero
+                          : const Duration(milliseconds: 180),
+                      alignment: .35,
+                    );
+                  }
+                },
+              ),
             IconButton(
               tooltip: _reverseEpisodes ? '选集正序' : '选集倒序',
               icon: const Icon(Icons.swap_vert),
@@ -6996,12 +7059,22 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               },
             ),
             Text(
-              '${route?.episodes.length ?? 0} 集',
+              choices.isEmpty
+                  ? '${route?.episodes.length ?? 0} 集'
+                  : '${choices.length} 项',
               style: const TextStyle(color: _muted, fontSize: 12),
             ),
           ],
         ),
         const SizedBox(height: 20),
+        if (choices.isNotEmpty)
+          CinemaShowPicker(
+            choices: choices,
+            reverse: _reverseEpisodes,
+            current: _selection,
+            select: (c) =>
+                unawaited(_startPlayback(anchor: c, playWhenReady: true)),
+          ),
         Row(
           children: [
             const Text('播放线路', style: TextStyle(color: _muted, fontSize: 12)),
@@ -7191,7 +7264,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             padding: EdgeInsets.symmetric(vertical: 28),
             child: Text('暂时没有集数', style: TextStyle(color: _muted)),
           )
-        else
+        else if (choices.isEmpty)
           Wrap(
             spacing: 8,
             runSpacing: 8,

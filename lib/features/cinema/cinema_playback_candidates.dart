@@ -8,6 +8,7 @@ import 'cinema_original_match.dart' show originalEpisode;
 import 'cinema_movie_versions.dart';
 import 'cinema_repository.dart';
 import 'cinema_seasons.dart';
+import 'cinema_variety_episode.dart';
 
 /// A concrete source, route and episode. Indexes only identify a selection
 /// inside this title; they are never used to match episodes across sources.
@@ -79,16 +80,28 @@ int? cinemaMatchPlaybackEpisode({
   }
   if (cinemaVarietyCategory(current.title.category) ||
       cinemaVarietyCategory(target.category)) {
+    final show = CinemaShowEpisode(current.episode.name);
+    if (show.section == CinemaShowSection.pure) {
+      return _matchingCuts(current, episodes).firstOrNull;
+    }
     if (cinemaVarietyEdition.hasMatch(current.title.title) !=
         cinemaVarietyEdition.hasMatch(target.title))
       return null;
-    String label(String s) => cinemaIdentityTypography(s)
-        .toLowerCase()
-        .replaceAll(RegExp(r'\s+'), '')
-        .replaceFirst(RegExp(r'^第\d+集(?=(?:19|20)\d{6})'), '')
-        .replaceFirstMapped(RegExp(r'^(第\d+期[上中下]?)[:：].+$'), (m) => m[1]!);
+    String label(String s) =>
+        cinemaIdentityTypography(s)
+            .toLowerCase()
+            .replaceAll(RegExp(r'\s+'), '')
+            .replaceFirst(RegExp(r'^第\d+集(?=(?:19|20)\d{6})'), '')
+            .replaceFirstMapped(RegExp(r'^(第\d+期[上中下]?)[:：].+$'), (m) => m[1]!);
     final name = label(current.episode.name);
-    return name.isEmpty ? null : unique((e) => label(e.name) == name);
+    final edition = CinemaShowEpisode(current.episode.name).section;
+    return name.isEmpty
+        ? null
+        : unique(
+            (e) =>
+                CinemaShowEpisode(e.name).section == edition &&
+                label(e.name) == name,
+          );
   }
   final number = originalEpisode(current.episode.name);
   if (number.episode != null && !_movie(current.title) && !_movie(target)) {
@@ -124,6 +137,36 @@ int? cinemaMatchPlaybackEpisode({
     return cinemaPreferredEpisode(target, routeIndex);
   }
   return null;
+}
+
+/// An unlabeled half cannot disambiguate two identically named performances.
+List<int> _matchingCuts(
+  CinemaPlaybackCandidate current,
+  List<CinemaEpisode> episodes,
+) {
+  final from = CinemaShowEpisode(current.episode.name);
+  if (!from.namedPure) return [];
+  final compatible = <int, CinemaShowEpisode>{
+    for (final (index, episode) in episodes.indexed)
+      if (CinemaShowEpisode(episode.name) case final to when from.sameClip(to))
+        index: to,
+  };
+  if (compatible.isEmpty) return [];
+  final parts = <String>{
+    for (final ep in [...current.route.episodes, ...episodes])
+      if (CinemaShowEpisode(ep.name) case final item
+          when item.clip == from.clip &&
+              (from.day.isNotEmpty && item.day == from.day ||
+                  from.issue.isNotEmpty && item.issue == from.issue) &&
+              item.part.isNotEmpty)
+        item.part,
+  };
+  return [
+    for (final e in compatible.entries)
+      if (parts.length <= 1 ||
+          (from.part.isNotEmpty && from.part == e.value.part))
+        e.key,
+  ];
 }
 
 String _episodeName(String value) {
@@ -199,13 +242,11 @@ class CinemaPlaybackCatalogue {
   final Duration detailTimeout;
   late List<CinemaTitle> variants;
   void addVariants(Iterable<CinemaTitle> values) {
+    _matchedAnchor = null;
     variants = List.unmodifiable(
       orderCinemaVariants(
-        groupCinemaTitles([
-          _anchor,
-          ...variants,
-          ...values,
-        ]).first.variants.where((v) => _sources.containsKey(v.sourceId)),
+        groupCinemaTitles([_anchor, ...variants, ...values]).first.variants
+            .where((v) => _sources.containsKey(v.sourceId)),
         _sources.keys,
       ),
     );
@@ -242,6 +283,7 @@ class CinemaPlaybackCatalogue {
                 !cinemaSamePlaybackWork(_anchor, detail)) {
               throw const CinemaSourceException('返回的作品与当前影片不一致，请手动核对。');
             }
+            _matchedAnchor = null;
             _loaded[title.key] = detail;
             return detail;
           })
@@ -259,6 +301,7 @@ class CinemaPlaybackCatalogue {
   }
 
   Future<CinemaTitle> refresh(CinemaTitle title) {
+    _matchedAnchor = null;
     _loaded.remove(title.key);
     return load(title, retry: true);
   }
@@ -293,8 +336,40 @@ class CinemaPlaybackCatalogue {
     return null;
   }
 
+  CinemaPlaybackCandidate? _matchedAnchor;
+  List<CinemaPlaybackCandidate> _matchedRows = const [];
   List<CinemaPlaybackCandidate> matching(CinemaPlaybackCandidate current) {
+    if (_matchedAnchor?.key == current.key &&
+        identical(_matchedAnchor?.title, current.title))
+      return List.of(_matchedRows);
     final result = <CinemaPlaybackCandidate>[];
+    final clip = cinemaVarietyCategory(current.title.category)
+        ? CinemaShowEpisode(
+            current.episode.name,
+            bonusCollection: cinemaVarietyEdition.hasMatch(current.title.title),
+          )
+        : null;
+    final dates = <String>{}, issues = <String>{};
+    if (clip?.plainBroadcast == true) {
+      for (final work in _loaded.values.where(
+        (t) =>
+            cinemaVarietyCategory(t.category) &&
+            !cinemaVarietyEdition.hasMatch(t.title),
+      )) {
+        for (final route in work.routes) {
+          for (final e in route.episodes) {
+            final b = CinemaShowEpisode(e.name);
+            if (!b.plainBroadcast ||
+                b.part != clip!.part ||
+                b.day.isEmpty ||
+                b.issue.isEmpty)
+              continue;
+            if (b.issue == clip.issue) dates.add(b.day);
+            if (b.day == clip.day) issues.add(b.issue);
+          }
+        }
+      }
+    }
     for (final variant in variants) {
       final title = loaded(variant);
       if (title == null) continue;
@@ -305,17 +380,53 @@ class CinemaPlaybackCatalogue {
             _movie(title) &&
             cinemaHasMovieVersions(current.title, current.routeIndex) &&
             cinemaHasMovieVersions(title, route);
-        final matched = cinemaMatchPlaybackEpisode(
+        var matched = cinemaMatchPlaybackEpisode(
           current: current,
           target: title,
           routeIndex: route,
         );
+        if (matched == null &&
+            clip?.plainBroadcast == true &&
+            !cinemaVarietyEdition.hasMatch(title.title) &&
+            cinemaSamePlaybackWork(current.title, title)) {
+          final alternatives = [
+            for (final (i, e) in title.routes[route].episodes.indexed)
+              if (CinemaShowEpisode(e.name) case final to
+                  when to.plainBroadcast &&
+                      to.part == clip!.part &&
+                      (clip.day.isEmpty ||
+                          to.day.isEmpty ||
+                          clip.day == to.day) &&
+                      (clip.issue.isEmpty ||
+                          to.issue.isEmpty ||
+                          clip.issue == to.issue) &&
+                      (to.day.isNotEmpty &&
+                              (to.day == clip.day ||
+                                  dates.length == 1 &&
+                                      dates.contains(to.day)) ||
+                          to.issue.isNotEmpty &&
+                              (to.issue == clip.issue ||
+                                  issues.length == 1 &&
+                                      issues.contains(to.issue))))
+                i,
+          ];
+          if (alternatives.length == 1) matched = alternatives.single;
+        }
+        final moreCuts = matched != null && clip?.namedPure == true;
         final episodes = editions
             ? List.generate(
                 title.routes[route].episodes.length,
                 (index) => index,
               )
-            : [?matched];
+            : [
+                ?matched,
+                if (moreCuts)
+                  ..._matchingCuts(
+                    current,
+                    title.routes[route].episodes,
+                  ).where((i) => i != matched),
+              ];
+
         for (final episode in episodes) {
           result.add(
             CinemaPlaybackCandidate(
@@ -328,7 +439,9 @@ class CinemaPlaybackCatalogue {
         }
       }
     }
-    return orderCinemaCandidates(result, sourceOrder);
+    _matchedAnchor = current;
+    _matchedRows = orderCinemaCandidates(result, sourceOrder);
+    return List.of(_matchedRows);
   }
 }
 
