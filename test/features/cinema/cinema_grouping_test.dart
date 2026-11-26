@@ -19,6 +19,31 @@ CinemaTitle _title(
 );
 
 void main() {
+  test('variety editions join the correct season across sources', () {
+    CinemaTitle entry(String id, String title, String year, String remarks) =>
+        CinemaTitle(
+          sourceId: id,
+          id: id,
+          title: title,
+          year: year,
+          remarks: remarks,
+          category: '大陆综艺',
+          actors: '演员甲 / 演员乙',
+        );
+    final rows = [
+      entry('a', '现在就出发', '2023', ''),
+      entry('b', '现在就出发 第三季', '2025', ''),
+      entry('c', '现在就出发第三季（加更版）', '2025', ''),
+      entry('d', '现在就出发第四季', '2026', ''),
+      entry('e', '现在就出发第4季（加更版）', '2026', '更新至20261126期'),
+      entry('f', '现在就出发（加更版）', '', '更新至20261126期'),
+      entry('g', '现在就出发 新春特别节目', '2026', ''),
+    ];
+    expect(
+      groupCinemaTitles(rows).map((g) => g.variants.map((v) => v.id).join()),
+      ['a', 'bc', 'def', 'g'],
+    );
+  });
   test(
     'a regional release can be recovered from matching credits across sources',
     () {

@@ -4441,6 +4441,13 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             key: ValueKey('cinema-featured-${_section.name}'),
             topInset: topInset,
             titles: featured,
+            posterFallback: (title) => _poster(
+              title,
+              null,
+              null,
+              variantsByKey[title.key] ?? const [],
+              const ColoredBox(color: Color(0xFF111113)),
+            ),
             artworkRepository: widget.artworkRepository,
             artworkChanges: _ratings.changes,
             artworkIdentity: (title) =>
@@ -4917,28 +4924,56 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     );
   }
 
-  Widget _poster(CinemaTitle title, double? width, double? height) => ClipRRect(
-    borderRadius: BorderRadius.circular(9),
-    child: SizedBox(
-      width: width,
-      height: height,
-      child: title.poster.isEmpty
-          ? _posterFallback(title.title)
-          : CachedNetworkImage(
+  Widget _poster(
+    CinemaTitle title,
+    double? width,
+    double? height, [
+    List<CinemaTitle> variants = const [],
+    Widget? empty,
+  ]) {
+    final placeholder = empty ?? _posterFallback(title.title);
+    final urls = {
+      for (final item in [title, ...variants])
+        if (item.poster.isNotEmpty) item.poster,
+    }.toList();
+    Widget load(int index) {
+      if (index == urls.length) {
+        final grant = _repository.fallbackPoster(title);
+        if (grant == null) return placeholder;
+        return FutureBuilder<String>(
+          future: grant,
+          builder: (context, snapshot) {
+            final url = snapshot.data;
+            if (url == null || url.isEmpty) return placeholder;
+            return CachedNetworkImage(
+              imageUrl: url,
+              cacheKey: 'catalog-poster:${title.key}:${title.poster}',
               cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
               memCacheWidth: NakuDevice.isTV ? 640 : 480,
-              fadeInDuration: Duration.zero,
-              fadeOutDuration: Duration.zero,
-              imageUrl: title.poster,
-              httpHeaders: title.sourceId == 'douban-discovery'
-                  ? doubanImageHeaders
-                  : null,
               fit: BoxFit.cover,
-              placeholder: (_, _) => _posterFallback(title.title),
-              errorWidget: (_, _, _) => _posterFallback(title.title),
-            ),
-    ),
-  );
+              placeholder: (_, _) => placeholder,
+              errorWidget: (_, _, _) => placeholder,
+            );
+          },
+        );
+      }
+      return CachedNetworkImage(
+        cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
+        memCacheWidth: NakuDevice.isTV ? 640 : 480,
+        fadeInDuration: Duration.zero,
+        fadeOutDuration: Duration.zero,
+        imageUrl: urls[index],
+        fit: BoxFit.cover,
+        placeholder: (_, _) => placeholder,
+        errorWidget: (_, _, _) => load(index + 1),
+      );
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(9),
+      child: SizedBox(width: width, height: height, child: load(0)),
+    );
+  }
 
   Widget _posterFallback(String name) => LayoutBuilder(
     builder: (context, bounds) => bounds.maxWidth < 96 || bounds.maxHeight < 100
@@ -5110,7 +5145,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      _poster(title, null, null),
+                      _poster(title, null, null, variants),
                       if (nasPoster != null)
                         ClipRRect(
                           borderRadius: BorderRadius.circular(9),

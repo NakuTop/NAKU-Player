@@ -59,6 +59,7 @@ class CinemaArtworkBackdrop extends StatefulWidget {
     super.key,
     required this.image,
     this.fallbackImage,
+    this.onImageFailure,
     this.alignment = Alignment.center,
     this.fit = BoxFit.contain,
     this.featherSides = false,
@@ -68,6 +69,7 @@ class CinemaArtworkBackdrop extends StatefulWidget {
 
   final ImageProvider image;
   final ImageProvider? fallbackImage;
+  final Widget Function()? onImageFailure;
   final Alignment alignment;
   final BoxFit fit;
   final bool featherSides;
@@ -85,6 +87,7 @@ class _CinemaArtworkBackdropState extends State<CinemaArtworkBackdrop> {
   ImageConfiguration? _configuration;
   bool _attaching = false;
   bool _usingFallback = false;
+  bool _failed = false;
   int _generation = 0;
 
   @override
@@ -109,6 +112,7 @@ class _CinemaArtworkBackdropState extends State<CinemaArtworkBackdrop> {
   void _resolve({bool fallback = false}) {
     final generation = ++_generation;
     _usingFallback = fallback;
+    _failed = false;
     _detach();
     _sharp?.dispose();
     _ambient?.dispose();
@@ -144,7 +148,16 @@ class _CinemaArtworkBackdropState extends State<CinemaArtworkBackdrop> {
     _sharpListener = ImageStreamListener(
       (info, _) => frame(info, ambient: false),
       onError: (Object error, StackTrace? trace) {
-        if (fallback || widget.fallbackImage == null) return;
+        if (fallback || widget.fallbackImage == null) {
+          if (widget.onImageFailure != null) {
+            Future.microtask(() {
+              if (mounted && generation == _generation) {
+                setState(() => _failed = true);
+              }
+            });
+          }
+          return;
+        }
         // Image errors may arrive synchronously from a cached completer.
         // Defer the replacement and reject stale callbacks after a page swipe.
         Future.microtask(() {
@@ -185,18 +198,20 @@ class _CinemaArtworkBackdropState extends State<CinemaArtworkBackdrop> {
   Widget build(BuildContext context) => IgnorePointer(
     child: RepaintBoundary(
       child: ClipRect(
-        child: CustomPaint(
-          painter: _ExtendedArtworkPainter(
-            sharp: _sharp?.image,
-            ambient: _ambient?.image,
-            alignment: widget.alignment,
-            fit: _usingFallback ? BoxFit.contain : widget.fit,
-            insets: widget.contentInsets,
-            featherSides: widget.featherSides,
-            shadeLeading: widget.shadeLeading,
-          ),
-          child: const SizedBox.expand(),
-        ),
+        child: _failed && widget.onImageFailure != null
+            ? widget.onImageFailure!()
+            : CustomPaint(
+                painter: _ExtendedArtworkPainter(
+                  sharp: _sharp?.image,
+                  ambient: _ambient?.image,
+                  alignment: widget.alignment,
+                  fit: _usingFallback ? BoxFit.contain : widget.fit,
+                  insets: widget.contentInsets,
+                  featherSides: widget.featherSides,
+                  shadeLeading: widget.shadeLeading,
+                ),
+                child: const SizedBox.expand(),
+              ),
       ),
     ),
   );

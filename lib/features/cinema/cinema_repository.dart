@@ -64,6 +64,50 @@ class CinemaRepository {
     return dio;
   }
 
+  final _posterGrants = _CatalogueCache<(String, String), String>(
+    lifetime: const Duration(hours: 12),
+    capacity: 240,
+    now: DateTime.now,
+  );
+
+  Future<String>? fallbackPoster(CinemaTitle title) {
+    if (!const {
+          'maccms-jisu',
+          'maccms-juliang',
+          'maccms-guangsu',
+          'maccms-haohua',
+          'maccms-zuid',
+          'maccms-ruyi',
+          'maccms-dytt',
+        }.contains(title.sourceId) ||
+        !RegExp(r'^\d{1,20}$').hasMatch(title.id)) {
+      return null;
+    }
+    final uri = Uri.https('naku-mobile.pages.dev', '/api/poster/resolve', {
+      'source': title.sourceId,
+      'id': title.id,
+    });
+    return _posterGrants.load((title.key, title.poster), () async {
+      final response = await _dio.getUri(
+        uri,
+        options: Options(responseType: ResponseType.json),
+      );
+      final row = response.data;
+      if (row is! Map ||
+          (title.poster.isNotEmpty && row['poster'] != title.poster)) {
+        return '';
+      }
+      final path = Uri.tryParse(row['posterProxy']?.toString() ?? '');
+      if (path == null ||
+          path.hasScheme ||
+          path.hasAuthority ||
+          path.path != '/api/poster') {
+        return '';
+      }
+      return uri.resolveUri(path).toString();
+    });
+  }
+
   final Dio _dio;
   final CinemaSourceHealth? health;
   final _CatalogueCache<(String, String), List<CinemaCategory>> _categories;
@@ -656,22 +700,23 @@ class CinemaRepository {
               cleanCinemaText(entry['vod_name']).isEmpty) {
             throw const FormatException('MacCMS 影片缺少 vod_id 或 vod_name');
           }
-          final poster = textValue(entry['vod_pic']).trim();
-          final posterUri = Uri.tryParse(poster);
-          final resolvedPoster = poster.isEmpty
-              ? ''
-              : requireHttpUrl(
-                  source.url,
-                ).resolveUri(posterUri ?? Uri()).toString();
+          final base = requireHttpUrl(source.url);
+          final posters = ['vod_pic', 'vod_pic_thumb', 'vod_pic_slide']
+              .map((key) => textValue(entry[key]).trim())
+              .where((s) => s.isNotEmpty)
+              .map(Uri.tryParse)
+              .whereType<Uri>()
+              .map(base.resolveUri)
+              .where(
+                (u) =>
+                    u.host.isNotEmpty &&
+                    (u.scheme == 'https' || u.scheme == 'http'),
+              );
           return CinemaTitle(
             id: textValue(entry['vod_id']),
             sourceId: source.id,
             title: cleanCinemaText(entry['vod_name']),
-            poster:
-                Uri.tryParse(resolvedPoster)?.isScheme('https') == true ||
-                    Uri.tryParse(resolvedPoster)?.isScheme('http') == true
-                ? resolvedPoster
-                : '',
+            poster: posters.firstOrNull?.toString() ?? '',
             description: cleanCinemaText(
               entry['vod_content'] ?? entry['vod_blurb'],
             ),

@@ -52,6 +52,7 @@ class CinemaFeaturedWall extends StatefulWidget {
     required this.titles,
     required this.onOpen,
     this.statusBuilder,
+    this.posterFallback,
     this.topInset = 0,
     this.artworkRepository,
     this.artworkIdentity,
@@ -62,6 +63,7 @@ class CinemaFeaturedWall extends StatefulWidget {
   final List<CinemaTitle> titles;
   final ValueChanged<CinemaTitle> onOpen;
   final Widget Function(CinemaTitle)? statusBuilder;
+  final Widget Function(CinemaTitle)? posterFallback;
   final double topInset;
   final CinemaDetailArtworkRepository? artworkRepository;
   final CinemaArtworkIdentity? artworkIdentity;
@@ -344,8 +346,11 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
               fit: artwork.usableLandscape ? BoxFit.cover : BoxFit.contain,
               alignment: const Alignment(.3, 0),
               errorBuilder: (_, _, _) =>
+                  widget.posterFallback?.call(title) ??
                   const ColoredBox(color: Color(0xFF111113)),
-            ),
+            )
+          else if (widget.posterFallback != null)
+            widget.posterFallback!(title),
           const Positioned.fill(
             child: IgnorePointer(
               child: DecoratedBox(
@@ -623,6 +628,9 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
                   width: decodeWidth,
                   policy: ResizeImagePolicy.fit,
                 ),
+            onImageFailure: widget.posterFallback == null
+                ? null
+                : () => widget.posterFallback!(title),
             alignment: const Alignment(.4, 0),
             fit: artwork.usableLandscape ? BoxFit.cover : BoxFit.contain,
             fallbackImage:
@@ -643,6 +651,8 @@ class _CinemaFeaturedWallState extends State<CinemaFeaturedWall>
                 : null,
             contentInsets: EdgeInsets.fromLTRB(0, widget.topInset + 12, 0, 40),
           ),
+        if (artwork.url.isEmpty && widget.posterFallback != null)
+          widget.posterFallback!(title),
         // Keep contrast local to the title/action area. A page-wide shadow
         // must not become a second mask over the full poster composition.
         Positioned(

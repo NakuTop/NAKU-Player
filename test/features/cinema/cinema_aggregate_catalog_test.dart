@@ -122,6 +122,29 @@ DoubanResultPage metadataPage({
 );
 
 void main() {
+  test('variety reveals buffered works forty at a time', () async {
+    final repo = _Repo()
+      ..categoryData = const [CinemaCategory(id: '9', name: '综艺')];
+    repo.respond = (s, category, year, page) async => CinemaPage(
+      items: [
+        for (var i = 0; i < 97; i++)
+          movie(s.id, '$i', name: '节目 $i', category: '综艺', categoryId: '9'),
+      ],
+    );
+    final controller = CinemaAggregateCatalogController(repository: repo);
+    addTearDown(controller.dispose);
+    await controller.load(
+      sources: [source('a')],
+      kind: CinemaAggregateKind.variety,
+    );
+    expect(controller.snapshot.groups, hasLength(40));
+    await controller.loadMore();
+    expect(controller.snapshot.groups, hasLength(80));
+    await controller.loadMore();
+    expect(controller.snapshot.groups, hasLength(97));
+    expect(controller.snapshot.hasMore, isFalse);
+    expect(repo.calls, hasLength(1));
+  });
   test(
     'variety browses provider trees, merges shows and excludes other catalogues',
     () async {
@@ -452,7 +475,7 @@ void main() {
         1,
         2,
       ]);
-      expect(controller.snapshot.items, hasLength(60));
+      expect(controller.snapshot.items, hasLength(40));
       await controller.load(
         sources: sources,
         kind: CinemaAggregateKind.movies,
