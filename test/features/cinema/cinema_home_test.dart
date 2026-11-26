@@ -30,6 +30,7 @@ const _categories = [
   CinemaCategory(id: '11', name: '剧情片', parentId: '1'),
   CinemaCategory(id: '2', name: '电视剧'),
   CinemaCategory(id: '22', name: '欧美剧', parentId: '2'),
+  CinemaCategory(id: '31', name: '大陆综艺'),
   CinemaCategory(id: '90', name: '擦边短剧', parentId: '2'),
 ];
 
@@ -225,9 +226,17 @@ class _Repository extends CinemaRepository {
               CinemaTitle(
                 id: 'title-$categoryId',
                 sourceId: source.id,
-                title: categoryId == '22' ? '剧集测试作品' : '电影测试作品',
+                title: switch (categoryId) {
+                  '22' => '剧集测试作品',
+                  '31' => '综艺测试节目',
+                  _ => '电影测试作品',
+                },
                 year: '2026',
-                category: categoryId == '22' ? '欧美剧' : '剧情片',
+                category: switch (categoryId) {
+                  '22' => '欧美剧',
+                  '31' => '大陆综艺',
+                  _ => '剧情片',
+                },
               ),
             ],
       categories: _categories,
@@ -951,6 +960,20 @@ void main() {
       expect(find.text('电影较早热门'), findsWidgets);
     },
   );
+
+  testWidgets('macOS variety tab browses source shows and returns to movies', (
+    tester,
+  ) async {
+    await mount(tester);
+    await tester.tap(find.text('综艺').first);
+    await tester.pumpAndSettle();
+    expect(repository.browsed, contains('31'));
+    expect(find.text('综艺测试节目'), findsWidgets);
+    expect(find.text('电影测试作品'), findsNothing);
+    await tester.tap(find.text('电影').first);
+    await tester.pumpAndSettle();
+    expect(find.text('综艺测试节目'), findsNothing);
+  }, skip: !Platform.isMacOS);
 
   testWidgets(
     'unified catalogues load real movie and series leaves without provider tabs',

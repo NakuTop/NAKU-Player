@@ -1097,7 +1097,10 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   // Explicit anime startup/deep links keep a selected destination while that
   // page is open, without changing the device's saved navigation preference.
   bool get _showVariety =>
-      NakuDevice.isTV || _usesMobileLayout || Platform.isAndroid;
+      NakuDevice.isTV ||
+      _usesMobileLayout ||
+      Platform.isAndroid ||
+      Platform.isMacOS;
 
   Iterable<_Section> get _visibleSections => _Section.values.where(
     (s) =>
@@ -3685,7 +3688,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                             filled: false,
                             hintText: _section == _Section.anime
                                 ? '搜索动漫'
-                                : '搜索电影、剧集或演员',
+                                : '搜索作品或演员',
                             prefixIcon: _desktopSearchActive
                                 ? IconButton(
                                     tooltip: '返回浏览',
