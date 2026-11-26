@@ -72,15 +72,18 @@ class VideoController {
   /// {@macro video_controller}
   VideoController(
     this.player, {
+    bool initializeBeforeFrame = false,
     VideoControllerConfiguration configuration =
         const VideoControllerConfiguration(),
   }) {
     player.platform?.isVideoControllerAttached = true;
 
     () async {
-      final completer = Completer();
-      WidgetsBinding.instance.addPostFrameCallback((_) => completer.complete());
-      await completer.future;
+      if (!initializeBeforeFrame) {
+        final completer = Completer<void>();
+        WidgetsBinding.instance.addPostFrameCallback((_) => completer.complete());
+        await completer.future;
+      }
 
       try {
         if (NativeVideoController.supported) {

@@ -643,6 +643,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       widget.windowControls ?? DesktopWindowControls.instance;
   bool _manualPlaybackChanging = false;
   int _lifecycleRevision = 0;
+  AppLifecycleState? _presentationLifecycle =
+      WidgetsBinding.instance.lifecycleState;
   late final _preferences =
       widget.preferences ?? CinemaPlayerPreferences.read();
   late final _nasPlayback = widget.nasPlayback ?? CinemaNASPlaybackClient();
@@ -2360,6 +2362,14 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             );
           }
         });
+      if (Platform.isMacOS && widget.videoSurfaceBuilder == null) {
+        // mpv starts in audio-only mode. Bind the texture before open even if
+        // AppKit has suspended Flutter frames for a hidden window.
+        await candidate.controller.platform.future;
+        if (!_isCurrent(generation)) return;
+        candidate.logStage('controller-ready');
+        _observeNativeFirstFrame(candidate);
+      }
       await candidate.player.setVolume(_volume);
       if (!_isCurrent(generation)) return;
       candidate.logStage('volume-ready');
@@ -3590,6 +3600,26 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       ..reset();
   }
 
+  void _syncFirstFrameTimeout(_CinemaPlayback playback) {
+    final limit = playback.firstFrameTimeout;
+    if (limit == null || playback.firstFrameRendered) return;
+    if (Platform.isMacOS &&
+        (_windowControls.hidden ||
+            (_presentationLifecycle != null &&
+                _presentationLifecycle != AppLifecycleState.resumed))) {
+      playback.firstFrameTimer?.cancel();
+      playback.firstFrameTimer = null;
+      return;
+    }
+    playback.firstFrameTimer ??= Timer(limit, () {
+      if (_isCurrent(playback.generation) &&
+          identical(_playback, playback) &&
+          !playback.firstFrameRendered) {
+        _fail(playback.generation, '视频已有媒体信息，但未能显示首帧，请重试或更换线路。');
+      }
+    });
+  }
+
   void _updateReady(_CinemaPlayback playback, int generation) {
     if (!_isCurrent(generation) ||
         playback.ready ||
@@ -3623,16 +3653,10 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
             Platform.isAndroid && original != null) &&
         widget.videoSurfaceBuilder == null &&
         !playback.firstFrameRendered) {
-      final frameLimit = original == null
+      playback.firstFrameTimeout = original == null
           ? Duration(seconds: _hasShowAlternative(_selection) ? 12 : 30)
           : _originalTimeout(const Duration(seconds: 30), decoding: true);
-      playback.firstFrameTimer = Timer(frameLimit, () {
-        if (_isCurrent(generation) &&
-            identical(_playback, playback) &&
-            !playback.firstFrameRendered) {
-          _fail(generation, '视频已有媒体信息，但未能显示首帧，请重试或更换线路。');
-        }
-      });
+      _syncFirstFrameTimeout(playback);
     }
     playback.bufferMonitor.start();
     unawaited(playback.danmaku?.loadAutomatic());
@@ -4981,6 +5005,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _presentationLifecycle = state;
+    final video = _playback;
+    if (Platform.isMacOS && video != null) _syncFirstFrameTimeout(video);
     if (state != AppLifecycleState.resumed) {
       unawaited(_playback?.mobileHold?.release());
       _stopEntranceSound();
@@ -5010,6 +5037,8 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   Future<void> _windowVisibilityChanged(bool hidden) async {
     if (!mounted || _closing) return;
+    final video = _playback;
+    if (Platform.isMacOS && video != null) _syncFirstFrameTimeout(video);
     if (!hidden) {
       _backgroundPaused = false;
       final playback = _playback;
@@ -5838,6 +5867,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       final playback = _playback;
       final entranceGeneration = _generation;
       if (playback != null &&
+          (!Platform.isMacOS || widget.videoSurfaceBuilder != null) &&
           (nativeCinema || Platform.isAndroid && _original != null)) {
         _observeNativeFirstFrame(playback);
       }
@@ -5845,7 +5875,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           nativeCinema &&
           playback?.ready == true &&
           playback?.firstFrameRendered != true;
-      if (widget.videoSurfaceBuilder == null) {
+      if (!Platform.isMacOS && widget.videoSurfaceBuilder == null) {
         playback?.observeControllerInitialization();
       }
       final controlsTheme = MaterialDesktopVideoControlsThemeData(
@@ -7377,6 +7407,7 @@ class _CinemaPlayback {
 
   late final controller = VideoController(
     player,
+    initializeBeforeFrame: Platform.isMacOS,
     configuration: preferences.videoConfiguration,
   );
   late final liveSubtitles = CinemaLiveSubtitles(player);
@@ -7502,6 +7533,7 @@ class _CinemaPlayback {
   bool opened = false;
   bool firstFrameObserved = false, firstFrameRendered = false;
   Timer? firstFrameTimer;
+  Duration? firstFrameTimeout;
   int manualPlaybackRevision = 0;
   String? mediaUrl;
   Map<String, String> mediaHeaders = const {};
