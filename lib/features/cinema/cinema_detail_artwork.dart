@@ -72,7 +72,7 @@ class CinemaDetailArtworkRepository {
 
   static String kind(CinemaTitle title) {
     final value = title.category.toLowerCase();
-    if (RegExp(r'剧|series|\btv\b').hasMatch(value)) return 'series';
+    if (RegExp(r'综艺|綜藝|真人秀|剧|series|\btv\b').hasMatch(value)) return 'series';
     if (RegExp(r'电影|片|movie|film').hasMatch(value)) return 'movie';
     return '';
   }
@@ -81,6 +81,7 @@ class CinemaDetailArtworkRepository {
       jsonEncode([
         title.key,
         title.poster,
+        title.landscapePoster,
         title.doubanId,
         title.imdbId,
         identity.doubanId,
@@ -166,7 +167,7 @@ class CinemaDetailArtworkRepository {
         ? '$douban|$imdb|$type'
         : 'poster|${title.poster}';
     final key = landscapeOnly
-        ? 'landscape|$identityCacheKey'
+        ? 'landscape|${title.landscapePoster}|$identityCacheKey'
         : identityCacheKey;
     if (force) _cache.remove(key);
     final cached = _cache[key];
@@ -217,6 +218,8 @@ class CinemaDetailArtworkRepository {
       }
 
       final jobs = <Future<List<String>>>[
+        if (landscapeOnly && _imageUrl(title.landscapePoster).isNotEmpty)
+          Future.value([title.landscapePoster]),
         if (!landscapeOnly && feed != null) Future.value(subjectImages(feed)),
         if (landscapeOnly && validDouban)
           (() async {

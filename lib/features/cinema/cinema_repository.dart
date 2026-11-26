@@ -727,7 +727,7 @@ class CinemaRepository {
             throw const FormatException('MacCMS 影片缺少 vod_id 或 vod_name');
           }
           final base = requireHttpUrl(source.url);
-          final posters = ['vod_pic', 'vod_pic_thumb', 'vod_pic_slide']
+          Iterable<Uri> artwork(List<String> fields) => fields
               .map((key) => textValue(entry[key]).trim())
               .where((s) => s.isNotEmpty)
               .map(Uri.tryParse)
@@ -742,7 +742,8 @@ class CinemaRepository {
             id: textValue(entry['vod_id']),
             sourceId: source.id,
             title: cleanCinemaText(entry['vod_name']),
-            poster: posters.firstOrNull?.toString() ?? '',
+            poster: artwork(['vod_pic', 'vod_pic_thumb', 'vod_pic_slide']).firstOrNull?.toString() ?? '',
+            landscapePoster: artwork(['vod_pic_slide']).firstOrNull?.toString() ?? '',
             description: cleanCinemaText(
               entry['vod_content'] ?? entry['vod_blurb'],
             ),

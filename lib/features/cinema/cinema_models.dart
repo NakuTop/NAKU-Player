@@ -215,6 +215,7 @@ class CinemaTitle {
     required this.sourceId,
     required this.title,
     this.poster = '',
+    this.landscapePoster = '',
     this.description = '',
     this.category = '',
     this.categoryId = '',
@@ -241,6 +242,7 @@ class CinemaTitle {
   final String sourceId;
   final String title;
   final String poster;
+  final String landscapePoster;
   final String description;
   final String category;
   final String categoryId;
@@ -290,6 +292,7 @@ class CinemaTitle {
     sourceId: sourceId ?? this.sourceId,
     title: title,
     poster: poster,
+    landscapePoster: landscapePoster,
     description: description,
     category: category ?? this.category,
     categoryId: categoryId,
@@ -317,6 +320,7 @@ class CinemaTitle {
     'sourceId': sourceId,
     'title': title,
     'poster': poster,
+    'landscapePoster': landscapePoster,
     'description': description,
     'category': category,
     'categoryId': categoryId,
@@ -345,6 +349,7 @@ class CinemaTitle {
     sourceId: textValue(json['sourceId']),
     title: textValue(json['title']),
     poster: textValue(json['poster']),
+    landscapePoster: textValue(json['landscapePoster']),
     description: textValue(json['description']),
     category: textValue(json['category']),
     categoryId: textValue(json['categoryId']),
