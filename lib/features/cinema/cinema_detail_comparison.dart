@@ -1,3 +1,4 @@
+import 'cinema_seasons.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:dio/dio.dart';
@@ -135,6 +136,15 @@ class CinemaDetailComparison extends ChangeNotifier {
         cinemaRecommendedCandidate(options, sourceOrder: catalogue.sourceOrder);
   }
 
+  bool _extras = false;
+  bool get hasBothVarietyEditions {
+    final editions = _episodeTitles
+        .where((t) => cinemaVarietyCategory(t.category) && _hasPlayableRoute(t))
+        .map((t) => cinemaVarietyEdition.hasMatch(t.title))
+        .toSet();
+    return editions.length == 2;
+  }
+
   List<CinemaTitle> _episodeTitles = const [];
   List<CinemaPlaybackCandidate> _episodes = const [];
   static final _series = RegExp(r'剧|劇|动漫|動畫|动画|番剧|综艺|綜藝');
@@ -143,6 +153,7 @@ class CinemaDetailComparison extends ChangeNotifier {
   /// The visible episode list belongs to the work, even if its fastest source
   /// only carries a few episodes. Picking an episode never pins its provider.
   List<CinemaPlaybackCandidate> episodeChoices({
+    bool extras = false,
     CinemaPlaybackCandidate? original,
   }) {
     final titles = [
@@ -151,11 +162,39 @@ class CinemaDetailComparison extends ChangeNotifier {
       if (original != null && original.source.id == 'douban-discovery')
         original.title,
     ];
-    if (listEquals(titles, _episodeTitles)) return _episodes;
+    if (listEquals(titles, _episodeTitles) && extras == _extras)
+      return _episodes;
+    _extras = extras;
     _episodeTitles = titles;
     final expectedSeason =
         cinemaSeasonName(_initialTitle.title)?.number ??
         _initialTitle.originalReference?.season;
+    // Variety providers use different numbering for broadcast dates, extras and halves.
+    // Present one programme guide rather than concatenating incompatible numbering schemes.
+    final shows = titles
+        .where((t) => cinemaVarietyCategory(t.category) && _hasPlayableRoute(t))
+        .toList();
+    if (shows.isNotEmpty) {
+      int priority(CinemaTitle t) =>
+          (cinemaIsSeasonProjection(t) ? 2 : 0) +
+          (cinemaVarietyEdition.hasMatch(t.title) != extras ? 4 : 0);
+      var show = shows.first;
+      for (final other in shows.skip(1)) {
+        if (priority(other) < priority(show)) show = other;
+      }
+      final road = show.routes.indexWhere((r) => r.episodes.isNotEmpty);
+      final seen = <String>{};
+      return _episodes = [
+        for (final (i, e) in show.routes[road].episodes.indexed)
+          if (seen.add(e.url))
+            CinemaPlaybackCandidate(
+              title: show,
+              source: catalogue.sourceFor(show),
+              routeIndex: road,
+              episodeIndex: i,
+            ),
+      ];
+    }
     final numbered = <(int, int, String), CinemaPlaybackCandidate>{};
     final named = <String, CinemaPlaybackCandidate>{};
     for (final title in titles) {

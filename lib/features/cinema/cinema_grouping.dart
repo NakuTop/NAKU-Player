@@ -38,7 +38,21 @@ class CinemaTitleGroup {
   late final CinemaTitle catalogTitle = _catalogTitle();
 
   CinemaTitle _catalogTitle({CinemaTitle? primary}) {
-    final selected = primary ?? representative;
+    var selected = primary ?? representative;
+    if (cinemaVarietyCategory(selected.category)) {
+      final labelled = variants
+          .map((v) => cinemaSeasonName(_editionBase(v.title)))
+          .nonNulls
+          .firstOrNull;
+      if (labelled != null &&
+          (cinemaSeasonName(selected.title) == null ||
+              cinemaVarietyEdition.hasMatch(selected.title))) {
+        selected = CinemaTitle.fromJson({
+          ...selected.toJson(),
+          'title': '${labelled.work} 第${labelled.number}季',
+        });
+      }
+    }
     final concrete = variants
         .where((t) => !cinemaIsSeasonProjection(t))
         .toList();
@@ -235,11 +249,8 @@ _Kind _entryKind(CinemaTitle title) =>
     ? _Kind.variety
     : _kind(title.category);
 
-final _varietyEdition = RegExp(
-  r'\s*[（(【\[]?\s*(?:加更版?|会员版|會員版|纯享版?|純享版?|精编版|精編版|完整版)\s*[）)】\]]?\s*$',
-);
 String _editionBase(String name) =>
-    name.replaceFirst(_varietyEdition, '').trim();
+    name.replaceFirst(cinemaVarietyEdition, '').trim();
 
 Map<String, String> _varietySeasonNames(Iterable<CinemaTitle> titles) {
   final numbered = <String, List<(CinemaTitle, String)>>{};

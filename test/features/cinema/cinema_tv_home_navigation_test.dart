@@ -793,7 +793,7 @@ void main() {
     await tester.ensureVisible(episodes);
     await tester.tap(episodes);
     await tester.pumpAndSettle();
-    expect(find.text('选择集数'), findsOneWidget);
+    expect(find.byType(Dialog), findsNothing);
     expect(find.text('第 1 集'), findsOneWidget);
     expect(find.text('第 2 集'), findsOneWidget);
     expect(find.byType(BackdropFilter), findsNothing);

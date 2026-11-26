@@ -9,6 +9,47 @@ import 'package:kazumi/features/cinema/cinema_search_discovery.dart';
 import 'package:kazumi/features/cinema/cinema_seasons.dart';
 
 void main() {
+  test(
+    'variety projections keep main episodes and only specials attributed to that season',
+    () {
+      const t = CinemaTitle(
+        id: '99',
+        sourceId: 'provider',
+        title: '节目（加更版）',
+        category: '大陆综艺',
+        routes: [
+          CinemaRoute(
+            name: 'line',
+            episodes: [
+              CinemaEpisode(
+                name: '第 0 季 第 2 集 第3季 第1期加更',
+                url: 'https://example.org/a',
+              ),
+              CinemaEpisode(
+                name: '第 3 季 第 1 集 20251018上',
+                url: 'https://example.org/b',
+              ),
+              CinemaEpisode(
+                name: '第 4 季 第 1 集 20261018上',
+                url: 'https://example.org/c',
+              ),
+            ],
+          ),
+        ],
+      );
+      final groups = cinemaSplitSeasons(t);
+      expect(groups.map((x) => x.id), ['99~s3', '99~s4']);
+      expect(groups[0].routes.single.episodes.map((e) => e.url), [
+        'https://example.org/b',
+        'https://example.org/a',
+      ]);
+      expect(
+        groups[1].routes.single.episodes.single.url,
+        'https://example.org/c',
+      );
+      expect(groups.map((x) => x.year), ['2025', '2026']);
+    },
+  );
   CinemaTitle series(
     String provider,
     String id,

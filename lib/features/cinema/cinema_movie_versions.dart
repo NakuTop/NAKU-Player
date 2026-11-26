@@ -1,3 +1,4 @@
+import 'cinema_catalog_categories.dart';
 import 'cinema_models.dart';
 
 int cinemaVersionQuality(String label) {
@@ -34,6 +35,14 @@ bool cinemaHasMovieVersions(CinemaTitle title, int route) {
 }
 
 int cinemaPreferredEpisode(CinemaTitle title, int route) {
+  if (route < 0 || route >= title.routes.length) return 0;
+  if (cinemaVarietyCategory(title.category)) {
+    final first = title.routes[route].episodes.indexWhere(
+      (episode) =>
+          RegExp(r'^第\s*0*1\s*期\s*(?:上|[:：]|$)').hasMatch(episode.name.trim()),
+    );
+    if (first >= 0) return first;
+  }
   if (!cinemaHasMovieVersions(title, route)) return 0;
   final episodes = title.routes[route].episodes;
   var best = 0;

@@ -1,3 +1,4 @@
+import 'cinema_seasons.dart' show cinemaVarietyEdition;
 import 'cinema_source_glow.dart';
 import 'cinema_poster_lift.dart';
 import 'cinema_original_engine.dart';
@@ -6744,36 +6745,37 @@ class _TitleDetailsState extends State<_TitleDetails> {
     unawaited(_comparison.start(refresh: true));
   }
 
-  Future<void> _pickQualityEpisode(
-    List<CinemaPlaybackCandidate> choices,
-  ) async {
-    final choice = await showDialog<CinemaPlaybackCandidate>(
-      context: context,
-      useRootNavigator: false,
-      builder: (dialog) => AlertDialog(
-        title: const Text('选集'),
-        contentPadding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
-        content: SizedBox(
-          width: 320,
-          height: math.min(400.0, choices.length * 48.0),
-          child: ListView.builder(
-            itemExtent: 48,
-            itemCount: choices.length,
-            itemBuilder: (_, index) {
-              final route = choices[index];
-              return ListTile(
-                title: Text(
-                  route.episode.name,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                onTap: () => Navigator.of(dialog).pop(route),
-              );
+  bool _episodesExpanded = false;
+  bool _showExtraEpisodes = false;
+  void _toggleEpisodes() =>
+      setState(() => _episodesExpanded = !_episodesExpanded);
+  Widget _episodeList(
+    int length,
+    String Function(int) label,
+    void Function(int) select,
+  ) {
+    return SizedBox(
+      width: double.infinity,
+      height: math.min(288.0, length * 48.0),
+      child: Material(
+        type: MaterialType.transparency,
+        child: ListView.builder(
+          primary: false,
+          itemExtent: 48,
+          itemCount: length,
+          itemBuilder: (context, i) => ListTile(
+            title: Text(label(i), maxLines: 1, overflow: TextOverflow.ellipsis),
+            onTap: () {
+              setState(() => _episodesExpanded = false);
+              select(i);
             },
           ),
         ),
       ),
     );
-    if (!mounted || choice == null) return;
+  }
+
+  void _playChosenEpisode(CinemaPlaybackCandidate choice) {
     final best = _recommended;
     // Preserve a known measurement for this episode only.
     if (best != null &&
@@ -6803,7 +6805,10 @@ class _TitleDetailsState extends State<_TitleDetails> {
     final options = _qualityOptions(title, snapshot);
     final regular = options.regular, original = options.ultraHD;
     final sample = regular == null ? null : _comparison.results[regular.key];
-    final episodes = _comparison.episodeChoices(original: original?.route);
+    final episodes = _comparison.episodeChoices(
+      original: original?.route,
+      extras: _showExtraEpisodes,
+    );
     final hdReady = _hdReady(snapshot), uhdReady = _uhdReady(snapshot);
     return Wrap(
       key: const ValueKey('cinema-detail-qualities'),
@@ -6846,9 +6851,25 @@ class _TitleDetailsState extends State<_TitleDetails> {
         if (episodes.isNotEmpty)
           TextButton.icon(
             key: const ValueKey('detail-quality-episodes'),
-            onPressed: () => _pickQualityEpisode(episodes),
+            onPressed: _toggleEpisodes,
             icon: const Icon(Icons.playlist_play_rounded, size: 19),
-            label: const Text('选集'),
+            label: Text(_episodesExpanded ? '收起选集' : '选集'),
+          ),
+        if (_episodesExpanded && _comparison.hasBothVarietyEditions)
+          SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment(value: false, label: Text('正片')),
+              ButtonSegment(value: true, label: Text('加更')),
+            ],
+            selected: {_showExtraEpisodes},
+            onSelectionChanged: (v) =>
+                setState(() => _showExtraEpisodes = v.single),
+          ),
+        if (_episodesExpanded && episodes.isNotEmpty)
+          _episodeList(
+            episodes.length,
+            (i) => episodes[i].episode.name,
+            (i) => _playChosenEpisode(episodes[i]),
           ),
       ],
     );
@@ -6896,7 +6917,13 @@ class _TitleDetailsState extends State<_TitleDetails> {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(name, style: TextStyle(fontSize: NakuDevice.isTV ? 16 : 12)),
+              Text(
+                cinemaVarietyCategory(variant.category) &&
+                        cinemaVarietyEdition.hasMatch(variant.title)
+                    ? '$name · 加更'
+                    : name,
+                style: TextStyle(fontSize: NakuDevice.isTV ? 16 : 12),
+              ),
               if (recommended) ...[
                 const SizedBox(width: 6),
                 const Tooltip(
@@ -6987,9 +7014,24 @@ class _TitleDetailsState extends State<_TitleDetails> {
               style: TextButton.styleFrom(
                 textStyle: const TextStyle(fontSize: 18),
               ),
-              onPressed: () => _tvSelectEpisode(title, road),
+              onPressed: _toggleEpisodes,
               icon: const Icon(Icons.video_library_outlined),
-              label: Text('选集 · ${title.routes[road].episodes.length} 集'),
+              label: Text(
+                '${_episodesExpanded ? '收起选集' : '选集'} · ${title.routes[road].episodes.length} 集',
+              ),
+            ),
+          if (_episodesExpanded && road >= 0 && road < title.routes.length)
+            _episodeList(
+              title.routes[road].episodes.length,
+              (i) => title.routes[road].episodes[i].name,
+              (i) => _playCompared(
+                title,
+                selectedSource,
+                road,
+                i,
+                _variants,
+                _variantChosen || _routeChosen,
+              ),
             ),
           Wrap(
             spacing: 8,
@@ -7280,28 +7322,27 @@ class _TitleDetailsState extends State<_TitleDetails> {
               ),
             if (title.routes[road].episodes.length > 1 ||
                 !cinemaHasMovieVersions(title, road))
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (var e = 0; e < title.routes[road].episodes.length; e++)
-                    TextButton(
-                      style: TextButton.styleFrom(
-                        foregroundColor: CinemaTheme.text,
-                      ),
-                      onPressed: () => _playCompared(
-                        title,
-                        selectedSource,
-                        road,
-                        e,
-                        _variants,
-                        _variantChosen ||
-                            _routeChosen ||
-                            cinemaHasMovieVersions(title, road),
-                      ),
-                      child: Text(title.routes[road].episodes[e].name),
-                    ),
-                ],
+              TextButton.icon(
+                onPressed: _toggleEpisodes,
+                icon: Icon(
+                  _episodesExpanded ? Icons.expand_less : Icons.expand_more,
+                ),
+                label: Text(_episodesExpanded ? '收起选集' : '选集'),
+              ),
+            if (_episodesExpanded)
+              _episodeList(
+                title.routes[road].episodes.length,
+                (i) => title.routes[road].episodes[i].name,
+                (i) => _playCompared(
+                  title,
+                  selectedSource,
+                  road,
+                  i,
+                  _variants,
+                  _variantChosen ||
+                      _routeChosen ||
+                      cinemaHasMovieVersions(title, road),
+                ),
               ),
           ],
         ],
@@ -7565,56 +7606,6 @@ class _TitleDetailsState extends State<_TitleDetails> {
       );
     },
   );
-
-  Future<void> _tvSelectEpisode(CinemaTitle title, int road) async {
-    final episodes = title.routes[road].episodes;
-    final selected = await showDialog<int>(
-      context: context,
-      useRootNavigator: false,
-      animationStyle: AnimationStyle.noAnimation,
-      builder: (dialogContext) => Dialog(
-        backgroundColor: const Color(0xFF171719),
-        child: SizedBox(
-          width: 700,
-          height: MediaQuery.sizeOf(context).height * .72,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text('选择集数', style: const TextStyle(fontSize: 24)),
-              ),
-              Expanded(
-                child: ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                  itemCount: episodes.length,
-                  itemBuilder: (_, i) => CinemaTVFocus(
-                    child: ListTile(
-                      autofocus: i == 0,
-                      title: Text(
-                        episodes[i].name,
-                        style: const TextStyle(fontSize: 20),
-                      ),
-                      onTap: () => Navigator.of(dialogContext).pop(i),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (selected != null && mounted) {
-      _playCompared(
-        title,
-        _selectedSource,
-        road,
-        selected,
-        _variants,
-        _variantChosen || _routeChosen,
-      );
-    }
-  }
 
   Widget _tvDetail(CinemaTitle title, AsyncSnapshot<CinemaTitle> snapshot) {
     final viewport = MediaQuery.sizeOf(context);
