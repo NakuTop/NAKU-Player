@@ -556,6 +556,24 @@ class CinemaRepository {
           aliases: title.aliases,
         );
       }
+      if (!cinemaIsSeasonProjection(title) &&
+          cinemaVarietyCategory(match.category)) {
+        final seasons = cinemaSplitSeasons(match);
+        if (seasons.first.id != match.id) {
+          final number = cinemaSeasonName(
+            title.title.replaceFirst(cinemaVarietyEdition, ''),
+          )?.number;
+          if (number != null) {
+            return seasons.firstWhere(
+              (s) => s.id == '${match.id}~s$number',
+              orElse: () => throw const CinemaSourceException('未找到此季'),
+            );
+          }
+          return cinemaVarietyEdition.hasMatch(title.title)
+              ? seasons.last
+              : seasons.first;
+        }
+      }
       return match;
     }
     final plugin = Plugin.fromJson(source.rule!);

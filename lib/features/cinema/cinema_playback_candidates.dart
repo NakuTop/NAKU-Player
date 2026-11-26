@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'cinema_catalog_categories.dart';
 import 'cinema_grouping.dart';
 import 'cinema_models.dart';
 import 'cinema_media_identity.dart';
@@ -74,6 +75,16 @@ int? cinemaMatchPlaybackEpisode({
     if (urls > 0) {
       return urls == 1 ? unique((e) => e.url == current.episode.url) : null;
     }
+  }
+  if (cinemaVarietyCategory(current.title.category) ||
+      cinemaVarietyCategory(target.category)) {
+    String label(String s) => cinemaIdentityTypography(s)
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s+'), '')
+        .replaceFirst(RegExp(r'^第\d+集(?=(?:19|20)\d{6})'), '')
+        .replaceFirstMapped(RegExp(r'^(第\d+期[上中下]?)[:：].+$'), (m) => m[1]!);
+    final name = label(current.episode.name);
+    return name.isEmpty ? null : unique((e) => label(e.name) == name);
   }
   final number = originalEpisode(current.episode.name);
   if (number.episode != null && !_movie(current.title) && !_movie(target)) {

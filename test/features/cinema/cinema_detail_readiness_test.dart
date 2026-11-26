@@ -1254,12 +1254,15 @@ void main() {
       await tester.ensureVisible(picker);
       await tester.tap(picker);
       await tester.pumpAndSettle();
-      final dialog = find.byType(AlertDialog);
-      expect(
-        find.descendant(of: dialog, matching: find.byType(ListTile)),
-        findsNWidgets(3),
-      );
-      await tester.tap(find.descendant(of: dialog, matching: find.text('第3集')));
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(find.text('第3集'), findsOneWidget);
+      await tester.tap(picker);
+      await tester.pumpAndSettle();
+      expect(find.text('第3集'), findsNothing);
+      await tester.tap(picker);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('第3集'));
+      await tester.tap(find.text('第3集'));
       await tester.pumpAndSettle();
       final page = opened!;
       expect(

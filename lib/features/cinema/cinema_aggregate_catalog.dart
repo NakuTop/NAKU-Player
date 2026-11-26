@@ -127,6 +127,7 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
         )
         .toList();
     final key = jsonEncode([
+      if (kind == CinemaAggregateKind.variety) 'variety-season-routes-v2',
       if (_repository.hideShortDramas) 'catalog-ai-drama-filter-v1',
       kind.name,
       // An older 20-card snapshot is not a complete 40-card head page.
