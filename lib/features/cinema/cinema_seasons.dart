@@ -1,3 +1,4 @@
+import 'cinema_catalog_categories.dart';
 import 'cinema_models.dart';
 import 'cinema_media_identity.dart';
 
@@ -29,6 +30,24 @@ bool cinemaMatchesWorkQuery(CinemaTitle title, String query) {
     if (title.doubanId.isNotEmpty) cinemaRegionalTitle(title.title, title.year),
     ...cinemaTitleAliases(title.aliases),
   ].any((name) => cinemaSameSearchTitle(name, query, title.year));
+}
+
+bool cinemaMatchesSeasonQuery(CinemaTitle title, CinemaSeasonName query) {
+  if (cinemaMatchesSeason(title.title, query)) return true;
+  if (!cinemaVarietyCategory(title.category)) return false;
+  final primary = cinemaSeasonName(
+    cinemaCleanWorkTitle(title.title, title.year),
+  );
+  if (primary?.number != query.number) return false;
+  return cinemaTitleAliases(title.aliases).any((alias) {
+    final alternate = cinemaSeasonName(alias);
+    if (alternate != null && alternate.number != query.number) return false;
+    return cinemaSameSearchTitle(
+      alternate?.work ?? alias,
+      query.work,
+      title.year,
+    );
+  });
 }
 
 bool cinemaIsSeasonProjection(CinemaTitle title) =>
