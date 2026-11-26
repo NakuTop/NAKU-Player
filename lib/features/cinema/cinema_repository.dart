@@ -275,7 +275,11 @@ class CinemaRepository {
     String query,
     int page,
   ) async {
-    final queries = cinemaWorkSearchQueries(query);
+    final short = cinemaShortVarietySeason(query);
+    final queries = {
+      ...cinemaWorkSearchQueries(query),
+      if (short != null) short.work,
+    }.toList();
     Object? failure;
     final results = await Future.wait(
       queries.map((q) async {
@@ -301,7 +305,11 @@ class CinemaRepository {
       if (result == null) continue;
       if (result.pageCount > pageCount) pageCount = result.pageCount;
       for (final title in result.items) {
-        if (index > 0 && !exact(title)) {
+        if (index > 0 &&
+            !exact(title) &&
+            !(short != null &&
+                cinemaVarietyCategory(title.category) &&
+                cinemaMatchesSeasonQuery(title, short))) {
           continue;
         }
         items.putIfAbsent(title.key, () => title);

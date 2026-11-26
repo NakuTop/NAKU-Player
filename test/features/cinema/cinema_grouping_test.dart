@@ -19,6 +19,69 @@ CinemaTitle _title(
 );
 
 void main() {
+  test('an explicit alias cannot relabel bare titles of another season', () {
+    CinemaTitle show(
+      String id,
+      String name,
+      String year, [
+      String alias = '',
+    ]) => CinemaTitle(
+      id: id,
+      sourceId: 'feed',
+      title: name,
+      category: '大陆综艺',
+      year: year,
+      aliases: alias,
+    );
+    final rows = [
+      show('a', '山海巡游', '2023'),
+      show('b', '山海巡游 第1季', '2023'),
+      show('c', '山海巡游第二季', '2024', '山海巡游 第2季'),
+      show('d', '山海巡游2', '2024'),
+    ];
+    expect(
+      groupCinemaTitles(rows).map((g) => g.variants.map((t) => t.id).join()),
+      ['ab', 'cd'],
+    );
+  });
+
+  test(
+    'variety season numbers, themed aliases and adjacent broadcast years share only corroborated seasons',
+    () {
+      CinemaTitle show(
+        String id,
+        String name, {
+        String year = '2024',
+        String aliases = '',
+        String subject = '42',
+      }) => CinemaTitle(
+        id: id,
+        sourceId: 'feed',
+        title: name,
+        category: '大陆综艺',
+        year: year,
+        aliases: aliases,
+        doubanId: subject,
+        actors: '甲演员 / 乙演员',
+      );
+      final rows = [
+        show('1', '山海旅行 第五季'),
+        show('2', '山海旅行5', subject: ''),
+        show('3', '山海旅行·远洋季', aliases: '山海旅行第五季', year: '2023'),
+        show('4', '山海旅行 远洋季 第5季', subject: ''),
+        show('5', '山海旅行5会员Plus版', subject: ''),
+        show('6', '山海旅行第六季'),
+        show('7', '山海旅行第五季', subject: '99'),
+        show('8', '山海旅行2050', subject: ''),
+      ];
+      // Conflicting provider subjects must not be joined by an ambiguous record.
+      expect(groupCinemaTitles(rows.take(6)).map((g) => g.variants.length), [
+        5,
+        1,
+      ]);
+      expect(groupCinemaTitles([rows[0], rows[6], rows[7]]).length, 3);
+    },
+  );
   test('variety editions join the correct season across sources', () {
     CinemaTitle entry(String id, String title, String year, String remarks) =>
         CinemaTitle(

@@ -7,6 +7,7 @@ import 'cinema_media_identity.dart';
 import 'cinema_original_match.dart' show originalEpisode;
 import 'cinema_movie_versions.dart';
 import 'cinema_repository.dart';
+import 'cinema_seasons.dart';
 
 /// A concrete source, route and episode. Indexes only identify a selection
 /// inside this title; they are never used to match episodes across sources.
@@ -78,6 +79,9 @@ int? cinemaMatchPlaybackEpisode({
   }
   if (cinemaVarietyCategory(current.title.category) ||
       cinemaVarietyCategory(target.category)) {
+    if (cinemaVarietyEdition.hasMatch(current.title.title) !=
+        cinemaVarietyEdition.hasMatch(target.title))
+      return null;
     String label(String s) => cinemaIdentityTypography(s)
         .toLowerCase()
         .replaceAll(RegExp(r'\s+'), '')
