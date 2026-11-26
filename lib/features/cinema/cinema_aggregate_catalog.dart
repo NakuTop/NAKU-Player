@@ -226,6 +226,13 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
     if (_disposed || session == null || session.loading || !snapshot.hasMore) {
       return;
     }
+    session.visibleLimit += discoveryPageSize;
+    if (session.groupCount >= session.visibleLimit ||
+        (session.groupCount > snapshot.groups.length &&
+            !session.canFetchMore)) {
+      _publish(session);
+      return;
+    }
     await _round(session, _generation);
   }
 
@@ -252,6 +259,8 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
           // than waiting indefinitely to reach forty cards.
           var fetched = 1;
           while (firstRound &&
+              (session.kind != CinemaAggregateKind.variety ||
+                  session.groupCount < discoveryPageSize) &&
               _valid(session, generation) &&
               cursor.hasMore &&
               cursor.error == null &&
@@ -524,6 +533,14 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
             session.sort,
           );
     final byKey = {for (final group in groups) group.representative.key: group};
+    session.groupCount = groups.length;
+    final visibleGroups = representatives
+        .take(session.visibleLimit)
+        .map((title) => byKey[title.key]!)
+        .toList();
+    final visibleKeys = visibleGroups
+        .expand((g) => g.variants.map((t) => t.key))
+        .toSet();
     final statuses = session.sources
         .map(
           (cursor) => CinemaAggregateSourceState(
@@ -539,18 +556,16 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
     final errors = statuses.where((source) => source.error != null).length;
     final limited = session.items.length >= 800;
     _snapshot = CinemaAggregateSnapshot(
-      items: List.unmodifiable(ordered),
-      groups: List.unmodifiable(
-        representatives.map((title) => byKey[title.key]!),
+      items: List.unmodifiable(
+        ordered.where((t) => visibleKeys.contains(t.key)),
       ),
+      groups: List.unmodifiable(visibleGroups),
       sources: List.unmodifiable(statuses),
       loading: session.loading,
       initialized: session.initialized,
       hasMore:
-          !limited &&
-          ((!session.metadataOnly &&
-                  session.sources.any((source) => source.hasMore)) ||
-              (session.usesMetadata && session.discoveryHasMore)),
+          groups.length > session.visibleLimit ||
+          (!limited && session.canFetchMore),
       usesMetadataDiscovery: session.usesMetadata,
       error:
           session.discoveryError ??
@@ -673,6 +688,11 @@ void _includeDescendants(Set<String> ids, List<CinemaCategory> categories) {
 }
 
 class _Session {
+  int visibleLimit = CinemaAggregateCatalogController.discoveryPageSize;
+  int groupCount = 0;
+  bool get canFetchMore =>
+      (!metadataOnly && sources.any((s) => s.hasMore)) ||
+      (usesMetadata && discoveryHasMore);
   _Session(
     this.key,
     this.kind,

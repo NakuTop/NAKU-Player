@@ -159,8 +159,9 @@ List<CinemaTitleGroup> groupCinemaTitles(
       );
       return metadata != 0 ? metadata : order[a.key]!.compareTo(order[b.key]!);
     });
+  final varietyNames = _varietySeasonNames(prioritized);
   for (final title in prioritized) {
-    final candidate = _Candidate(title);
+    final candidate = _Candidate(title, varietyNames[title.key]);
     final lookup = {
       candidate.name,
       candidate.regionalName,
@@ -229,11 +230,72 @@ Set<String> _credits(String value) => value
     )
     .toSet();
 
+_Kind _entryKind(CinemaTitle title) =>
+    title.sourceId == 'douban-discovery' && cinemaVarietyCategory(title.genres)
+    ? _Kind.variety
+    : _kind(title.category);
+
+final _varietyEdition = RegExp(
+  r'\s*[（(【\[]?\s*(?:加更版?|会员版|會員版|纯享版?|純享版?|精编版|精編版|完整版)\s*[）)】\]]?\s*$',
+);
+String _editionBase(String name) =>
+    name.replaceFirst(_varietyEdition, '').trim();
+
+Map<String, String> _varietySeasonNames(Iterable<CinemaTitle> titles) {
+  final numbered = <String, List<(CinemaTitle, String)>>{};
+  final unresolved = <CinemaTitle>[];
+  final names = <String, String>{};
+  for (final t in titles.where((t) => _entryKind(t) == _Kind.variety)) {
+    final base = _editionBase(t.title);
+    final season = cinemaSeasonName(base);
+    if (season == null) {
+      unresolved.add(t);
+      continue;
+    }
+    names[t.key] = base;
+    (numbered[cinemaGroupedWorkTitleKey(season.work, '')] ??= []).add((
+      t,
+      base,
+    ));
+  }
+  for (final t in unresolved) {
+    final base = _editionBase(t.title),
+        day = RegExp(r'(?:19|20)\d{6}').firstMatch(t.remarks)?.group(0);
+    final matches = <String, String>{};
+    for (final (peer, name)
+        in numbered[cinemaGroupedWorkTitleKey(base, '')] ??
+            const <(CinemaTitle, String)>[]) {
+      if (t.doubanId.isNotEmpty &&
+          peer.doubanId.isNotEmpty &&
+          t.doubanId != peer.doubanId) {
+        continue;
+      }
+      if (t.year.isNotEmpty && peer.year.isNotEmpty && t.year != peer.year) {
+        continue;
+      }
+      if ((t.year.isNotEmpty && t.year == peer.year) ||
+          (day != null &&
+              peer.remarks.contains(day) &&
+              _credits(t.actors).intersection(_credits(peer.actors)).length >=
+                  2)) {
+        matches[cinemaGroupedWorkTitleKey(name, '')] = name;
+      }
+    }
+    if (matches.length == 1) {
+      names[t.key] = matches.values.single;
+    } else if (t.year.isNotEmpty) {
+      names[t.key] = base;
+    }
+  }
+  return names;
+}
+
 class _Candidate {
-  _Candidate(this.title)
-    : name = cinemaGroupedWorkTitleKey(title.title, title.year),
+  _Candidate(this.title, [String? identityName])
+    : season = cinemaSeasonName(identityName ?? title.title)?.number,
+      name = cinemaGroupedWorkTitleKey(identityName ?? title.title, title.year),
       doubanId = cinemaIsSeasonProjection(title) ? '' : title.doubanId.trim(),
-      kind = _kind(title.category),
+      kind = _entryKind(title),
       year = cinemaIsSeasonProjection(title)
           ? null
           : _year(title.year, _kind(title.category)) ??
@@ -243,6 +305,7 @@ class _Candidate {
                     : null);
 
   final CinemaTitle title;
+  final int? season;
   final String name;
   late final aliases = cinemaTitleAliases(
     title.aliases,
@@ -260,12 +323,14 @@ class _Candidate {
 
 class _Group {
   _Group(_Candidate candidate)
-    : name = candidate.name,
+    : season = candidate.season,
+      name = candidate.name,
       doubanId = candidate.doubanId,
       kind = candidate.kind,
       year = candidate.year,
       variants = [candidate.title];
 
+  final int? season;
   final String name;
   String doubanId;
   _Kind kind;
@@ -319,8 +384,11 @@ class _Group {
                     candidate.title.releaseDateText.contains('${known.year}-'));
       });
     }
-    final season = cinemaSeasonName(candidate.title.title)?.number;
-    final sameSeason = cinemaSeasonName(variants.first.title)?.number == season;
+    final season = candidate.season;
+    final sameSeason = this.season == season;
+    if (kind == _Kind.variety && candidate.kind == kind && !sameSeason) {
+      return false;
+    }
     final exactSeason =
         season != null &&
         sameSeason &&
@@ -329,6 +397,15 @@ class _Group {
     if (kind != _Kind.unknown &&
         candidate.kind != _Kind.unknown &&
         kind != candidate.kind) {
+      if ({kind, candidate.kind}.containsAll({_Kind.variety, _Kind.series}) &&
+          sameSeason &&
+          name == candidate.name &&
+          doubanId.isNotEmpty &&
+          doubanId == candidate.doubanId &&
+          (candidate.title.sourceId == 'douban-discovery' ||
+              variants.first.sourceId == 'douban-discovery')) {
+        return true;
+      }
       // Older subject suggestions stored every TV series as a movie.
       // Repair those rows only with a corroborating, same-season native entry.
       if (candidate.title.sourceId == 'douban-discovery' &&
