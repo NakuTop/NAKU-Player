@@ -1,55 +1,55 @@
 {
-  "tag_name": "3.2.26",
-  "name": "NAKU Android 手机版 3.2.26",
-  "body": "安卓 3.2.26\n\n电视播放控制栏显示实际分辨率，支持用遥控器换源和重新测速。手机详情页和播放器增加换源入口，次要工具收进播放设置。观看历史记录已发现的其他片源，恢复同一集时可继续换线。优化高密度屏幕的弹幕绘制和弹幕缓存写入。\n",
-  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.26-android",
-  "published_at": "2026-11-25T14:21:27Z",
+  "tag_name": "3.2.27",
+  "name": "NAKU Android 手机版 3.2.27",
+  "body": "首页新增「综艺」，支持跨片源聚合、按期播放和历史续播。手机支持筛选和跨分类搜索，电视支持遥控器导航。\n",
+  "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/v3.2.27-android",
+  "published_at": "2026-11-26T05:52:59Z",
   "draft": false,
   "prerelease": false,
   "assets": [
     {
-      "name": "NAKUPlayer-3.2.26-Android-Mobile.apk",
+      "name": "NAKUPlayer-3.2.27-Android-Mobile.apk",
       "state": "uploaded",
-      "size": 165877043,
-      "digest": "sha256:f59ae5c27472050335e8b4978f6b6019bec9ae47cc9122e7e4294acb7c74e865",
-      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.26-android/NAKUPlayer-3.2.26-Android-Mobile.apk",
-      "build": 154,
+      "size": 165875029,
+      "digest": "sha256:a3c40d7ec51fe638a6e39993093270a4edd7411947e85445e7b28dcdf551a595",
+      "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.27-android/NAKUPlayer-3.2.27-Android-Mobile.apk",
+      "build": 155,
       "deltas": [
         {
-          "name": "NAKU-Mobile-153-154.gdiff.gz",
+          "name": "NAKU-Mobile-154-155.gdiff.gz",
           "state": "uploaded",
-          "size": 26561465,
-          "digest": "sha256:e13d14cabeaf99406972e35df4994c06f863bcdb17a5710ac08c4620bfd84be2",
-          "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.26-android/NAKU-Mobile-153-154.gdiff.gz",
+          "size": 26558428,
+          "digest": "sha256:5e896b852d6d96081936b55912124d380fdf0d6ea1080ca4235e11fc225e142d",
+          "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.27-android/NAKU-Mobile-154-155.gdiff.gz",
+          "format": "gdiff4-gzip",
+          "base_version": "3.2.26",
+          "base_build": 154,
+          "base_sha256": "f59ae5c27472050335e8b4978f6b6019bec9ae47cc9122e7e4294acb7c74e865",
+          "target_sha256": "a3c40d7ec51fe638a6e39993093270a4edd7411947e85445e7b28dcdf551a595"
+        },
+        {
+          "name": "NAKU-Mobile-153-155.gdiff.gz",
+          "state": "uploaded",
+          "size": 26558431,
+          "digest": "sha256:4ec8149fd6af0ac022fb8bd46b45fb2f40c5049d99b67f3d3b3ce855b0ac2721",
+          "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.27-android/NAKU-Mobile-153-155.gdiff.gz",
           "format": "gdiff4-gzip",
           "base_version": "3.2.25",
           "base_build": 153,
           "base_sha256": "54025368221a5d4a0b7656dc371302063fcc6e183440e93a090a2ba6193c986f",
-          "target_sha256": "f59ae5c27472050335e8b4978f6b6019bec9ae47cc9122e7e4294acb7c74e865"
+          "target_sha256": "a3c40d7ec51fe638a6e39993093270a4edd7411947e85445e7b28dcdf551a595"
         },
         {
-          "name": "NAKU-Mobile-151-154.gdiff.gz",
+          "name": "NAKU-Mobile-151-155.gdiff.gz",
           "state": "uploaded",
-          "size": 26561464,
-          "digest": "sha256:db6ae4df111dc65688ef605b12ceb90c1e94f9bb98b84e6404f25f4ca5574cc9",
-          "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.26-android/NAKU-Mobile-151-154.gdiff.gz",
+          "size": 26558447,
+          "digest": "sha256:219ae214900915c0f105dbeac5fa865825ff863f79872c9df96eea3d9e5150a2",
+          "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.27-android/NAKU-Mobile-151-155.gdiff.gz",
           "format": "gdiff4-gzip",
           "base_version": "3.2.23",
           "base_build": 151,
           "base_sha256": "a38a297051a07622a6dedb1c17d81ed8d06f8ea4e37e510f33fbdd5c031421e6",
-          "target_sha256": "f59ae5c27472050335e8b4978f6b6019bec9ae47cc9122e7e4294acb7c74e865"
-        },
-        {
-          "name": "NAKU-Mobile-150-154.gdiff.gz",
-          "state": "uploaded",
-          "size": 26561451,
-          "digest": "sha256:6e80201d4783e06a2c1cd7f635b82e3d9f870cff8ce34c739372d57283161ca3",
-          "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/v3.2.26-android/NAKU-Mobile-150-154.gdiff.gz",
-          "format": "gdiff4-gzip",
-          "base_version": "3.2.22",
-          "base_build": 150,
-          "base_sha256": "2ac4f07938e7de41bfb68329388eacf5d826cc6d6408a76a7cc081769cdb3a41",
-          "target_sha256": "f59ae5c27472050335e8b4978f6b6019bec9ae47cc9122e7e4294acb7c74e865"
+          "target_sha256": "a3c40d7ec51fe638a6e39993093270a4edd7411947e85445e7b28dcdf551a595"
         }
       ]
     }
