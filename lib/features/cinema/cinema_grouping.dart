@@ -40,6 +40,16 @@ class CinemaTitleGroup {
   CinemaTitle _catalogTitle({CinemaTitle? primary}) {
     var selected = primary ?? representative;
     if (cinemaVarietyCategory(selected.category)) {
+      if (cinemaVarietyEdition.hasMatch(selected.title)) {
+        final regular = variants
+            .where((t) => !cinemaVarietyEdition.hasMatch(t.title))
+            .firstOrNull;
+        if (regular != null)
+          selected = CinemaTitle.fromJson({
+            ...selected.toJson(),
+            'title': regular.title,
+          });
+      }
       final labelled = variants
           .map((v) => cinemaSeasonName(_editionBase(v.title)))
           .nonNulls
@@ -222,7 +232,7 @@ List<CinemaTitleGroup> groupCinemaTitles(
 enum _Kind { movie, series, variety, anime, documentary, commentary, unknown }
 
 Set<String> _credits(String value) => value
-    .split(RegExp(r'[,，、/|;；]'))
+    .split(RegExp(r'[,，、/|;；]|(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])'))
     .map(
       (s) => cinemaIdentityTypography(
         s,
@@ -256,17 +266,43 @@ Map<String, String> _varietySeasonNames(Iterable<CinemaTitle> titles) {
   final numbered = <String, List<(CinemaTitle, String)>>{};
   final unresolved = <CinemaTitle>[];
   final names = <String, String>{};
-  for (final t in titles.where((t) => _entryKind(t) == _Kind.variety)) {
+  final shows = titles.where((t) => _entryKind(t) == _Kind.variety).toList();
+  final evidence = <String, Map<String, CinemaSeasonName>>{};
+  String key(String s) => cinemaGroupedWorkTitleKey(s, '');
+  void record(String name, CinemaSeasonName season) {
+    (evidence[key(name)] ??= {})['${key(season.work)}#${season.number}'] =
+        season;
+  }
+
+  for (final t in shows) {
+    final base = _editionBase(t.title),
+        explicit = cinemaSeasonName(base),
+        alias = cinemaVarietyAliasSeason(t);
+    if (explicit != null)
+      record('${explicit.work}${explicit.number}', explicit);
+    if (alias != null && key(alias.work) != key(explicit?.work ?? base)) {
+      record(explicit?.work ?? base, alias);
+    }
+  }
+  for (final t in shows) {
     final base = _editionBase(t.title);
-    final season = cinemaSeasonName(base);
+    final direct = cinemaSeasonName(base);
+    final peers = evidence[key(direct?.work ?? base)]?.values
+        .where((s) => direct == null || s.number == direct.number)
+        .toList();
+    final season =
+        cinemaVarietyAliasSeason(t) ??
+        (peers?.length == 1 ? peers!.single : null) ??
+        direct;
     if (season == null) {
       unresolved.add(t);
       continue;
     }
-    names[t.key] = base;
+    final label = '${season.work} 第${season.number}季';
+    names[t.key] = label;
     (numbered[cinemaGroupedWorkTitleKey(season.work, '')] ??= []).add((
       t,
-      base,
+      label,
     ));
   }
   for (final t in unresolved) {
@@ -359,6 +395,21 @@ class _Group {
       return false;
     }
     if (year != null && candidate.year != null && year != candidate.year) {
+      if (kind == _Kind.variety &&
+          candidate.kind == kind &&
+          (this.season != null || name.endsWith('季')) &&
+          this.season == candidate.season &&
+          name == candidate.name &&
+          (year! - candidate.year!).abs() == 1) {
+        if (doubanId.isNotEmpty && doubanId == candidate.doubanId) return true;
+        return variants.any(
+          (v) =>
+              _credits(
+                v.actors,
+              ).intersection(_credits(candidate.title.actors)).length >=
+              2,
+        );
+      }
       if (kind != _Kind.movie ||
           candidate.kind != _Kind.movie ||
           (year! - candidate.year!).abs() != 1) {

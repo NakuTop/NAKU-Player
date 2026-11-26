@@ -32,6 +32,36 @@ bool cinemaMatchesWorkQuery(CinemaTitle title, String query) {
   ].any((name) => cinemaSameSearchTitle(name, query, title.year));
 }
 
+CinemaSeasonName? cinemaShortVarietySeason(String value) {
+  final match = RegExp(
+    r'^(.{2,}?[^\d])\s*([1-9]\d?)$',
+  ).firstMatch(cinemaIdentityTypography(value).trim());
+  return match == null
+      ? null
+      : (work: match[1]!.trim(), number: int.parse(match[2]!));
+}
+
+/// A themed season may have a numbered provider alias. Only accept a unique
+/// coordinate belonging to the same programme, consistent with its own label.
+CinemaSeasonName? cinemaVarietyAliasSeason(CinemaTitle title) {
+  final base = title.title.replaceFirst(cinemaVarietyEdition, '').trim();
+  final explicit = cinemaSeasonName(base);
+  final key = cinemaGroupedWorkTitleKey(explicit?.work ?? base, '');
+  final candidates = <String, CinemaSeasonName>{};
+  for (final alias in cinemaTitleAliases(title.aliases)) {
+    final season = cinemaSeasonName(
+      alias.replaceFirst(cinemaVarietyEdition, '').trim(),
+    );
+    if (season == null ||
+        (explicit != null && season.number != explicit.number))
+      continue;
+    final family = cinemaGroupedWorkTitleKey(season.work, '');
+    if (family.length < 2 || !key.startsWith(family)) continue;
+    candidates['$family#${season.number}'] = season;
+  }
+  return candidates.length == 1 ? candidates.values.single : null;
+}
+
 bool cinemaMatchesSeasonQuery(CinemaTitle title, CinemaSeasonName query) {
   if (cinemaMatchesSeason(title.title, query)) return true;
   if (!cinemaVarietyCategory(title.category)) return false;
@@ -41,6 +71,15 @@ bool cinemaMatchesSeasonQuery(CinemaTitle title, CinemaSeasonName query) {
       title.year,
     ),
   );
+  final hint =
+      cinemaVarietyAliasSeason(title) ??
+      cinemaShortVarietySeason(
+        title.title.replaceFirst(cinemaVarietyEdition, '').trim(),
+      );
+  if ((primary == null || primary.number == query.number) &&
+      hint?.number == query.number &&
+      cinemaSameSearchTitle(hint!.work, query.work, title.year))
+    return true;
   if (primary == null &&
       query.number == 1 &&
       !cinemaVarietyEdition.hasMatch(title.title)) {
@@ -60,10 +99,11 @@ bool cinemaMatchesSeasonQuery(CinemaTitle title, CinemaSeasonName query) {
 }
 
 final cinemaVarietyEdition = RegExp(
-  r'\s*[（(【\[]?\s*(?:加更版?|会员版|會員版|纯享版?|純享版?|精编版|精編版|完整版)\s*[）)】\]]?\s*$',
+  r'\s*[（(【\[]?\s*(?:加更版?|(?:会员|會員|VIP)\s*(?:Plus|加长|加長)?\s*版|番外篇|下饭版|下飯版|独享版|獨享版|舞台纯享版|舞台純享版|纯享版?|純享版?|精编版|精編版|完整版)\s*[）)】\]]?\s*$',
+  caseSensitive: false,
 );
 final _showCoordinate = RegExp(
-  r'^(?:第\s*([0-9一二两兩三四五六七八九十]+)\s*季\s*第\s*(\d+)\s*[集期]|S(\d{1,2})\s*E(\d+))\s*(.*)$',
+  r'^(?:第\s*([0-9一二两兩三四五六七八九十]+)\s*季[\s._-]*第\s*([0-9一二两兩三四五六七八九十百]+)\s*([集期])|S(\d{1,2})[\s._-]*E(\d+))\s*(.*)$',
   caseSensitive: false,
 );
 final _specialSeason = RegExp(r'^第\s*([0-9一二两兩三四五六七八九十]+)\s*季\s*(.+)$');
@@ -77,7 +117,7 @@ List<CinemaTitle> _varietySeasons(CinemaTitle title) {
   for (final route in title.routes) {
     final parts = <int, List<CinemaEpisode>>{};
     bool special(CinemaEpisode e) => RegExp(
-      r'^(?:第\s*0+\s*季|s0+e)',
+      r'^(?:第\s*0+\s*季|s0+[\s._-]*e)',
       caseSensitive: false,
     ).hasMatch(e.name.trim());
     for (final e in [
@@ -91,21 +131,22 @@ List<CinemaTitle> _varietySeasons(CinemaTitle title) {
         unlabelled = true;
         continue;
       }
-      var season = cinemaSeasonNumber(m[1] ?? m[3]!);
-      var label = m[5]!.trim();
-      if ((m[1] ?? m[3]) == '0' || (m[1] ?? m[3]) == '00') {
+      var season = cinemaSeasonNumber(m[1] ?? m[4]!);
+      var label = m[6]!.trim();
+      final period = m[2] ?? m[5]!, unit = m[3] ?? '集';
+      if (label.isEmpty || RegExp(r'^[（(]?[上中下][）)]?$').hasMatch(label)) {
+        label =
+            '第${cinemaSeasonNumber(period) ?? period}$unit' +
+            label.replaceAll(RegExp('[（()）]'), '');
+      }
+      if (RegExp(r'^0+$').hasMatch(m[1] ?? m[4]!)) {
         final inner = _specialSeason.firstMatch(label);
         if (inner == null) continue;
         season = cinemaSeasonNumber(inner[1]!);
         label = inner[2]!;
       }
       if (season == null || season < 1 || season > 99) continue;
-      (parts[season] ??= []).add(
-        CinemaEpisode(
-          name: label.isEmpty ? '第${m[2] ?? m[4]}集' : label,
-          url: e.url,
-        ),
-      );
+      (parts[season] ??= []).add(CinemaEpisode(name: label, url: e.url));
     }
     for (final part in parts.entries) {
       (groups[part.key] ??= []).add(
