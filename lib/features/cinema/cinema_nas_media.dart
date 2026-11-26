@@ -178,6 +178,7 @@ CinemaTitle createCinemaNASTitle({
     poster: text('poster_path').startsWith('https://scraper.ugnas.com/')
         ? text('poster_path')
         : '',
+    landscapePoster: text('backdrop_path').startsWith('https://scraper.ugnas.com/') ? text('backdrop_path') : '',
     description: text('introduction'),
     year: year >= 1000 && year <= 9999 ? '$year' : '',
     doubanId: douban.length <= 12 ? douban : '',

@@ -4939,6 +4939,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     final urls = {
       for (final item in [title, ...variants])
         if (item.poster.isNotEmpty) item.poster,
+      for (final item in [title, ...variants])
+        if (item.landscapePoster.isNotEmpty) item.landscapePoster,
     }.toList();
     Widget load(int index) {
       if (index == urls.length) {
@@ -4951,7 +4953,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             if (url == null || url.isEmpty) return placeholder;
             return CachedNetworkImage(
               imageUrl: url,
-              cacheKey: 'catalog-poster:${title.key}:${title.poster}',
+              cacheKey: 'catalog-poster:${title.key}:$url',
               cacheManager: ProxyAwareImageCacheManager.cinemaInstance,
               memCacheWidth: NakuDevice.isTV ? 640 : 480,
               fit: BoxFit.cover,

@@ -95,6 +95,10 @@ class CinemaTitleGroup {
     // A conflicting external ID means the purported variants need inspection.
     // Never transfer a different provider's identity through that conflict.
     if ([douban, imdb, rotten].any((ids) => ids.length > 1)) return base;
+    String available(String own, String Function(CinemaTitle) select) =>
+        own.isNotEmpty ? own : concrete.map(select).where((url) => url.isNotEmpty).firstOrNull ?? '';
+    final landscape = available(base.landscapePoster, (t) => t.landscapePoster);
+    final poster = available(base.poster, (t) => t.poster);
     final doubanId = douban.firstOrNull ?? '';
     double? score = base.sourceDoubanScore;
     if (score == null && doubanId.isNotEmpty) {
@@ -112,7 +116,7 @@ class CinemaTitleGroup {
     final year = base.year.isEmpty && years.length == 1
         ? years.single
         : base.year;
-    if (base.year == year &&
+    if (base.landscapePoster == landscape && base.poster == poster && base.year == year &&
         base.doubanId == doubanId &&
         base.imdbId == imdbId &&
         base.rottenTomatoesId == rottenId &&
@@ -120,6 +124,8 @@ class CinemaTitleGroup {
       return base;
     }
     return base.copyWith(
+      landscapePoster: landscape,
+      poster: poster,
       year: year,
       doubanId: doubanId,
       imdbId: imdbId,
