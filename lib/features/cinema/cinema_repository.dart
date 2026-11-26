@@ -372,13 +372,14 @@ class CinemaRepository {
     for (final result in pages) {
       if (result.pageCount > pageCount) pageCount = result.pageCount;
       for (final title in result.items) {
-        if (cinemaMatchesSeason(title.title, season)) {
+        if (cinemaMatchesSeasonQuery(title, season)) {
           items.putIfAbsent(title.key, () => title);
         }
       }
     }
     final fragmentPage = page == 1 && items.isEmpty
         ? await _searchFragments(source, season.work, (title) {
+            if (cinemaMatchesSeasonQuery(title, season)) return true;
             final found = cinemaSeasonName(title.title);
             return found != null &&
                 found.number == season.number &&

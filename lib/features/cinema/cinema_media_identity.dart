@@ -270,10 +270,10 @@ List<String> cinemaWorkSearchQueries(String value) {
       : cinemaCleanWorkTitle(normalized, year);
   final equivalent = {
     original,
+    if (year == null) plain.replaceAll(_hanSeparator, ''),
     plain,
     plain.replaceAll(':', '：'),
     normalized,
-    plain.replaceAll(_hanSeparator, ''),
   }.where((q) => q.isNotEmpty).take(3).toList();
   final key = cinemaWorkTitleKey(plain, '');
   return _edgerunnersKeys.contains(key) || _edgerunnersShortKeys.contains(key)

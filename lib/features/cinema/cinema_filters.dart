@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'cinema_media_identity.dart';
 import 'cinema_models.dart';
+import 'cinema_seasons.dart';
 import 'cinema_theme.dart';
 
 String cinemaSearchKey(String value) => cinemaIdentityTypography(
@@ -9,7 +10,7 @@ String cinemaSearchKey(String value) => cinemaIdentityTypography(
 
 bool cinemaMatchesKeyword(CinemaTitle title, String keyword) {
   final season = cinemaSeasonName(keyword);
-  if (season != null) return cinemaMatchesSeason(title.title, season);
+  if (season != null) return cinemaMatchesSeasonQuery(title, season);
   final key = cinemaSearchKey(keyword);
   return key.isEmpty ||
       cinemaSameSearchTitle(title.title, keyword, title.year) ||
