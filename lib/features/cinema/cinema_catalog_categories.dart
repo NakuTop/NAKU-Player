@@ -1,5 +1,10 @@
 import 'cinema_models.dart';
 
+bool cinemaVarietyCategory(String name) => RegExp(
+  r'综艺|綜藝|真人秀|脱口秀|脫口秀|^variety(?: shows?)?$',
+  caseSensitive: false,
+).hasMatch(name.trim());
+
 final _shortDrama = RegExp(
   r'(?:微短[剧劇]|短[剧劇]|(?:ai|a\.i\.)\s*(?:动态|動態)?漫[剧劇]|^漫[剧劇]$)',
   caseSensitive: false,

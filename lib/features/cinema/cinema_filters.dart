@@ -57,12 +57,14 @@ class CinemaFilterBar extends StatelessWidget {
     required this.onChanged,
     this.scope = '已加载内容',
     this.compact = false,
+    this.variety = false,
   });
   final CinemaFilters value;
   final List<CinemaTitle> items;
   final ValueChanged<CinemaFilters> onChanged;
   final String scope;
   final bool compact;
+  final bool variety;
   @override
   Widget build(BuildContext context) {
     final now = DateTime.now().year;
@@ -71,24 +73,36 @@ class CinemaFilterBar extends StatelessWidget {
       ...items.map((t) => t.year).where((s) => RegExp(r'^\d{4}$').hasMatch(s)),
     }.toList()..sort((a, b) => b.compareTo(a));
     final genres = <String>{
-      '剧情',
-      '喜剧',
-      '动作',
-      '爱情',
-      '科幻',
-      '动画',
-      '悬疑',
-      '惊悚',
-      '恐怖',
-      '犯罪',
-      '冒险',
-      '奇幻',
-      '战争',
-      '纪录',
-      '家庭',
-      '历史',
-      '音乐',
-      '运动',
+      if (variety) ...[
+        '真人秀',
+        '脱口秀',
+        '音乐',
+        '舞蹈',
+        '喜剧',
+        '旅行',
+        '美食',
+        '访谈',
+        '竞技',
+      ] else ...[
+        '剧情',
+        '喜剧',
+        '动作',
+        '爱情',
+        '科幻',
+        '动画',
+        '悬疑',
+        '惊悚',
+        '恐怖',
+        '犯罪',
+        '冒险',
+        '奇幻',
+        '战争',
+        '纪录',
+        '家庭',
+        '历史',
+        '音乐',
+        '运动',
+      ],
       ...items
           .expand((t) => t.genres.split(RegExp(r'[,，/、\s]+')))
           .where((s) => s.isNotEmpty && s.length <= 6 && !s.contains('擦边')),

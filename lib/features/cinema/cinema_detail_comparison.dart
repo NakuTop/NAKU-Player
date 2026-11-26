@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'cinema_catalog_categories.dart';
 import 'cinema_models.dart';
 import 'cinema_media_identity.dart';
 import 'cinema_original_match.dart' show originalEpisode;
@@ -164,7 +165,9 @@ class CinemaDetailComparison extends ChangeNotifier {
           expectedSeason;
       final film = _film.hasMatch(title.category);
       final series =
-          season != null || !film && _series.hasMatch(title.category);
+          season != null ||
+          cinemaVarietyCategory(title.category) ||
+          !film && _series.hasMatch(title.category);
       final source = title.sourceId == 'douban-discovery'
           ? original!.source
           : catalogue.sourceFor(title);

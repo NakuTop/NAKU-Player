@@ -1,4 +1,5 @@
 import 'cinema_movie_versions.dart';
+import 'cinema_catalog_categories.dart';
 import 'cinema_models.dart';
 import 'cinema_media_identity.dart';
 import 'cinema_seasons.dart';
@@ -203,7 +204,7 @@ List<CinemaTitleGroup> groupCinemaTitles(
   return result..sort((a, b) => order[a.key]!.compareTo(order[b.key]!));
 }
 
-enum _Kind { movie, series, anime, documentary, commentary, unknown }
+enum _Kind { movie, series, variety, anime, documentary, commentary, unknown }
 
 Set<String> _credits(String value) => value
     .split(RegExp(r'[,，、/|;；]'))
@@ -369,7 +370,9 @@ class _Group {
     }
     if (doubanId.isNotEmpty && doubanId == candidate.doubanId) return true;
     if (exactSeason &&
-        (kind == _Kind.series || kind == _Kind.anime) &&
+        (kind == _Kind.series ||
+            kind == _Kind.anime ||
+            kind == _Kind.variety) &&
         candidate.kind == kind) {
       return true;
     }
@@ -400,6 +403,7 @@ _Kind _kind(String value) {
       .replaceAll('歐', '欧')
       .replaceAll('電', '电');
   if (RegExp('解说|解說|影评|影評|说电影|說电影').hasMatch(name)) return _Kind.commentary;
+  if (cinemaVarietyCategory(name)) return _Kind.variety;
   if (RegExp('纪录|记录片').hasMatch(name)) return _Kind.documentary;
   if (RegExp('动漫|动画|動漫|動畫').hasMatch(name)) return _Kind.anime;
   if (const {
@@ -434,7 +438,9 @@ _Kind _kind(String value) {
 int? _year(String text, _Kind kind) {
   final value = cinemaIdentityTypography(cinemaCatalogYear(text)).trim();
   if (RegExp(r'^[1-9][0-9]{3}$').hasMatch(value)) return int.parse(value);
-  if (kind != _Kind.series && kind != _Kind.anime) return null;
+  if (kind != _Kind.series && kind != _Kind.anime && kind != _Kind.variety) {
+    return null;
+  }
   final range = RegExp(
     r'^([1-9][0-9]{3})\s*[-–—]\s*([1-9][0-9]{3})?$',
   ).firstMatch(value);

@@ -15,7 +15,14 @@ import 'cinema_repository.dart';
 import 'douban/douban_models.dart';
 import 'douban/douban_repository.dart';
 
-enum CinemaAggregateKind { movies, series, ultraHd }
+enum CinemaAggregateKind {
+  movies,
+  series,
+  ultraHd,
+  variety;
+
+  bool get hasDoubanFeed => this == movies || this == series;
+}
 
 bool cinemaOrdinaryCategory(String value) =>
     !RegExp('伦理|福利|情色|成人|里番|写真|三级|擦边').hasMatch(value) &&
@@ -32,6 +39,7 @@ bool _matchesKindName(String name, CinemaAggregateKind kind) => switch (kind) {
     '电影|动作片|喜剧片|爱情片|科幻片|恐怖片|剧情片|战争片|纪录片|记录片|悬疑片|动画片|犯罪片|奇幻片|冒险片|惊悚片|灾难片|家庭片|家庭篇|历史片|古装片|西部片|短片',
   ).hasMatch(name),
   CinemaAggregateKind.ultraHd => cinemaIs4KLabel(name),
+  CinemaAggregateKind.variety => cinemaVarietyCategory(name),
   CinemaAggregateKind.series => RegExp(
     '电视剧|连续剧|大陆剧|内地剧|国产剧|欧美剧|美国剧|英国剧|美剧|日剧|韩剧|日本剧|韩国剧|香港剧|港澳剧|台湾剧|海外剧|泰国剧|泰剧|马泰剧|Netflix自制剧|短剧',
   ).hasMatch(name),
@@ -127,8 +135,7 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
       filters.region,
       filters.genre,
       filters.isEmpty &&
-              (sort != CinemaCatalogSort.popular ||
-                  kind == CinemaAggregateKind.ultraHd)
+              (sort != CinemaCatalogSort.popular || !kind.hasDoubanFeed)
           ? ''
           : sort.name,
       enabled.map((source) => source.toJson()).toList(),
@@ -307,7 +314,7 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
     _publish(session);
     try {
       final sourceKey = _sourceKey(cursor.source);
-      if (session.kind != CinemaAggregateKind.ultraHd &&
+      if (session.kind.hasDoubanFeed &&
           session.filters.year.isNotEmpty &&
           _ignoredYear.contains(sourceKey)) {
         cursor.yearUnsupported = true;
@@ -344,12 +351,16 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
           : await _repository.browseFiltered(
               cursor.source,
               categoryId: category.id.isEmpty ? null : category.id,
-              year: session.filters.year,
+              year:
+                  session.kind == CinemaAggregateKind.variety &&
+                      session.filters.year == '更早'
+                  ? ''
+                  : session.filters.year,
               page: category.page,
             );
       if (!_valid(session, generation)) return;
       final year = session.filters.year;
-      if (session.kind != CinemaAggregateKind.ultraHd &&
+      if (session.kind.hasDoubanFeed &&
           year.isNotEmpty &&
           page.items.any((item) {
             final found = RegExp(r'\d{4}').firstMatch(item.year)?.group(0);
@@ -369,12 +380,24 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
             !cursor.blockedIds.contains(title.categoryId) &&
             (cinemaMatchesAggregateKind(title, session.kind) ||
                 (cinemaOrdinaryCategory('${title.category} ${title.genres}') &&
+                    title.categoryId.isNotEmpty &&
                     cursor.allowedIds.contains(title.categoryId) &&
                     category.id != '@4k-search')) &&
             session.filters.matches(title),
       )) {
         if (session.items.length >= 800) break;
-        session.items[title.key] = title;
+        // A provider may name a leaf simply "访谈" under its variety parent.
+        final inherited =
+            session.kind == CinemaAggregateKind.variety &&
+            !cinemaVarietyCategory(title.category);
+        session.items[title.key] = inherited
+            ? title.copyWith(
+                category: [
+                  '综艺',
+                  if (title.category.isNotEmpty) title.category,
+                ].join(' · '),
+              )
+            : title;
         cursor.keys.add(title.key);
       }
       if (page.hasMore && newPage && !cursor.yearUnsupported) {
@@ -593,7 +616,8 @@ List<String> _categoryIds(
                 ? cinemaIs4KLabel(category.name)
                 : kind == CinemaAggregateKind.movies
                 ? ['电影', '电影片'].contains(category.name)
-                : ['电视剧', '连续剧'].contains(category.name)),
+                : kind == CinemaAggregateKind.series &&
+                      ['电视剧', '连续剧'].contains(category.name)),
       )
       .toList();
   final eligible = categories
@@ -776,12 +800,11 @@ class _Session {
   DateTime? fetchedAt;
   CancelToken? cancel;
   bool get recentPopular =>
-      kind != CinemaAggregateKind.ultraHd && sort == CinemaCatalogSort.popular;
+      kind.hasDoubanFeed && sort == CinemaCatalogSort.popular;
   bool get usesMetadata =>
-      kind != CinemaAggregateKind.ultraHd &&
-      (recentPopular || !filters.isEmpty);
+      kind.hasDoubanFeed && (recentPopular || !filters.isEmpty);
   bool get metadataOnly =>
-      kind != CinemaAggregateKind.ultraHd &&
+      kind.hasDoubanFeed &&
       (recentPopular ||
           filters.region.isNotEmpty ||
           filters.genre.isNotEmpty ||

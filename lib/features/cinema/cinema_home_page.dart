@@ -69,6 +69,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:kazumi/services/network/macos_system_proxy.dart';
 import 'package:kazumi/services/network/proxy_aware_image_cache_manager.dart';
 
+import 'cinema_catalog_categories.dart';
 import 'cinema_models.dart';
 import 'cinema_follow_resolver.dart';
 import 'cinema_sync_session.dart';
@@ -111,9 +112,20 @@ import 'cinema_tv_application.dart';
 import 'cinema_tv_cast_receiver.dart';
 import 'cinema_tv_update_page.dart';
 
-enum _Section { movies, series, anime, favorites, history, settings }
+enum _Section {
+  movies(CinemaAggregateKind.movies),
+  series(CinemaAggregateKind.series),
+  variety(CinemaAggregateKind.variety),
+  anime,
+  favorites,
+  history,
+  settings;
 
-enum _TVDestination { home, movies, series, nas, mine, search }
+  const _Section([this.kind]);
+  final CinemaAggregateKind? kind;
+}
+
+enum _TVDestination { home, movies, series, variety, nas, mine, search }
 
 /// Each sidebar destination owns its catalogue, search and scroll state.
 /// Requests may finish offscreen, but can only update the state they started in.
@@ -306,6 +318,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   final Map<_Section, CinemaCatalogSort> _catalogSort = {
     _Section.movies: CinemaCatalogSort.popular,
     _Section.series: CinemaCatalogSort.popular,
+    _Section.variety: CinemaCatalogSort.popular,
   };
   _CatalogState get _catalog => _catalogs[_section]!;
   TextEditingController get _search => _catalog.search;
@@ -333,8 +346,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   String _sourceKey(CinemaSource source) => jsonEncode(source.toJson());
 
-  bool _aggregates(_Section section) =>
-      section == _Section.movies || section == _Section.series;
+  bool _aggregates(_Section section) => section.kind != null;
 
   CinemaAggregateCatalogController _aggregateFor(_Section section) =>
       _aggregateControllers.putIfAbsent(section, () {
@@ -980,9 +992,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                         return;
                       }
                       await _selectSection(
-                        _matchesCategory(detail.category, _Section.series)
-                            ? _Section.series
-                            : _Section.movies,
+                        _sectionForCategory(detail.category),
                       );
                       if (!mounted) return;
                       _search.text = recommendation.title;
@@ -1086,6 +1096,22 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   // Explicit anime startup/deep links keep a selected destination while that
   // page is open, without changing the device's saved navigation preference.
+  bool get _showVariety =>
+      NakuDevice.isTV || _usesMobileLayout || Platform.isAndroid;
+
+  Iterable<_Section> get _visibleSections => _Section.values.where(
+    (s) =>
+        (s != _Section.variety || _showVariety) &&
+        (s != _Section.anime || _showAnimeDestination),
+  );
+
+  _Section _sectionForCategory(String name) =>
+      _showVariety && cinemaVarietyCategory(name)
+      ? _Section.variety
+      : _matchesCategory(name, _Section.series)
+      ? _Section.series
+      : _Section.movies;
+
   bool get _showAnimeDestination =>
       !NakuDevice.isTV &&
       !Platform.isAndroid &&
@@ -1182,6 +1208,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   String _sectionLabel(_Section section) => switch (section) {
     _Section.movies => '电影',
     _Section.series => '剧集',
+    _Section.variety => '综艺',
     _Section.anime => '动漫',
     _Section.favorites => '我的收藏',
     _Section.history => '继续观看',
@@ -1190,11 +1217,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   String get _heading => _sectionLabel(_section);
 
-  bool get _isCatalog =>
-      _section == _Section.movies || _section == _Section.series;
+  bool get _isCatalog => _section.kind != null;
 
-  bool get _showsCatalogSort =>
-      _section == _Section.movies || _section == _Section.series;
+  bool get _showsCatalogSort => _section.kind != null;
 
   CinemaCatalogSort get _currentCatalogSort =>
       _catalogSort[_section] ?? CinemaCatalogSort.latest;
@@ -1203,7 +1228,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     if (_searching && NakuDevice.unifiedCinema) {
       return '按片名和别名的匹配程度排列，同一剧集按季序展示。';
     }
-    if (_currentCatalogSort == CinemaCatalogSort.popular && !_searching) {
+    if (_currentCatalogSort == CinemaCatalogSort.popular &&
+        !_searching &&
+        _section != _Section.variety) {
       return '按豆瓣近期热门顺序展示，打开详情可检测画质。';
     }
     if (_currentCatalogSort == CinemaCatalogSort.rating) {
@@ -1250,6 +1277,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       _Section.series => RegExp(
         '电视剧|连续剧|大陆剧|国产剧|欧美剧|美国剧|英国剧|美剧|日剧|韩剧|日本剧|韩国剧|香港剧|港澳剧|台湾剧|海外剧|泰国剧|泰剧|Netflix自制剧|短剧',
       ).hasMatch(name),
+      _Section.variety => cinemaVarietyCategory(name),
       _Section.anime => RegExp('动漫|动画').hasMatch(name),
       _ => true,
     };
@@ -1261,7 +1289,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       (((NakuDevice.unifiedCinema || Platform.isWindows || _usesMobileLayout) &&
               !NakuDevice.isTV) ||
           (NakuDevice.isTV && _tvDestination == _TVDestination.search)) &&
-      (section == _Section.movies || section == _Section.series);
+      _aggregates(section);
 
   bool _searchCategoryMatches(String name, _Section section) =>
       _unifiedSearchSection(section)
@@ -1345,6 +1373,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   String? _preferredCategory(_CatalogState state, _Section section) {
     final names = switch (section) {
       _Section.movies => ['剧情片', '科幻片', '动作片'],
+      _Section.variety => ['大陆综艺', '港台综艺', '日韩综艺', '欧美综艺'],
       _Section.series => ['欧美剧', '美国剧', '国产剧', '大陆剧', '日剧'],
       _ => ['日韩动漫', '日本动漫', '国产动漫'],
     };
@@ -1374,10 +1403,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       });
       await _aggregateFor(section).load(
         sources: _activeSources,
-        kind: switch (section) {
-          _Section.movies => CinemaAggregateKind.movies,
-          _ => CinemaAggregateKind.series,
-        },
+        kind: section.kind!,
         filters: state.filters,
         sort: _catalogSort[section] ?? CinemaCatalogSort.latest,
         refresh: refresh,
@@ -2287,11 +2313,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           return;
         }
         if (!_isCatalog) {
-          setState(
-            () => _section = _matchesCategory(title.category, _Section.series)
-                ? _Section.series
-                : _Section.movies,
-          );
+          setState(() => _section = _sectionForCategory(title.category));
         }
         _search.text = recommendation.title;
         _runSearch();
@@ -2403,12 +2425,14 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   @override
   Widget build(BuildContext context) {
     if (NakuDevice.isTV) return _buildHome(context);
-    final sections = _Section.values
-        .where((section) => section != _Section.anime || _showAnimeDestination)
-        .toList();
+    final sections = _visibleSections.toList();
     final index = sections.indexOf(_section);
     final previous = _section == _Section.history
-        ? (_showAnimeDestination ? _Section.anime : _Section.series)
+        ? (_showAnimeDestination
+              ? _Section.anime
+              : _showVariety
+              ? _Section.variety
+              : _Section.series)
         : index > 0
         ? sections[index - 1]
         : null;
@@ -2651,18 +2675,17 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   bool _mobileDrawerOpen = false;
 
   Widget _mobileScaffold() {
-    final sections = _Section.values
-        .where((section) => section != _Section.anime || _showAnimeDestination)
-        .toList();
+    final sections = _visibleSections.toList();
     const icons = [
       Icons.movie_outlined,
       Icons.tv_rounded,
+      Icons.mic_none_rounded,
       Icons.animation_outlined,
       Icons.bookmark_border_rounded,
       Icons.history_rounded,
       Icons.person_outline_rounded,
     ];
-    const labels = ['电影', '剧集', '动漫', '收藏', '历史', '我的'];
+    const labels = ['电影', '剧集', '综艺', '动漫', '收藏', '历史', '我的'];
     return PopScope<void>(
       canPop:
           _mobileDrawerOpen || (!_desktopSearchActive && !_showSourceManager),
@@ -2711,7 +2734,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 textInputAction: TextInputAction.search,
                 onSubmitted: (_) => unawaited(_submitDesktopSearch()),
                 decoration: InputDecoration(
-                  hintText: _section == _Section.anime ? '搜索动漫' : '搜索电影、剧集或演员',
+                  hintText: '搜索作品或演员',
                   filled: true,
                   fillColor: const Color(0xFF1B1B1D),
                   prefixIcon: _desktopSearchActive
@@ -2813,9 +2836,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       unawaited(_refreshTVSession());
       return;
     }
-    await _selectSection(
-      destination == _TVDestination.series ? _Section.series : _Section.movies,
-    );
+    await _selectSection(switch (destination) {
+      _TVDestination.series => _Section.series,
+      _TVDestination.variety => _Section.variety,
+      _ => _Section.movies,
+    });
     if (destination == _TVDestination.search) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _tvSearchFocus.requestFocus();
@@ -2965,6 +2990,14 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                               key: const ValueKey('tv-nav-series'),
                             ),
                             _tvNav(
+                              '综艺',
+                              () =>
+                                  unawaited(_tvSelect(_TVDestination.variety)),
+                              selected:
+                                  _tvDestination == _TVDestination.variety,
+                              key: const ValueKey('tv-nav-variety'),
+                            ),
+                            _tvNav(
                               'NAS',
                               () => unawaited(_tvSelect(_TVDestination.nas)),
                               selected: _tvDestination == _TVDestination.nas,
@@ -3031,7 +3064,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
 
   Widget _tvBody() => switch (_tvDestination) {
     _TVDestination.home => _tvHome(),
-    _TVDestination.movies || _TVDestination.series => _tvCatalogue(),
+    _TVDestination.movies ||
+    _TVDestination.series ||
+    _TVDestination.variety => _tvCatalogue(),
     _TVDestination.search => _tvSearchBody(),
     _TVDestination.mine => _tvMine(),
     _TVDestination.nas => const SizedBox.shrink(),
@@ -3164,7 +3199,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           child: Padding(
             padding: EdgeInsets.fromLTRB(_tvGutter, 28, _tvGutter, 20),
             child: Text(
-              _tvDestination == _TVDestination.series ? '剧集' : '电影',
+              _heading,
               style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w600),
             ),
           ),
@@ -3210,8 +3245,18 @@ class _CinemaHomePageState extends State<CinemaHomePage>
   }
 
   Widget _tvSearchBody() {
+    final scope = switch (_tvSearchFilter) {
+      'movie' => _Section.movies,
+      'series' => _Section.series,
+      'variety' => _Section.variety,
+      _ => null,
+    };
     final visible = _catalogView.visible
-        .where((title) => _ordinaryCategory(title.category))
+        .where(
+          (title) =>
+              _ordinaryCategory(title.category) &&
+              (scope == null || _matchesCategory(title.category, scope)),
+        )
         .toList();
     return Column(
       children: [
@@ -3225,7 +3270,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             onSubmitted: (_) => _tvRunSearch(),
             style: const TextStyle(fontSize: 20),
             decoration: InputDecoration(
-              hintText: '搜索电影、剧集与 NAS',
+              hintText: '搜索电影、剧集、综艺与 NAS',
               prefixIcon: _tvSubmittedQuery.isNotEmpty
                   ? IconButton(
                       key: const ValueKey('tv-exit-search'),
@@ -3245,6 +3290,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 ('all', '全部'),
                 ('movie', '电影'),
                 ('series', '剧集'),
+                ('variety', '综艺'),
                 ('nas', 'NAS'),
               ])
                 _tvNav(option.$2, () {
@@ -3837,6 +3883,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                       destinations: [
                         (_Section.movies, Icons.local_movies_outlined, '电影'),
                         (_Section.series, Icons.tv_rounded, '剧集'),
+                        if (_showVariety)
+                          (_Section.variety, Icons.mic_none_rounded, '综艺'),
                         if (_showAnimeDestination)
                           (_Section.anime, Icons.animation_rounded, '动漫'),
                         (
@@ -3928,12 +3976,13 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     const icons = [
       Icons.local_movies_outlined,
       Icons.tv_rounded,
+      Icons.mic_none_rounded,
       Icons.animation_rounded,
       Icons.bookmark_border_rounded,
       Icons.history_rounded,
       Icons.settings_outlined,
     ];
-    const labels = ['电影', '剧集', '动漫', '我的收藏', '继续观看', '设置'];
+    const labels = ['电影', '剧集', '综艺', '动漫', '我的收藏', '继续观看', '设置'];
     return ListView(
       children: [
         const Padding(
@@ -3965,9 +4014,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
             ),
           ),
         const SizedBox(height: 28),
-        for (final section in _Section.values.where(
-          (s) => s != _Section.anime || _showAnimeDestination,
-        )) ...[
+        for (final section in _visibleSections) ...[
           if (section == _Section.favorites)
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 24, vertical: 13),
@@ -4160,7 +4207,8 @@ class _CinemaHomePageState extends State<CinemaHomePage>
               ChoiceChip(
                 key: ValueKey('catalog-sort-${sort.name}'),
                 label: Text(switch (sort) {
-                  CinemaCatalogSort.popular => _searching ? '热度' : '近期热门',
+                  CinemaCatalogSort.popular =>
+                    _searching || _section == _Section.variety ? '热度' : '近期热门',
                   CinemaCatalogSort.latest => '最新',
                   CinemaCatalogSort.rating => '评分',
                 }),
@@ -4240,7 +4288,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                 child: Text(
                   switch (_currentCatalogSort) {
                     CinemaCatalogSort.popular =>
-                      _searching ? '已加载资源 · 片源热度' : '豆瓣 · 近期热门',
+                      _searching || _section == _Section.variety
+                          ? '片源热度'
+                          : '豆瓣 · 近期热门',
                     CinemaCatalogSort.latest => '已加载作品 · 片源更新时间',
                     CinemaCatalogSort.rating => '已加载作品 · 评分从高到低',
                   },
@@ -4274,16 +4324,16 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     search: _searching ? _catalog.activeKeyword : '',
     preferredKind:
         _searching && NakuDevice.unifiedCinema && _aggregates(_section)
-        ? (_section == _Section.movies
-              ? CinemaAggregateKind.movies
-              : CinemaAggregateKind.series)
+        ? _section.kind
         : null,
     filters: _catalog.filters,
     grouped: _searching || _aggregates(_section),
     sourcePriority: _store.enabledSources.map((s) => s.id).toList(),
     sort:
         _showsCatalogSort &&
-            !(!_searching && _currentCatalogSort == CinemaCatalogSort.popular)
+            !(!_searching &&
+                _section != _Section.variety &&
+                _currentCatalogSort == CinemaCatalogSort.popular)
         ? _currentCatalogSort
         : null,
     provider: _scoreProvider,
@@ -4673,6 +4723,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                   ),
                 CinemaFilterBar(
                   compact: compactCatalog,
+                  variety: !_searching && _section == _Section.variety,
                   value: _catalog.filters,
                   items: aggregated ? representatives : _items,
                   onChanged: _changeCatalogueFilters,

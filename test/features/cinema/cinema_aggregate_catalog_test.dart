@@ -123,6 +123,54 @@ DoubanResultPage metadataPage({
 
 void main() {
   test(
+    'variety browses provider trees, merges shows and excludes other catalogues',
+    () async {
+      final repo = _Repo()
+        ..categoryData = const [
+          CinemaCategory(id: '4', name: '綜藝'),
+          CinemaCategory(id: '52', parentId: '4', name: '访谈'),
+          CinemaCategory(id: '2', name: '电视剧'),
+        ];
+      repo.respond = (s, id, year, page) async => CinemaPage(
+        items: [
+          movie(s.id, '001', category: '访谈', categoryId: '52'),
+          movie(s.id, '002', name: '音乐剧', category: '电视剧', categoryId: '2'),
+        ],
+      );
+      final discovery = _Discovery();
+      final controller = CinemaAggregateCatalogController(
+        repository: repo,
+        discoveryRepository: discovery,
+      );
+      addTearDown(controller.dispose);
+      await controller.load(
+        sources: [source('a'), source('b')],
+        kind: CinemaAggregateKind.variety,
+        sort: CinemaCatalogSort.popular,
+      );
+      expect(discovery.calls, isEmpty);
+      expect(repo.calls.map((v) => v.$2).toSet(), {'52', '4'});
+      expect(controller.snapshot.items.map((v) => v.title).toSet(), {'共同电影'});
+      expect(controller.snapshot.groups.single.variants.length, 2);
+      expect(controller.snapshot.items.first.category, '综艺 · 访谈');
+      expect(
+        cinemaMatchesAggregateKind(
+          movie('a', '11', category: '港台綜藝'),
+          CinemaAggregateKind.variety,
+        ),
+        isTrue,
+      );
+      expect(
+        cinemaMatchesAggregateKind(
+          movie('a', '12', category: '真人秀'),
+          CinemaAggregateKind.variety,
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test(
     'a provider with one twenty-card leaf fills forty before load more',
     () async {
       final repo = _Repo()

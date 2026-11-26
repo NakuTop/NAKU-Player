@@ -5,11 +5,42 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_home_page.dart';
+import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
 import 'package:kazumi/features/cinema/cinema_theme.dart';
 import 'package:kazumi/features/cinema/cinema_navigation_preferences.dart';
 import 'cinema_aggregated_search_test.dart'
     show CatalogueStub, RatingsStub, modu, sourceA;
+
+class _PhoneCatalog extends CatalogueStub {
+  @override
+  Future<List<CinemaCategory>> categories(CinemaSource source) async => [
+    ...await super.categories(source),
+    const CinemaCategory(id: 'show', name: '港台綜藝'),
+  ];
+
+  @override
+  Future<CinemaPage> browse(
+    CinemaSource source, {
+    String? categoryId,
+    int page = 1,
+  }) async {
+    if (categoryId != 'show') {
+      return super.browse(source, categoryId: categoryId, page: page);
+    }
+    return CinemaPage(
+      items: [
+        CinemaTitle(
+          sourceId: source.id,
+          id: '42',
+          title: '周末综艺',
+          category: '港台綜藝',
+          year: '2026',
+        ),
+      ],
+    );
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -71,7 +102,7 @@ void main() {
               child: CinemaHomePage(
                 mobileLayout: true,
                 store: store,
-                repository: CatalogueStub(),
+                repository: _PhoneCatalog(),
                 ratingsRepository: RatingsStub(),
                 enableSearchDiscovery: false,
                 enableWatchTogether: false,
@@ -90,7 +121,24 @@ void main() {
         for (final label in ['Home Display', '下载内容', '检查更新']) {
           expect(find.byTooltip(label), findsOneWidget);
         }
-        await tester.tap(find.byKey(const ValueKey('catalog-sort-latest')));
+        await tester.tap(
+          find.byKey(const ValueKey('mobile-destination-variety')),
+        );
+        await tester.pumpAndSettle();
+        await tester.scrollUntilVisible(
+          find.byKey(const ValueKey('title-card:maccms-feifan::42')),
+          120,
+          scrollable: find
+              .descendant(
+                of: find.byType(CustomScrollView).first,
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        expect(find.text('周末综艺'), findsWidgets);
+        final latest = find.byKey(const ValueKey('catalog-sort-latest'));
+        await tester.ensureVisible(latest);
+        await tester.tap(latest);
         await tester.pumpAndSettle();
         final field = find.byKey(const ValueKey('mobile-search-field'));
         await tester.enterText(field, '星际穿越');
@@ -101,6 +149,17 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.byTooltip('返回主页'), findsNothing);
         expect(tester.widget<TextField>(field).controller!.text, isEmpty);
+        await tester.scrollUntilVisible(
+          find.byKey(const ValueKey('title-card:maccms-feifan::42')),
+          120,
+          scrollable: find
+              .descendant(
+                of: find.byType(CustomScrollView).first,
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        expect(find.text('周末综艺'), findsWidgets);
         expect(tester.takeException(), isNull);
         final output = Platform.environment['NAKU_MOBILE_SCREENSHOTS'];
         if (output != null) {

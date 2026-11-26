@@ -57,6 +57,27 @@ const _movie = CinemaTitle(
     ),
   ],
 );
+const _variety = CinemaTitle(
+  id: 'variety',
+  sourceId: 'tv-fixture',
+  title: '综艺测试节目',
+  category: '大陆综艺',
+  routes: [
+    CinemaRoute(
+      name: '测试片源',
+      episodes: [
+        CinemaEpisode(
+          name: '20261120 上',
+          url: 'https://media.invalid/show-1.mp4',
+        ),
+        CinemaEpisode(
+          name: '20261120 下',
+          url: 'https://media.invalid/show-2.mp4',
+        ),
+      ],
+    ),
+  ],
+);
 const _series = CinemaTitle(
   id: 'series',
   sourceId: 'tv-fixture',
@@ -91,13 +112,22 @@ class _Repository extends CinemaRepository {
   Future<List<CinemaCategory>> categories(CinemaSource source) async => const [
     CinemaCategory(id: 'movie', name: '剧情片'),
     CinemaCategory(id: 'series', name: '欧美剧'),
+    CinemaCategory(id: 'variety', name: '大陆综艺'),
   ];
   @override
   Future<CinemaPage> browse(
     CinemaSource source, {
     String? categoryId,
     int page = 1,
-  }) async => CinemaPage(items: [categoryId == 'series' ? _series : _movie]);
+  }) async => CinemaPage(
+    items: [
+      switch (categoryId) {
+        'series' => _series,
+        'variety' => _variety,
+        _ => _movie,
+      },
+    ],
+  );
   @override
   Future<CinemaPage> browseFiltered(
     CinemaSource source, {
@@ -130,7 +160,11 @@ class _Repository extends CinemaRepository {
 
   @override
   Future<CinemaTitle> detail(CinemaSource source, CinemaTitle title) async =>
-      title.category.contains('剧') ? _series : _movie;
+      title.id == _variety.id
+      ? _variety
+      : title.category.contains('剧')
+      ? _series
+      : _movie;
 }
 
 class _Discovery extends DoubanRepository {
@@ -441,6 +475,7 @@ void main() {
         'home',
         'movies',
         'series',
+        'variety',
         'nas',
         'mine',
         'screensaver',
@@ -461,7 +496,7 @@ void main() {
       expect(find.byType(CinemaGlass), findsNothing);
       expect(find.byType(CinemaPaneTransition), findsNothing);
       expect(find.byType(BackdropFilter), findsNothing);
-      for (var destination = 0; destination < 5; destination++) {
+      for (var destination = 0; destination < 6; destination++) {
         await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
       }
       expect(
@@ -505,6 +540,24 @@ void main() {
     await tester.pumpAndSettle();
     expect(discovery.kinds, contains(DoubanKind.tv));
     expect(find.textContaining('剧集测试作品'), findsWidgets);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    expect(
+      Focus.of(
+        tester.element(find.byKey(const ValueKey('tv-nav-variety'))),
+      ).hasFocus,
+      isTrue,
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(find.text('剧集测试作品'), findsNothing);
+    await tester.tap(find.text(_variety.title).first);
+    await tester.pumpAndSettle();
+    final episodes = find.byKey(const ValueKey('tv-detail-episodes'));
+    await tester.ensureVisible(episodes);
+    await tester.tap(episodes);
+    await tester.pumpAndSettle();
+    expect(find.text('20261120 上'), findsOneWidget);
+    expect(find.text('20261120 下'), findsOneWidget);
     await clean(tester);
   });
   testWidgets('TV search shows animation without opening an anime category', (

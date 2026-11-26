@@ -7,6 +7,7 @@ import 'package:ffi/ffi.dart';
 import 'package:crypto/crypto.dart';
 import 'cinema_subtitle_catalogs.dart';
 import 'cinema_search_discovery.dart';
+import 'cinema_catalog_categories.dart';
 import 'cinema_models.dart' show CinemaTitle, parseCinemaImdbId;
 import 'cinema_subtitle_fallbacks.dart';
 import 'cinema_media_identity.dart';
@@ -78,6 +79,7 @@ class CinemaSubtitleQuery {
         episode != null ||
         season != null ||
         englishSeason != null ||
+        cinemaVarietyCategory(category) ||
         (!movieCategory &&
             RegExp(
               '剧|劇|动漫|動畫|series|tv',
