@@ -17,45 +17,51 @@ class CinemaVideoGestures extends StatelessWidget {
   final VoidCallback? onWindowDrag;
   final EdgeInsets controlsInsets;
   @override
-  Widget build(BuildContext context) => RawGestureDetector(
-    behavior: HitTestBehavior.opaque,
-    gestures: {
-      TapGestureRecognizer:
-          GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
-            TapGestureRecognizer.new,
-            (recognizer) => recognizer.onTap = onTogglePlayback,
-          ),
-      _VideoDoubleTap: GestureRecognizerFactoryWithHandlers<_VideoDoubleTap>(
-        _VideoDoubleTap.new,
-        (recognizer) {
-          recognizer.onDoubleTap = onToggleFullscreen;
-          recognizer.allowed = (position) {
-            final box = context.findRenderObject();
-            if (box is! RenderBox || !box.hasSize) return false;
-            final point = box.globalToLocal(position);
-            return point.dy >= controlsInsets.top &&
-                point.dy < box.size.height - controlsInsets.bottom;
-          };
-        },
-      ),
-      if (onWindowDrag != null)
-        _VideoWindowDrag:
-            GestureRecognizerFactoryWithHandlers<_VideoWindowDrag>(
-              _VideoWindowDrag.new,
-              (recognizer) {
-                recognizer.onStart = (_) => onWindowDrag?.call();
-                recognizer.allowed = (position) {
-                  final box = context.findRenderObject();
-                  if (box is! RenderBox || !box.hasSize) return false;
-                  final point = box.globalToLocal(position);
-                  return point.dy >= controlsInsets.top &&
-                      point.dy < box.size.height - controlsInsets.bottom;
-                };
-              },
-            ),
-    },
-    child: child,
-  );
+  Widget build(BuildContext context) {
+    bool inVideo(Offset position) {
+      final box = context.findRenderObject();
+      if (box is! RenderBox || !box.hasSize) return false;
+      final point = box.globalToLocal(position);
+      return point.dy >= controlsInsets.top &&
+          point.dy < box.size.height - controlsInsets.bottom;
+    }
+
+    return RawGestureDetector(
+      behavior: HitTestBehavior.opaque,
+      gestures: {
+        _VideoTap: GestureRecognizerFactoryWithHandlers<_VideoTap>(
+          _VideoTap.new,
+          (recognizer) => recognizer
+            ..allowed = inVideo
+            ..onTap = onTogglePlayback,
+        ),
+        _VideoDoubleTap: GestureRecognizerFactoryWithHandlers<_VideoDoubleTap>(
+          _VideoDoubleTap.new,
+          (recognizer) {
+            recognizer.onDoubleTap = onToggleFullscreen;
+            recognizer.allowed = inVideo;
+          },
+        ),
+        if (onWindowDrag != null)
+          _VideoWindowDrag:
+              GestureRecognizerFactoryWithHandlers<_VideoWindowDrag>(
+                _VideoWindowDrag.new,
+                (recognizer) {
+                  recognizer.onStart = (_) => onWindowDrag?.call();
+                  recognizer.allowed = inVideo;
+                },
+              ),
+      },
+      child: child,
+    );
+  }
+}
+
+class _VideoTap extends TapGestureRecognizer {
+  bool Function(Offset)? allowed;
+  @override
+  bool isPointerAllowed(PointerDownEvent event) =>
+      (allowed?.call(event.position) ?? false) && super.isPointerAllowed(event);
 }
 
 /// Toolbar taps must not wait in the video's double-click gesture arena.

@@ -1,3 +1,4 @@
+import 'cinema_player_inspector.dart';
 import 'dart:async';
 import 'cinema_theme.dart';
 import 'package:flutter/material.dart';
@@ -8,8 +9,9 @@ import 'package:kazumi/pages/settings/playback_quality_settings.dart';
 import 'package:kazumi/services/player/playback_quality.dart';
 
 Future<void> showCinemaQualitySheet(BuildContext context, Player player) =>
-    showModalBottomSheet<void>(
+    showCinemaPlayerPanel<void>(
       context: context,
+      title: '画质',
       isScrollControlled: true,
       constraints: const BoxConstraints(maxWidth: 760),
       backgroundColor: CinemaTheme.panelDataFor(

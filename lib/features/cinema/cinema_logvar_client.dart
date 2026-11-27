@@ -8,6 +8,9 @@ import 'package:kazumi/request/core/network_config.dart';
 import 'package:kazumi/services/platform/logvar_credential_store.dart';
 import 'package:kazumi/services/player/local_danmaku_store.dart';
 import 'cinema_media_identity.dart';
+import 'cinema_catalog_categories.dart';
+import 'cinema_variety_episode.dart';
+import 'cinema_seasons.dart';
 import 'cinema_online_subtitles.dart' show CinemaSubtitleQuery;
 
 class CinemaLogvarQuery {
@@ -17,8 +20,10 @@ class CinemaLogvarQuery {
     this.season = 1,
     this.episode = 1,
     this.year = '',
+    this.showEpisode,
   });
   final String title, year;
+  final CinemaShowEpisode? showEpisode;
   final bool series;
   final int season, episode;
 
@@ -35,16 +40,38 @@ class CinemaLogvarQuery {
       episodeName: episodeName,
       fallbackEpisode: fallbackEpisode,
     );
+    final show = cinemaVarietyCategory(category)
+        ? CinemaShowEpisode(episodeName, bonusCollection: cinemaVarietyEdition.hasMatch(title))
+        : null;
     return CinemaLogvarQuery(
-      title: parsed.title,
+      showEpisode: show,
+      title: show == null ? parsed.title : parsed.title.replaceFirst(cinemaVarietyEdition, '').trim(),
       series: parsed.type == 'series',
       season: parsed.season,
-      episode: parsed.episode,
+      episode: int.tryParse(show?.issue ?? '') ?? (show == null ? parsed.episode : 1),
       year: RegExp(r'(?:19|20)\d{2}').firstMatch(year)?.group(0) ?? '',
     );
   }
 
-  String get label => series ? '$title · 第 $season 季 第 $episode 集' : title;
+  bool matchesEpisode(String label, [int? number]) {
+    final wanted = showEpisode;
+    if (wanted == null) return number == episode || cinemaLogvarEpisodeNumber(label) == episode;
+    final other = CinemaShowEpisode(label);
+    if (wanted.section != other.section || wanted.part != other.part) return false;
+    if (wanted.day.isNotEmpty && other.day.isNotEmpty && wanted.day != other.day) return false;
+    if (wanted.issue.isNotEmpty && other.issue.isNotEmpty && wanted.issue != other.issue) return false;
+    if (wanted.section != CinemaShowSection.main) {
+      if (wanted.clip != other.clip) return false;
+    }
+    if (wanted.day.isNotEmpty && wanted.day == other.day ||
+        wanted.issue.isNotEmpty && wanted.issue == other.issue) return true;
+    return wanted.text.isNotEmpty &&
+        CinemaShowEpisode.searchText(wanted.text) == CinemaShowEpisode.searchText(label);
+  }
+
+  String get episodeLabel => showEpisode?.text ?? (series ? '第${episode}集' : '正片');
+
+  String get label => showEpisode != null ? '$title · ${showEpisode!.text}' : series ? '$title · 第 $season 季 第 $episode 集' : title;
 }
 
 class CinemaLogvarWork {
@@ -196,7 +223,10 @@ bool cinemaLogvarWorkMatches(CinemaLogvarQuery query, CinemaLogvarWork work) {
       ).hasMatch('${work.source} ${work.title}')) {
     return false;
   }
-  if (_cleanTitle(query.title) != _cleanTitle(work.title)) return false;
+  final candidateTitle = query.showEpisode == null ? work.title :
+      work.title.replaceFirst(cinemaVarietyEdition, '');
+  if (_cleanTitle(query.title) != _cleanTitle(candidateTitle)) return false;
+  if (query.showEpisode?.section == CinemaShowSection.main && cinemaVarietyEdition.hasMatch(work.title)) return false;
   final candidateSeason = _season(work.title);
   if (query.series && (candidateSeason ?? 1) != query.season) return false;
   if (!query.series && candidateSeason != null) return false;
@@ -370,7 +400,7 @@ class CinemaLogvarClient implements CinemaDanmakuMatcher {
     final rows = await search(
       query.title,
       season: query.series ? query.season : null,
-      episode: query.series ? query.episode : null,
+      episode: query.series && query.showEpisode == null ? query.episode : null,
       cancelToken: cancelToken,
     );
     final works = rows
@@ -390,7 +420,7 @@ class CinemaLogvarClient implements CinemaDanmakuMatcher {
         onProgress?.call('正在核对 ${work.title} 的分集');
         final catalogue = await episodes(work.id, cancelToken: cancelToken);
         final choices = query.series
-            ? catalogue.where((e) => e.number == query.episode).toList()
+            ? catalogue.where((e) => query.showEpisode == null ? e.number == query.episode : query.matchesEpisode(e.title, e.number)).toList()
             : catalogue.length == 1
             ? catalogue
             : catalogue

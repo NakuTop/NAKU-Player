@@ -26,6 +26,8 @@ void main() {
       kind: PointerDeviceKind.mouse,
     );
     await tester.pump(const Duration(milliseconds: 350));
+    await tester.tapAt(const Offset(200, 570), kind: PointerDeviceKind.mouse);
+    await tester.pump(const Duration(milliseconds: 350));
     expect(drags, 1);
     expect(playback, 0);
     expect(fullscreen, 0);

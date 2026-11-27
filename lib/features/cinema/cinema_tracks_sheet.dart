@@ -1,3 +1,4 @@
+import 'cinema_player_inspector.dart';
 import 'dart:io';
 import 'cinema_theme.dart';
 import 'dart:async';
@@ -71,8 +72,9 @@ Future<void> showCinemaTracksSheet(
           onSubtitleApplied: onSubtitleApplied,
         ),
       )
-    : showModalBottomSheet<void>(
-        context: context,
+    : showCinemaPlayerPanel<void>(
+      context: context,
+      title: '音轨与字幕',
         isScrollControlled: true,
         constraints: const BoxConstraints(maxWidth: 680),
         backgroundColor: CinemaTheme.panelDataFor(
@@ -222,7 +224,7 @@ class _CinemaTracksPanelState extends State<CinemaTracksPanel> {
 
   Future<void> _url() async {
     final field = TextEditingController();
-    final url = await showDialog<String>(
+    final url = await showCinemaSettingsDialog<String>(
       context: context,
       useRootNavigator: !NakuDevice.isTV,
       animationStyle: NakuDevice.isTV ? AnimationStyle.noAnimation : null,
@@ -884,6 +886,7 @@ class _CinemaTracksPanelState extends State<CinemaTracksPanel> {
           if (NakuDevice.isTV) return _tvTracks(available, current, external);
           return Column(
             children: [
+if (Theme.of(context).platform != TargetPlatform.macOS)
               Padding(
                 padding: const EdgeInsets.fromLTRB(24, 16, 12, 12),
                 child: Row(

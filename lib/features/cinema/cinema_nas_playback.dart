@@ -1,3 +1,4 @@
+import 'cinema_player_inspector.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'cinema_nas_media.dart';
@@ -335,8 +336,9 @@ Future<CinemaNASPlaybackSelection?> showCinemaNASPlaybackSheet(
   int bitrate = 0,
   VoidCallback? onPlayerTracks,
   VoidCallback? onPlayerQuality,
-}) => showModalBottomSheet<CinemaNASPlaybackSelection>(
-  context: context,
+}) => showCinemaPlayerPanel<CinemaNASPlaybackSelection>(
+   context: context,
+   title: '播放版本',
   isScrollControlled: true,
   constraints: const BoxConstraints(maxWidth: 720),
   builder: (ctx) => _NASPlaybackPanel(

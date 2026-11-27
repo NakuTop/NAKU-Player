@@ -931,30 +931,17 @@ class MaterialDesktopSeekBarState extends State<MaterialDesktopSeekBar> {
     super.dispose();
   }
 
-  void onPointerMove(PointerMoveEvent e, BoxConstraints constraints) {
-    final percent = e.localPosition.dx / constraints.maxWidth;
-    setState(() {
-      hover = true;
-      slider = percent.clamp(0.0, 1.0);
-    });
-    controller(context).player.seek(duration * slider);
-  }
+  double _fraction(Offset local, BoxConstraints bounds) =>
+      bounds.maxWidth > 0 ? (local.dx / bounds.maxWidth).clamp(0.0, 1.0) : 0.0;
 
-  void onPointerDown() {
-    widget.onSeekStart?.call();
-    setState(() {
-      click = true;
-    });
-  }
-
-  void onPointerUp() {
+  void _finishSeek() {
     widget.onSeekEnd?.call();
+    final target = duration * slider;
     setState(() {
-      // Explicitly set the position to prevent the slider from jumping.
       click = false;
-      position = duration * slider;
+      position = target;
     });
-    controller(context).player.seek(duration * slider);
+    controller(context).player.seek(target);
   }
 
   void onHover(PointerHoverEvent e, BoxConstraints constraints) {
@@ -976,7 +963,7 @@ class MaterialDesktopSeekBarState extends State<MaterialDesktopSeekBar> {
   void onExit(PointerExitEvent e, BoxConstraints constraints) {
     setState(() {
       hover = false;
-      slider = 0.0;
+      if (!click) slider = 0.0;
     });
   }
 
@@ -1011,10 +998,29 @@ class MaterialDesktopSeekBarState extends State<MaterialDesktopSeekBar> {
           onHover: (e) => onHover(e, constraints),
           onEnter: (e) => onEnter(e, constraints),
           onExit: (e) => onExit(e, constraints),
-          child: Listener(
-            onPointerMove: (e) => onPointerMove(e, constraints),
-            onPointerDown: (e) => onPointerDown(),
-            onPointerUp: (e) => onPointerUp(),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapUp: (event) {
+              widget.onSeekStart?.call();
+              slider = _fraction(event.localPosition, constraints);
+              _finishSeek();
+            },
+            onHorizontalDragStart: (event) {
+              widget.onSeekStart?.call();
+              setState(() {
+                click = true;
+                slider = _fraction(event.localPosition, constraints);
+              });
+            },
+            onHorizontalDragUpdate: (event) => setState(() {
+              slider = _fraction(event.localPosition, constraints);
+            }),
+            onHorizontalDragEnd: (_) => _finishSeek(),
+            onHorizontalDragCancel: () {
+              if (!click) return;
+              widget.onSeekEnd?.call();
+              setState(() => click = false);
+            },
             child: Container(
               color: const Color(0x00000000),
               width: constraints.maxWidth,

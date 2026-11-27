@@ -1,3 +1,4 @@
+import 'cinema_player_inspector.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
@@ -1319,8 +1320,9 @@ Future<void> showCinemaOnlineSubtitles(
     );
     return;
   }
-  await showModalBottomSheet<void>(
+  await showCinemaPlayerPanel<void>(
     context: context,
+    title: '在线字幕',
     isScrollControlled: true,
     constraints: const BoxConstraints(maxWidth: 720),
     builder: (ctx) {

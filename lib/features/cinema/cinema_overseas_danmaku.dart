@@ -333,7 +333,7 @@ class CinemaOverseasDanmakuClient implements CinemaDanmakuMatcher {
     work,
     CinemaLogvarEpisode(
       _id(episodeId),
-      q.series ? '第${q.episode}集' : '正片',
+      q.episodeLabel,
       q.episode,
     ),
     entries,
@@ -503,10 +503,7 @@ class CinemaOverseasDanmakuClient implements CinemaDanmakuMatcher {
       final matching = eps
           .where(
             (e) =>
-                cinemaLogvarEpisodeNumber(
-                  _text(e['episodeTitle'] ?? e['title']),
-                ) ==
-                query.episode,
+                query.matchesEpisode(_text(e['episodeTitle'] ?? e['title'])), 
           )
           .toList();
       final Map? ep = query.series
@@ -727,8 +724,7 @@ class CinemaOverseasDanmakuClient implements CinemaDanmakuMatcher {
       final matching = episodes
           .where(
             (e) =>
-                int.tryParse('${e['episodeNo']}') == query.episode ||
-                cinemaLogvarEpisodeNumber(_text(e['title'])) == query.episode,
+                query.matchesEpisode(_text(e['title']), int.tryParse('${e['episodeNo']}')),
           )
           .toList();
       final Map? ep = query.series

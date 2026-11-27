@@ -1,3 +1,4 @@
+import 'cinema_player_inspector.dart';
 import 'dart:async';
 import 'cinema_theme.dart';
 import 'dart:convert';
@@ -290,6 +291,7 @@ class CinemaDanmakuController extends ChangeNotifier {
       series: original.series,
       season: original.season,
       episode: original.episode,
+      showEpisode: original.showEpisode,
     );
   }
 
@@ -554,6 +556,11 @@ class CinemaDanmakuController extends ChangeNotifier {
       }
       final text = await file.readAsString();
       final data = jsonDecode(text);
+      final show = autoQuery?.showEpisode;
+      if (show != null && data is Map &&
+          (data['windowed'] == true || data['multiSource'] == true ||
+              data['source'].toString().startsWith('NAS ·')) &&
+          data['showEpisode'] != show.text) return;
       final loaded =
           data is Map &&
               data['comments'] is List &&
@@ -706,6 +713,7 @@ class CinemaDanmakuController extends ChangeNotifier {
       'offset': offset,
       'comments': List<DanmakuEntry>.of(entries),
       'windowed': _windowed,
+      if (autoQuery?.showEpisode case final show?) 'showEpisode': show.text,
       'multiSource': _multiSourceData,
     };
     _writes = _writes.catchError((Object _) {}).then((_) async {
@@ -1120,8 +1128,9 @@ Future<void> showCinemaDanmakuSheet(
         width: 580,
         builder: (_) => CinemaDanmakuStylePanel(controller: controller),
       )
-    : showModalBottomSheet<void>(
-        context: context,
+    : showCinemaPlayerPanel<void>(
+      context: context,
+      title: '弹幕',
         isScrollControlled: true,
         constraints: const BoxConstraints(maxWidth: 480),
         backgroundColor: CinemaTheme.panelDataFor(
@@ -1175,6 +1184,7 @@ class CinemaDanmakuStylePanel extends StatelessWidget {
       );
       return Column(
         children: [
+if (Theme.of(context).platform != TargetPlatform.macOS)
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 12, 12, 0),
             child: Row(
@@ -1338,7 +1348,7 @@ class _CinemaTVDanmakuPanel extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 10),
             child: Text(
-              '${cinemaMediaBaseTitle(query.title)}${query.year.isEmpty ? '' : ' · ${query.year}'}${query.series ? ' · 第 ${query.season} 季 第 ${query.episode} 集' : ''}',
+              '${cinemaMediaBaseTitle(query.title)}${query.year.isEmpty ? '' : ' · ${query.year}'}${query.series ? ' · 第 ${query.season} 季 · ${query.episodeLabel}' : ''}',
               style: const TextStyle(fontSize: 16),
             ),
           ),
@@ -1408,7 +1418,7 @@ Future<void> showCinemaDanmakuSourcesDialog(
   CinemaDanmakuController controller,
 ) async {
   final draft = Set.of(controller.selectedSources);
-  final selected = await showDialog<Set<String>>(
+  final selected = await showCinemaSettingsDialog<Set<String>>(
     context: context,
     builder: (context) => CinemaPanelTheme(
       child: StatefulBuilder(
@@ -1492,7 +1502,7 @@ Future<void> showCinemaDanmakuMatchDialog(
 ) async {
   final query = controller.matchQuery;
   if (query == null) return;
-  final edit = await showDialog<({CinemaLogvarQuery? query})>(
+  final edit = await showCinemaSettingsDialog<({CinemaLogvarQuery? query})>(
     context: context,
     useRootNavigator: !NakuDevice.isTV,
     animationStyle: NakuDevice.isTV ? AnimationStyle.noAnimation : null,
@@ -1557,6 +1567,7 @@ class _DanmakuMatchDialogState extends State<_DanmakuMatchDialog> {
         series: q.series,
         season: q.season,
         episode: q.episode,
+        showEpisode: q.showEpisode,
       ),
     ));
   }
@@ -1598,7 +1609,7 @@ class _DanmakuMatchDialogState extends State<_DanmakuMatchDialog> {
               onSubmitted: (_) => _submit(),
             ),
             if (widget.query.series)
-              Text('第 ${widget.query.season} 季 · 第 ${widget.query.episode} 集'),
+              Text('第 ${widget.query.season} 季 · ${widget.query.episodeLabel}'),
             const Text('更正会记住，并用于同名、同年份的其他片源。'),
             if (_error != null)
               Text(

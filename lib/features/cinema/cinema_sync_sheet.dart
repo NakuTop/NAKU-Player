@@ -1,3 +1,4 @@
+import 'cinema_player_inspector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'cinema_watch_together.dart';
@@ -9,7 +10,7 @@ Future<void> showCinemaSyncSheet(
   final together = coordinator ?? CinemaWatchTogether.instance;
   await together.initialize();
   if (!context.mounted) return;
-  await showDialog<void>(
+  await showCinemaSettingsDialog<void>(
     context: context,
     builder: (_) => _SyncDialog(together: together),
   );

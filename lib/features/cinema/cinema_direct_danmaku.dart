@@ -306,7 +306,7 @@ class CinemaDirectDanmakuClient implements CinemaDanmakuMatcher {
       throw const FormatException('公开片名或集数无效');
     }
     onProgress?.call('正在查找 ${query.label} 的平台弹幕');
-    final keyword = query.series && query.season > 1
+    final keyword = query.showEpisode == null && query.series && query.season > 1
         ? '$title 第${query.season}季'
         : cinemaMediaBaseTitle(title);
     List raw = const [];
@@ -383,24 +383,25 @@ class CinemaDirectDanmakuClient implements CinemaDanmakuMatcher {
         (id) => providers?.contains(id) ?? true,
       )) {
         _check(cancelToken);
-        if (links is! Map || links[site] is! String) continue;
+        if (links is! Map ||
+            !(links[site] is String || query.showEpisode != null && links[site] is List)) continue;
         try {
           final page = await _episode(candidate.row, site, query, cancelToken);
           if (page == null) continue;
           onProgress?.call(
-            '正在获取${cinemaDirectDanmakuProviders[site]} · ${query.series ? '第${query.episode}集' : '正片'}弹幕',
+            '正在获取${cinemaDirectDanmakuProviders[site]} · ${query.episodeLabel}弹幕',
           );
           final comments = await loadPage(
             page.url,
             token: cancelToken,
-            episodeNumber: query.series ? query.episode : null,
+            episodeNumber: query.series && query.showEpisode == null ? query.episode : null,
           );
           if (comments.entries.isEmpty && comments.timeline == null) continue;
           final selection = CinemaLogvarSelection(
             candidate.work,
             CinemaLogvarEpisode(
               query.episode,
-              query.series ? '第${query.episode}集' : '正片',
+              query.episodeLabel,
               query.episode,
             ),
             comments.entries,
@@ -443,7 +444,8 @@ class CinemaDirectDanmakuClient implements CinemaDanmakuMatcher {
   ) async {
     if (!query.series) return _PublicEpisode(site, '${row['playlinks'][site]}');
     String? fromList(dynamic list) {
-      if (list is! List || query.episode > list.length) return null;
+      if (list is! List) return null;
+      if (query.episode > list.length) return null;
       final item = list[query.episode - 1];
       final value = item is Map ? item['url'] : item;
       if (value is! String || !value.startsWith('http')) return null;
@@ -464,6 +466,42 @@ class CinemaDirectDanmakuClient implements CinemaDanmakuMatcher {
       return value;
     }
 
+    if (query.showEpisode case final show?) {
+      final id = '${row['en_id'] ?? ''}';
+      final links = row['playlinks'] as Map;
+      String? varietyPage(dynamic rows) {
+        if (rows is! List) return null;
+        final urls = <String>{};
+        for (final entry in rows.whereType<Map>()) {
+          final label = '${entry['pubdate'] ?? ''} ${entry['name'] ?? entry['title'] ?? ''}'.trim();
+          final url = entry['url'];
+          if (url is String && url.startsWith('https://') && query.matchesEpisode(label)) urls.add(url);
+        }
+        return urls.length == 1 ? urls.single : null;
+      }
+      if (RegExp(r'^[a-zA-Z0-9_-]{1,80}$').hasMatch(id)) {
+        final yearsBySite = row['playlinks_year'];
+        final available = yearsBySite is Map ? yearsBySite[site] : null;
+        final years = show.day.isNotEmpty ? [show.day.substring(0, 4)] :
+            available is List && available.isNotEmpty
+            ? available.map((year) => year.toString()).where((year) => RegExp(r'^\d{4}$').hasMatch(year)).toSet()
+            : [query.year];
+        final catalogue = <dynamic>[];
+        for (final year in years) {
+          final detail = await _json('https://api.web.360kan.com/v1/detail',
+              query: {'cat': '${row['cat_id'] ?? 3}', 'id': id, 'site': site,
+                if (year.isNotEmpty) 'year': year}, token: token);
+          final data = detail['data'];
+          if (data is Map && data['defaultepisode'] is List) catalogue.addAll(data['defaultepisode'] as List);
+        }
+        if (catalogue.isNotEmpty) {
+          final url = varietyPage(catalogue);
+          return url == null ? null : _PublicEpisode(site, url);
+        }
+      }
+      final url = varietyPage(links[site]);
+      return url == null ? null : _PublicEpisode(site, url);
+    }
     if (row['seriesSite'] == site) {
       final direct = fromList(row['seriesPlaylinks']);
       if (direct != null) return _PublicEpisode(site, direct);

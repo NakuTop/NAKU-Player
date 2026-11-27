@@ -3099,6 +3099,26 @@ void main() {
     },
   );
 
+  for (final width in [720.0, 1200.0]) {
+    testWidgets('Mac volume is directly reachable at width $width', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      await mount(tester, {'defaultVolume': 80.0}, renderToolbar: true,
+          viewport: Size(width, 800));
+      final volume = find.byKey(const ValueKey('cinema-fixed-volume'));
+      expect(volume.hitTestable(), findsOneWidget);
+      final previous = backends.last.state.volume;
+      await tester.tap(find.byTooltip('静音').hitTestable());
+      await tester.pumpAndSettle();
+      expect(backends.last.state.volume, 0);
+      await tester.tap(find.byTooltip('取消静音').hitTestable());
+      await tester.pumpAndSettle();
+      expect(backends.last.state.volume, previous);
+      await unmount(tester);
+      debugDefaultTargetPlatformOverride = null;
+    });
+  }
+
   testWidgets(
     'Mac cinema fills the first viewport and waits for real video dimensions',
     (tester) async {
@@ -3189,10 +3209,20 @@ void main() {
       }
       expect(find.text('第1集'), findsOneWidget);
       expect(find.text('第2集'), findsOneWidget);
-      Navigator.of(tester.element(find.byType(BottomSheet))).pop();
+      await tester.tap(find.byType(CloseButton).last);
       await tester.pumpAndSettle();
       expect(backends, [backend]);
       await tester.tap(find.byTooltip('播放选项'));
+      await tester.pumpAndSettle();
+      expect(find.text('播放速度'), findsOneWidget);
+      await tester.tap(find.byTooltip('加快'));
+      await tester.pumpAndSettle();
+      expect(backend.state.rate, 1.25);
+      await tester.tap(find.byTooltip('减慢'));
+      await tester.pumpAndSettle();
+      expect(backend.state.rate, 1.0);
+      expect(find.text('保存截图'), findsNothing);
+      await tester.tap(find.text('更多工具'));
       await tester.pumpAndSettle();
       expect(find.text('在线搜索字幕'), findsOneWidget);
       expect(find.text('保存截图'), findsOneWidget);
@@ -3211,7 +3241,7 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('第2集'), findsOneWidget);
-      Navigator.of(tester.element(find.byType(BottomSheet))).pop();
+      await tester.tap(find.byType(CloseButton).last);
       await tester.pumpAndSettle();
       expect(backends, [backend]);
       expect(backend.disposed, isFalse);

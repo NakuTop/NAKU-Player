@@ -1,3 +1,4 @@
+import 'cinema_player_inspector.dart';
 import 'cinema_movie_versions.dart';
 import 'cinema_original_match.dart';
 import 'cinema_original_engine.dart';
@@ -1018,8 +1019,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   bool get _canChooseSource => widget.offlinePaths == null && !_usesNASPlayback;
   Future<void> _showSourcePicker() {
     _discovering ??= _discoverRoutes();
-    return showModalBottomSheet<void>(
+    return showCinemaPlayerPanel<void>(
       context: context,
+      title: '片源',
       isScrollControlled: true,
       constraints: const BoxConstraints(maxWidth: 820),
       builder: (sheet) => SizedBox(
@@ -1067,8 +1069,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         ),
       );
     }
-    return showModalBottomSheet<void>(
+    return showCinemaPlayerPanel<void>(
       context: context,
+      title: '选集',
       isScrollControlled: true,
       constraints: const BoxConstraints(maxWidth: 820),
       builder: (sheetContext) => SizedBox(
@@ -3117,8 +3120,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       if (NakuDevice.canDownload && widget.offlinePaths == null)
         '下载选集': _downloadCurrent,
     };
-    final action = await showModalBottomSheet<VoidCallback>(
+    final action = await showCinemaPlayerPanel<VoidCallback>(
       context: context,
+      title: '播放控制',
       isScrollControlled: true,
       builder: (ctx) => SafeArea(
         child: SingleChildScrollView(
@@ -3272,35 +3276,67 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   Widget _macPlaybackOptions() {
     final playback = _playback;
-    final actions = <String, VoidCallback?>{
-      '保存截图': playback == null ? null : _screenshot,
-      '在线搜索字幕': playback == null ? null : _showOnlineSubtitles,
-      _usesNASPlayback ? '清晰度与 NAS 播放设置' : '画质信息与处理':
-          playback == null && !_usesNASPlayback ? null : _showQuality,
-      '超分辨率': _showSuperResolutionOptions,
-      'NAS 用户配对': () => showCinemaSyncSheet(context, coordinator: _together),
-      if (NakuDevice.canDownload && widget.offlinePaths == null)
-        '下载选集': _downloadCurrent,
-      if (widget.offlinePaths == null && !_usesNASPlayback)
-        '播放线路测速': () {
-          _showEpisodes();
-          _probeRoutes();
-        },
-      if (_canRetryDirect) '启用视频直连并重试': _retryDirect,
-    };
-    return PopupMenuButton<String>(
+    return IconButton(
       key: const ValueKey('cinema-mac-playback-options'),
       tooltip: '播放选项',
-      icon: const Icon(Icons.more_horiz_rounded),
-      onSelected: (action) => actions[action]?.call(),
-      itemBuilder: (_) => [
-        for (final action in actions.entries)
-          PopupMenuItem(
-            value: action.key,
-            enabled: action.value != null,
-            child: Text(action.key),
-          ),
-      ],
+      icon: const Icon(Icons.tune_rounded),
+      onPressed: () async {
+        final action = await showCinemaPlayerPanel<VoidCallback>(
+          context: context, title: '播放选项',
+          builder: (panel) {
+            Widget entry(String label, IconData icon, VoidCallback? action) =>
+                ListTile(leading: Icon(icon, size: 19), title: Text(label),
+                  enabled: action != null, trailing: const Icon(Icons.chevron_right, size: 17),
+                  onTap: action == null ? null : () => Navigator.pop(panel, action));
+            final controller = playback?.danmaku;
+            return ListView(shrinkWrap: true, padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
+              children: [
+                if (playback != null)
+                  StreamBuilder<double>(stream: playback.player.stream.rate, initialData: _rate,
+                    builder: (_, snapshot) {
+                      final rate = snapshot.data ?? _rate;
+                      final lower = defaultPlaySpeedList.where((r) => r < rate).lastOrNull;
+                      final higher = defaultPlaySpeedList.where((r) => r > rate).firstOrNull;
+                      VoidCallback? change(double? value) => value == null ? null : () {
+                        if (identical(_playback, playback)) unawaited(_setRate(value));
+                      };
+                      return Wrap(alignment: WrapAlignment.spaceBetween,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          const Padding(padding: EdgeInsets.only(left: 16), child: Text('播放速度')),
+                          Row(mainAxisSize: MainAxisSize.min, children: [
+                            IconButton(tooltip: '减慢', onPressed: change(lower), icon: const Icon(Icons.remove)),
+                            TextButton(onPressed: change(1), child: Text('${rate}×')),
+                            IconButton(tooltip: '加快', onPressed: change(higher), icon: const Icon(Icons.add)),
+                          ]),
+                        ]);
+                    }),
+                if (controller != null)
+                  ListenableBuilder(listenable: controller, builder: (_, __) =>
+                    SwitchListTile.adaptive(title: const Text('显示弹幕'),
+                      secondary: const Icon(Icons.comment_outlined, size: 19),
+                      value: controller.enabled, onChanged: controller.setEnabled)),
+                entry('字幕与音轨', Icons.subtitles_outlined, playback == null ? null : _showTracks),
+                entry('画质', Icons.high_quality_outlined, playback == null && !_usesNASPlayback ? null : _showQuality),
+                entry('弹幕设置', Icons.tune, playback == null ? null : _showDanmaku),
+                const Divider(height: 12),
+                ExpansionTile(title: const Text('更多工具'), leading: const Icon(Icons.more_horiz),
+                  children: [
+                    entry('在线搜索字幕', Icons.search, playback == null ? null : _showOnlineSubtitles),
+                    entry('超分辨率', Icons.auto_awesome_outlined, _showSuperResolutionOptions),
+                    entry('保存截图', Icons.photo_camera_outlined, playback == null ? null : _screenshot),
+                    if (NakuDevice.canDownload && widget.offlinePaths == null)
+                      entry('下载选集', Icons.download_outlined, _downloadCurrent),
+                    entry('NAS 用户配对', Icons.people_outline, () => showCinemaSyncSheet(context, coordinator: _together)),
+                    if (widget.offlinePaths == null && !_usesNASPlayback)
+                      entry('播放线路测速', Icons.network_check, () { _showEpisodes(); _probeRoutes(); }),
+                    if (_canRetryDirect) entry('启用视频直连并重试', Icons.refresh, _retryDirect),
+                  ]),
+              ]);
+          },
+        );
+        if (mounted && !_closing) action?.call();
+      },
     );
   }
 
@@ -6145,7 +6181,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                         ),
                                       if (!_pip) ...[
                                         const SizedBox(width: 24),
-                                        if (wide &&
+                                        if (!Platform.isMacOS && wide &&
                                             widget.videoSurfaceBuilder == null)
                                           const MaterialDesktopVolumeButton(),
                                       ],
@@ -6153,6 +6189,28 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                   ),
                                 ),
                               ),
+                              if (Platform.isMacOS && !_pip)
+                                StreamBuilder<double>(
+                                  stream: playback?.player.stream.volume,
+                                  initialData: _volume,
+                                  builder: (_, snapshot) {
+                                    final volume = (snapshot.data ?? _volume).clamp(0.0, 100.0);
+                                    return Row(mainAxisSize: MainAxisSize.min, children: [
+                                      IconButton(
+                                        tooltip: volume > 0 ? '静音' : '取消静音',
+                                        onPressed: playback == null ? null : () => _setVolume(
+                                          volume > 0 ? 0 : (_audibleVolume > 0 ? _audibleVolume : 100)),
+                                        icon: Icon(volume > 0 ? Icons.volume_up_rounded : Icons.volume_off_rounded),
+                                      ),
+                                      SizedBox(width: (constraints.maxWidth * .14).clamp(48.0, 104.0),
+                                        child: Slider(
+                                          key: const ValueKey('cinema-fixed-volume'), value: volume, max: 100,
+                                          semanticFormatterCallback: (v) => '音量 ${v.round()}%',
+                                          onChanged: playback == null ? null : _setVolume,
+                                        )),
+                                    ]);
+                                  },
+                                ),
                               Expanded(
                                 child: Align(
                                   alignment: Alignment.centerRight,
@@ -6208,7 +6266,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                             ),
                                           ),
                                           _speedControl(),
-                                          if (_fullscreen && !nativeCinema) ...[
+                                          if (_fullscreen && !nativeCinema && !Platform.isMacOS) ...[
                                             IconButton(
                                               constraints:
                                                   const BoxConstraints.tightFor(
@@ -6293,7 +6351,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                                 ),
                                               ),
                                           ],
-                                          if (nativeCinema)
+                                          if (nativeCinema || Platform.isMacOS && !_pip)
                                             _macPlaybackOptions(),
                                           IconButton(
                                             constraints:
@@ -6745,7 +6803,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Future<void> _showSpeedOptions() async {
-    final selected = await showDialog<double>(
+    final selected = await showCinemaSettingsDialog<double>(
       context: context,
       builder: (context) => SimpleDialog(
         title: const Text('倍速'),
@@ -6762,7 +6820,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   Future<void> _showSuperResolutionOptions() async {
-    final selected = await showDialog<SuperResolutionMode>(
+    final selected = await showCinemaSettingsDialog<SuperResolutionMode>(
       context: context,
       builder: (context) => SimpleDialog(
         title: const Text('超分辨率'),
