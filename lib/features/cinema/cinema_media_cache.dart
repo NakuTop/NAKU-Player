@@ -94,6 +94,8 @@ class CinemaCacheSession {
   final Map<String, List<_Segment>> _playlists = {};
   bool closed = false, buffering = false, prefetching = false;
   bool _backgroundPrefetchAllowed;
+  @visibleForTesting
+  bool get prefetchHasForegroundWaiter => cache._promoted.containsKey(_fetchKey);
   bool get backgroundPrefetchAllowed => _backgroundPrefetchAllowed;
   set backgroundPrefetchAllowed(bool allowed) {
     if (_backgroundPrefetchAllowed == allowed) return;
@@ -598,36 +600,30 @@ class CinemaMediaCache extends ChangeNotifier {
       final key = _key(resource.uri, session.headers, range);
       _retain(_pinned, key);
       try {
-        var cached =
-            preferences.enabled && resource.persist && _cacheable(resource.uri)
-            ? await _cached(key, session)
-            : null;
+        final cacheable = preferences.enabled && resource.persist && _cacheable(resource.uri);
         var completeFile = range == null;
         final wholeKey = _key(resource.uri, session.headers, null);
         final canUseWhole =
             range == null || RegExp(r'^bytes=(\d*)-(\d*)$').hasMatch(range);
-        final pendingKey = _pending.containsKey(key)
-            ? key
-            : canUseWhole
-            ? wholeKey
-            : key;
-        final pending = preferences.enabled && resource.persist
-            ? _pending[pendingKey]
-            : null;
-        if (cached == null && pending != null) {
-          // Adopt an in-flight warmup for this exact segment instead of
-          // cancelling it and downloading the same bytes a second time.
+        final pendingKey = _pending.containsKey(key) || !canUseWhole ? key : wholeKey;
+        final pending = cacheable ? _pending[pendingKey] : null;
+        // Claim the live request before yielding to disk I/O. Buffering can
+        // suspend speculative traffic while the local file lookup is pending.
+        File? cached;
+        if (pending != null) {
           _retain(_promoted, pendingKey);
           _yieldBackground();
           try {
-            cached = await pending.timeout(
-              prefetchAdoptionTimeout,
-              onTimeout: () => null,
-            );
-            completeFile = pendingKey == wholeKey;
+            cached = await _cached(key, session);
+            if (cached == null) {
+              cached = await pending.timeout(prefetchAdoptionTimeout, onTimeout: () => null);
+              completeFile = pendingKey == wholeKey;
+            }
           } finally {
             _release(_promoted, pendingKey);
           }
+        } else if (cacheable) {
+          cached = await _cached(key, session);
         }
         // FFmpeg commonly sends bytes=0- even for whole HLS segments. A warmed
         // complete segment can answer open, suffix and explicit byte ranges.

@@ -314,9 +314,13 @@ void main() {
       opened.session.backgroundPrefetchAllowed = true;
       await started!.future.timeout(const Duration(seconds: 2));
       final foreground = read(media);
-      await Future<void>.delayed(const Duration(milliseconds: 40));
+      final wait = Stopwatch()..start();
+      while (!opened.session.prefetchHasForegroundWaiter &&
+          wait.elapsed < const Duration(seconds: 2)) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+      expect(opened.session.prefetchHasForegroundWaiter, isTrue);
       opened.session.backgroundPrefetchAllowed = false;
-      await Future<void>.delayed(const Duration(milliseconds: 40));
       expect(
         opened.session.prefetching,
         true,

@@ -31,9 +31,35 @@ class CinemaBufferMonitor extends ValueNotifier<CinemaBufferSnapshot> {
   CinemaBufferMonitor(this.player) : super(const CinemaBufferSnapshot());
   final Player player;
   Timer? _timer;
-  bool _closed = false, _reading = false;
+  bool _closed = false, _reading = false, _ready = false;
   void start() {
-    if (_timer != null || _closed || player.platform is! NativePlayer) return;
+    _ready = true;
+    _startIfObserved();
+  }
+
+  @override
+  void addListener(VoidCallback listener) {
+    super.addListener(listener);
+    _startIfObserved();
+  }
+
+  @override
+  void removeListener(VoidCallback listener) {
+    super.removeListener(listener);
+    if (!hasListeners) {
+      _timer?.cancel();
+      _timer = null;
+    }
+  }
+
+  void _startIfObserved() {
+    if (!_ready ||
+        !hasListeners ||
+        _timer != null ||
+        _closed ||
+        player.platform is! NativePlayer) {
+      return;
+    }
     unawaited(sample());
     _timer = Timer.periodic(
       const Duration(seconds: 1),
@@ -57,24 +83,26 @@ class CinemaBufferMonitor extends ValueNotifier<CinemaBufferSnapshot> {
       }
 
       final state = cinemaNativeCacheState(native);
-      final values = await Future.wait([
-        read('demuxer-cache-state/fw-bytes'),
-        read('demuxer-cache-duration'),
-        read('cache-speed'),
-        read('demuxer-cache-idle'),
-      ]);
-      if (_closed) return;
-      double number(String s) {
-        final n = double.tryParse(s);
-        return n != null && n.isFinite && n >= 0 ? n : 0;
+      Future<num> metric(String field, String fallback) async {
+        final available = state[field];
+        if (available != null) return available;
+        final number = double.tryParse(await read(fallback));
+        return number != null && number.isFinite && number >= 0 ? number : 0;
       }
 
+      final metrics = await Future.wait([
+        metric('fw-bytes', 'demuxer-cache-state/fw-bytes'),
+        metric('cache-duration', 'demuxer-cache-duration'),
+        metric('raw-input-rate', 'cache-speed'),
+      ]);
+      if (_closed || !hasListeners) return;
+      final idle = await read('demuxer-cache-idle');
+      if (_closed) return;
       value = CinemaBufferSnapshot(
-        bytes: (state['fw-bytes'] ?? number(values[0])).round(),
-        mediaSeconds: (state['cache-duration'] ?? number(values[1])).toDouble(),
-        bytesPerSecond: (state['raw-input-rate'] ?? number(values[2]))
-            .toDouble(),
-        idle: values[3] == 'yes',
+        bytes: metrics[0].round(),
+        mediaSeconds: metrics[1].toDouble(),
+        bytesPerSecond: metrics[2].toDouble(),
+        idle: idle == 'yes',
       );
     } finally {
       _reading = false;

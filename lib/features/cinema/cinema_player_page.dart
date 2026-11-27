@@ -206,11 +206,13 @@ class CinemaPlaybackWatchdog {
   DateTime? _lastProgressAt;
   Duration? _lastPosition;
   bool _wasPlaying = false;
+  DateTime? _lastSample;
 
   void reset() {
     _lastProgressAt = null;
     _lastPosition = null;
     _wasPlaying = false;
+    _lastSample = null;
   }
 
   bool sample({
@@ -219,7 +221,13 @@ class CinemaPlaybackWatchdog {
     required bool playing,
     required bool completed,
   }) {
-    if (!playing || completed || !_wasPlaying || position != _lastPosition) {
+    final gap = _lastSample == null ? null : now.difference(_lastSample!);
+    _lastSample = now;
+    if (!playing ||
+        completed ||
+        !_wasPlaying ||
+        position != _lastPosition ||
+        (gap != null && (gap.isNegative || gap > timeout * 2))) {
       _lastProgressAt = now;
     }
     _lastPosition = position;
@@ -805,15 +813,17 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       if (key == LogicalKeyboardKey.arrowLeft ||
           key == LogicalKeyboardKey.arrowRight) {
         final playback = _playback;
-        if (playback?.ready != true) return KeyEventResult.handled;
+        if (playback == null || !playback.ready || playback.duration <= Duration.zero) {
+          return KeyEventResult.handled;
+        }
         _tvHeldDirection = key;
         final seconds = key == LogicalKeyboardKey.arrowLeft ? -10 : 10;
         if (event is KeyRepeatEvent) {
           setState(
             () => _tvHeldSeek = Duration(
               seconds:
-                  ((_tvHeldSeek ?? playback!.position).inSeconds + seconds * 3)
-                      .clamp(0, playback!.duration.inSeconds),
+                  ((_tvHeldSeek ?? playback.position).inSeconds + seconds * 3)
+                      .clamp(0, playback.duration.inSeconds),
             ),
           );
         } else {
@@ -886,12 +896,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   }
 
   void _seekTV(Duration target) {
-    final playback = _playback;
-    if (playback == null || !playback.ready) return;
-    playback.watchdog.reset();
-    _cancelTVBackground('用户正在定位播放进度', reset: true);
-    playback.danmaku?.prepareForSeek();
-    unawaited(playback.player.seek(target));
+    _seekTo(target);
   }
 
   Future<void> _showTVAction(
@@ -1805,7 +1810,6 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
     if (!automatic && !initial && !continuingLoad) {
       _automaticProbePending = false;
     }
-    if (!automatic && !initial && !continuingLoad) {}
     _cancelTVBackground('播放选择已变化', reset: true);
     _tvCurrentProbePending = false;
     _cancelRouteProbe();
@@ -5661,7 +5665,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
           ),
           const SizedBox(height: 2),
           StreamBuilder<Duration>(
-            stream: playback.player.stream.position,
+            stream: playback.displayPosition,
             initialData: playback.position,
             builder: (_, position) => CinemaTVTimeline(
               compact: true,
@@ -6008,7 +6012,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                     stream: playback?.player.stream.playing,
                     initialData: playback?.player.state.playing ?? false,
                     builder: (context, playing) => StreamBuilder<Duration>(
-                      stream: playback?.player.stream.position,
+                      stream: playback?.displayPosition,
                       initialData: playback?.position ?? Duration.zero,
                       builder: (context, position) => CinemaMobilePlaybackBar(
                         playing: playing.data ?? false,
@@ -6048,7 +6052,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                     children: [
                       if (!_pip && playback != null)
                         StreamBuilder<Duration>(
-                          stream: playback.player.stream.position,
+                          stream: playback.displayPosition,
                           initialData: playback.position,
                           builder: (context, snapshot) => Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -6755,7 +6759,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
                                   ),
                                   label: const Text('重试'),
                                 ),
-                                if (_title.routes.length > 1)
+                                if (_canChooseSource && (_title.routes.length > 1 || _catalogue.variants.length > 1))
                                   OutlinedButton(
                                     onPressed: _tryNextRoute,
                                     child: const Text('更换线路'),
@@ -6860,7 +6864,11 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
 
   void _seekTo(Duration position) {
     final playback = _playback;
-    if (playback == null || !playback.ready) return;
+    if (playback == null ||
+        !playback.ready ||
+        playback.duration <= Duration.zero) {
+      return;
+    }
     playback.watchdog.reset();
     _cancelTVBackground('用户正在定位播放进度', reset: true);
     playback.danmaku?.prepareForSeek();
@@ -6879,14 +6887,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
   void _seekBy(int seconds) {
     final playback = _playback;
     if (playback == null || !playback.ready) return;
-    final target = (playback.position.inSeconds + seconds).clamp(
-      0,
-      playback.duration.inSeconds,
-    );
-    playback.watchdog.reset();
-    _cancelTVBackground('用户正在定位播放进度', reset: true);
-    playback.danmaku?.prepareForSeek();
-    unawaited(playback.player.seek(Duration(seconds: target)));
+    _seekTo(playback.position + Duration(seconds: seconds));
   }
 
   void _tryNextRoute() {
@@ -7580,6 +7581,11 @@ class _CinemaPlayback {
     );
   }
 
+  // These controls display whole seconds. Keep decoder precision for playback,
+  // subtitles and cache decisions without rebuilding the control rows per tick.
+  late final displayPosition = player.stream.position.distinct(
+    (previous, next) => previous.inSeconds == next.inSeconds,
+  );
   final subscriptions = <StreamSubscription<dynamic>>[];
   Timer? fatalErrorTimer;
   final watchdog = CinemaPlaybackWatchdog();
@@ -7649,20 +7655,24 @@ class _CinemaPlayback {
     // Keep early errors observed while still awaiting/reporting them below.
     closingExternal.ignore();
     final closingNAS = nasSession?.close();
+    final closingCache = cacheSession?.close();
+    // Disk pruning and NAS teardown can finish after the decoder is released.
+    final housekeeping = Future.wait<void>([
+      closingExternal,
+      if (closingCache != null) closingCache,
+      if (closingNAS != null) closingNAS,
+    ]);
+    housekeeping.ignore();
+    watchdogTimer?.cancel();
+    fatalErrorTimer?.cancel();
     try {
-      await cacheSession?.close();
-      watchdogTimer?.cancel();
-      fatalErrorTimer?.cancel();
-      for (final subscription in subscriptions) {
-        await subscription.cancel();
-      }
-      subscriptions.clear();
-      await player.dispose();
+      await Future.wait([for (final subscription in subscriptions) subscription.cancel()]);
     } finally {
+      subscriptions.clear();
       try {
-        await closingExternal;
+        await player.dispose();
       } finally {
-        await closingNAS;
+        await housekeeping;
       }
     }
   }

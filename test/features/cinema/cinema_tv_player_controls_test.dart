@@ -4,6 +4,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_tv_player_controls.dart';
 
 void main() {
+  test('no preview until duration is known; holding at the end stays idle', () {
+    final preview = CinemaTVSeekPreview();
+    var changes = 0;
+    preview.addListener(() => changes++);
+    preview.preview(Duration.zero, Duration.zero, 10);
+    expect(preview.take(), isNull);
+    preview.preview(Duration.zero, const Duration(seconds: 8), 10);
+    preview.preview(Duration.zero, const Duration(seconds: 8), 30);
+    expect(changes, 1);
+    expect(preview.take(), const Duration(seconds: 8));
+    preview.dispose();
+  });
   testWidgets(
     'remote timeline previews, cancels and explicitly commits without player toggles',
     (tester) async {

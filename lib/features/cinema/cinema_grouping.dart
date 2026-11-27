@@ -11,6 +11,7 @@ class CinemaTitleGroup {
     required Iterable<CinemaTitle> variants,
     String preferredSourceId = 'maccms-feifan',
     this.sourcePriority = const [],
+    this.discoverySuggestions = false,
   }) : variants = List.unmodifiable(variants),
        _preferredSourceId = preferredSourceId {
     if (this.variants.isEmpty) {
@@ -26,6 +27,7 @@ class CinemaTitleGroup {
   final List<CinemaTitle> variants;
   final String _preferredSourceId;
   final List<String> sourcePriority;
+  final bool discoverySuggestions;
 
   CinemaTitle get representative => orderCinemaVariants(variants, [
     ...sourcePriority,
@@ -84,7 +86,12 @@ class CinemaTitleGroup {
                 selected.poster,
           })
         : selected;
-    Set<String> identities(String Function(CinemaTitle) read) => concrete
+    // Home binds verified discovery IDs before grouping. Grouping can still
+    // borrow cover art, but a public suggestion cannot supply a source rating.
+    final ratingSources = discoverySuggestions && base.sourceId != 'douban-discovery'
+        ? concrete.where((item) => item.sourceId != 'douban-discovery')
+        : concrete;
+    Set<String> identities(String Function(CinemaTitle) read) => ratingSources
         .map(read)
         .map((id) => id.trim())
         .where((id) => id.isNotEmpty)
@@ -102,7 +109,7 @@ class CinemaTitleGroup {
     final doubanId = douban.firstOrNull ?? '';
     double? score = base.sourceDoubanScore;
     if (score == null && doubanId.isNotEmpty) {
-      final scores = concrete
+      final scores = ratingSources
           .where((title) => title.doubanId.trim() == doubanId)
           .map((title) => title.sourceDoubanScore)
           .whereType<double>()
@@ -112,7 +119,7 @@ class CinemaTitleGroup {
     }
     final imdbId = imdb.firstOrNull ?? '';
     final rottenId = rotten.firstOrNull ?? '';
-    final years = identities((title) => title.year);
+    final years = concrete.map((title) => title.year.trim()).where((year) => year.isNotEmpty).toSet();
     final year = base.year.isEmpty && years.length == 1
         ? years.single
         : base.year;
@@ -157,6 +164,7 @@ List<CinemaTitleGroup> groupCinemaTitles(
   Iterable<CinemaTitle> items, {
   String preferredSourceId = 'maccms-feifan',
   List<String> sourcePriority = const [],
+  bool discoverySuggestions = false,
 }) {
   final groups = <_Group>[];
   final byName = <String, List<_Group>>{};
@@ -230,6 +238,7 @@ List<CinemaTitleGroup> groupCinemaTitles(
       variants: group.variants,
       preferredSourceId: preferredSourceId,
       sourcePriority: sourcePriority,
+      discoverySuggestions: discoverySuggestions,
     );
   }).toList();
   return result..sort((a, b) => order[a.key]!.compareTo(order[b.key]!));

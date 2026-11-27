@@ -53,7 +53,7 @@ class CinemaCatalogViewCache {
           ? const []
           : search.trim().isEmpty
           ? groupCinemaTitles(filtered, sourcePriority: sourcePriority)
-          : groupCinemaTitles(all, sourcePriority: sourcePriority)
+          : groupCinemaTitles(all, sourcePriority: sourcePriority, discoverySuggestions: discovery.isNotEmpty)
                 .where(
                   (g) =>
                       filters.matches(g.catalogTitle) ||

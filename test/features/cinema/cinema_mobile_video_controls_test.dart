@@ -7,6 +7,7 @@ import 'package:kazumi/features/cinema/cinema_mobile_playback_bar.dart';
 class _Backend extends PlatformPlayer {
   _Backend() : super(configuration: const PlayerConfiguration()) {
     state = state.copyWith(
+      playing: true,
       duration: const Duration(minutes: 30),
       position: const Duration(minutes: 2),
     );
@@ -101,6 +102,15 @@ void main() {
               .ignoring,
           true,
         );
+        await tester.pump();
+        expect(find.byKey(const ValueKey('mobile-video-seek')), findsNothing);
+        backend.state = backend.state.copyWith(playing: false);
+        backend.playingController.add(false);
+        await tester.pumpAndSettle();
+        await tester.pump(const Duration(seconds: 6));
+        expect(find.byKey(const ValueKey('mobile-video-seek')), findsOneWidget);
+        toggle.value++;
+        await tester.pumpAndSettle();
         toggle.value++;
         await tester.pumpAndSettle();
         await tester.tap(find.byTooltip('弹幕'));

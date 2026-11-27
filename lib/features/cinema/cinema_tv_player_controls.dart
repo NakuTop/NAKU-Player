@@ -78,10 +78,13 @@ class CinemaTVSeekPreview extends ChangeNotifier {
   Duration? get target => _target;
   bool get active => _target != null;
   void preview(Duration position, Duration duration, int seconds) {
-    _target = Duration(
+    if (duration <= Duration.zero) return;
+    final next = Duration(
       milliseconds: ((_target ?? position).inMilliseconds + seconds * 1000)
           .clamp(0, duration.inMilliseconds),
     );
+    if (next == _target) return;
+    _target = next;
     notifyListeners();
   }
 
