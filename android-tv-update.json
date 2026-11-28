@@ -1,5 +1,62 @@
 [
   {
+    "tag_name": "android-tv-v3.2.38+166",
+    "name": "NAKU Android TV 3.2.38",
+    "body": "修复重开片库后丢失已展开内容、详情页重复请求片源，以及窗口挂起后误判播放卡死。修正首帧和片源状态记录，优化评分列表的加载与排序，修复界面透明度的应用。\n",
+    "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.38%2B166",
+    "published_at": "2026-11-28T03:38:26Z",
+    "draft": false,
+    "prerelease": false,
+    "assets": [
+      {
+        "name": "NAKU-TV-3.2.38-Android-universal.apk",
+        "state": "uploaded",
+        "size": 165999024,
+        "digest": "sha256:a3f6ab9d28dcd50fb0f32e2fce652188916a73323c72b8ff7840aef31cf117f2",
+        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.38%2B166/NAKU-TV-3.2.38-Android-universal.apk",
+        "build": 166,
+        "deltas": [
+          {
+            "name": "NAKU-TV-165-166.gdiff.gz",
+            "state": "uploaded",
+            "size": 26726179,
+            "digest": "sha256:0c4d20ba4f83cb71a1f053fd56f0fb4e73a9c6f7adfb546f8c4a19488717fe3a",
+            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.38%2B166/NAKU-TV-165-166.gdiff.gz",
+            "format": "gdiff4-gzip",
+            "base_version": "3.2.37",
+            "base_build": 165,
+            "base_sha256": "6fbd543055e70c52ebf8b95c08bd8a43d498e816fc59dc4d08001b17b331a607",
+            "target_sha256": "a3f6ab9d28dcd50fb0f32e2fce652188916a73323c72b8ff7840aef31cf117f2"
+          },
+          {
+            "name": "NAKU-TV-159-166.gdiff.gz",
+            "state": "uploaded",
+            "size": 26726184,
+            "digest": "sha256:9a7017ead59a6a3dfe7ad81efb34ecf56349826bf72c9c1c60fbf44ab737c811",
+            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.38%2B166/NAKU-TV-159-166.gdiff.gz",
+            "format": "gdiff4-gzip",
+            "base_version": "3.2.31",
+            "base_build": 159,
+            "base_sha256": "3b581b1d610ad9a8e316321367f7d8e4c284abc5117d863b529f22002cbd6671",
+            "target_sha256": "a3f6ab9d28dcd50fb0f32e2fce652188916a73323c72b8ff7840aef31cf117f2"
+          },
+          {
+            "name": "NAKU-TV-158-166.gdiff.gz",
+            "state": "uploaded",
+            "size": 26726165,
+            "digest": "sha256:cd22709d1133f1675591b440fdd870118f3f9a0b4aeea3117dc358e354ec797a",
+            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.38%2B166/NAKU-TV-158-166.gdiff.gz",
+            "format": "gdiff4-gzip",
+            "base_version": "3.2.30",
+            "base_build": 158,
+            "base_sha256": "460db4e68913886bdb3f49f7064a2abdead06f0945ceb8480e610c8db12b85f1",
+            "target_sha256": "a3f6ab9d28dcd50fb0f32e2fce652188916a73323c72b8ff7840aef31cf117f2"
+          }
+        ]
+      }
+    ]
+  },
+  {
     "tag_name": "android-tv-v3.2.37+165",
     "name": "NAKU Android TV 3.2.37",
     "body": "优化播放进度刷新和缓存分片接续，减少无效后台采样，修复搜索结果评分误绑定及未知时长时误跳播。 改进手机暂停时的控制栏和电视遥控器进度预览。\n",
@@ -393,63 +450,6 @@
             "base_build": 151,
             "base_sha256": "55999b9c62982fd3f5563895a00bf3e73992026fb01df9ce7760f7728feca4d8",
             "target_sha256": "e1dc30a3bf4477484644566f23ae970458139d694713e1764eaaba6ee4efbfa6"
-          }
-        ]
-      }
-    ]
-  },
-  {
-    "tag_name": "android-tv-v3.2.25+153",
-    "name": "NAKU Android TV 3.2.25",
-    "body": "3.2.25 · 自动选择最快的 1080p 线路\n\n自动播放与原画回退会比较同一集可用的常规线路。优先实测 1080p，在相同画质中选择实测加载最快的线路。已完成的检测直接沿用，手动选择片源和线路仍优先。\n",
-    "html_url": "https://github.com/NakuTop/NAKU-Player/releases/tag/android-tv-v3.2.25%2B153",
-    "published_at": "2026-11-23T22:22:30Z",
-    "draft": false,
-    "prerelease": false,
-    "assets": [
-      {
-        "name": "NAKU-TV-3.2.25-Android-universal.apk",
-        "state": "uploaded",
-        "size": 165875324,
-        "digest": "sha256:0a6366ecad57b2217294d576cdacc15f8d224f8e895b625758e6d2eea7f39883",
-        "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.25%2B153/NAKU-TV-3.2.25-Android-universal.apk",
-        "build": 153,
-        "deltas": [
-          {
-            "name": "NAKU-TV-152-153.gdiff.gz",
-            "state": "uploaded",
-            "size": 26529906,
-            "digest": "sha256:fb35cde88442fd448a247f8886d540da03f983a3fa2a38861223344bf048b18a",
-            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.25%2B153/NAKU-TV-152-153.gdiff.gz",
-            "format": "gdiff4-gzip",
-            "base_version": "3.2.24",
-            "base_build": 152,
-            "base_sha256": "e660885e2aa4961f1f5e81d1ab44e96525ab7b8f51e83a575a319fdc17ef396f",
-            "target_sha256": "0a6366ecad57b2217294d576cdacc15f8d224f8e895b625758e6d2eea7f39883"
-          },
-          {
-            "name": "NAKU-TV-151-153.gdiff.gz",
-            "state": "uploaded",
-            "size": 26529904,
-            "digest": "sha256:145a445ff07f6a8c492d392ca364756d01d6fd308ec794f09dcc152c946842e3",
-            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.25%2B153/NAKU-TV-151-153.gdiff.gz",
-            "format": "gdiff4-gzip",
-            "base_version": "3.2.23",
-            "base_build": 151,
-            "base_sha256": "55999b9c62982fd3f5563895a00bf3e73992026fb01df9ce7760f7728feca4d8",
-            "target_sha256": "0a6366ecad57b2217294d576cdacc15f8d224f8e895b625758e6d2eea7f39883"
-          },
-          {
-            "name": "NAKU-TV-150-153.gdiff.gz",
-            "state": "uploaded",
-            "size": 26529917,
-            "digest": "sha256:4fe356baaa30035d6e94e068248528593c427c0e268347a828a2bb0c8dec0b0d",
-            "browser_download_url": "https://github.com/NakuTop/NAKU-Player/releases/download/android-tv-v3.2.25%2B153/NAKU-TV-150-153.gdiff.gz",
-            "format": "gdiff4-gzip",
-            "base_version": "3.2.22",
-            "base_build": 150,
-            "base_sha256": "5f9d2ca25d669885ba5a14bfcb5be33983a3cbe5dabe11bd4e7fbf4d3c7087ee",
-            "target_sha256": "0a6366ecad57b2217294d576cdacc15f8d224f8e895b625758e6d2eea7f39883"
           }
         ]
       }
