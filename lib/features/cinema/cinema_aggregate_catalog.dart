@@ -186,6 +186,7 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
       if (previous != null && session.recentPopular && !refresh) {
         // Only revalidate the head of the hot list. Already loaded later pages
         // keep their data and cursor instead of being downloaded a second time.
+        session.visibleLimit = previous.visibleLimit;
         session.retainedItems = oldItems
             .where((item) => !previous.headKeys.contains(item.key))
             .toList();
@@ -227,11 +228,17 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
     if (_disposed || session == null || session.loading || !snapshot.hasMore) {
       return;
     }
-    session.visibleLimit += discoveryPageSize;
+    session.visibleLimit = (session.visibleLimit + discoveryPageSize).clamp(
+      discoveryPageSize,
+      800,
+    );
     if (session.groupCount >= session.visibleLimit ||
         (session.groupCount > snapshot.groups.length &&
             !session.canFetchMore)) {
       _publish(session);
+      if (session.fetchedAt != null) {
+        await _cache?.put('catalog', session.key, session.toJson());
+      }
       return;
     }
     await _round(session, _generation);
@@ -572,7 +579,7 @@ class CinemaAggregateCatalogController extends ChangeNotifier {
           session.discoveryError ??
           (session.sources.isEmpty && !session.usesMetadata
               ? '还没有启用的影视接口，请在设置中添加或启用片源。'
-              : errors == session.sources.length
+              : errors > 0 && errors == session.sources.length
               ? '当前片源暂时无法连接，请刷新重试。'
               : null),
       message: limited
@@ -718,6 +725,13 @@ class _Session {
     final session = _Session(key, kind, filters, sort, sources);
     session.fetchedAt = DateTime.parse(data['at'] as String);
     session.initialized = true;
+    final limit = data['visibleLimit'];
+    if (limit is int) {
+      session.visibleLimit = limit.clamp(
+        CinemaAggregateCatalogController.discoveryPageSize,
+        800,
+      );
+    }
     for (final raw in jsonMaps(data['items']).take(800)) {
       final item = CinemaTitle.fromJson(raw);
       if (item.id.isNotEmpty &&
@@ -776,6 +790,7 @@ class _Session {
 
   Map<String, dynamic> toJson() => {
     'at': fetchedAt?.toIso8601String(),
+    'visibleLimit': visibleLimit,
     'items': items.values.map((t) => t.toJson()).toList(),
     'headKeys': headKeys.toList(),
     'discoveryPages': [

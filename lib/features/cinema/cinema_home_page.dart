@@ -731,16 +731,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     }
     final provider = _scoreProviders[section] ?? '豆瓣';
     final works = state.searching && NakuDevice.unifiedCinema
-        ? state.viewCache
-              .resolve(
-                items: state.items,
-                discovery: state.metadata,
-                search: state.activeKeyword,
-                filters: state.filters,
-                grouped: true,
-                sourcePriority: _store.enabledSources.map((s) => s.id).toList(),
-              )
-              .representatives
+        ? _viewFor(section).representatives
         : [
             ...groupCinemaTitles(
               state.items.where(state.filters.matches).toList(),
@@ -1230,7 +1221,9 @@ class _CinemaHomePageState extends State<CinemaHomePage>
       _catalogSort[_section] ?? CinemaCatalogSort.latest;
 
   String get _catalogSortExplanation {
-    if (_searching && NakuDevice.unifiedCinema) {
+    if (_searching &&
+        NakuDevice.unifiedCinema &&
+        _currentCatalogSort != CinemaCatalogSort.rating) {
       return '按片名和别名的匹配程度排列，同一剧集按季序展示。';
     }
     if (_currentCatalogSort == CinemaCatalogSort.popular &&
@@ -1251,7 +1244,11 @@ class _CinemaHomePageState extends State<CinemaHomePage>
           .where((title) => _ratings.scoreFor(title, _scoreProvider) != null)
           .length;
       final loading = _ratingPreloads.contains(_section) ? ' · 后台补充评分中' : '';
-      final scope = _searching && _catalog.discovery.titles.isNotEmpty
+      final scope = !_searching
+          ? ''
+          : NakuDevice.unifiedCinema
+          ? ' · 优先片名相关性，同系列按季序'
+          : _catalog.discovery.titles.isNotEmpty
           ? '；片源结果与相关作品分别排序'
           : '';
       return '已加载 $available/${works.length} 部有$_scoreProvider评分，缺失项排后$loading$scope';
@@ -2214,9 +2211,25 @@ class _CinemaHomePageState extends State<CinemaHomePage>
         );
         return;
       }
-      final available = found
-          .where((t) => _findSource(t.sourceId)?.enabled == true)
-          .toList();
+      // A visible card may finish fetching its routes while the foreground
+      // search is in flight. Reuse that exact edition without delaying a tap.
+      final confirmed = {
+        for (final item
+            in _resources.peek(title, _activeSources)?.variants ??
+                const <CinemaTitle>[])
+          if (item.routes.any((route) => route.episodes.isNotEmpty))
+            item.key: item,
+      };
+      final available = [
+        for (final item in found)
+          if (_findSource(item.sourceId)?.enabled == true)
+            if (confirmed[item.key] case final detail?
+                when item.routes.isEmpty &&
+                    cinemaSamePlaybackWork(item, detail))
+              inheritCinemaRatingMetadata(detail, item)
+            else
+              item,
+      ];
       if (available.isEmpty) return;
       final representative = groupCinemaTitles(
         [...available, title],
@@ -4259,10 +4272,7 @@ class _CinemaHomePageState extends State<CinemaHomePage>
                   key: const ValueKey('catalog-rating-provider'),
                   value: _scoreProvider,
                   isDense: true,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: CinemaTheme.copper,
-                  ),
+                  style: const TextStyle(fontSize: 12, color: CinemaTheme.text),
                   items: [
                     for (final provider in ['豆瓣', 'IMDb', '烂番茄'])
                       DropdownMenuItem(value: provider, child: Text(provider)),
@@ -4321,30 +4331,35 @@ class _CinemaHomePageState extends State<CinemaHomePage>
     ),
   );
 
-  CinemaCatalogView get _catalogView => _catalog.viewCache.resolve(
-    items: _items,
-    discovery: _searching && NakuDevice.unifiedCinema
-        ? _catalog.metadata
-        : const [],
-    search: _searching ? _catalog.activeKeyword : '',
-    preferredKind:
-        _searching && NakuDevice.unifiedCinema && _aggregates(_section)
-        ? _section.kind
-        : null,
-    filters: _catalog.filters,
-    grouped: _searching || _aggregates(_section),
-    sourcePriority: _store.enabledSources.map((s) => s.id).toList(),
-    sort:
-        _showsCatalogSort &&
-            !(!_searching &&
-                _section != _Section.variety &&
-                _currentCatalogSort == CinemaCatalogSort.popular)
-        ? _currentCatalogSort
-        : null,
-    provider: _scoreProvider,
-    ratingRevision: _ratingRevision,
-    scoreOf: (title) => _ratings.scoreFor(title, _scoreProvider),
-  );
+  CinemaCatalogView get _catalogView => _viewFor(_section);
+
+  CinemaCatalogView _viewFor(_Section section) {
+    final state = _catalogs[section]!;
+    final searching = state.searching;
+    final sort = _catalogSort[section] ?? CinemaCatalogSort.latest;
+    final provider = _scoreProviders[section] ?? '豆瓣';
+    final keepFeedOrder =
+        !searching &&
+        section != _Section.variety &&
+        sort == CinemaCatalogSort.popular;
+    return state.viewCache.resolve(
+      items: state.items,
+      discovery: searching && NakuDevice.unifiedCinema
+          ? state.metadata
+          : const [],
+      search: searching ? state.activeKeyword : '',
+      preferredKind: searching && NakuDevice.unifiedCinema
+          ? section.kind
+          : null,
+      filters: state.filters,
+      grouped: searching || _aggregates(section),
+      sourcePriority: _store.enabledSources.map((s) => s.id).toList(),
+      sort: section.kind != null && !keepFeedOrder ? sort : null,
+      provider: provider,
+      ratingRevision: _ratingRevision,
+      scoreOf: (title) => _ratings.scoreFor(title, provider),
+    );
+  }
 
   Widget _content(bool wide, {double topInset = 0}) {
     if (topInset > 0 && !_isCatalog) {

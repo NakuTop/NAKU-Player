@@ -172,10 +172,12 @@ void main() {
       expect(sample(70, 3, playing: false), isFalse);
       expect(sample(200, 3, playing: false), isFalse);
       expect(sample(201, 3), isFalse); // Resume gets a fresh timeout window.
+      expect(sample(216, 3), isFalse);
       expect(sample(232, 3), isTrue); // Confirmed sustained lack of progress.
       expect(sample(240, 3, completed: true), isFalse);
       watchdog.reset();
       expect(sample(300, 3), isFalse);
+      expect(sample(345, 3), isFalse); // No observations during a short sleep.
       expect(sample(3900, 3), isFalse); // Machine woke from sleep.
       expect(sample(3915, 3), isFalse);
       expect(sample(3930, 3), isTrue);

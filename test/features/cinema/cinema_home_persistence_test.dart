@@ -244,6 +244,24 @@ void main() {
   );
 
   test(
+    'public discovery with no enabled video sources can still show its catalogue',
+    () async {
+      final controller = CinemaAggregateCatalogController(
+        repository: _Source(),
+        discoveryRepository: _Feed(),
+      );
+      addTearDown(controller.dispose);
+      await controller.load(
+        sources: const [],
+        kind: CinemaAggregateKind.movies,
+        sort: CinemaCatalogSort.popular,
+      );
+      expect(controller.snapshot.items, hasLength(2));
+      expect(controller.snapshot.error, isNull);
+    },
+  );
+
+  test(
     'cache count is bounded and storage failures leave live values available',
     () async {
       final cache = CinemaHomeCache(directory: directory);

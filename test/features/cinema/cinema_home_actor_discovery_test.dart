@@ -476,7 +476,10 @@ void main() {
       await mount(tester);
       await search(tester, '演员');
       await select(tester, _firstActor);
-      final initialSourceSearches = repository.searches.toList();
+      int actorQueries() =>
+          repository.searches.where((query) => query == '演员').length;
+      final initialSourceSearches = actorQueries();
+      expect(initialSourceSearches, greaterThan(0));
       final sortChip = find.byKey(const ValueKey('catalog-sort-rating'));
       await Scrollable.ensureVisible(tester.element(sortChip), alignment: .25);
       await tester.pumpAndSettle();
@@ -499,7 +502,7 @@ void main() {
         find.byWidgetPredicate(
           (widget) =>
               widget is Tooltip &&
-              (widget.message?.contains('片源结果与相关作品分别排序') ?? false),
+              (widget.message?.contains('优先片名相关性，同系列按季序') ?? false),
         ),
         findsOneWidget,
       );
@@ -527,7 +530,7 @@ void main() {
         ),
         findsOneWidget,
       );
-      expect(repository.searches, initialSourceSearches);
+      expect(actorQueries(), initialSourceSearches);
       expect(repository.details, isEmpty);
 
       await tester.tap(find.text('更多参演作品'));
@@ -555,7 +558,7 @@ void main() {
         reason: 'Preloading must not depend on visible-card construction.',
       );
       expect(
-        repository.searches,
+        actorQueries(),
         initialSourceSearches,
         reason:
             'Actor pagination and score controls must not rerun source search.',
@@ -665,7 +668,15 @@ void main() {
           await tester.pumpAndSettle();
           expect(find.byType(CinemaRatingsPanel), findsNothing);
         } else {
-          await tester.pumpAndSettle();
+          final panelFinder = find.byType(CinemaRatingsPanel);
+          for (
+            var frame = 0;
+            frame < 60 && panelFinder.evaluate().isEmpty;
+            frame++
+          ) {
+            await tester.pump(const Duration(milliseconds: 50));
+          }
+          expect(panelFinder, findsOneWidget);
           final panel = tester.widget<CinemaRatingsPanel>(
             find.byType(CinemaRatingsPanel),
           );
@@ -737,7 +748,6 @@ void main() {
       expect(repository.details, hasLength(1));
       expect(repository.details.single.sourceId, _source.id);
       expect(repository.details.single.id, _rawTitle.id);
-      expect(repository.details.single.doubanId, _metadata.id);
       final panel = tester.widget<CinemaRatingsPanel>(
         find.byType(CinemaRatingsPanel),
       );

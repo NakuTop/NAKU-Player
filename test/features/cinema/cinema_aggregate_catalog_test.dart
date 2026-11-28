@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kazumi/features/cinema/cinema_aggregate_catalog.dart';
 import 'package:kazumi/features/cinema/cinema_filters.dart';
+import 'package:kazumi/features/cinema/cinema_home_cache.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_repository.dart';
 import 'package:kazumi/features/cinema/douban/douban_models.dart';
@@ -131,7 +133,14 @@ void main() {
           movie(s.id, '$i', name: '节目 $i', category: '综艺', categoryId: '9'),
       ],
     );
-    final controller = CinemaAggregateCatalogController(repository: repo);
+    final directory = await Directory.systemTemp.createTemp(
+      'catalogue-reveal-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final controller = CinemaAggregateCatalogController(
+      repository: repo,
+      cache: CinemaHomeCache(directory: directory),
+    );
     addTearDown(controller.dispose);
     await controller.load(
       sources: [source('a')],
@@ -140,9 +149,19 @@ void main() {
     expect(controller.snapshot.groups, hasLength(40));
     await controller.loadMore();
     expect(controller.snapshot.groups, hasLength(80));
-    await controller.loadMore();
-    expect(controller.snapshot.groups, hasLength(97));
-    expect(controller.snapshot.hasMore, isFalse);
+    final restored = CinemaAggregateCatalogController(
+      repository: repo,
+      cache: CinemaHomeCache(directory: directory),
+    );
+    addTearDown(restored.dispose);
+    await restored.load(
+      sources: [source('a')],
+      kind: CinemaAggregateKind.variety,
+    );
+    expect(restored.snapshot.groups, hasLength(80));
+    await restored.loadMore();
+    expect(restored.snapshot.groups, hasLength(97));
+    expect(restored.snapshot.hasMore, isFalse);
     expect(repo.calls, hasLength(1));
   });
   test(

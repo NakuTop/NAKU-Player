@@ -15,29 +15,37 @@ abstract final class CinemaTheme {
   static Color get background => backgroundFor(CinemaAppearance.instance);
   static Color get surface => surfaceFor(CinemaAppearance.instance);
   static Color get raised => raisedFor(CinemaAppearance.instance);
-  static Color backgroundFor(CinemaAppearance appearance) =>
-      const Color(0xFF09090B).withValues(
-        alpha:
-            NakuDevice.isTV ||
-                defaultTargetPlatform == TargetPlatform.windows ||
-                defaultTargetPlatform == TargetPlatform.android
-            ? 1
-            : appearance.effectiveBackgroundOpacity,
-      );
-  static Color surfaceFor(CinemaAppearance appearance) =>
-      const Color(0xFF1B1B1D).withValues(
-        alpha:
-            NakuDevice.isTV || defaultTargetPlatform == TargetPlatform.android
-            ? 1
-            : _panelAlpha(appearance.effectiveBackgroundOpacity, .38, .56),
-      );
-  static Color raisedFor(CinemaAppearance appearance) =>
-      const Color(0xFF242426).withValues(
-        alpha:
-            NakuDevice.isTV || defaultTargetPlatform == TargetPlatform.android
-            ? 1
-            : _panelAlpha(appearance.effectiveBackgroundOpacity, .30, .68),
-      );
+  static Color backgroundFor(
+    CinemaAppearance appearance, {
+    TargetPlatform? platform,
+  }) => const Color(0xFF09090B).withValues(
+    alpha:
+        NakuDevice.isTV ||
+            (platform ?? defaultTargetPlatform) == TargetPlatform.windows ||
+            (platform ?? defaultTargetPlatform) == TargetPlatform.android
+        ? 1
+        : appearance.effectiveBackgroundOpacity,
+  );
+  static Color surfaceFor(
+    CinemaAppearance appearance, {
+    TargetPlatform? platform,
+  }) => const Color(0xFF1B1B1D).withValues(
+    alpha:
+        NakuDevice.isTV ||
+            (platform ?? defaultTargetPlatform) == TargetPlatform.android
+        ? 1
+        : _panelAlpha(appearance.effectiveBackgroundOpacity, .38, .56),
+  );
+  static Color raisedFor(
+    CinemaAppearance appearance, {
+    TargetPlatform? platform,
+  }) => const Color(0xFF242426).withValues(
+    alpha:
+        NakuDevice.isTV ||
+            (platform ?? defaultTargetPlatform) == TargetPlatform.android
+        ? 1
+        : _panelAlpha(appearance.effectiveBackgroundOpacity, .30, .68),
+  );
   static double _panelAlpha(double opacity, double base, double scale) =>
       opacity >= .999 ? 1 : base + opacity * scale;
   // Warm light remains a cinematic effect; macOS controls use the same silver
@@ -98,8 +106,8 @@ abstract final class CinemaTheme {
         _cachedPlatform == platform) {
       return _cached!;
     }
-    final background = backgroundFor(appearance),
-        surface = surfaceFor(appearance);
+    final background = backgroundFor(appearance, platform: platform),
+        surface = surfaceFor(appearance, platform: platform);
     _cachedOpacity = opacity;
     _cachedFont = fontFamily;
     _cachedPlatform = platform;
@@ -153,7 +161,7 @@ abstract final class CinemaTheme {
         surfaceContainerLowest: background,
         surfaceContainerLow: surface,
         surfaceContainer: surface,
-        surfaceContainerHigh: raisedFor(appearance),
+        surfaceContainerHigh: raisedFor(appearance, platform: platform),
         surfaceContainerHighest: const Color(0xFF303032),
         onSurfaceVariant: muted,
         outline: border,
@@ -569,7 +577,10 @@ class _CinemaAppearanceScopeState extends State<CinemaAppearanceScope>
       builder: (context, child) {
         final media = MediaQuery.maybeOf(context);
         final themed = Theme(
-          data: CinemaTheme.dataFor(_appearance),
+          data: CinemaTheme.dataFor(
+            _appearance,
+            platform: Theme.of(context).platform,
+          ),
           child: child!,
         );
         return media == null

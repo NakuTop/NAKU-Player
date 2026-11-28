@@ -170,6 +170,57 @@ void main() {
     },
   );
 
+  test(
+    'concurrent detail reads share the request and a later retry reads fresh routes',
+    () async {
+      const card = CinemaTitle(id: '19', sourceId: 'movies', title: '影片');
+      var fail = true;
+      var revision = 0;
+      final adapter = FixtureAdapter((_) {
+        if (fail) return jsonResponse({'code': 0, 'msg': '暂不可用', 'list': []});
+        return jsonResponse({
+          'code': 1,
+          'list': [
+            {
+              'vod_id': 19,
+              'vod_name': '影片',
+              'vod_play_from': 'hls',
+              'vod_play_url': '正片\$https://media.example/${++revision}.m3u8',
+            },
+          ],
+        });
+      });
+      final repository = CinemaRepository(
+        dio: Dio()..httpClientAdapter = adapter,
+      );
+      await Future.wait([
+        for (var i = 0; i < 2; i++)
+          expectLater(
+            repository.detail(source, card),
+            throwsA(isA<CinemaSourceException>()),
+          ),
+      ]);
+      expect(adapter.requests, hasLength(1));
+      fail = false;
+      final details = await Future.wait([
+        repository.detail(source, card),
+        repository.detail(source, card),
+      ]);
+      for (final detail in details) {
+        expect(
+          detail.routes.single.episodes.single.url,
+          'https://media.example/1.m3u8',
+        );
+      }
+      expect(adapter.requests, hasLength(2));
+      final refreshed = await repository.detail(source, card);
+      expect(
+        refreshed.routes.single.episodes.single.url,
+        'https://media.example/2.m3u8',
+      );
+    },
+  );
+
   test('search preserves Unicode keywords and real empty results', () async {
     final adapter = FixtureAdapter(
       (_) => jsonResponse({'code': 1, 'list': [], 'total': 0}),
@@ -179,7 +230,11 @@ void main() {
     );
     final results = await repository.search(source, '电影 & test');
     expect(results.items, isEmpty);
-    expect(adapter.requests.single.uri.queryParameters['wd'], '电影 & test');
+    final words = adapter.requests
+        .map((r) => r.uri.queryParameters['wd'])
+        .nonNulls;
+    expect(words.where((word) => word == '电影 & test'), hasLength(1));
+    expect(words.first, '电影 & test');
   });
 
   test(

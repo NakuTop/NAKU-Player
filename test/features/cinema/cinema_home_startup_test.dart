@@ -345,7 +345,7 @@ void main() {
   });
 
   testWidgets(
-    'history click directly resumes saved episode and position after catalogue reorder',
+    'history starts the saved episode at its position without waiting for a reordered catalogue',
     (tester) async {
       const first = CinemaEpisode(
         name: '第1集',
@@ -382,7 +382,7 @@ void main() {
       await tester.tap(find.text('美国恐怖故事 第10季').first);
       await tester.pumpAndSettle();
       expect(find.text('history-player-fixture'), findsOneWidget);
-      expect(launchedPlayer!.episodeIndex, 0);
+      expect(repository.detailReads, 0);
       expect(
         launchedPlayer!
             .title
@@ -413,9 +413,13 @@ void main() {
 
 class _Catalogue extends CinemaRepository {
   CinemaTitle? detailTitle;
+  int detailReads = 0;
   @override
-  Future<CinemaTitle> detail(CinemaSource source, CinemaTitle title) async =>
-      detailTitle ?? title;
+  Future<CinemaTitle> detail(CinemaSource source, CinemaTitle title) async {
+    detailReads++;
+    return detailTitle ?? title;
+  }
+
   int categoriesRead = 0;
   final browsed = <String?>[];
   @override

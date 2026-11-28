@@ -4,12 +4,14 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:hive_ce_flutter/hive_flutter.dart';
 import 'package:kazumi/features/cinema/cinema_models.dart';
 import 'package:kazumi/features/cinema/cinema_player_entrance.dart';
 import 'package:kazumi/features/cinema/cinema_player_page.dart';
 import 'package:kazumi/features/cinema/cinema_player_preferences.dart';
 import 'package:kazumi/features/cinema/cinema_store.dart';
+import 'package:kazumi/features/cinema/cinema_source_health.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -59,6 +61,12 @@ Future<void> main() async {
       (await PackageInfo.fromPlatform()).packageName ==
           'com.shenminghao.yingchuan') {
     throw StateError('Use a macOS QA bundle and a loopback fixture URL.');
+  }
+  final appearance = await const MethodChannel('naku/appearance')
+      .invokeMapMethod<String, bool>('state');
+  if (appearance?['reduceTransparency'] == null ||
+      appearance?['reduceMotion'] == null) {
+    throw StateError('Initial AppKit accessibility settings were unavailable.');
   }
   MediaKit.ensureInitialized();
   await windowManager.ensureInitialized();
@@ -177,6 +185,14 @@ Future<void> main() async {
           'Lost the current player, playback progress, or pause state',
         );
       }
+    }
+    final frames = CinemaSourceHealth.instance
+        .history(source, media: true)
+        .where((record) => record.ok && record.firstFrameMs != null);
+    if (frames.length != 3) {
+      throw StateError(
+        'Expected one first-frame measurement for each of the three episodes, got ${frames.length}',
+      );
     }
     stdout.writeln('Background episode regression passed');
     exit(0);

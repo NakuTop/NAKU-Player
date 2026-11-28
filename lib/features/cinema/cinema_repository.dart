@@ -109,6 +109,8 @@ class CinemaRepository {
   }
 
   final Dio _dio;
+  final _pendingDetailResponses =
+      <(String, String, String), Future<Map<String, dynamic>>>{};
   final CinemaSourceHealth? health;
   final _CatalogueCache<(String, String), List<CinemaCategory>> _categories;
   final _CatalogueCache<(String, String, String, int), CinemaPage> _pages;
@@ -541,10 +543,16 @@ class CinemaRepository {
     }
     if (source.kind == CinemaSourceKind.direct) return title;
     if (source.kind == CinemaSourceKind.maccms) {
-      final body = await _request(source, {
-        'ac': 'detail',
-        'ids': cinemaCatalogId(title.id),
-      });
+      // Multiple season projections and foreground/background lookups can share
+      // the raw response. Each caller still resolves its own season and IDs.
+      final id = cinemaCatalogId(title.id);
+      final key = (source.id, _sourceIdentity(source), id);
+      final body = await _pendingDetailResponses.putIfAbsent(
+        key,
+        () => _request(source, {'ac': 'detail', 'ids': id}).whenComplete(() {
+          _pendingDetailResponses.remove(key);
+        }),
+      );
       final items = parseMacCmsPage(
         source,
         body,

@@ -36,6 +36,7 @@ public class VideoOutput: NSObject {
   private var height: Int64?
   private var texture: ResizableTextureProtocol!
   private var textureId: Int64 = -1
+  private var publishedSize: CGSize = .zero
   private var currentSize: CGSize = CGSize.zero
   private var disposed: Bool = false
 
@@ -175,11 +176,7 @@ public class VideoOutput: NSObject {
       currentSize = size
 
       texture.resize(size)
-      DispatchQueue.main.sync { [weak self] in
-        guard let that = self else { return }
-        // textureUpdateCallback must run on the main thread
-        that.textureUpdateCallback(that.textureId, size)
-      }
+      publishedSize = .zero
     }
 
     if disposed {
@@ -187,8 +184,19 @@ public class VideoOutput: NSObject {
     }
 
     texture.render(size)
+    // A positive resize completes Flutter's first-frame future. Publish the
+    // size only once this texture can supply a pixel buffer at that size.
+    let publishSize = publishedSize != size
+    if publishSize {
+      guard let buffer = texture.copyPixelBuffer() else { return }
+      buffer.release()
+      publishedSize = size
+    }
     DispatchQueue.main.sync { [weak self] in
-      guard let that = self else { return }
+      guard let that = self, that.textureId >= 0 else { return }
+      if publishSize {
+        that.textureUpdateCallback(that.textureId, size)
+      }
       // Textures must be marked as available from the main thread
       that.registry.textureFrameAvailable(that.textureId)
     }

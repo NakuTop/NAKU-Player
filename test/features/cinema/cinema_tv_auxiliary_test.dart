@@ -442,7 +442,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(panelRoute.isCurrent, isTrue);
     expect(find.byType(Slider), findsNothing);
-    expect(find.textContaining('第 2 季 第 3 集'), findsOneWidget);
+    expect(
+      find.textContaining(RegExp(r'第\s*2\s*季.*第\s*3\s*集')),
+      findsOneWidget,
+    );
     expect(controller.fontSize, 28);
     await tester.ensureVisible(find.text('字号：28'));
     await tester.runAsync(() async {

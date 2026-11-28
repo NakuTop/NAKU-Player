@@ -50,7 +50,7 @@ void main() {
   });
 
   test(
-    'macOS controls have neutral roles while other platforms retain their palette',
+    'macOS and Android handsets share neutral controls and use their own background opacity',
     () {
       final appearance = _Appearance();
       addTearDown(appearance.dispose);
@@ -81,10 +81,12 @@ void main() {
         platform: TargetPlatform.android,
       );
       expect(android.platform, TargetPlatform.android);
-      expect(android.colorScheme.primary, CinemaTheme.copper);
+      expect(mac.scaffoldBackgroundColor.a, closeTo(.47, .001));
+      expect(android.scaffoldBackgroundColor.a, 1);
+      expect(android.colorScheme.primary, CinemaTheme.controlTint);
       expect(
         android.filledButtonTheme.style!.backgroundColor!.resolve({}),
-        CinemaTheme.copper,
+        CinemaTheme.controlTint,
       );
     },
   );

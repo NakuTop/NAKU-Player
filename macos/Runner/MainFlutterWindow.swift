@@ -642,11 +642,13 @@ class MainFlutterWindow: NakuFullscreenWindow {
 
     let appearanceChannel = FlutterMethodChannel(
       name: "naku/appearance", binaryMessenger: flutterViewController.engine.binaryMessenger)
+    var appearanceListenerReady = false
     appearanceChannel.setMethodCallHandler { [weak glassController] call, result in
       guard call.method == "state" else {
         result(FlutterMethodNotImplemented)
         return
       }
+      appearanceListenerReady = true
       result(glassController?.accessibilityState ?? [:])
     }
     glassController.onAccessibilityChange = { [weak self] state in
@@ -655,7 +657,9 @@ class MainFlutterWindow: NakuFullscreenWindow {
       self?.backgroundColor = reduced
         ? NSColor(srgbRed: 9.0 / 255.0, green: 9.0 / 255.0, blue: 11.0 / 255.0, alpha: 1)
         : NSColor.clear
-      appearanceChannel.invokeMethod("accessibilityChanged", arguments: state)
+      if appearanceListenerReady {
+        appearanceChannel.invokeMethod("accessibilityChanged", arguments: state)
+      }
     }
     glassController.onAccessibilityChange?(glassController.accessibilityState)
 

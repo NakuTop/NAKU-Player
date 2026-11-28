@@ -175,6 +175,7 @@ void main() {
       final navigator = GlobalKey<NavigatorState>();
       await tester.pumpWidget(
         MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.macOS),
           navigatorKey: navigator,
           builder: (context, child) =>
               CinemaAppearanceScope(appearance: settings, child: child!),

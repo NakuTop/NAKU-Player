@@ -542,8 +542,8 @@ void main() {
     );
     expect(activity.value, isFalse);
     expect(
-      ratings.cardCalls['影片59'],
-      greaterThan(before['影片59']!),
+      ratings.cardCalls['影片39'],
+      greaterThan(before['影片39']!),
       reason: 'The new search resumes the selected provider even offscreen.',
     );
     final after = Map<String, int>.of(ratings.cardCalls);
@@ -569,7 +569,7 @@ void main() {
       }
       await mount(tester);
       expect(
-        card('影片59'),
+        card('影片39'),
         findsNothing,
         reason: 'The last loaded work has no visible card.',
       );
@@ -585,9 +585,9 @@ void main() {
       final browses = catalogue.browseCalls;
       expect(
         ratings.cardCalls.keys.toSet(),
-        catalogue.items.map((item) => item.id).toSet(),
+        catalogue.items.take(40).map((item) => item.id).toSet(),
       );
-      expect(card('影片59'), findsNothing);
+      expect(card('影片39'), findsNothing);
       final calls = Map<String, int>.of(ratings.cardCalls);
       await tester.pump(const Duration(seconds: 3));
       ratings.notifier.notifyListeners();

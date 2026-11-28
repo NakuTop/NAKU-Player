@@ -227,7 +227,7 @@ class CinemaPlaybackWatchdog {
         completed ||
         !_wasPlaying ||
         position != _lastPosition ||
-        (gap != null && (gap.isNegative || gap > timeout * 2))) {
+        (gap != null && (gap.isNegative || gap > timeout))) {
       _lastProgressAt = now;
     }
     _lastPosition = position;
@@ -2240,7 +2240,13 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       candidate.mediaUrl = mediaUrl;
       candidate.mediaHeaders = mediaHeaders;
       candidate.mediaFormat = mediaFormat;
-      candidate.firstFrameWatch = watch;
+      // Local files and local original streams say nothing about an online
+      // provider. Only a rendered video frame completes this measurement.
+      if (localFile == null &&
+          original == null &&
+          widget.videoSurfaceBuilder == null) {
+        candidate.firstFrameWatch = watch;
+      }
       if (original == null &&
           localFile == null &&
           !nas &&
@@ -3598,15 +3604,41 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
               playback.firstFrameTimer?.cancel();
               setState(() => playback.firstFrameRendered = true);
               if (_original != null && playback.ready) _finishOriginalStartup();
+              _recordFirstFrame(playback);
               playback.logStage('first-frame-rendered');
             },
             onError: (Object error, StackTrace _) {
               if (_isCurrent(playback.generation) &&
-                  identical(_playback, playback)) {
+                  identical(_playback, playback) &&
+                  (Platform.isMacOS || NakuDevice.isTV ||
+                      (Platform.isAndroid && _original != null))) {
                 _fail(playback.generation, '视频画面未能初始化，请重试或更换线路。');
               }
             },
           ),
+    );
+  }
+
+  void _recordFirstFrame(_CinemaPlayback playback) {
+    final clock = playback.firstFrameWatch;
+    if (clock == null ||
+        _error != null ||
+        !playback.ready ||
+        !playback.firstFrameRendered) {
+      return;
+    }
+    playback.firstFrameWatch = null;
+    // Android's mpv surface can report a resize before it presents a frame.
+    // Its dimensions confirm video, while Media3 and the Mac texture also
+    // provide a rendered-frame signal.
+    final rendered =
+        Platform.isMacOS || playback.player is CinemaTVNativePlayer;
+    _health.observe(
+      _source,
+      ok: true,
+      media: true,
+      confirmedVideo: true,
+      firstFrameMs: rendered ? clock.elapsedMilliseconds : null,
     );
   }
 
@@ -3711,14 +3743,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
         },
       ),
     );
-    if (original == null) {
-      _health.observe(
-        _source,
-        ok: true,
-        media: true,
-        firstFrameMs: playback.firstFrameWatch?.elapsedMilliseconds,
-      );
-    }
+    _recordFirstFrame(playback);
     if (NakuDevice.isTV) {
       _tvCurrentProbePending = true;
     } else {
@@ -3874,7 +3899,9 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       });
       return;
     }
-    _health.observe(_source, ok: false, media: true, reason: '视频未能继续');
+    if (widget.offlinePaths == null && _original == null) {
+      _health.observe(_source, ok: false, media: true, reason: '视频未能继续');
+    }
     if (_downgradeTVHLS(failure) || _downgradeTVNAS(generation, failure)) {
       return;
     }
@@ -5907,8 +5934,7 @@ class _CinemaPlayerPageState extends State<CinemaPlayerPage>
       final playback = _playback;
       final entranceGeneration = _generation;
       if (playback != null &&
-          (!Platform.isMacOS || widget.videoSurfaceBuilder != null) &&
-          (nativeCinema || Platform.isAndroid && _original != null)) {
+          (!Platform.isMacOS || widget.videoSurfaceBuilder != null)) {
         _observeNativeFirstFrame(playback);
       }
       final waitingForFirstFrame =

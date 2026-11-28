@@ -131,7 +131,7 @@ void main() {
 
   for (final showAnime in [true, false]) {
     testWidgets(
-      'history right swipe returns to ${showAnime ? 'anime' : 'series'}',
+      'history right swipe returns to ${showAnime ? 'anime' : 'variety'}',
       (tester) async {
         await mount(tester, '3.0.14', '94', showAnime: showAnime);
         await tester.tap(
@@ -146,7 +146,7 @@ void main() {
             )
             .value
             .toString();
-        expect(destination, contains(showAnime ? 'anime' : 'series'));
+        expect(destination, contains(showAnime ? 'anime' : 'variety'));
         await tester.pumpWidget(const SizedBox());
       },
     );
